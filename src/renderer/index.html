@@ -25,6 +25,10 @@
             <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="providers"></span>
             <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.providers">服务</span>
           </button>
+          <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="chat">
+            <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="newSession"></span>
+            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.newSession">新会话</span>
+          </button>
           <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="plugins">
             <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7h3a2 2 0 0 1 2 2v3h-1.5a1.5 1.5 0 1 0 0 3H19v3a2 2 0 0 1-2 2h-3v-1.5a1.5 1.5 0 1 0-3 0V20H8a2 2 0 0 1-2-2v-3H4.5a1.5 1.5 0 1 1 0-3H6V9a2 2 0 0 1 2-2h3V5.5a1.5 1.5 0 1 1 3 0V7z"/></svg></span>
             <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.plugins">插件</span>
@@ -61,7 +65,7 @@
 
       <main class="main-panel flex-1 min-h-0 flex flex-col overflow-hidden min-w-0">
         <div class="titlebar-drag drag-region h-9 shrink-0"></div>
-        <div class="main-scroll flex-grow min-h-0 overflow-y-auto overflow-x-hidden scrollbar-gutter-stable has-[#view-conversations:not(.hidden)]:overflow-hidden has-[#view-conversations:not(.hidden)]:flex has-[#view-conversations:not(.hidden)]:flex-col has-[#view-settings:not(.hidden)]:overflow-hidden has-[#view-settings:not(.hidden)]:flex has-[#view-settings:not(.hidden)]:flex-col" id="mainScroll">
+        <div class="main-scroll flex-grow min-h-0 overflow-y-auto overflow-x-hidden scrollbar-gutter-stable has-[#view-conversations:not(.hidden)]:overflow-hidden has-[#view-conversations:not(.hidden)]:flex has-[#view-conversations:not(.hidden)]:flex-col has-[#view-chat:not(.hidden)]:overflow-hidden has-[#view-chat:not(.hidden)]:flex has-[#view-chat:not(.hidden)]:flex-col has-[#view-settings:not(.hidden)]:overflow-hidden has-[#view-settings:not(.hidden)]:flex has-[#view-settings:not(.hidden)]:flex-col" id="mainScroll">
 
         <!-- 服务 -->
         <section id="view-providers" class="panel flex-none max-w-[1120px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
@@ -371,6 +375,75 @@
         </section>
 
         <!-- 监控 -->
+        <!-- 新会话（在应用内直接运行 Claude Code / Codex） -->
+        <section id="view-chat" data-clarity-mask="true" class="panel-full hidden flex-grow min-h-0 w-full overflow-hidden flex animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+          <div class="flex w-full h-full overflow-hidden">
+            <aside class="chat-sidebar w-[230px] border-r border-border-custom flex flex-col shrink-0 overflow-hidden">
+              <div class="p-[7px_8px] border-b border-border-custom flex gap-1.5 items-center shrink-0 h-10">
+                <span class="text-[11.5px] font-semibold text-caption uppercase tracking-[0.03em] px-1.5 flex-1" data-i18n="chat.listTitle">会话</span>
+                <button id="chatNewBtn" class="tool-btn w-[26px] h-[26px] shrink-0 border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" type="button" data-i18n-title="chat.new" title="新会话"><span data-icon="plus"></span></button>
+              </div>
+              <div id="chatSessionList" class="flex-1 overflow-y-auto p-1.5 flex flex-col gap-1"></div>
+            </aside>
+            <main class="flex-grow min-w-0 flex flex-col bg-bg-elev">
+              <div id="chatHeader" class="hidden items-center gap-2 px-4 border-b border-border-custom h-10 shrink-0">
+                <img id="chatHeaderIcon" class="w-[16px] h-[16px] rounded-[4px] shrink-0" src="assets/claude.svg" alt="" />
+                <span id="chatHeaderTitle" class="text-[12.5px] font-semibold text-fg truncate min-w-0"></span>
+                <span id="chatHeaderCwd" class="text-[11px] text-caption font-mono truncate max-w-[300px]"></span>
+                <span id="chatHeaderGateway" class="hidden text-[10.5px] px-1.5 py-0.25 rounded-full bg-green-soft text-green font-semibold whitespace-nowrap" data-i18n="chat.viaGateway">经网关</span>
+                <span class="flex-1"></span>
+                <span id="chatHeaderStatus" class="text-[11px] text-caption whitespace-nowrap"></span>
+              </div>
+              <div id="chatBody" class="flex-1 min-h-0 overflow-y-auto">
+                <div id="chatSetup" class="max-w-[560px] mx-auto px-8 py-10 flex flex-col gap-5">
+                  <div class="flex flex-col gap-1">
+                    <h2 class="text-[17px] font-bold tracking-tight" data-i18n="chat.setupTitle">开始一个新会话</h2>
+                    <p class="text-[12px] text-caption leading-normal" data-i18n="chat.setupSub">在选定目录中运行编码智能体，请求经本机网关路由到当前服务。</p>
+                  </div>
+                  <div class="flex flex-col gap-1.75">
+                    <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="chat.agent">智能体</span>
+                    <div id="chatAgentSeg" class="flex gap-1.5">
+                      <button type="button" data-agent="claude" class="chat-agent-btn active flex-1 flex items-center gap-2 px-3 py-2.5 border border-border-custom rounded-[10px] bg-bg-elev cursor-pointer transition-all duration-140 hover:border-border-strong [&.active]:border-brand [&.active]:bg-brand-soft"><img src="assets/claude.svg" class="w-[18px] h-[18px] rounded-[4px]" alt="" /><span class="text-[12.5px] font-semibold">Claude Code</span><span class="chat-agent-state text-[10px] text-caption ml-auto"></span></button>
+                      <button type="button" data-agent="codex" class="chat-agent-btn flex-1 flex items-center gap-2 px-3 py-2.5 border border-border-custom rounded-[10px] bg-bg-elev cursor-pointer transition-all duration-140 hover:border-border-strong [&.active]:border-brand [&.active]:bg-brand-soft"><img src="assets/chatgpt.svg" class="w-[18px] h-[18px] rounded-[4px]" alt="" /><span class="text-[12.5px] font-semibold">Codex</span><span class="chat-agent-state text-[10px] text-caption ml-auto"></span></button>
+                    </div>
+                  </div>
+                  <div class="flex flex-col gap-1.75">
+                    <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="chat.workdir">工作目录</span>
+                    <div class="flex gap-1.75">
+                      <input id="chatCwd" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[12.5px] font-mono flex-1 min-w-0 outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="~/projects/my-app" />
+                      <button id="chatPickDir" class="btn bg-bg-elev text-fg border border-border-custom rounded-[7px] px-3 py-1.25 font-medium text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] shrink-0" type="button" data-i18n="chat.browse">浏览…</button>
+                    </div>
+                  </div>
+                  <div class="flex flex-col gap-1.75">
+                    <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="chat.permission">权限</span>
+                    <div id="chatPermSeg" class="flex gap-1.5">
+                      <button type="button" data-perm="plan" class="chat-perm-btn flex-1 px-3 py-2 border border-border-custom rounded-[9px] bg-bg-elev cursor-pointer transition-all duration-140 hover:border-border-strong [&.active]:border-brand [&.active]:bg-brand-soft text-[12px] font-medium" data-i18n="chat.permPlan">只读规划</button>
+                      <button type="button" data-perm="edits" class="chat-perm-btn active flex-1 px-3 py-2 border border-border-custom rounded-[9px] bg-bg-elev cursor-pointer transition-all duration-140 hover:border-border-strong [&.active]:border-brand [&.active]:bg-brand-soft text-[12px] font-medium" data-i18n="chat.permEdits">允许编辑</button>
+                      <button type="button" data-perm="full" class="chat-perm-btn flex-1 px-3 py-2 border border-border-custom rounded-[9px] bg-bg-elev cursor-pointer transition-all duration-140 hover:border-border-strong [&.active]:border-brand [&.active]:bg-brand-soft text-[12px] font-medium" data-i18n="chat.permFull">完全放开</button>
+                    </div>
+                  </div>
+                  <div class="flex flex-col gap-1.75">
+                    <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="chat.task">任务</span>
+                    <textarea id="chatSetupPrompt" rows="4" class="bg-bg-input border border-border-custom rounded-[10px] px-3 py-2.5 text-fg text-[13px] leading-[1.5] w-full outline-none transition-colors duration-120 focus:border-primary resize-none" data-i18n-placeholder="chat.taskPlaceholder" placeholder="描述要做什么…"></textarea>
+                  </div>
+                  <div class="flex items-center gap-2.5">
+                    <button id="chatStartBtn" class="btn btn-primary bg-primary text-white border-none rounded-[9px] px-4 py-2 font-semibold text-[12.5px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985] inline-flex items-center gap-1.5" type="button"><span data-icon="send"></span><span data-i18n="chat.start">开始</span></button>
+                    <span id="chatSetupHint" class="text-[11px] text-caption"></span>
+                  </div>
+                </div>
+                <div id="chatTranscript" class="hidden flex-col gap-4 p-[22px_26px] max-w-[860px] mx-auto w-full"></div>
+              </div>
+              <div id="chatComposer" class="hidden shrink-0 border-t border-border-custom p-3 px-4">
+                <div class="max-w-[860px] mx-auto w-full flex items-end gap-2">
+                  <textarea id="chatInput" rows="1" class="bg-bg-input border border-border-custom rounded-[11px] px-3 py-2.25 text-fg text-[13px] leading-[1.5] flex-1 min-w-0 outline-none transition-colors duration-120 focus:border-primary resize-none max-h-[140px]" data-i18n-placeholder="chat.inputPlaceholder" placeholder="继续对话… (Enter 发送)"></textarea>
+                  <button id="chatSendBtn" class="btn btn-primary bg-primary text-white border-none rounded-[10px] w-[38px] h-[38px] cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.96] flex items-center justify-center shrink-0" type="button" data-i18n-title="chat.send" title="发送"><span data-icon="send"></span></button>
+                  <button id="chatStopBtn" class="btn hidden bg-red-soft text-red border border-red/25 rounded-[10px] w-[38px] h-[38px] cursor-pointer transition-all duration-140 hover:bg-red hover:text-white active:scale-[0.96] items-center justify-center shrink-0" type="button" data-i18n-title="chat.stop" title="停止"><span data-icon="stop"></span></button>
+                </div>
+              </div>
+            </main>
+          </div>
+        </section>
+
         <section id="view-monitor" class="panel hidden flex-none max-w-[1120px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
           <div class="metric-grid grid grid-cols-4 gap-3.5">
             <div class="metric bg-bg-elev border border-border-custom rounded-[16px] p-5 shadow-card flex flex-col gap-2">
@@ -600,5 +673,6 @@
     <script src="vendor/highlight.min.js"></script>
     <script src="renderer.js"></script>
     <script src="conversations.js"></script>
+    <script src="chat.js"></script>
   </body>
 </html>

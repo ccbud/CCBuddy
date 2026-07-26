@@ -6,6 +6,7 @@
 #![allow(unused_variables)]
 
 mod antigravity;
+mod chat;
 mod claude;
 mod codex;
 mod codexconnect;
@@ -1840,6 +1841,8 @@ pub fn run() {
             pm.sync_providers(); // reconcile services with installed plugins on boot
             let pm_boot = pm.clone();
             app.manage(pm);
+            // New Session chat runner (chat.rs) — tracks live CLI child processes.
+            app.manage(std::sync::Arc::new(chat::ChatState::default()));
             let startup_cfg = store::read_config();
             // Repair previously managed targets that remain selected. A compatibility backup is
             // required per target because old defaults could persist `["claude"]` without any
@@ -2239,6 +2242,7 @@ pub fn run() {
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_search, history_dirs, history_pick_dir, history_set_active,
             history_import, history_import_paths, history_remove_import, history_set_meta, history_delete_forever, history_export_raw, history_export_html,
+            chat::chat_start, chat::chat_send, chat::chat_stop, chat::chat_list, chat::chat_get, chat::chat_remove, chat::chat_pick_dir, chat::chat_agents,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
             selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_export, selfcheck_import, selfcheck_popover
@@ -2246,6 +2250,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
+            // Quitting: stop any CLI child processes the chat runner still has live.
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(cs) = app_handle.try_state::<std::sync::Arc<chat::ChatState>>() {
+                    cs.kill_all();
+                }
+            }
             // Keep running in the tray when the user closes the window (hide instead of quit).
             if let tauri::RunEvent::WindowEvent {
                 label,

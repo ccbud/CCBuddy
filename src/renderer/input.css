@@ -1960,6 +1960,46 @@ body {
   text-transform: none;
 }
 
+/* ---- 新会话 (New Session chat) ---- */
+.chat-run-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--green);
+  animation: chatPulse 1.4s ease-in-out infinite;
+}
+@keyframes chatPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+.chat-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--brand);
+  border-radius: 99px;
+  animation: chatSpin 0.8s linear infinite;
+}
+@keyframes chatSpin { to { transform: rotate(360deg); } }
+.chat-think-pulse { animation: chatThink 1.6s ease-in-out infinite; }
+@keyframes chatThink { 0%, 100% { opacity: 0.9; } 50% { opacity: 0.45; } }
+/* streaming caret on the live assistant bubble */
+.chat-live .msg-body::after {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--brand);
+  border-radius: 2px;
+  animation: chatCaret 1s steps(2, start) infinite;
+}
+@keyframes chatCaret { 50% { opacity: 0; } }
+#view-chat .msg-body, #view-chat .msg-body * { -webkit-user-select: text; user-select: text; }
+.chat-sess-del { display: none; }
+.chat-sess:hover .chat-sess-del { display: flex; }
+
 /* 会话正文字号 (设置 › 常规 › 会话): --conv-fs is a scale factor set on :root by the renderer
    (13px body == 1, absent == default). Every reading-surface size in the message timeline
    multiplies by it, so 大/特大/自定义 scale the whole log proportionally — layout stays real px

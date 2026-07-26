@@ -1335,6 +1335,7 @@ function switchView(view) {
   // Smooth fade between views
   const viewIds = {
     providers: 'view-providers',
+    chat: 'view-chat',
     plugins: 'view-plugins',
     monitor: 'view-monitor',
     conversations: 'view-conversations',
@@ -1373,6 +1374,7 @@ function switchView(view) {
     }
 
     if (view === 'conversations' && window.ccbudConversations) window.ccbudConversations.onShow();
+    if (view === 'chat' && window.ccbudChat) window.ccbudChat.onShow();
     if (view === 'plugins') loadPlugins();
     if (view === 'monitor') refreshGatewayLog();
     // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.

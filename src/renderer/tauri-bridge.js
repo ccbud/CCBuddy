@@ -94,6 +94,16 @@
     },
     onHistoryChanged: (cb) => on('history:changed', cb),
 
+    chatStart: (agent, cwd, prompt, permission) => inv('chat_start', { agent, cwd, prompt, permission }),
+    chatSend: (id, prompt) => inv('chat_send', { id, prompt }),
+    chatStop: (id) => inv('chat_stop', { id }),
+    chatList: () => inv('chat_list'),
+    chatGet: (id) => inv('chat_get', { id }),
+    chatRemove: (id) => inv('chat_remove', { id }),
+    chatPickDir: () => inv('chat_pick_dir'),
+    chatAgents: () => inv('chat_agents'),
+    onChatEvent: (cb) => on('chat:event', cb),
+
     copy: (t) => inv('util_copy', { text: t }),
     openExternal: (u) => inv('util_open_external', { url: u }),
 
