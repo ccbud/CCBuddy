@@ -199,13 +199,14 @@ pub(crate) fn foreign_kind(file: &Path) -> Option<Foreign> {
 }
 
 /// Cached soft-delete verdict for one file: a Claude session's flag (rides its first line, so it's
-/// final for a given mtime), or "this belongs to another CLI" (Codex rollout / foreign source,
-/// whose flag lives in a sidecar and can flip WITHOUT touching the file — so only the format
-/// verdict is cached, never the flag).
+/// final for a given mtime), or "this belongs to another CLI" (Codex rollout / Qoder session /
+/// foreign source, whose flag lives in a sidecar and can flip WITHOUT touching the file — so only
+/// the format verdict is cached, never the flag).
 #[derive(Clone, Copy)]
 enum DelKind {
     Claude(bool),
     Codex,
+    Qoder,
     Foreign(Foreign),
 }
 
@@ -229,9 +230,12 @@ fn is_session_deleted(file: &Path) -> bool {
         .ok()
         .and_then(|c| c.get(file).filter(|(cmt, _)| *cmt == mt).map(|(_, k)| *k));
     let kind = cached.unwrap_or_else(|| {
-        // Foreign sources are recognized by path shape alone — no read needed.
+        // Foreign sources are recognized by path shape alone — no read needed. Qoder is
+        // Claude-FORMAT but another tool's file, so its flag lives in the sidecar too.
         let kind = if let Some(fk) = foreign_kind(file) {
             DelKind::Foreign(fk)
+        } else if crate::qoder::looks_qoder_path(file) {
+            DelKind::Qoder
         } else {
             // Read the same window session_meta uses: a Codex rollout's first (session_meta) line
             // embeds the full system prompt (~22 KB), so a smaller head truncates it, parse yields
@@ -253,6 +257,7 @@ fn is_session_deleted(file: &Path) -> bool {
     match kind {
         DelKind::Claude(del) => del,
         DelKind::Codex => crate::codex::is_deleted(file),
+        DelKind::Qoder => crate::qoder::is_deleted(file),
         DelKind::Foreign(Foreign::Grok) => crate::grok::is_deleted(file),
         DelKind::Foreign(Foreign::Copilot) => crate::copilot::is_deleted(file),
         DelKind::Foreign(Foreign::Antigravity) => crate::antigravity::is_deleted(file),
@@ -434,10 +439,10 @@ fn all_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
     dirs
 }
 /// A sibling data tree next to a dir entry's `projects/`. Every configured dir is probed for
-/// EVERY layout (Claude Code writes `<dir>/projects/…`, Codex and Grok `<dir>/sessions/…`,
-/// Copilot `<dir>/session-state/…`, Antigravity `<dir>/conversations/*.db`), so `~/.codex`,
-/// `~/.grok`, `~/.copilot`, `~/.gemini/antigravity-cli` are just configured dirs rather than
-/// special cases.
+/// EVERY layout (Claude Code AND Qoder write `<dir>/projects/…`, Codex and Grok
+/// `<dir>/sessions/…`, Copilot `<dir>/session-state/…`, Antigravity `<dir>/conversations/*.db`),
+/// so `~/.codex`, `~/.grok`, `~/.copilot`, `~/.gemini/antigravity-cli`, `~/.qoder` are just
+/// configured dirs rather than special cases.
 fn sibling_dir(projects_dir: &Path, name: &str) -> Option<PathBuf> {
     projects_dir.parent().map(|b| b.join(name))
 }
@@ -570,14 +575,21 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
     if crate::codex::looks_codex(&recs) {
         return crate::codex::session_meta_from(file, &recs, dir_id, dir_label);
     }
+    // Qoder sessions are Claude-FORMAT files in another tool's tree (~/.qoder/projects): the
+    // normal shaping below applies, but the row brands as qoder, custom title/tags/delete live
+    // in the app-owned sidecar, and the `<uuid>-session.json` companion supplies qoder's own
+    // title (beats first-user-text) plus a cwd fallback.
+    let qoder = crate::qoder::looks_qoder_path(file);
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
         .or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let agent_rec = recs.iter().find(|r| r.get("agentId").is_some());
     let msgs: Vec<Value> = recs.iter().filter_map(line_to_message).collect();
-    let (cc_title, cc_tags, cc_deleted) = read_ccbud(&recs);
-    let auto_title = first_user_text(&msgs);
+    let (cc_title, cc_tags, cc_deleted) =
+        if qoder { crate::qoder::sidecar_meta(file) } else { read_ccbud(&recs) };
+    let auto_title = (if qoder { crate::qoder::session_title(file) } else { None })
+        .unwrap_or_else(|| first_user_text(&msgs));
     let mut model: Option<String> = None;
     for r in &recs {
         if r.get("type").and_then(|v| v.as_str()) == Some("assistant") {
@@ -591,13 +603,14 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
         .and_then(|r| r.get("cwd"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+        .or_else(|| if qoder { crate::qoder::working_dir(file) } else { None })
         .or_else(|| decode_dir_name(dir_name));
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let mt = mtime_ms(file);
     Some(json!({
-        "id": format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }),
+        "id": if qoder { format!("qoder:{}", stem) } else { format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }) },
         "file": file.to_string_lossy(),
-        "source": "disk",
+        "source": if qoder { "qoder" } else { "disk" },
         "dirId": dir_id,
         "dirLabel": dir_label,
         "sessionId": meta_rec.and_then(|r| r.get("sessionId")).and_then(|v| v.as_str()).unwrap_or(&stem),
@@ -971,11 +984,20 @@ pub fn get_session(file: &str) -> Value {
         .iter()
         .find(|r| r.get("type").and_then(|v| v.as_str()) == Some("summary") && r.get("summary").is_some())
         .and_then(|r| r.get("summary").cloned());
-    let (cc_title, cc_tags, cc_deleted) = read_ccbud(&recs);
+    // Qoder detail: same Claude shaping, qoder branding + sidecar meta + companion title/cwd
+    // (mirrors build_session_meta).
+    let qoder = crate::qoder::looks_qoder_path(path);
+    let (cc_title, cc_tags, cc_deleted) =
+        if qoder { crate::qoder::sidecar_meta(path) } else { read_ccbud(&recs) };
     let shaped = shape_messages(&recs);
-    let auto_title = first_user_text(&shaped.messages);
+    let auto_title = (if qoder { crate::qoder::session_title(path) } else { None })
+        .unwrap_or_else(|| first_user_text(&shaped.messages));
     let subagent = agent_rec.is_some();
-    let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let cwd = meta_rec
+        .and_then(|r| r.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| if qoder { crate::qoder::working_dir(path) } else { None });
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let base_id = meta_rec
         .and_then(|r| r.get("sessionId"))
@@ -993,9 +1015,11 @@ pub fn get_session(file: &str) -> Value {
 
     json!({
         "meta": {
-            "id": format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }),
+            "id": if qoder { format!("qoder:{}", stem) } else { format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }) },
             "file": file,
-            "source": "disk",
+            "source": if qoder { "qoder" } else { "disk" },
+            // Renderer falls back to Claude when null (the app's home turf carries no label).
+            "assistant": if qoder { json!("Qoder") } else { Value::Null },
             "title": cc_title.clone().unwrap_or_else(|| auto_title.clone()),
             "autoTitle": auto_title,
             "tags": cc_tags,
@@ -1376,6 +1400,18 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
         }
         return r;
     }
+    // Qoder sessions are Claude-format but another tool's live files: title/tags/delete go to
+    // the shared sidecar (keyed qoder:<uuid>) instead of an in-file rewrite. The sidecar edit
+    // doesn't touch the file (no mtime bump), so the list-meta memo is dropped by hand.
+    if crate::qoder::looks_qoder_path(target) {
+        let r = crate::qoder::set_meta(file, patch);
+        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Ok(mut cache) = meta_cache().lock() {
+                cache.remove(target);
+            }
+        }
+        return r;
+    }
     let raw = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return json!({ "ok": false, "reason": "read" }),
@@ -1495,12 +1531,12 @@ pub fn delete_session_file(file: &str, config: &Value) -> Value {
     if !target.is_file() {
         return json!({ "ok": false, "reason": "missing" });
     }
-    // A LIVE Codex rollout or foreign-CLI session is another tool's file — the app only ever
-    // soft-deletes those via the sidecar and never rewrites them (see set_ccbud), so "delete
-    // forever" must not rm the source either. Imported codex COPIES (marked by an .import.json)
-    // are our own snapshots and stay hard-deletable, like Claude sessions the app manages in
-    // the configured dirs.
-    if foreign_kind(target).is_some() {
+    // A LIVE Codex rollout, Qoder session, or foreign-CLI session is another tool's file — the
+    // app only ever soft-deletes those via the sidecar and never rewrites them (see set_ccbud),
+    // so "delete forever" must not rm the source either. Imported codex COPIES (marked by an
+    // .import.json) are our own snapshots and stay hard-deletable, like Claude sessions the app
+    // manages in the configured dirs.
+    if foreign_kind(target).is_some() || crate::qoder::looks_qoder_path(target) {
         return json!({ "ok": false, "reason": "foreign" });
     }
     let head = parse_lines(&read_head(target, 131072));
@@ -2009,6 +2045,86 @@ mod tests {
             let hits = search_sessions(&config, "all", needle, 10);
             assert_eq!(hits.len(), 1, "search {}: {:?}", needle, hits);
         }
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Qoder writes Claude-FORMAT transcripts into its own tree (.qoder/projects/…): rows must
+    // brand as qoder with the `<uuid>-session.json` title, detail must run the Claude shaper
+    // (incl. nested subagents), hard-delete must refuse (another tool's file), and content
+    // search must reach both the main thread and subagent transcripts.
+    #[test]
+    fn qoder_sessions_route_end_to_end() {
+        let base = std::env::temp_dir().join("ccbud-qoder-route-test");
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join(".qoder");
+        let proj = root.join("projects").join("-tmp-qproj");
+        fs::create_dir_all(&proj).unwrap();
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        let sess = proj.join(format!("{}.jsonl", uuid));
+        fs::write(
+            &sess,
+            format!(
+                "{{\"type\":\"agent-setting\",\"agentSetting\":\"triage\",\"entrypoint\":\"sdk-cli\",\"sessionId\":\"{u}\"}}\n\
+                 {{\"type\":\"user\",\"uuid\":\"u1\",\"timestamp\":\"2026-06-04T09:47:27.966Z\",\"message\":{{\"role\":\"user\",\"content\":\"qoder needle axolotl\"}},\"cwd\":\"/tmp/qproj\",\"sessionId\":\"{u}\",\"version\":\"1.0.8\"}}\n\
+                 {{\"type\":\"assistant\",\"uuid\":\"a1\",\"parentUuid\":\"u1\",\"timestamp\":\"2026-06-04T09:47:32.116Z\",\"message\":{{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"qoder-auto\",\"stop_reason\":\"end_turn\",\"usage\":{{\"input_tokens\":100,\"cache_creation_input_tokens\":7,\"cache_read_input_tokens\":50,\"output_tokens\":30}},\"content\":[{{\"type\":\"text\",\"text\":\"done\"}},{{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"Task\",\"input\":{{}}}}]}},\"sessionId\":\"{u}\"}}\n",
+                u = uuid
+            ),
+        )
+        .unwrap();
+        // qoder's own metadata companion: its title must win over first-user-text
+        fs::write(
+            proj.join(format!("{}-session.json", uuid)),
+            "{\"title\":\"Qoder 会话\",\"working_dir\":\"/tmp/qproj\"}",
+        )
+        .unwrap();
+        let sub = proj.join(uuid).join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(
+            sub.join("agent-q1.jsonl"),
+            format!("{{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"q1\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"sub quetzal done\"}}]}},\"sessionId\":\"{}\",\"timestamp\":\"2026-06-04T09:47:40.000Z\"}}\n", uuid),
+        )
+        .unwrap();
+        fs::write(
+            sub.join("agent-q1.meta.json"),
+            "{\"agentType\":\"general-purpose\",\"description\":\"d\",\"toolUseId\":\"tu1\"}",
+        )
+        .unwrap();
+
+        let config = json!({ "historyDirs": [ root.to_string_lossy() ] });
+        let rows = list_sessions(&config, "all", 50);
+        assert_eq!(rows.len(), 1, "rows: {:?}", rows);
+        let r = &rows[0];
+        assert_eq!(r["source"], "qoder");
+        assert_eq!(r["id"], format!("qoder:{}", uuid));
+        assert_eq!(r["title"], "Qoder 会话");
+        assert_eq!(r["autoTitle"], "Qoder 会话");
+        assert_eq!(r["cwd"], "/tmp/qproj");
+        assert_eq!(r["model"], "qoder-auto");
+        assert_eq!(r["deleted"], false);
+
+        let file = r["file"].as_str().unwrap();
+        let d = get_session(file);
+        assert_eq!(d["meta"]["assistant"], "Qoder");
+        assert_eq!(d["meta"]["source"], "qoder");
+        assert_eq!(d["meta"]["id"], format!("qoder:{}", uuid));
+        assert_eq!(d["meta"]["title"], "Qoder 会话");
+        assert_eq!(d["meta"]["subagentCount"], 1);
+        assert_eq!(d["messages"][0]["content"], "qoder needle axolotl"); // string-content user turn
+        assert_eq!(d["subagents"]["tu1"]["messages"][0]["content"][0]["text"], "sub quetzal done");
+
+        // another tool's live file: delete-forever must refuse and leave it on disk
+        let del = delete_session_file(file, &config);
+        assert_eq!(del["reason"], "foreign");
+        assert!(Path::new(file).is_file());
+
+        // content search reaches the main thread and the subagent transcript
+        let hits = search_sessions(&config, "all", "axolotl", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0]["agent"], "main");
+        let hits = search_sessions(&config, "all", "quetzal", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0]["agent"], "tu1");
 
         let _ = fs::remove_dir_all(&base);
     }

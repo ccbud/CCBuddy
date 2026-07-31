@@ -375,11 +375,15 @@ pub fn build_data(file: &str) -> Value {
     if crate::codex::looks_codex(&recs) {
         return build_from_session(crate::codex::session_from_recs(file, &recs), "Codex");
     }
+    // Qoder sessions are Claude-format (the shaping below applies as-is) — brand the exported
+    // page and prefer qoder's own stored title over first-user-text.
+    let qoder = crate::qoder::looks_qoder_path(path);
     let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let s = shape_session(&recs);
     let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str());
     let title = {
-        let t = first_user_text(&s.messages);
+        let t = (if qoder { crate::qoder::session_title(path) } else { None })
+            .unwrap_or_else(|| first_user_text(&s.messages));
         if t.is_empty() { "(conversation)".to_string() } else { t }
     };
     let stem = path.file_stem().and_then(|x| x.to_str()).unwrap_or("");
@@ -391,6 +395,8 @@ pub fn build_data(file: &str) -> Value {
     json!({
         "meta": {
             "title": title,
+            // The viewer runtime labels turns `meta.assistant || 'Claude'`.
+            "assistant": if qoder { json!("Qoder") } else { Value::Null },
             "model": s.model,
             "project": cwd.map(base_name),
             "cwd": cwd,

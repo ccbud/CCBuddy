@@ -17,6 +17,7 @@ mod grok;
 mod history;
 mod plugin;
 mod protocol;
+mod qoder;
 mod sidecar;
 mod store;
 mod usage;
@@ -1823,13 +1824,15 @@ pub fn run() {
                 )?;
             }
             // One-time migrations: detected installs of the other coding CLIs (Codex, Grok
-            // Build, Copilot CLI, Antigravity CLI) and an XDG Claude tree join historyDirs as
-            // regular work dirs. Runs BEFORE the history watcher so their trees get watched.
+            // Build, Copilot CLI, Antigravity CLI, Qoder) and an XDG Claude tree join
+            // historyDirs as regular work dirs. Runs BEFORE the history watcher so their trees
+            // get watched.
             store::ensure_codex_dir();
             store::ensure_xdg_claude_dir();
             store::ensure_grok_dir();
             store::ensure_copilot_dir();
             store::ensure_antigravity_dir();
+            store::ensure_qoder_dir();
 
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());

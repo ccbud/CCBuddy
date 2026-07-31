@@ -427,6 +427,18 @@ pub fn ensure_antigravity_dir() -> bool {
     ensure_history_dir("antigravityDirAutoAdded", crate::antigravity::root_exists(), crate::antigravity::agy_label())
 }
 
+/// Qoder writes Claude-format sessions under two known roots (~/.qoder and ~/.qoderwork) —
+/// each detected root joins historyDirs once, under its own run-once flag.
+pub fn ensure_qoder_dir() -> bool {
+    let mut changed = false;
+    for (flag, root) in
+        [("qoderDirAutoAdded", crate::qoder::default_root()), ("qoderworkDirAutoAdded", crate::qoder::work_root())]
+    {
+        changed |= ensure_history_dir(flag, crate::qoder::root_exists(&root), collapse_home(&root.to_string_lossy()));
+    }
+    changed
+}
+
 /// One-time startup migration (ccusage parity): Claude Code also writes history under the XDG
 /// config dir (`$XDG_CONFIG_HOME/claude`, default `~/.config/claude`) — when that tree exists,
 /// add it to historyDirs so its sessions count toward conversations and usage. Same run-once

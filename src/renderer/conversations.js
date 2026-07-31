@@ -15,7 +15,7 @@
   const localeTag = () => (window.I18n ? window.I18n.localeTag : 'en-US');
   // Non-Claude session sources (meta.source): list-row chip label + assistant display name.
   // Claude ('disk') deliberately has no chip — it's the app's home turf.
-  const SOURCE_NAMES = { codex: 'Codex', grok: 'Grok', copilot: 'Copilot', antigravity: 'Antigravity' };
+  const SOURCE_NAMES = { codex: 'Codex', grok: 'Grok', copilot: 'Copilot', antigravity: 'Antigravity', qoder: 'Qoder' };
   const isForeignSource = (s) => !!SOURCE_NAMES[s];
 
   let projects = [];      // [{ cwd, name, sessions:[...], lastActivity }]
@@ -484,9 +484,9 @@
     // Recycle bin rows swap the import-remove affordance for restore + delete-forever; everywhere else
     // imported copies (which live only in the app store) keep their remove affordance.
     const inTrash = activeDir === '__trash__';
-    // A LIVE session of another CLI (codex/grok/copilot/antigravity, not an imported copy) is
-    // that tool's file — it can be restored but NEVER permanently deleted, since the app must
-    // not rm another tool's data.
+    // A LIVE session of another CLI (codex/grok/copilot/antigravity/qoder, not an imported
+    // copy) is that tool's file — it can be restored but NEVER permanently deleted, since the
+    // app must not rm another tool's data.
     const foreign = isForeignSource(c.source) && !c.imported;
     const restoreBtn = `<button class="conv-restore ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-brand hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-restore="${esc(c.file || '')}" title="${esc(L('conv.restore'))}">${ICN.refresh || '↺'}</button>`;
     const deleteForeverBtn = `<button class="conv-delete-forever shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-delete-forever="${esc(c.file || '')}" title="${esc(L('conv.deleteForever'))}">${ICN.trash || '✕'}</button>`;
