@@ -111,7 +111,7 @@ pub(crate) fn raw_session_bytes(file: &str) -> std::io::Result<Vec<u8>> {
     read_session_bytes(Path::new(file))
 }
 
-fn session_read_error(file: &Path, error: &std::io::Error) -> Value {
+pub(crate) fn session_read_error(file: &Path, error: &std::io::Error) -> Value {
     let kind = match error.kind() {
         std::io::ErrorKind::NotFound => "notFound",
         std::io::ErrorKind::PermissionDenied => "permissionDenied",
@@ -739,18 +739,30 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
     // so a title/tag rewrite (which resets fs times) can neither reshuffle nor evict a row.
     // The meta cache turns the full walk into stats for unchanged files.
     let mut live: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    let mut out: Vec<Value> = Vec::new();
+    let mut candidates: Vec<(PathBuf, String, String, String)> = Vec::new();
     each_session_file(config, |file, dir_name, id, label| {
         live.insert(file.clone());
         if !trash && active != "all" && id != active {
             return;
         }
-        if let Some(m) = session_meta(&file, &dir_name, id, label) {
+        candidates.push((file, dir_name, id.to_string(), label.to_string()));
+    });
+    // Warm the qoder helper cache in ONE batch before the per-row reads — on a macOS install with
+    // protected app data, every stale row would otherwise spawn its own helper process.
+    let qoder_files: Vec<PathBuf> = candidates
+        .iter()
+        .map(|(file, _, _, _)| file.clone())
+        .filter(|file| crate::qoder::looks_qoder_path(file))
+        .collect();
+    crate::qoder::prefetch(&qoder_files);
+    let mut out: Vec<Value> = Vec::new();
+    for (file, dir_name, id, label) in &candidates {
+        if let Some(m) = session_meta(file, dir_name, id, label) {
             if m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) == trash {
                 out.push(m);
             }
         }
-    });
+    }
     // Drop memo entries for files that no longer exist, so removed dirs don't pin stale rows.
     if let Ok(mut cache) = meta_cache().lock() {
         cache.retain(|k, _| live.contains(k));
@@ -908,11 +920,25 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
         Ok(e) => e,
         Err(_) => return by_tool,
     };
+    let mut agent_files: Vec<(String, PathBuf)> = vec![];
     for ent in entries.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
-        if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
-            continue;
+        if name.starts_with("agent-") && name.ends_with(".jsonl") {
+            agent_files.push((name, ent.path()));
         }
+    }
+    // A protected qoder session's subagent transcripts + meta sidecars warm in one helper batch
+    // instead of two spawns per agent.
+    if qoder {
+        let mut warm: Vec<PathBuf> = vec![];
+        for (name, path) in &agent_files {
+            warm.push(path.clone());
+            let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl");
+            warm.push(dir.join(format!("agent-{}.meta.json", agent_id)));
+        }
+        crate::qoder::prefetch(&warm);
+    }
+    for (name, transcript_path) in agent_files {
         let agent_id = name
             .trim_start_matches("agent-")
             .trim_end_matches(".jsonl")
@@ -927,7 +953,6 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| json!({}));
-        let transcript_path = ent.path();
         let raw = match read_session_text(&transcript_path) {
             Ok(s) => s,
             Err(_) => continue,
@@ -953,7 +978,7 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
             key,
             json!({
                 "agentId": agent_id,
-                "file": ent.path().to_string_lossy(),
+                "file": transcript_path.to_string_lossy(),
                 "type": agent_type,
                 "description": meta.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 "skill": skill_from_recs(&recs),
@@ -1244,17 +1269,34 @@ fn icount(hay: &str, needle: &str) -> usize {
     c
 }
 
-/// Strip harness-injected blocks from user prose — mirrors the renderer's stripInjected, so what
+/// Strip harness-injected blocks from user prose — MUST stay rule-for-rule in sync with the
+/// renderer's stripInjected (conversations.js) and the export viewer's copy (runtime.js), so what
 /// the big search matches is exactly what the in-conversation search (and the panel) will show.
+/// Task-notification envelopes keep their human-facing <result> body; the transport metadata
+/// (ids, status, summary) is dropped and must therefore never be searchable.
 fn strip_injected(s: &str) -> String {
+    static TASK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RESULT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let task_re = TASK_RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<task-notification\b[^>]*>.*?</task-notification>").unwrap()
+    });
+    let result_re =
+        RESULT_RE.get_or_init(|| regex::Regex::new(r"(?is)<result\b[^>]*>(.*?)</result>").unwrap());
     let re = RE.get_or_init(|| {
         regex::Regex::new(
             r"(?s)<system-reminder>.*?</system-reminder>|<command-[a-z-]+>.*?</command-[a-z-]+>|<local-command-[a-z]+>.*?</local-command-[a-z]+>",
         )
         .unwrap()
     });
-    re.replace_all(s, "").trim().to_string()
+    let unwrapped = task_re.replace_all(s, |caps: &regex::Captures| {
+        result_re
+            .captures(caps.get(0).map(|m| m.as_str()).unwrap_or(""))
+            .and_then(|c| c.get(1))
+            .map(|m| format!("\n{}\n", m.as_str().trim()))
+            .unwrap_or_default()
+    });
+    re.replace_all(&unwrapped, "").trim().to_string()
 }
 
 fn tool_result_search_text(c: &Value) -> String {
@@ -1502,6 +1544,14 @@ pub fn search_sessions(config: &Value, active: &str, query: &str, limit: usize) 
     });
     files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     files.truncate(600); // the list view's own cap — search what the list can show
+    // One batch helper call instead of a spawn per protected qoder file inside the worker loop
+    // (repeat scans of unchanged files are then served by the extraction + helper caches).
+    let qoder_files: Vec<PathBuf> = files
+        .iter()
+        .map(|(file, _)| file.clone())
+        .filter(|file| crate::qoder::looks_qoder_path(file))
+        .collect();
+    crate::qoder::prefetch(&qoder_files);
     let hits = std::sync::Mutex::new(Vec::<(f64, Value)>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
@@ -1843,6 +1893,37 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn records_to_jsonl(records: &[Value]) -> String {
+    let mut text = records
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push('\n');
+    text
+}
+
+/// A qoder transcript imported into the app store loses its container path and would otherwise
+/// re-parse as raw Claude records: queued commands vanish, redacted duplicates render, atomic
+/// wrappers stay fragmented, and qoder's own title is lost. Sniffed by CONTENT (import copies and
+/// bundle zips carry no .qoder path), the copy is rewritten up front — normalized records, with
+/// the qoder title carried onto the first line's __ccbud__ so the import keeps its name.
+fn qoder_import_raw(recs: &[Value]) -> Option<(String, Vec<Value>)> {
+    if !crate::qoder::looks_qoder_records(recs) {
+        return None;
+    }
+    let mut normalized = crate::qoder::normalize_records(recs);
+    if let Some(title) = crate::qoder::session_title_from(recs) {
+        if let Some(first) = normalized.iter_mut().find(|r| r.is_object()) {
+            let obj = first.as_object_mut().unwrap();
+            let mut cc = obj.get("__ccbud__").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            cc.entry("title".to_string()).or_insert_with(|| json!(title));
+            obj.insert("__ccbud__".into(), Value::Object(cc));
+        }
+    }
+    Some((records_to_jsonl(&normalized), normalized))
+}
+
 /// Snapshot a transcript (already read into `raw`) plus its subagent sidecars into the import store,
 /// laid out like a native projects/ tree + a provenance sidecar. `subagents`: (filename, bytes) to
 /// drop under `<baseId>/subagents/` — names are basename-reduced and pattern-checked so a crafted
@@ -1851,6 +1932,13 @@ fn now_ms() -> i64 {
 fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents: &[(String, Vec<u8>)]) -> i32 {
     let recs = parse_lines(raw);
     let is_codex = crate::codex::looks_codex(&recs);
+    // Qoder content is rewritten to Claude shape before storing — the has_msg gate below then
+    // sees the materialized queued-command user turns too.
+    let (qoder_text, recs) = match qoder_import_raw(&recs) {
+        Some((text, normalized)) => (Some(text), normalized),
+        None => (None, recs),
+    };
+    let raw = qoder_text.as_deref().unwrap_or(raw);
     let has_msg = recs.iter().any(|r| {
         let t = r.get("type").and_then(|v| v.as_str());
         (t == Some("user") || t == Some("assistant")) && r.get("message").is_some()
@@ -1891,6 +1979,15 @@ fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents
                 let safe = Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let lower = safe.to_lowercase();
                 if lower.starts_with("agent-") && (lower.ends_with(".jsonl") || lower.ends_with(".meta.json")) {
+                    // A qoder session's subagent transcripts carry the same atomic wrappers —
+                    // the parent's sniff decides, so the whole stored copy is Claude-shaped.
+                    if qoder_text.is_some() && lower.ends_with(".jsonl") {
+                        if let Ok(text) = std::str::from_utf8(bytes) {
+                            let normalized = crate::qoder::normalize_records(&parse_lines(text));
+                            let _ = fs::write(sub_dir.join(safe), records_to_jsonl(&normalized));
+                            continue;
+                        }
+                    }
                     let _ = fs::write(sub_dir.join(safe), bytes);
                 }
             }
@@ -2358,6 +2455,46 @@ mod tests {
         assert_eq!(denied["error"]["kind"], "permissionDenied");
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // The Rust search extractor and the renderer's stripInjected must agree: a task-notification
+    // envelope surfaces only its <result> body — transport metadata must never be searchable.
+    #[test]
+    fn strip_injected_unwraps_task_notifications() {
+        let s = strip_injected(
+            "before <task-notification id=\"t1\">\n<status>completed</status>\n<summary>transport-noise</summary>\n<result>\nDone **ok**\n</result>\n</task-notification> after",
+        );
+        assert!(s.contains("before") && s.contains("after"));
+        assert!(s.contains("Done **ok**"));
+        assert!(!s.contains("transport-noise"));
+        assert!(!s.contains("task-notification"));
+        // an envelope without a <result> vanishes wholesale, like a system-reminder
+        let gone = strip_injected("x <task-notification><status>running</status></task-notification> y");
+        assert!(gone.contains('x') && gone.contains('y') && !gone.contains("running"));
+        // the pre-existing rules still apply after the unwrap
+        assert_eq!(strip_injected("hi<system-reminder>meta</system-reminder>"), "hi");
+    }
+
+    // Imported qoder content is rewritten to Claude shape (wrappers merged, queued commands
+    // materialized) with qoder's own title carried onto __ccbud__; Claude content passes through.
+    #[test]
+    fn qoder_imports_are_normalized_with_title() {
+        let recs = vec![
+            json!({ "type": "ai-title", "aiTitle": "Qoder 导入标题" }),
+            json!({ "type": "assistant", "uuid": "w1", "message": { "id": "m1", "role": "assistant", "content": [{ "type": "thinking", "thinking": "t" }] } }),
+            json!({ "type": "assistant", "uuid": "w2", "message": { "id": "m1", "role": "assistant", "content": [{ "type": "text", "text": "done" }] } }),
+            json!({ "type": "attachment", "attachment": { "type": "queued_command", "prompt": "queued prompt" } }),
+        ];
+        let (text, normalized) = qoder_import_raw(&recs).expect("sniffs as qoder");
+        let assistants: Vec<&Value> = normalized.iter().filter(|r| r["type"] == "assistant").collect();
+        assert_eq!(assistants.len(), 1, "wrappers merged: {:?}", normalized);
+        assert_eq!(assistants[0]["message"]["content"].as_array().unwrap().len(), 2);
+        assert!(normalized
+            .iter()
+            .any(|r| r["type"] == "user" && r["message"]["content"] == "queued prompt"));
+        let first: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first["__ccbud__"]["title"], "Qoder 导入标题");
+        assert!(qoder_import_raw(&[json!({ "type": "user", "message": { "content": "hi" } })]).is_none());
     }
 
     // A live Codex rollout (a work dir's sessions/ tree, no .import.json) must NEVER be hard-deleted

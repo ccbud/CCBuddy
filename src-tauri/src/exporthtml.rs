@@ -32,27 +32,27 @@ fn cap(s: &str, n: usize) -> String {
     }
 }
 
-fn parse_jsonl(file: &Path) -> Vec<Value> {
+fn parse_jsonl_result(file: &Path) -> std::io::Result<Vec<Value>> {
     let qoder = crate::qoder::looks_qoder_path(file);
-    let raw = match if qoder {
-        crate::qoder::read_text(file)
-    } else {
-        fs::read_to_string(file)
-    } {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
+    let raw = if qoder { crate::qoder::read_text(file) } else { fs::read_to_string(file) }?;
     let records: Vec<Value> = raw
         .split('\n')
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .collect();
-    if qoder {
+    Ok(if qoder {
         crate::qoder::normalize_records(&records)
     } else {
         records
-    }
+    })
+}
+
+/// Skip-on-error variant for subagent sidecars — one broken agent file must not sink the export.
+/// The MAIN transcript goes through parse_jsonl_result so a read failure surfaces to the caller
+/// instead of exporting an empty page.
+fn parse_jsonl(file: &Path) -> Vec<Value> {
+    parse_jsonl_result(file).unwrap_or_default()
 }
 
 fn usage_of(u: &Value) -> Value {
@@ -291,12 +291,24 @@ fn read_subagents(file: &Path) -> Value {
         Ok(e) => e,
         Err(_) => return json!({}),
     };
-    let mut by_tool = serde_json::Map::new();
-    for ent in entries.flatten() {
-        let name = ent.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
-            continue;
+    let mut agent_names: Vec<String> = entries
+        .flatten()
+        .map(|ent| ent.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("agent-") && name.ends_with(".jsonl"))
+        .collect();
+    agent_names.sort();
+    // A protected qoder session's subagent transcripts + meta sidecars warm in one helper batch.
+    if qoder {
+        let mut warm: Vec<std::path::PathBuf> = vec![];
+        for name in &agent_names {
+            warm.push(dir.join(name));
+            let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl");
+            warm.push(dir.join(format!("agent-{}.meta.json", agent_id)));
         }
+        crate::qoder::prefetch(&warm);
+    }
+    let mut by_tool = serde_json::Map::new();
+    for name in agent_names {
         let agent_id = name
             .trim_start_matches("agent-")
             .trim_end_matches(".jsonl")
@@ -311,7 +323,7 @@ fn read_subagents(file: &Path) -> Value {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(json!({}));
-        let recs = parse_jsonl(&ent.path());
+        let recs = parse_jsonl(&dir.join(&name));
         let shaped = shape_session(&recs);
         let key = meta
             .get("toolUseId")
@@ -404,22 +416,25 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
 pub fn build_data(file: &str) -> Value {
     let path = Path::new(file);
     let qoder = crate::qoder::looks_qoder_path(path);
-    // Foreign sources first — container-shape routing (one of them is SQLite, not jsonl).
+    // Antigravity first — it's SQLite and its shaper opens the DB itself. Every other source
+    // reads the transcript here, and a failed MAIN read returns the structured error (the export
+    // command surfaces it) instead of silently exporting an empty page.
+    if matches!(crate::history::foreign_kind(path), Some(crate::history::Foreign::Antigravity)) {
+        return build_from_session(crate::antigravity::session_from(file), "Antigravity");
+    }
+    let recs = match parse_jsonl_result(path) {
+        Ok(recs) => recs,
+        Err(error) => return crate::history::session_read_error(path, &error),
+    };
     match crate::history::foreign_kind(path) {
         Some(crate::history::Foreign::Grok) => {
-            let recs = parse_jsonl(path);
             return build_from_session(crate::grok::session_from_recs(file, &recs), "Grok");
         }
         Some(crate::history::Foreign::Copilot) => {
-            let recs = parse_jsonl(path);
             return build_from_session(crate::copilot::session_from_recs(file, &recs), "Copilot");
         }
-        Some(crate::history::Foreign::Antigravity) => {
-            return build_from_session(crate::antigravity::session_from(file), "Antigravity");
-        }
-        None => {}
+        _ => {}
     }
-    let recs = parse_jsonl(path);
     if crate::codex::looks_codex(&recs) {
         return build_from_session(crate::codex::session_from_recs(file, &recs), "Codex");
     }

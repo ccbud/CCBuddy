@@ -17,6 +17,12 @@
   // Claude ('disk') deliberately has no chip — it's the app's home turf.
   const SOURCE_NAMES = { codex: 'Codex', grok: 'Grok', copilot: 'Copilot', antigravity: 'Antigravity', qoder: 'Qoder' };
   const isForeignSource = (s) => !!SOURCE_NAMES[s];
+  // conv.permissionDenied walks the user through macOS System Settings — that guidance only fits
+  // macOS (the helper-backed Qoder read path); other platforms show the generic read-failure copy.
+  const IS_MAC = /mac/i.test(navigator.platform || '');
+  const readErrorKey = (kind) => (kind === 'permissionDenied' && IS_MAC
+    ? 'conv.permissionDenied'
+    : kind === 'notFound' ? 'conv.notFound' : 'conv.readFailed');
 
   let projects = [];      // [{ cwd, name, sessions:[...], lastActivity }]
   let openId = null;
@@ -37,7 +43,11 @@
   let currentDetail = null; // last-loaded session detail (for export)
   let detailRequestSeq = 0; // drops a late historyGet result after another session/request took over
   let detailRequest = null; // latest in-flight { seq, file }; also prevents timer requests piling up
-  let detailRetryPending = false; // permission/read failures retry on the existing 4s safety-net timer
+  // Failed detail reads retry via the safety-net timer: { file, attempts, nextAt }.
+  // permissionDenied probes steadily (granting macOS access emits no event we could watch);
+  // other read/IPC failures back off exponentially so a permanently broken transcript isn't
+  // re-read — and on macOS re-spawned through the helper — every 4 seconds forever.
+  let detailRetry = null;
   // Which session occupies the main panel: 'main' (the root thread) or a subagent key (its tool_use
   // id in detail.subagents). Each subagent is an independent session, so it gets the WHOLE panel —
   // switched via the agent list in the right nav, not nested inline. Reset to 'main' on open.
@@ -488,6 +498,10 @@
     // Non-Claude sources carry a small origin chip so a mixed project group stays readable.
     const srcName = SOURCE_NAMES[c.source];
     const srcBadge = srcName ? `<span class="conv-badge conv-badge-source text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(srcName)}</span>` : '';
+    // A row whose transcript couldn't be read explains itself on hover instead of sitting as a
+    // silent untitled entry (the reason only became visible after clicking before).
+    const rerr = c.readError;
+    const errBadge = rerr ? `<span class="conv-badge conv-badge-error text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-red font-sans" data-tip="${esc(L(readErrorKey(rerr.kind)))}">⚠</span>` : '';
     // Recycle bin rows swap the import-remove affordance for restore + delete-forever; everywhere else
     // imported copies (which live only in the app store) keep their remove affordance.
     const inTrash = activeDir === '__trash__';
@@ -517,7 +531,7 @@
     const tip = (c.autoTitle && c.title && c.autoTitle !== c.title) ? (fullTitle + ' · ' + c.autoTitle) : fullTitle;
     return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
       <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
-      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${srcBadge}${sub}${imp}</div>
+      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${srcBadge}${errBadge}${sub}${imp}</div>
       ${snipRow}
       ${tagsRow}
       <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption">${metaTimes(c)}${c.sizeKB ? '<span>' + fmtSizeKB(c.sizeKB) + '</span>' : ''}</div>
@@ -532,7 +546,7 @@
     const rs = document.querySelector('.conv-resizer-right');
     if (nav) nav.classList.toggle('hidden', !openFile);
     if (rs) rs.classList.toggle('hidden', !openFile);
-    if (!openFile) detailRetryPending = false;
+    if (!openFile) detailRetry = null;
   }
 
   // Drop all transcript-derived UI while a different session loads or the current read fails.
@@ -554,7 +568,7 @@
     openId = id; openFile = file || null;
     syncConvNav();
     activeAgent = 'main'; // new conversation always opens on its main thread
-    detailRetryPending = false;
+    detailRetry = null;
     clearLoadedDetail();
     vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
@@ -607,24 +621,22 @@
     const loadError = ipcReadFailed ? { kind: 'readFailed' } : (detail && detail.error);
     if (loadError || !detail) {
       const kind = loadError && loadError.kind;
-      // conv.permissionDenied walks the user through macOS System Settings — that guidance only
-      // fits macOS (the helper-backed Qoder read path); elsewhere a permission failure shows the
-      // generic read-failure copy (both keys keep the retry timer armed).
-      const isMac = /mac/i.test(navigator.platform || '');
-      const key = kind === 'permissionDenied' && isMac
-        ? 'conv.permissionDenied'
-        : !loadError || kind === 'notFound'
-          ? 'conv.notFound'
-          : 'conv.readFailed';
+      const key = !loadError ? 'conv.notFound' : readErrorKey(kind);
       host.innerHTML = `<div class="conv-empty">${esc(L(key))}</div>`;
       clearLoadedDetail();
-      // A missing/moved path is not expected to recover in place. Permission and transient read/IPC
-      // failures are retried by the unified timer, including old (non-live) sessions.
-      detailRetryPending = key !== 'conv.notFound';
+      // A missing/moved path is not expected to recover in place. Permission failures re-probe at
+      // the timer's steady 4s; other read/IPC failures back off (4s → 60s cap) per attempt.
+      if (key === 'conv.notFound') {
+        detailRetry = null;
+      } else {
+        const attempts = (detailRetry && detailRetry.file === requestedFile ? detailRetry.attempts : 0) + 1;
+        const delay = kind === 'permissionDenied' ? 0 : Math.min(4000 * 2 ** (attempts - 1), 60000);
+        detailRetry = { file: requestedFile, attempts, nextAt: Date.now() + delay };
+      }
       lastRender = { file: null, count: -1 };
       return;
     }
-    detailRetryPending = false;
+    detailRetry = null;
     currentDetail = detail;
     subIndex = null; // call-site map is rebuilt lazily against the freshly-loaded subagents
 
@@ -1772,9 +1784,13 @@
     });
 
     // Unified safety-net: live sessions still refresh when a file-watch event is missed, while a
-    // permission/transient read error retries even for an old session after macOS access is granted.
-    // rerenderDetail coalesces ticks while a helper-backed read is already in flight.
-    setInterval(() => { if (openFile && (detailRetryPending || openSessionLive())) rerenderDetail(false); }, 4000);
+    // failed read retries on its own schedule (steady probe for permission errors, backoff for
+    // the rest). rerenderDetail coalesces ticks while a helper-backed read is already in flight.
+    setInterval(() => {
+      if (!openFile) return;
+      const retryDue = detailRetry && detailRetry.file === openFile && Date.now() >= detailRetry.nextAt;
+      if (retryDue || openSessionLive()) rerenderDetail(false);
+    }, 4000);
   }
 
   window.ccbudConversations = {
