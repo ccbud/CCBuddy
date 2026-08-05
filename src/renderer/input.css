@@ -1380,7 +1380,6 @@ body {
   padding: 6px 10px;
   cursor: pointer;
   list-style: none;
-  outline: none;
   color: var(--muted);
   font-size: calc(10.5px * var(--conv-fs, 1));
   font-weight: 600;
