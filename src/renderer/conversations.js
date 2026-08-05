@@ -15,8 +15,14 @@
   const localeTag = () => (window.I18n ? window.I18n.localeTag : 'en-US');
   // Non-Claude session sources (meta.source): list-row chip label + assistant display name.
   // Claude ('disk') deliberately has no chip — it's the app's home turf.
-  const SOURCE_NAMES = { codex: 'Codex', grok: 'Grok', copilot: 'Copilot', antigravity: 'Antigravity' };
+  const SOURCE_NAMES = { codex: 'Codex', grok: 'Grok', copilot: 'Copilot', antigravity: 'Antigravity', qoder: 'Qoder' };
   const isForeignSource = (s) => !!SOURCE_NAMES[s];
+  // conv.permissionDenied walks the user through macOS System Settings — that guidance only fits
+  // macOS (the helper-backed Qoder read path); other platforms show the generic read-failure copy.
+  const IS_MAC = /mac/i.test(navigator.platform || '');
+  const readErrorKey = (kind) => (kind === 'permissionDenied' && IS_MAC
+    ? 'conv.permissionDenied'
+    : kind === 'notFound' ? 'conv.notFound' : 'conv.readFailed');
 
   let projects = [];      // [{ cwd, name, sessions:[...], lastActivity }]
   let openId = null;
@@ -35,6 +41,13 @@
   let collapsed = new Set(); // collapsed project cwds
   let lastRender = { file: null, count: -1 };
   let currentDetail = null; // last-loaded session detail (for export)
+  let detailRequestSeq = 0; // drops a late historyGet result after another session/request took over
+  let detailRequest = null; // latest in-flight { seq, file }; also prevents timer requests piling up
+  // Failed detail reads retry via the safety-net timer: { file, attempts, nextAt }.
+  // permissionDenied probes steadily (granting macOS access emits no event we could watch);
+  // other read/IPC failures back off exponentially so a permanently broken transcript isn't
+  // re-read — and on macOS re-spawned through the helper — every 4 seconds forever.
+  let detailRetry = null;
   // Which session occupies the main panel: 'main' (the root thread) or a subagent key (its tool_use
   // id in detail.subagents). Each subagent is an independent session, so it gets the WHOLE panel —
   // switched via the agent list in the right nav, not nested inline. Reset to 'main' on open.
@@ -96,6 +109,17 @@
     if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, '') + 'K';
     return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
   }
+  // Qoder Credits are billing units, not tokens or currency. Keep their fractional precision for
+  // individual turns, while abbreviating only large conversation totals.
+  function fmtCredits(n) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return '—';
+    const trim = (s) => s.replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+    if (Math.abs(n) >= 1000) return trim((n / 1000).toFixed(Math.abs(n) < 10000 ? 1 : 0)) + 'K';
+    if (Math.abs(n) >= 100) return trim(n.toFixed(1));
+    if (Math.abs(n) >= 1) return trim(n.toFixed(2));
+    return trim(n.toFixed(3));
+  }
   function truncate(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + L('conv.charsMore', { n: s.length - n }) : s; }
   // Size shown in KB until it's large enough to read better as MB / GB.
   function fmtSizeKB(kb) {
@@ -109,12 +133,82 @@
     if (typeof c === 'string') return c ? [{ type: 'text', text: c }] : [];
     return Array.isArray(c) ? c : [];
   }
-  // Strip the harness-injected blocks Claude Code appends to user turns — environment
-  // <system-reminder>s, slash-command expansions (<command-*>), and local-command output
-  // (<local-command-*>) — leaving the human prose. Returns '' when a turn was nothing but
-  // injected content, so a pure slash-command / lone reminder turn still renders as nothing.
+  // Codex records its initial AGENTS instructions and environment snapshot as two text blocks in
+  // one user message. Turn that XML-ish transport shape into compact Markdown for the transcript.
+  function formatCodexBootstrap(text) {
+    const source = String(text || '');
+    const agents = /^\s*#\s+AGENTS\.md instructions for ([^\r\n]+)[\s\S]*?<INSTRUCTIONS\b[^>]*>([\s\S]*?)<\/INSTRUCTIONS>/i.exec(source);
+    if (!agents) return null;
+
+    const env = /<environment_context\b[^>]*>([\s\S]*?)<\/environment_context>/i.exec(source);
+    const parts = ['# AGENTS.md instructions for ' + agents[1].trim()];
+    const instructions = agents[2].trim();
+    if (instructions) {
+      const lines = instructions.split(/\r?\n/).filter((line) => line.trim());
+      parts.push(lines.length === 1
+        ? '**INSTRUCTIONS:** ' + lines[0].trim()
+        : '**INSTRUCTIONS:**\n\n' + instructions);
+    }
+
+    if (env) {
+      const block = env[1];
+      const tag = (name) => {
+        const match = new RegExp('<' + name + '\\b[^>]*>([\\s\\S]*?)<\\/' + name + '>', 'i').exec(block);
+        return match ? match[1].trim() : '';
+      };
+      const attr = (name, attribute) => {
+        const match = new RegExp("<" + name + "\\b[^>]*\\b" + attribute + "=[\"']([^\"']+)[\"']", "i").exec(block);
+        return match ? match[1].trim() : '';
+      };
+      const code = (value) => {
+        const tick = String.fromCharCode(96);
+        return value ? tick + value + tick : '';
+      };
+      const roots = [];
+      const rootRe = /<root\b[^>]*>([\s\S]*?)<\/root>/gi;
+      let root;
+      while ((root = rootRe.exec(block)) !== null) {
+        if (root[1].trim()) roots.push(code(root[1].trim()));
+      }
+      const fields = [
+        ['environment_context', code(tag('cwd'))],
+        ['shell', tag('shell')],
+        ['current_date', tag('current_date')],
+        ['timezone', tag('timezone')],
+        ['workspace_roots', roots.join(', ')],
+        ['permission_profile', attr('permission_profile', 'type')],
+        ['file_system', attr('file_system', 'type')],
+      ].filter((field) => field[1]);
+      if (fields.length) {
+        parts.push(fields.map((field) => '**' + field[0] + ':** ' + field[1]).join('  \n'));
+      }
+    }
+
+    let rest = source.replace(agents[0], '');
+    if (env) rest = rest.replace(env[0], '');
+    rest = rest.trim();
+    if (rest) parts.push(rest);
+    return parts.join('\n\n').trim();
+  }
+  // Strip harness-injected blocks from user turns while keeping their human-facing content.
+  // A task notification is an XML envelope whose <result> is the actual Markdown response;
+  // its IDs, status, summary, usage, and other transport metadata are not useful in the thread.
+  // Codex normalization turns a standalone <skill> envelope into a neutral `skill_load` card.
+  // Keep this raw-envelope suppression only as a legacy fallback, so it can never leak into a
+  // user bubble when older/imported data bypasses that normalizer.
+  // Returns '' when a turn contains injected metadata only.
   function stripInjected(text) {
-    return String(text || '')
+    let source = String(text || '');
+    const bootstrap = formatCodexBootstrap(source);
+    if (bootstrap != null) source = bootstrap;
+    // Only suppress the standalone Codex injection. Keep ordinary prose intact when a user is
+    // discussing or quoting <skill> markup alongside their own text.
+    if (/^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/i.test(source)) return '';
+    return source
+      .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, (block) => {
+        const result = /<result\b[^>]*>([\s\S]*?)<\/result>/i.exec(block);
+        return result ? `\n${result[1].trim()}\n` : '';
+      })
       .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
       .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, '')
       .replace(/<local-command-[a-z]+>[\s\S]*?<\/local-command-[a-z]+>/g, '')
@@ -209,6 +303,10 @@
   // card — not the user turn that carries them). Keeps search matches aligned with rendered messages.
   function messagePlainText(m, results) {
     const blocks = normContent(m.content);
+    const skillLoads = blocks.filter((b) => b && b.type === 'skill_load');
+    if (skillLoads.length) {
+      return skillLoads.map((b) => [b.name, b.path, b.snapshot].filter(Boolean).join('\n')).join('\n');
+    }
     if (m.role === 'user') {
       const vis = blocks.filter((b) => b.type === 'text' || b.type === 'image');
       if (!vis.length) return '';
@@ -317,6 +415,13 @@
     refreshWindowHighlights();
     const host = $('convDetail');
     const el = host && host.querySelector(`[data-mi="${mi}"]`);
+    const skillSnapshot = el && el.querySelector('.skill-snapshot');
+    const skillBody = skillSnapshot && skillSnapshot.querySelector('.skill-snapshot-body');
+    if (skillSnapshot && skillBody && searchQuery
+      && String(skillBody.textContent || '').toLocaleLowerCase().includes(searchQuery.toLocaleLowerCase())) {
+      skillSnapshot.open = true;
+      refreshWindowHighlights();
+    }
     if (el && hasHighlightAPI() && searchQuery) {
       let re; try { re = new RegExp(escapeRegExp(searchQuery), 'gi'); } catch (_) { re = null; }
       let curRange = null;
@@ -453,7 +558,7 @@
     }
     el.innerHTML = fbar + list.map((p) => {
       const isCol = collapsed.has(p.cwd || p.name) && !search;
-      const items = isCol ? '' : `<div class="conv-proj-sessions">${p.sessions.map(sessionItem).join('')}</div>`;
+      const items = isCol ? '' : `<div class="conv-proj-sessions">${orderSessionRows(p.sessions).map(sessionItem).join('')}</div>`;
       return `<div class="conv-proj border-b border-border-custom">
         <div class="conv-proj-head flex items-center gap-1.5 px-3 py-2 cursor-pointer sticky top-0 z-10 bg-bg-sidebar/90 backdrop-blur-md select-none hover:bg-chip-bg transition-colors duration-150" data-proj="${esc(p.cwd || p.name)}">
           <span class="conv-proj-caret text-[10px] text-caption w-2.5 shrink-0">${isCol ? '▸' : '▾'}</span>
@@ -462,6 +567,60 @@
         </div>${items}
       </div>`;
     }).join('');
+  }
+
+  // Codex assigns one session_id to the whole root/subagent tree. Keep that tree together in the
+  // list, but key each node by its canonical first SessionMeta.id. The first bucket encounter is
+  // already the newest activity in the backend order; within it, root precedes recursively nested
+  // children so parallel agents no longer look like duplicate top-level conversations.
+  function orderSessionRows(sessions) {
+    const buckets = new Map();
+    (sessions || []).forEach((session, index) => {
+      const grouped = session.source === 'codex' && session.canonicalThreadIdValid && session.rootSessionId;
+      // Keep live/configured/imported stores independent. A copied snapshot may share both root
+      // and thread ids with a live rollout, but must never replace it merely because its copy mtime
+      // is newer.
+      const key = grouped
+        ? `codex:${session.dirId || ''}:${session.rootSessionId}`
+        : `row:${session.id || ''}:${session.file || index}`;
+      if (!buckets.has(key)) buckets.set(key, { index, activity: 0, sessions: [] });
+      const bucket = buckets.get(key);
+      bucket.activity = Math.max(bucket.activity, session.lastActivity || 0);
+      bucket.sessions.push(session);
+    });
+    const ordered = [];
+    [...buckets.values()].sort((a, b) => b.activity - a.activity || a.index - b.index).forEach((bucket) => {
+      if (bucket.sessions.length === 1 || bucket.sessions[0].source !== 'codex') {
+        ordered.push(...bucket.sessions);
+        return;
+      }
+      const byParent = new Map();
+      bucket.sessions.forEach((session) => {
+        const parent = session.parentThreadId || '';
+        if (!byParent.has(parent)) byParent.set(parent, []);
+        byParent.get(parent).push(session);
+      });
+      const newest = (a, b) => (b.lastActivity || 0) - (a.lastActivity || 0)
+        || (b.createdAt || 0) - (a.createdAt || 0)
+        || String(a.threadId || a.id || '').localeCompare(String(b.threadId || b.id || ''))
+        || String(a.file || '').localeCompare(String(b.file || ''));
+      byParent.forEach((children) => children.sort(newest));
+      const seen = new Set();
+      const append = (session) => {
+        const id = session.canonicalThreadIdValid
+          ? (session.threadId || session.sessionId || session.id)
+          : `${session.id || ''}:${session.file || ''}`;
+        if (seen.has(id)) return;
+        seen.add(id); ordered.push(session);
+        (byParent.get(id) || []).forEach(append);
+      };
+      bucket.sessions
+        .filter((session) => !session.isSubagent || session.threadId === session.rootSessionId)
+        .sort(newest)
+        .forEach(append);
+      bucket.sessions.sort((a, b) => (a.agentDepth || 0) - (b.agentDepth || 0) || newest(a, b)).forEach(append);
+    });
+    return ordered;
   }
 
   // Two timestamps: the session's start (createdAt, the sort key) and — only when it meaningfully
@@ -476,17 +635,22 @@
   }
   function sessionItem(c) {
     const live = isLive(c.lastActivity) ? '<span class="conv-live w-1.25 h-1.25 rounded-full bg-green animate-[pulse_1.6s_infinite] shrink-0"></span>' : '';
-    const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : '';
+    const subLabel = [L('conv.subagent'), c.agentNickname].filter(Boolean).join(' · ');
+    const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(subLabel)}</span>` : '';
     const imp = c.imported ? `<span class="conv-badge conv-badge-import inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.25 rounded-full bg-brand-soft text-brand font-sans">${ICN.download || ''}${esc(L('conv.imported'))}</span>` : '';
     // Non-Claude sources carry a small origin chip so a mixed project group stays readable.
     const srcName = SOURCE_NAMES[c.source];
     const srcBadge = srcName ? `<span class="conv-badge conv-badge-source text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(srcName)}</span>` : '';
+    // A row whose transcript couldn't be read explains itself on hover instead of sitting as a
+    // silent untitled entry (the reason only became visible after clicking before).
+    const rerr = c.readError;
+    const errBadge = rerr ? `<span class="conv-badge conv-badge-error text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-red font-sans" data-tip="${esc(L(readErrorKey(rerr.kind)))}">⚠</span>` : '';
     // Recycle bin rows swap the import-remove affordance for restore + delete-forever; everywhere else
     // imported copies (which live only in the app store) keep their remove affordance.
     const inTrash = activeDir === '__trash__';
-    // A LIVE session of another CLI (codex/grok/copilot/antigravity, not an imported copy) is
-    // that tool's file — it can be restored but NEVER permanently deleted, since the app must
-    // not rm another tool's data.
+    // A LIVE session of another CLI (codex/grok/copilot/antigravity/qoder, not an imported
+    // copy) is that tool's file — it can be restored but NEVER permanently deleted, since the
+    // app must not rm another tool's data.
     const foreign = isForeignSource(c.source) && !c.imported;
     const restoreBtn = `<button class="conv-restore ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-brand hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-restore="${esc(c.file || '')}" title="${esc(L('conv.restore'))}">${ICN.refresh || '↺'}</button>`;
     const deleteForeverBtn = `<button class="conv-delete-forever shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-delete-forever="${esc(c.file || '')}" title="${esc(L('conv.deleteForever'))}">${ICN.trash || '✕'}</button>`;
@@ -508,9 +672,12 @@
     // Full title on hover; when a custom title overrides the auto one, also surface the original first line.
     const fullTitle = c.title || L('conv.untitled');
     const tip = (c.autoTitle && c.title && c.autoTitle !== c.title) ? (fullTitle + ' · ' + c.autoTitle) : fullTitle;
-    return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
-      <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
-      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${srcBadge}${sub}${imp}</div>
+    const treeDepth = c.source === 'codex' && c.isSubagent ? Math.max(1, Math.min(Number(c.agentDepth) || 1, 5)) : 0;
+    const treeIndent = 22 + treeDepth * 13;
+    const treeMark = treeDepth ? '<span class="text-caption shrink-0" aria-hidden="true">↳</span>' : '';
+    return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" style="padding-left:${treeIndent}px" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
+      <div class="conv-item-top flex items-center gap-1.25">${treeMark}${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
+      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${srcBadge}${errBadge}${sub}${imp}</div>
       ${snipRow}
       ${tagsRow}
       <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption">${metaTimes(c)}${c.sizeKB ? '<span>' + fmtSizeKB(c.sizeKB) + '</span>' : ''}</div>
@@ -525,6 +692,19 @@
     const rs = document.querySelector('.conv-resizer-right');
     if (nav) nav.classList.toggle('hidden', !openFile);
     if (rs) rs.classList.toggle('hidden', !openFile);
+    if (!openFile) detailRetry = null;
+  }
+
+  // Drop all transcript-derived UI while a different session loads or the current read fails.
+  // openFile/openId deliberately stay untouched, so the selected row and navigation rail remain
+  // present and a later retry can recover in place without showing data from the previous session.
+  function clearLoadedDetail() {
+    currentDetail = null;
+    searchDocs = null;
+    subIndex = null;
+    renderAgentTabs(null);
+    const stats = $('convStats'); if (stats) stats.innerHTML = '';
+    const toc = $('convToc'); if (toc) toc.innerHTML = '';
   }
 
   async function openConversation(id, file) {
@@ -534,7 +714,9 @@
     openId = id; openFile = file || null;
     syncConvNav();
     activeAgent = 'main'; // new conversation always opens on its main thread
-    searchDocs = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
+    detailRetry = null;
+    clearLoadedDetail();
+    vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
     const eb = $('convExportBtn'); if (eb) eb.disabled = !openFile;
     const cp = $('convCopyPathBtn'); if (cp) cp.disabled = !openFile;
@@ -559,11 +741,48 @@
 
   async function rerenderDetail(force) {
     if (!openFile) return;
+    const requestedFile = openFile;
+    // The live/error retry timer can fire while a slower helper-backed Qoder read is still running.
+    // One request for the currently-selected file is enough; a genuinely different selection may
+    // start immediately and its newer sequence invalidates this result.
+    if (detailRequest && detailRequest.file === requestedFile) {
+      if (force) detailRequest.force = true; // preserve a language-change/re-open forced paint
+      return;
+    }
+    const request = { seq: ++detailRequestSeq, file: requestedFile, force: !!force };
+    detailRequest = request;
     let detail = null;
-    try { detail = await api.historyGet(openFile); } catch (_) {}
+    let ipcReadFailed = false;
+    try { detail = await api.historyGet(requestedFile); } catch (_) { ipcReadFailed = true; }
+    if (detailRequest === request) detailRequest = null;
+    // A→B (or A→B→A) can leave older IPC calls in flight. Never let their success/error overwrite
+    // the latest selection, even when the path happens to match again after an intervening click.
+    if (openFile !== requestedFile || request.seq !== detailRequestSeq) return;
+    force = request.force;
     const host = $('convDetail');
     if (!host) return;
-    if (!detail) { host.innerHTML = `<div class="conv-empty">${esc(L('conv.notFound'))}</div>`; lastRender = { file: null, count: -1 }; return; }
+    // A failed read is distinct from a missing/moved transcript. Keep openFile intact so the
+    // selected row + navigation rail remain open and a later retry (for example after granting
+    // macOS access to Qoder's data) can recover in place.
+    const loadError = ipcReadFailed ? { kind: 'readFailed' } : (detail && detail.error);
+    if (loadError || !detail) {
+      const kind = loadError && loadError.kind;
+      const key = !loadError ? 'conv.notFound' : readErrorKey(kind);
+      host.innerHTML = `<div class="conv-empty">${esc(L(key))}</div>`;
+      clearLoadedDetail();
+      // A missing/moved path is not expected to recover in place. Permission failures re-probe at
+      // the timer's steady 4s; other read/IPC failures back off (4s → 60s cap) per attempt.
+      if (key === 'conv.notFound') {
+        detailRetry = null;
+      } else {
+        const attempts = (detailRetry && detailRetry.file === requestedFile ? detailRetry.attempts : 0) + 1;
+        const delay = kind === 'permissionDenied' ? 0 : Math.min(4000 * 2 ** (attempts - 1), 60000);
+        detailRetry = { file: requestedFile, attempts, nextAt: Date.now() + delay };
+      }
+      lastRender = { file: null, count: -1 };
+      return;
+    }
+    detailRetry = null;
     currentDetail = detail;
     subIndex = null; // call-site map is rebuilt lazily against the freshly-loaded subagents
 
@@ -666,12 +885,18 @@
     messages.forEach((m) => normContent(m.content).forEach((b) => { if (b.type === 'tool_result') results[b.tool_use_id] = b; }));
     return results;
   }
-  // Returns the HTML for one message, or '' for a pure tool_result / meta user turn.
+  // Returns the HTML for one message, or '' for a pure tool_result / hidden meta user turn.
+  // Structured metadata such as a loaded Skill is rendered before the role branches so it reads
+  // as an event in the timeline, rather than being mislabeled as either the user or the assistant.
   // inSub: rendered inside a nested subagent block — suppress the per-turn "subagent" badge
   // (the surrounding block already labels it) so the nested thread stays clean.
   function renderMessage(m, results, idx, inSub) {
     const mid = idx == null ? '' : ` id="m${idx}" data-mi="${idx}"`;
     const blocks = normContent(m.content);
+    const skillLoads = blocks.filter((b) => b && b.type === 'skill_load');
+    if (skillLoads.length) {
+      return `<div class="msg meta animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}>${skillLoads.map(renderSkillLoad).join('')}</div>`;
+    }
     if (m.role === 'user') {
       const vis = blocks.filter((b) => b.type === 'text' || b.type === 'image');
       if (!vis.length) return '';
@@ -682,7 +907,7 @@
         .map((b) => (b.type === 'text' ? { type: 'text', text: stripInjected(b.text) } : b))
         .filter((b) => b.type === 'image' || b.text);
       if (!clean.length) return '';
-      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 px-4 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
+      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
     }
     let body = '';
     blocks.forEach((b) => {
@@ -786,10 +1011,36 @@
     const first = t.split('\n').find((x) => x.trim()) || L('conv.thinking');
     return `<details class="thinking bg-[#ff9f0a]/4 border border-[#ff9f0a]/12 rounded-[7px] my-1.5"><summary class="cursor-pointer p-1.75 px-2.5 text-[11px] font-medium text-amber outline-none list-none [&::-webkit-details-marker]:hidden">💭 ${esc(L('conv.thinking'))} · <span class="text-muted/70">${esc(first.slice(0, 60))}</span></summary><div class="thinking-body p-2.5 pt-1.75 pb-2 text-[11.5px] text-muted leading-[1.48] border-t border-[#ff9f0a]/8 mt-0.75">${md(t)}</div></details>`;
   }
+  // A Skill envelope is an automatic Codex context-load event. Its recorded body is the exact
+  // snapshot used for that turn, so keep it collapsed by default but make the full source available
+  // for later workflow/debug reviews. It deliberately carries no user/assistant role label.
+  function renderSkillLoad(b) {
+    const name = String(b.name || '').trim() || 'Skill';
+    const path = String(b.path || '').trim();
+    const snapshot = String(b.snapshot || '');
+    const target = path ? shortPath(path) : '';
+    const size = resultSummary(snapshot);
+    const source = path
+      ? `<div class="skill-source"><span>${esc(L('conv.skillSource'))}</span><code title="${esc(path)}">${esc(path)}</code></div>`
+      : '';
+    const disclosure = snapshot
+      ? `<details class="skill-snapshot"><summary><span class="skill-caret">▸</span><span>${esc(L('conv.skillSnapshot'))}</span>${size ? `<span class="tool-res-size">${esc(size)}</span>` : ''}</summary><div class="skill-snapshot-body">${source}${codeBlock(snapshot, 'markdown')}</div></details>`
+      : `<div class="skill-no-snapshot">${esc(L('conv.skillNoSnapshot'))}</div>`;
+    return `<div class="tool-card tool-mcp skill-load"><div class="tool-head"><span class="tool-icon">🧩</span><span class="tool-name">${esc(L('conv.skillLoaded'))}</span><span class="skill-name">${esc(name)}</span>${target ? `<span class="tool-target" title="${esc(path)}">${esc(target)}</span>` : ''}</div>${disclosure}</div>`;
+  }
   function turnMeta(m) {
     const bits = [];
     if (m.modelActual) bits.push(esc(m.modelActual));
-    if (m.usage) bits.push(`${fmtTok(m.usage.inputTokens)}↑ ${fmtTok(m.usage.outputTokens)}↓`);
+    if (m.usage) {
+      const tokenTotal = (m.usage.inputTokens || 0) + (m.usage.outputTokens || 0)
+        + (m.usage.cacheRead || 0) + (m.usage.cacheCreation || 0);
+      // A credit-bearing, all-zero Qoder usage object means token accounting was not recorded.
+      // Do not turn that absence into a misleading "0↑ 0↓" badge.
+      if (m.usage.credits == null || tokenTotal > 0) {
+        bits.push(`${fmtTok(m.usage.inputTokens)}↑ ${fmtTok(m.usage.outputTokens)}↓`);
+      }
+      if (m.usage.credits != null) bits.push(`${fmtCredits(m.usage.credits)} ${esc(L('conv.credits'))}`);
+    }
     if (m.usage && m.usage.cacheRead) bits.push(`${fmtTok(m.usage.cacheRead)} ${esc(L('conv.cache'))}`);
     if (m.stopReason && m.stopReason !== 'end_turn' && m.stopReason !== 'tool_use') bits.push(esc(m.stopReason));
     return bits.length ? `<div class="turn-meta flex gap-1 flex-wrap mt-1.5">${bits.map((b) => `<span class="text-[9.5px] font-mono text-caption bg-chip-bg rounded-[4px] px-1.25 py-0.25">${b}</span>`).join('')}</div>` : '';
@@ -928,6 +1179,13 @@
   // Display name of a subagent: its agent type, suffixed with the skill that invoked it
   // (`type:skill`) when the backend attributed one (Skill tool_use / transcript sentinel).
   function subName(s) { return (s.type || 'agent') + (s.skill ? ':' + s.skill : ''); }
+  function subUsageSummary(s) {
+    const totals = (s && s.totals) || {};
+    const bits = [];
+    if (totals.tokenUsageAvailable !== false) bits.push(`${fmtTok(totals.out || 0)}↓`);
+    if (totals.credits != null) bits.push(`${fmtCredits(totals.credits)} ${L('conv.credits')}`);
+    return bits.join(' · ') || '—';
+  }
   // A subagent dialogue is keyed by the tool_use id that spawned it (history.readSubagents). We render it
   // as a lazily-filled disclosure directly under that call — at any nesting depth, since a subagent's own
   // tool cards run through this same path. Body stays empty until opened (see fillSubBody) to bound the DOM.
@@ -936,10 +1194,9 @@
     const s = id && subs[id];
     if (!s) return '';
     const cnt = s.count != null ? s.count : ((s.messages || []).length);
-    const out = (s.totals && s.totals.out) || 0;
-    const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓`;
+    const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))} · ${esc(subUsageSummary(s))}`;
     const desc = s.description ? ` · <span class="font-normal text-muted">${esc(s.description)}</span>` : '';
-    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(subName(s))}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body pl-3 pr-1 py-1.5 bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
+    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(subName(s))}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
   }
   // Render one subagent's whole thread (recursively wiring its own inline subagents via renderMessage →
   // renderToolCard). idx=null so nested turns carry no data-mi (they're outside main-window navigation).
@@ -977,14 +1234,13 @@
     const ddLabel = activeSub ? `🤖 ${esc(subName(activeSub))}` : `🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})`;
     const items = keys.map((k) => {
       const s = subs[k] || {};
-      const out = (s.totals && s.totals.out) || 0;
       const cnt = s.count != null ? s.count : ((s.messages || []).length);
       const active = activeAgent === k;
       const desc = s.description ? `<div class="text-[10.5px] text-muted truncate pl-[18px]">${esc(s.description)}</div>` : '';
       return `<button type="button" data-agent="${esc(k)}" class="conv-agent-menu-item w-full flex flex-col gap-0.25 text-left px-2 py-1.5 rounded-[6px] cursor-pointer border border-transparent transition-colors ${active ? 'bg-brand-soft text-brand' : 'hover:bg-chip-bg text-fg'}">
         <div class="flex items-center gap-1.25 min-w-0"><span class="shrink-0 text-[11px]">🤖</span><span class="font-mono text-[11.5px] font-semibold truncate">${esc(subName(s))}</span></div>
         ${desc}
-        <div class="text-[10px] text-caption font-mono pl-[18px]">${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓</div>
+        <div class="text-[10px] text-caption font-mono pl-[18px]">${esc(L('conv.subagentMsgs', { n: cnt }))} · ${esc(subUsageSummary(s))}</div>
       </button>`;
     }).join('');
     const menu = `<div class="conv-agent-menu ${agentMenuOpen ? '' : 'hidden'} absolute left-0 top-[34px] z-30 min-w-[240px] max-w-[320px] max-h-[60vh] overflow-y-auto bg-bg-elev border border-border-custom rounded-[9px] shadow-[0_10px_30px_rgba(0,0,0,0.24)] p-1 flex flex-col gap-0.5">${items}</div>`;
@@ -1080,10 +1336,13 @@
 
   function renderSidePanels(detail) {
     const m = detail.meta || {};
-    const t = m.totals || {};
     // Invoking skill of the session in the panel: the active subagent's when one is selected,
     // else the session's own (a standalone subagent transcript). Absent → row filtered out.
     const panelSub = activeAgent !== 'main' && detail.subagents ? detail.subagents[activeAgent] : null;
+    const t = (panelSub && panelSub.totals) || m.totals || {};
+    const messageCount = panelSub
+      ? (panelSub.count != null ? panelSub.count : (panelSub.messages || []).length)
+      : m.messages;
     const skill = panelSub ? panelSub.skill : m.skill;
     const rows = [
       [L('conv.stat.title'), m.title],
@@ -1094,10 +1353,15 @@
       [L('conv.stat.project'), m.cwd ? projName(m.cwd) : m.project],
       [L('conv.stat.branch'), m.gitBranch],
       [L('conv.stat.session'), m.sessionId ? String(m.sessionId).slice(0, 8) : null],
-      [L('conv.stat.messages'), m.messages],
+      [L('conv.stat.rootSession'), m.rootSessionId && m.rootSessionId !== m.sessionId ? String(m.rootSessionId).slice(0, 8) : null],
+      [L('conv.stat.parentThread'), m.parentThreadId ? String(m.parentThreadId).slice(0, 8) : null],
+      [L('conv.stat.agent'), m.agentNickname],
+      [L('conv.stat.agentPath'), m.agentPath],
+      [L('conv.stat.messages'), messageCount],
       [L('conv.stat.turns'), t.turns],
-      [L('conv.stat.input'), t.in != null ? fmtTok(t.in) : null],
-      [L('conv.stat.output'), t.out != null ? fmtTok(t.out) : null],
+      [L('conv.stat.input'), t.tokenUsageAvailable === false ? '—' : (t.in != null ? fmtTok(t.in) : null)],
+      [L('conv.stat.output'), t.tokenUsageAvailable === false ? '—' : (t.out != null ? fmtTok(t.out) : null)],
+      [L('conv.stat.credits'), t.credits != null ? fmtCredits(t.credits) : null],
       [L('conv.stat.cacheRead'), t.cacheRead ? fmtTok(t.cacheRead) : null],
       [L('conv.stat.tool'), m.assistant || 'Claude Code'],
       [L('conv.stat.version'), m.version],
@@ -1110,10 +1374,10 @@
     const messages = activeMessages(); // TOC follows the session shown in the main panel
     const toc = [];
     messages.forEach((m, i) => {
-      if (m.role !== 'user') return;
+      if (m.role !== 'user' || m._meta || m.meta) return;
       const vis = normContent(m.content).filter((b) => b.type === 'text');
-      const tv = vis.map((b) => b.text || '').join(' ').trim();
-      if (!tv || tv.includes('<system-reminder>') || tv.includes('<command-name>') || tv.includes('<local-command')) return;
+      const tv = vis.map((b) => stripInjected(b.text)).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      if (!tv) return;
       toc.push(`<div class="toc-item text-xs text-caption py-1 px-1.75 rounded-[5px] cursor-pointer truncate transition-all duration-100 hover:bg-chip-bg hover:text-fg" data-go="${i}" data-tip="${esc(tv.slice(0, 200))}">👤 ${esc(tv.slice(0, 32) || '…')}</div>`);
     });
     $('convToc').innerHTML = toc.join('');
@@ -1710,10 +1974,14 @@
       await applyImportResult(r);
     });
 
-    // Safety-net auto-refresh: while an in-progress (live) session is open, re-read it on a timer in
-    // case a file-watch event is missed. rerenderDetail's skip-guard makes this a no-op when nothing
-    // changed and only repaints when the view is pinned to the bottom, so it never disrupts reading.
-    setInterval(() => { if (openFile && openSessionLive()) rerenderDetail(false); }, 4000);
+    // Unified safety-net: live sessions still refresh when a file-watch event is missed, while a
+    // failed read retries on its own schedule (steady probe for permission errors, backoff for
+    // the rest). rerenderDetail coalesces ticks while a helper-backed read is already in flight.
+    setInterval(() => {
+      if (!openFile) return;
+      const retryDue = detailRetry && detailRetry.file === openFile && Date.now() >= detailRetry.nextAt;
+      if (retryDue || openSessionLive()) rerenderDetail(false);
+    }, 4000);
   }
 
   window.ccbudConversations = {

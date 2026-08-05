@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CAP = { text: 24000, thinking: 16000, result: 24000, prompt: 9000, content: 14000 };
+const CAP = { text: 24000, thinking: 16000, result: 24000, prompt: 9000, content: 14000, skillSnapshot: 131072 };
 function cap(s, n) {
   s = s == null ? '' : String(s);
   return s.length > n ? s.slice(0, n) + '\n…[truncated ' + (s.length - n) + ' chars]' : s;
@@ -36,7 +36,11 @@ function parseJsonl(file) {
 
 function usageOf(u) {
   if (!u) return null;
-  return { in: u.input_tokens || 0, out: u.output_tokens || 0, cacheRead: u.cache_read_input_tokens || 0, cacheCreation: u.cache_creation_input_tokens || 0 };
+  const usage = { in: u.input_tokens || 0, out: u.output_tokens || 0, cacheRead: u.cache_read_input_tokens || 0, cacheCreation: u.cache_creation_input_tokens || 0 };
+  if (typeof u.credits === 'number' && Number.isFinite(u.credits)) usage.credits = u.credits;
+  if (typeof u.original_credits === 'number' && Number.isFinite(u.original_credits)) usage.originalCredits = u.original_credits;
+  if (typeof u.context_usage_ratio === 'number' && Number.isFinite(u.context_usage_ratio)) usage.contextUsageRatio = u.context_usage_ratio;
+  return usage;
 }
 
 // Cap the heavy fields inside a content array so the embedded JSON stays bounded.
@@ -47,6 +51,14 @@ function capContent(content) {
     if (!b || typeof b !== 'object') return b;
     if (b.type === 'text') return { type: 'text', text: cap(b.text, CAP.text) };
     if (b.type === 'thinking') return { type: 'thinking', thinking: cap(b.thinking, CAP.thinking) };
+    if (b.type === 'skill_load') {
+      return {
+        type: 'skill_load',
+        name: b.name == null ? null : b.name,
+        path: b.path == null ? null : b.path,
+        snapshot: b.snapshot == null ? null : cap(b.snapshot, CAP.skillSnapshot),
+      };
+    }
     if (b.type === 'tool_use') {
       const input = Object.assign({}, b.input || {});
       if (typeof input.prompt === 'string') input.prompt = cap(input.prompt, CAP.prompt);
@@ -115,15 +127,27 @@ const baseName = (p) => (p ? String(p).split('/').filter(Boolean).pop() : null);
 function shapeSession(recs) {
   const metaRec = recs.find((r) => r.cwd) || recs.find((r) => r.sessionId) || {};
   const messages = [];
-  const totals = { in: 0, out: 0, cacheRead: 0, turns: 0 };
+  const totals = { in: 0, out: 0, cacheRead: 0, cacheCreation: 0, turns: 0 };
+  let credits = 0, hasCredits = false;
   let model = null, firstTs = null, lastTs = null;
   for (const r of recs) {
     const lm = lineToMsg(r);
     if (!lm || lm.meta) continue;
     if (lm.ts) { if (!firstTs) firstTs = lm.ts; lastTs = lm.ts; }
     if (lm.model) model = lm.model;
-    if (lm.usage) { totals.in += lm.usage.in; totals.out += lm.usage.out; totals.cacheRead += lm.usage.cacheRead; totals.turns += 1; }
+    if (lm.usage) {
+      totals.in += lm.usage.in; totals.out += lm.usage.out;
+      totals.cacheRead += lm.usage.cacheRead; totals.cacheCreation += lm.usage.cacheCreation;
+      if (typeof lm.usage.credits === 'number' && Number.isFinite(lm.usage.credits)) {
+        credits += lm.usage.credits; hasCredits = true;
+      }
+      totals.turns += 1;
+    }
     messages.push(lm);
+  }
+  if (hasCredits) {
+    totals.credits = credits;
+    if (totals.in === 0 && totals.out === 0 && totals.cacheRead === 0 && totals.cacheCreation === 0) totals.tokenUsageAvailable = false;
   }
   return { messages, model, totals, firstTs, lastTs, metaRec };
 }
@@ -164,7 +188,7 @@ function buildCodexData(file, recs) {
   const sess = require('./codex').sessionFromRecs(file, recs);
   const m = sess.meta || {};
   const messages = (sess.messages || []).map((msg) => {
-    const out = { role: msg.role, content: capContent(msg.content), ts: msg.ts || null, meta: false };
+    const out = { role: msg.role, content: capContent(msg.content), ts: msg.ts || null, meta: !!(msg.meta || msg._meta) };
     if (msg.modelActual) out.model = msg.modelActual;
     if (msg.usage) {
       out.usage = {
@@ -173,6 +197,9 @@ function buildCodexData(file, recs) {
         cacheRead: msg.usage.cacheRead || 0,
         cacheCreation: msg.usage.cacheCreation || 0,
       };
+      if (typeof msg.usage.credits === 'number') out.usage.credits = msg.usage.credits;
+      if (typeof msg.usage.originalCredits === 'number') out.usage.originalCredits = msg.usage.originalCredits;
+      if (typeof msg.usage.contextUsageRatio === 'number') out.usage.contextUsageRatio = msg.usage.contextUsageRatio;
     }
     return out;
   });
@@ -192,6 +219,8 @@ function buildCodexData(file, recs) {
       inTok: t.in || 0,
       outTok: t.out || 0,
       cacheTok: t.cacheRead || 0,
+      credits: t.credits == null ? null : t.credits,
+      tokenUsageAvailable: t.tokenUsageAvailable !== false,
       subagentCount: 0,
       firstTs: m.firstTs || null,
       lastTs: m.lastTs || null,
@@ -223,6 +252,8 @@ function buildData(file) {
       inTok: s.totals.in,
       outTok: s.totals.out,
       cacheTok: s.totals.cacheRead,
+      credits: s.totals.credits == null ? null : s.totals.credits,
+      tokenUsageAvailable: s.totals.tokenUsageAvailable !== false,
       subagentCount: Object.keys(subagents).length,
       firstTs: s.firstTs,
       lastTs: s.lastTs,

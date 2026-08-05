@@ -17,6 +17,7 @@ mod grok;
 mod history;
 mod plugin;
 mod protocol;
+mod qoder;
 mod sidecar;
 mod store;
 mod usage;
@@ -1167,7 +1168,7 @@ async fn history_export_raw(file: String) -> Result<Value, String> {
             None => Ok(json!({ "canceled": true })),
         }
     } else {
-        let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+        let data = history::raw_session_bytes(&file).map_err(|e| e.to_string())?;
         match rfd::AsyncFileDialog::new()
             .add_filter("JSONL", &["jsonl"])
             .set_file_name(format!("{}.jsonl", base))
@@ -1193,6 +1194,15 @@ async fn history_export_html(payload: Value) -> Result<Value, String> {
         .to_string();
     // Build the export data once, then reuse it for both the HTML body and the filename.
     let data = exporthtml::build_data(&file);
+    // An unreadable main transcript surfaces as a command error (renderer reports it) instead of
+    // silently saving an empty viewer page.
+    if let Some(error) = data.get("error") {
+        return Err(error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("session read failed")
+            .to_string());
+    }
     let html = exporthtml::html_from_data(&data);
     let base = exporthtml::export_base_name_from_data(&data);
     match rfd::AsyncFileDialog::new().set_file_name(format!("{}.html", base)).save_file().await {
@@ -1823,13 +1833,15 @@ pub fn run() {
                 )?;
             }
             // One-time migrations: detected installs of the other coding CLIs (Codex, Grok
-            // Build, Copilot CLI, Antigravity CLI) and an XDG Claude tree join historyDirs as
-            // regular work dirs. Runs BEFORE the history watcher so their trees get watched.
+            // Build, Copilot CLI, Antigravity CLI, Qoder) and an XDG Claude tree join
+            // historyDirs as regular work dirs. Runs BEFORE the history watcher so their trees
+            // get watched.
             store::ensure_codex_dir();
             store::ensure_xdg_claude_dir();
             store::ensure_grok_dir();
             store::ensure_copilot_dir();
             store::ensure_antigravity_dir();
+            store::ensure_qoder_dir();
 
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());

@@ -70,6 +70,7 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function md(t) { try { return marked ? marked.parse(String(t || '')) : '<p>' + esc(t) + '</p>'; } catch (e) { return '<p>' + esc(t) + '</p>'; } }
   function fmtTok(n) { n = n || 0; if (n < 1000) return '' + n; if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, '') + 'K'; return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'; }
+  function fmtCredits(n) { n = Number(n); if (!isFinite(n)) return '—'; var a = Math.abs(n), s = a >= 1000 ? (n / 1000).toFixed(a < 10000 ? 1 : 0) : a >= 100 ? n.toFixed(1) : a >= 1 ? n.toFixed(2) : n.toFixed(3); s = s.replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1'); return a >= 1000 ? s + 'K' : s; }
   function size(s) { var b = s ? s.length : 0; if (!b) return ''; return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB'; }
   function trunc(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; }
   function shortPath(p) { if (!p) return ''; var a = String(p).split('/'); return a.length > 3 ? '…/' + a.slice(-2).join('/') : p; }
@@ -108,6 +109,19 @@
   function diff(o, n) { o = String(o || '').split('\n'); n = String(n || '').split('\n'); return '<div class="diff">' + o.map(function (l) { return '<div class="d-del">- ' + esc(l) + '</div>'; }).join('') + n.map(function (l) { return '<div class="d-add">+ ' + esc(l) + '</div>'; }).join('') + '</div>'; }
   function todos(list) { return '<div class="todos">' + (list || []).map(function (t) { var m = t.status === 'completed' ? '☑' : t.status === 'in_progress' ? '◐' : '☐'; return '<div class="todo ' + esc(t.status || '') + '"><span class="box">' + m + '</span>' + esc(t.content || t.activeForm || '') + '</div>'; }).join('') + '</div>'; }
 
+  function renderSkillLoad(b) {
+    var name = b.name || 'Skill';
+    var path = b.path || '';
+    var snapshot = typeof b.snapshot === 'string' ? b.snapshot : '';
+    var detail = '';
+    if (b.snapshot != null) {
+      detail = '<details class="skill-snapshot"><summary><span class="skill-caret">›</span><span>查看加载时快照</span>' + (snapshot ? '<span class="skill-size">' + esc(size(snapshot)) + '</span>' : '') + '</summary>' +
+        '<div class="skill-snapshot-body"><div class="lbl">来源路径</div><div class="skill-source" title="' + esc(path) + '">' + esc(path || '未记录') + '</div>' +
+        '<div class="lbl">Markdown 源码</div><pre class="code skill-snapshot-code"><code class="language-markdown">' + esc(snapshot) + '</code></pre></div></details>';
+    }
+    return '<div class="tool tool-skill skill-load-card"><div class="skill-load-head"><span class="tool-ico">🧩</span><span class="skill-loaded-label">Skill 已加载</span><span class="skill-load-name">' + esc(name) + '</span><span class="tool-target" title="' + esc(path) + '">' + esc(shortPath(path)) + '</span></div>' + detail + '</div>';
+  }
+
   function renderTool(b) {
     var name = b.name || 'tool', inp = (b.input && typeof b.input === 'object') ? b.input : {};
     var tm = toolMeta(name), ico = tm[0], cls = tm[1];
@@ -136,29 +150,108 @@
   }
   function renderSubagent(sub) {
     var subName = (sub.type || 'agent') + (sub.skill ? ':' + sub.skill : ''); // skill-spawned agents carry the invoking skill
-    return '<div class="subagent"><details class="subagent-d"><summary><span class="subagent-ico">🤖</span><span class="subagent-title">子代理 · ' + esc(subName) + '</span><span class="subagent-desc">' + esc(sub.description || '') + '</span><span class="subagent-count">' + (sub.count || 0) + ' 条 · ' + fmtTok((sub.totals && sub.totals.out) || 0) + '↓</span></summary><div class="subagent-body"><div class="thread">' + renderThread(sub.messages || []) + '</div></div></details></div>';
+    var totals = sub.totals || {}, usage = [];
+    if (totals.tokenUsageAvailable !== false) usage.push(fmtTok(totals.out || 0) + '↓');
+    if (totals.credits != null) usage.push(fmtCredits(totals.credits) + ' Credits');
+    return '<div class="subagent"><details class="subagent-d"><summary><span class="subagent-ico">🤖</span><span class="subagent-title">子代理 · ' + esc(subName) + '</span><span class="subagent-desc">' + esc(sub.description || '') + '</span><span class="subagent-count">' + (sub.count || 0) + ' 条 · ' + esc(usage.join(' · ') || '—') + '</span></summary><div class="subagent-body"><div class="thread">' + renderThread(sub.messages || []) + '</div></div></details></div>';
   }
 
-  function isReminder(t) { return /<(system-reminder|command-name|local-command)/.test(t); }
-  function renderBlocks(content) {
+  function formatCodexBootstrap(text) {
+    var source = String(text || '');
+    var agents = /^\s*#\s+AGENTS\.md instructions for ([^\r\n]+)[\s\S]*?<INSTRUCTIONS\b[^>]*>([\s\S]*?)<\/INSTRUCTIONS>/i.exec(source);
+    if (!agents) return null;
+
+    var env = /<environment_context\b[^>]*>([\s\S]*?)<\/environment_context>/i.exec(source);
+    var parts = ['# AGENTS.md instructions for ' + agents[1].trim()];
+    var instructions = agents[2].trim();
+    if (instructions) {
+      var lines = instructions.split(/\r?\n/).filter(function (line) { return line.trim(); });
+      parts.push(lines.length === 1
+        ? '**INSTRUCTIONS:** ' + lines[0].trim()
+        : '**INSTRUCTIONS:**\n\n' + instructions);
+    }
+
+    if (env) {
+      var block = env[1];
+      var tag = function (name) {
+        var match = new RegExp('<' + name + '\\b[^>]*>([\\s\\S]*?)<\\/' + name + '>', 'i').exec(block);
+        return match ? match[1].trim() : '';
+      };
+      var attr = function (name, attribute) {
+        var match = new RegExp("<" + name + "\\b[^>]*\\b" + attribute + "=[\"']([^\"']+)[\"']", "i").exec(block);
+        return match ? match[1].trim() : '';
+      };
+      var code = function (value) {
+        var tick = String.fromCharCode(96);
+        return value ? tick + value + tick : '';
+      };
+      var roots = [];
+      var rootRe = /<root\b[^>]*>([\s\S]*?)<\/root>/gi;
+      var root;
+      while ((root = rootRe.exec(block)) !== null) {
+        if (root[1].trim()) roots.push(code(root[1].trim()));
+      }
+      var fields = [
+        ['environment_context', code(tag('cwd'))],
+        ['shell', tag('shell')],
+        ['current_date', tag('current_date')],
+        ['timezone', tag('timezone')],
+        ['workspace_roots', roots.join(', ')],
+        ['permission_profile', attr('permission_profile', 'type')],
+        ['file_system', attr('file_system', 'type')],
+      ].filter(function (field) { return field[1]; });
+      if (fields.length) {
+        parts.push(fields.map(function (field) { return '**' + field[0] + ':** ' + field[1]; }).join('  \n'));
+      }
+    }
+
+    var rest = source.replace(agents[0], '');
+    if (env) rest = rest.replace(env[0], '');
+    rest = rest.trim();
+    if (rest) parts.push(rest);
+    return parts.join('\n\n').trim();
+  }
+  function stripInjected(text) {
+    var source = String(text || '');
+    var bootstrap = formatCodexBootstrap(source);
+    if (bootstrap != null) source = bootstrap;
+    if (/^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/i.test(source)) return '';
+    return source
+      .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, function (block) {
+        var result = /<result\b[^>]*>([\s\S]*?)<\/result>/i.exec(block);
+        return result ? '\n' + result[1].trim() + '\n' : '';
+      })
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, '')
+      .replace(/<local-command-[a-z]+>[\s\S]*?<\/local-command-[a-z]+>/g, '')
+      .trim();
+  }
+  function renderBlocks(content, cleanUserText) {
     var blocks = Array.isArray(content) ? content : (typeof content === 'string' ? [{ type: 'text', text: content }] : []);
     var out = '';
     blocks.forEach(function (b) {
       if (!b) return;
-      if (b.type === 'text') { if (b.text && b.text.trim()) out += '<div class="prose">' + md(b.text) + '</div>'; }
+      if (b.type === 'text') { var text = cleanUserText ? stripInjected(b.text) : b.text; if (text && text.trim()) out += '<div class="prose">' + md(text) + '</div>'; }
       else if (b.type === 'thinking') { if (b.thinking && b.thinking.trim()) { var first = b.thinking.split('\n').filter(function (x) { return x.trim(); })[0] || ''; out += '<details class="thinking"><summary>💭 思考 · ' + esc(trunc(first, 64)) + '</summary><div class="prose">' + md(b.thinking) + '</div></details>'; } }
+      else if (b.type === 'skill_load') out += renderSkillLoad(b);
       else if (b.type === 'tool_use') out += renderTool(b);
       else if (b.type === 'image') { var s = b.source || {}; out += s.data ? '<img class="msg-img" style="max-width:340px;border-radius:10px;border:1px solid var(--border);margin:6px 0" src="data:' + esc(s.media_type || 'image/png') + ';base64,' + esc(s.data) + '">' : '<div class="tool-desc">🖼 image' + (s.oversized ? ' (large, omitted)' : '') + '</div>'; }
     });
     return out;
   }
   function turnMeta(m) {
-    var bits = []; if (m.model) bits.push(esc(m.model)); if (m.usage) bits.push(fmtTok(m.usage.in) + '↑ ' + fmtTok(m.usage.out) + '↓'); if (m.usage && m.usage.cacheRead) bits.push(fmtTok(m.usage.cacheRead) + ' cache');
+    var bits = []; if (m.model) bits.push(esc(m.model));
+    if (m.usage) {
+      var tokenTotal = (m.usage.in || 0) + (m.usage.out || 0) + (m.usage.cacheRead || 0) + (m.usage.cacheCreation || 0);
+      if (m.usage.credits == null || tokenTotal > 0) bits.push(fmtTok(m.usage.in) + '↑ ' + fmtTok(m.usage.out) + '↓');
+      if (m.usage.credits != null) bits.push(fmtCredits(m.usage.credits) + ' Credits');
+    }
+    if (m.usage && m.usage.cacheRead) bits.push(fmtTok(m.usage.cacheRead) + ' cache');
     return bits.length ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + bits.map(function (b) { return '<span style="font-size:9.5px;font-family:ui-monospace,monospace;color:var(--text-faint);background:var(--surface-2);border-radius:4px;padding:1px 6px">' + b + '</span>'; }).join('') + '</div>' : '';
   }
   function msgVisible(m) {
     var bl = Array.isArray(m.content) ? m.content : (typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : []);
-    if (m.role === 'user') { var vis = bl.filter(function (b) { return b && (b.type === 'text' || b.type === 'image'); }); if (!vis.length) return false; var txt = vis.map(function (b) { return b.text || ''; }).join(''); return !isReminder(txt); }
+    if (m.role === 'user') { var vis = bl.filter(function (b) { return b && (b.type === 'text' || b.type === 'image'); }); if (!vis.length) return false; var hasImage = vis.some(function (b) { return b.type === 'image'; }); var txt = vis.map(function (b) { return b.type === 'text' ? stripInjected(b.text) : ''; }).filter(Boolean).join('\n'); return hasImage || !!txt; }
     return bl.some(function (b) { return b && (b.type === 'text' || b.type === 'thinking' || b.type === 'tool_use' || b.type === 'image'); });
   }
   // tags for sidebar/filtering
@@ -170,8 +263,13 @@
   function renderThread(msgs) {
     var out = '';
     (msgs || []).forEach(function (m) {
-      if (!msgVisible(m)) return;
-      var body = renderBlocks(m.content); if (!body) return;
+      var blocks = Array.isArray(m.content) ? m.content : (typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : []);
+      var skillBlocks = blocks.filter(function (b) { return b && b.type === 'skill_load'; });
+      if (skillBlocks.length) out += '<div class="skill-load-event" data-meta="1">' + skillBlocks.map(renderSkillLoad).join('') + '</div>';
+      var regularBlocks = blocks.filter(function (b) { return !b || b.type !== 'skill_load'; });
+      var regular = Object.assign({}, m, { content: regularBlocks });
+      if (!msgVisible(regular)) return;
+      var body = renderBlocks(regularBlocks, m.role === 'user'); if (!body) return;
       if (m.role === 'user') out += '<div class="msg user" data-role="user"><div class="msg-name">👤 你</div><div class="bubble">' + body + '</div></div>';
       else { var tg = msgTags(m); out += '<div class="msg assistant" data-role="assistant" data-tool="' + (tg.tool ? 1 : 0) + '" data-sub="' + (tg.sub ? 1 : 0) + '"><div class="msg-name"><span class="dot">✦</span>' + esc(AST) + '</div><div class="body">' + body + turnMeta(m) + '</div></div>'; }
     });
@@ -186,7 +284,8 @@
     if (meta.model) p.push('<b>' + esc(meta.model) + '</b>');
     if (meta.project) p.push(esc(meta.project));
     if (meta.turns) p.push(meta.turns + ' 轮');
-    if (meta.inTok != null) p.push(fmtTok(meta.inTok) + '↑ ' + fmtTok(meta.outTok) + '↓');
+    if (meta.inTok != null && meta.tokenUsageAvailable !== false) p.push(fmtTok(meta.inTok) + '↑ ' + fmtTok(meta.outTok) + '↓');
+    if (meta.credits != null) p.push(fmtCredits(meta.credits) + ' Credits');
     if (meta.cacheTok) p.push(fmtTok(meta.cacheTok) + ' 缓存');
     if (meta.subagentCount) p.push(meta.subagentCount + ' 子代理');
     return p.join(' · ');

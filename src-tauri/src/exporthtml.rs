@@ -21,6 +21,7 @@ const CAP_THINKING: usize = 16000;
 const CAP_RESULT: usize = 24000;
 const CAP_PROMPT: usize = 9000;
 const CAP_CONTENT: usize = 14000;
+const CAP_SKILL_SNAPSHOT: usize = 131072;
 
 fn cap(s: &str, n: usize) -> String {
     if s.chars().count() > n {
@@ -32,25 +33,47 @@ fn cap(s: &str, n: usize) -> String {
     }
 }
 
-fn parse_jsonl(file: &Path) -> Vec<Value> {
-    let raw = match fs::read_to_string(file) {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
-    raw.split('\n')
+fn parse_jsonl_result(file: &Path) -> std::io::Result<Vec<Value>> {
+    let qoder = crate::qoder::looks_qoder_path(file);
+    let raw = if qoder { crate::qoder::read_text(file) } else { fs::read_to_string(file) }?;
+    let records: Vec<Value> = raw
+        .split('\n')
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .collect()
+        .collect();
+    Ok(if qoder {
+        crate::qoder::normalize_records(&records)
+    } else {
+        records
+    })
+}
+
+/// Skip-on-error variant for subagent sidecars — one broken agent file must not sink the export.
+/// The MAIN transcript goes through parse_jsonl_result so a read failure surfaces to the caller
+/// instead of exporting an empty page.
+fn parse_jsonl(file: &Path) -> Vec<Value> {
+    parse_jsonl_result(file).unwrap_or_default()
 }
 
 fn usage_of(u: &Value) -> Value {
-    json!({
+    let mut usage = json!({
         "in": u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "out": u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheRead": u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheCreation": u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-    })
+    });
+    let object = usage.as_object_mut().unwrap();
+    for (source, target) in [
+        ("credits", "credits"),
+        ("original_credits", "originalCredits"),
+        ("context_usage_ratio", "contextUsageRatio"),
+    ] {
+        if let Some(value) = u.get(source).filter(|value| value.is_number()) {
+            object.insert(target.to_string(), value.clone());
+        }
+    }
+    usage
 }
 
 fn cap_content(content: &Value) -> Value {
@@ -68,6 +91,16 @@ fn cap_content(content: &Value) -> Value {
             match ty {
                 "text" => json!({ "type": "text", "text": cap(b.get("text").and_then(|t| t.as_str()).unwrap_or(""), CAP_TEXT) }),
                 "thinking" => json!({ "type": "thinking", "thinking": cap(b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""), CAP_THINKING) }),
+                "skill_load" => json!({
+                    "type": "skill_load",
+                    "name": b.get("name").cloned().unwrap_or(Value::Null),
+                    "path": b.get("path").cloned().unwrap_or(Value::Null),
+                    "snapshot": b
+                        .get("snapshot")
+                        .and_then(|v| v.as_str())
+                        .map(|v| json!(cap(v, CAP_SKILL_SNAPSHOT)))
+                        .unwrap_or(Value::Null),
+                }),
                 "tool_use" => {
                     let mut input = b.get("input").cloned().unwrap_or(json!({}));
                     if let Some(obj) = input.as_object_mut() {
@@ -138,9 +171,18 @@ fn line_to_msg(rec: &Value) -> Option<Value> {
     });
     if ty == "assistant" {
         let o = out.as_object_mut().unwrap();
-        o.insert("model".into(), m.get("model").cloned().unwrap_or(Value::Null));
-        o.insert("usage".into(), m.get("usage").map(usage_of).unwrap_or(Value::Null));
-        o.insert("stop".into(), m.get("stop_reason").cloned().unwrap_or(Value::Null));
+        o.insert(
+            "model".into(),
+            m.get("model").cloned().unwrap_or(Value::Null),
+        );
+        o.insert(
+            "usage".into(),
+            m.get("usage").map(usage_of).unwrap_or(Value::Null),
+        );
+        o.insert(
+            "stop".into(),
+            m.get("stop_reason").cloned().unwrap_or(Value::Null),
+        );
     }
     Some(out)
 }
@@ -178,7 +220,9 @@ fn command_label(raw: &str) -> String {
 fn first_user_text(messages: &[Value]) -> String {
     let mut fallback = String::new();
     for m in messages {
-        if m.get("role").and_then(|r| r.as_str()) != Some("user") || m.get("meta").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user")
+            || m.get("meta").and_then(|v| v.as_bool()).unwrap_or(false)
+        {
             continue;
         }
         let raw = content_text(m.get("content").unwrap_or(&Value::Null));
@@ -201,19 +245,28 @@ fn first_user_text(messages: &[Value]) -> String {
     fallback.chars().take(100).collect()
 }
 fn base_name(p: &str) -> String {
-    p.split('/').filter(|s| !s.is_empty()).last().unwrap_or(p).to_string()
+    p.split('/')
+        .filter(|s| !s.is_empty())
+        .last()
+        .unwrap_or(p)
+        .to_string()
 }
 
 struct Shaped {
     messages: Vec<Value>,
     model: Option<String>,
     totals: (i64, i64, i64, i64),
+    cache_creation: i64,
+    credits: Option<f64>,
+    token_usage_available: bool,
     first_ts: Option<String>,
     last_ts: Option<String>,
 }
 fn shape_session(recs: &[Value]) -> Shaped {
     let mut messages = vec![];
-    let (mut tin, mut tout, mut tcr, mut turns) = (0i64, 0i64, 0i64, 0i64);
+    let (mut tin, mut tout, mut tcr, mut tcc, mut turns) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut credits = 0.0f64;
+    let mut has_credits = false;
     let mut model = None;
     let mut first_ts = None;
     let mut last_ts = None;
@@ -238,17 +291,33 @@ fn shape_session(recs: &[Value]) -> Shaped {
             tin += u.get("in").and_then(|v| v.as_i64()).unwrap_or(0);
             tout += u.get("out").and_then(|v| v.as_i64()).unwrap_or(0);
             tcr += u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0);
+            tcc += u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0);
+            if let Some(value) = u.get("credits").and_then(|v| v.as_f64()) {
+                credits += value;
+                has_credits = true;
+            }
             turns += 1;
         }
         messages.push(lm);
     }
-    Shaped { messages, model, totals: (tin, tout, tcr, turns), first_ts, last_ts }
+    Shaped {
+        messages,
+        model,
+        totals: (tin, tout, tcr, turns),
+        cache_creation: tcc,
+        credits: has_credits.then_some(credits),
+        token_usage_available: !(has_credits && tin == 0 && tout == 0 && tcr == 0 && tcc == 0),
+        first_ts,
+        last_ts,
+    }
 }
 
 fn read_subagents(file: &Path) -> Value {
-    let dir = file
-        .parent()
-        .map(|p| p.join(file.file_stem().and_then(|s| s.to_str()).unwrap_or("")).join("subagents"));
+    let qoder = crate::qoder::looks_qoder_path(file);
+    let dir = file.parent().map(|p| {
+        p.join(file.file_stem().and_then(|s| s.to_str()).unwrap_or(""))
+            .join("subagents")
+    });
     let dir = match dir {
         Some(d) => d,
         None => return json!({}),
@@ -257,18 +326,39 @@ fn read_subagents(file: &Path) -> Value {
         Ok(e) => e,
         Err(_) => return json!({}),
     };
-    let mut by_tool = serde_json::Map::new();
-    for ent in entries.flatten() {
-        let name = ent.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
-            continue;
+    let mut agent_names: Vec<String> = entries
+        .flatten()
+        .map(|ent| ent.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("agent-") && name.ends_with(".jsonl"))
+        .collect();
+    agent_names.sort();
+    // A protected qoder session's subagent transcripts + meta sidecars warm in one helper batch.
+    if qoder {
+        let mut warm: Vec<std::path::PathBuf> = vec![];
+        for name in &agent_names {
+            warm.push(dir.join(name));
+            let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl");
+            warm.push(dir.join(format!("agent-{}.meta.json", agent_id)));
         }
-        let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_string();
-        let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+        crate::qoder::prefetch(&warm);
+    }
+    let mut by_tool = serde_json::Map::new();
+    for name in agent_names {
+        let agent_id = name
+            .trim_start_matches("agent-")
+            .trim_end_matches(".jsonl")
+            .to_string();
+        let meta_path = dir.join(format!("agent-{}.meta.json", agent_id));
+        let meta_raw = if qoder {
+            crate::qoder::read_text(&meta_path)
+        } else {
+            fs::read_to_string(&meta_path)
+        };
+        let meta: Value = meta_raw
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(json!({}));
-        let recs = parse_jsonl(&ent.path());
+        let recs = parse_jsonl(&dir.join(&name));
         let shaped = shape_session(&recs);
         let key = meta
             .get("toolUseId")
@@ -283,7 +373,15 @@ fn read_subagents(file: &Path) -> Value {
                 "description": meta.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 "skill": crate::history::skill_from_recs(&recs),
                 "count": shaped.messages.len(),
-                "totals": { "in": shaped.totals.0, "out": shaped.totals.1, "cacheRead": shaped.totals.2, "turns": shaped.totals.3 },
+                "totals": {
+                    "in": shaped.totals.0,
+                    "out": shaped.totals.1,
+                    "cacheRead": shaped.totals.2,
+                    "cacheCreation": shaped.cache_creation,
+                    "turns": shaped.totals.3,
+                    "credits": shaped.credits,
+                    "tokenUsageAvailable": shaped.token_usage_available,
+                },
                 "messages": shaped.messages,
             }),
         );
@@ -306,21 +404,32 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
                         "role": msg.get("role").cloned().unwrap_or(Value::Null),
                         "content": cap_content(msg.get("content").unwrap_or(&Value::Null)),
                         "ts": msg.get("ts").cloned().unwrap_or(Value::Null),
-                        "meta": false,
+                        "meta": msg
+                            .get("meta")
+                            .or_else(|| msg.get("_meta"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
                     });
                     let o = out.as_object_mut().unwrap();
                     if let Some(md) = msg.get("modelActual") {
                         o.insert("model".into(), md.clone());
                     }
                     if let Some(u) = msg.get("usage") {
+                        let mut usage = json!({
+                            "in": u.get("inputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                            "out": u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                            "cacheRead": u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0),
+                            "cacheCreation": u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0),
+                        });
+                        let usage_object = usage.as_object_mut().unwrap();
+                        for field in ["credits", "originalCredits", "contextUsageRatio"] {
+                            if let Some(value) = u.get(field).filter(|value| value.is_number()) {
+                                usage_object.insert(field.to_string(), value.clone());
+                            }
+                        }
                         o.insert(
                             "usage".into(),
-                            json!({
-                                "in": u.get("inputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                                "out": u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                                "cacheRead": u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0),
-                                "cacheCreation": u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0),
-                            }),
+                            usage,
                         );
                     }
                     out
@@ -329,7 +438,11 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
         })
         .unwrap_or_default();
     let t = m.get("totals").cloned().unwrap_or_else(|| json!({}));
-    let title = m.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = m
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     json!({
         "meta": {
             "title": if title.is_empty() { "(conversation)".to_string() } else { title },
@@ -345,6 +458,8 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
             "inTok": t.get("in").cloned().unwrap_or(json!(0)),
             "outTok": t.get("out").cloned().unwrap_or(json!(0)),
             "cacheTok": t.get("cacheRead").cloned().unwrap_or(json!(0)),
+            "credits": t.get("credits").cloned().unwrap_or(Value::Null),
+            "tokenUsageAvailable": t.get("tokenUsageAvailable").cloned().unwrap_or(json!(true)),
             "subagentCount": 0,
             "firstTs": m.get("firstTs").cloned().unwrap_or(Value::Null),
             "lastTs": m.get("lastTs").cloned().unwrap_or(Value::Null),
@@ -356,31 +471,62 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
 
 pub fn build_data(file: &str) -> Value {
     let path = Path::new(file);
-    // Foreign sources first — container-shape routing (one of them is SQLite, not jsonl).
+    let qoder = crate::qoder::looks_qoder_path(path);
+    // Antigravity first — it's SQLite and its shaper opens the DB itself. Every other source
+    // reads the transcript here, and a failed MAIN read returns the structured error (the export
+    // command surfaces it) instead of silently exporting an empty page.
+    if matches!(crate::history::foreign_kind(path), Some(crate::history::Foreign::Antigravity)) {
+        return build_from_session(crate::antigravity::session_from(file), "Antigravity");
+    }
+    let recs = match parse_jsonl_result(path) {
+        Ok(recs) => recs,
+        Err(error) => return crate::history::session_read_error(path, &error),
+    };
     match crate::history::foreign_kind(path) {
         Some(crate::history::Foreign::Grok) => {
-            let recs = parse_jsonl(path);
             return build_from_session(crate::grok::session_from_recs(file, &recs), "Grok");
         }
         Some(crate::history::Foreign::Copilot) => {
-            let recs = parse_jsonl(path);
             return build_from_session(crate::copilot::session_from_recs(file, &recs), "Copilot");
         }
-        Some(crate::history::Foreign::Antigravity) => {
-            return build_from_session(crate::antigravity::session_from(file), "Antigravity");
-        }
-        None => {}
+        _ => {}
     }
-    let recs = parse_jsonl(path);
     if crate::codex::looks_codex(&recs) {
         return build_from_session(crate::codex::session_from_recs(file, &recs), "Codex");
     }
-    let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
+    // Qoder sessions are Claude-format (the shaping below applies as-is) — brand the exported
+    // page and prefer qoder's own stored title over first-user-text.
+    let meta_rec = recs
+        .iter()
+        .find(|r| r.get("cwd").is_some())
+        .or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let s = shape_session(&recs);
-    let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str());
+    let top_level_cwd = meta_rec
+        .and_then(|r| r.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let cwd = if qoder {
+        crate::qoder::working_dir_from(&recs).or(top_level_cwd)
+    } else {
+        top_level_cwd
+    };
     let title = {
-        let t = first_user_text(&s.messages);
-        if t.is_empty() { "(conversation)".to_string() } else { t }
+        let t = (if qoder {
+            crate::qoder::session_title_from(&recs)
+        } else {
+            None
+        })
+        .unwrap_or_else(|| first_user_text(&s.messages));
+        if t.is_empty() {
+            "(conversation)".to_string()
+        } else {
+            t
+        }
+    };
+    let model = if qoder {
+        crate::qoder::model_from(&recs).or(s.model.clone())
+    } else {
+        s.model.clone()
     };
     let stem = path.file_stem().and_then(|x| x.to_str()).unwrap_or("");
     let mut subagents = read_subagents(path);
@@ -391,8 +537,10 @@ pub fn build_data(file: &str) -> Value {
     json!({
         "meta": {
             "title": title,
-            "model": s.model,
-            "project": cwd.map(base_name),
+            // The viewer runtime labels turns `meta.assistant || 'Claude'`.
+            "assistant": if qoder { json!("Qoder") } else { Value::Null },
+            "model": model,
+            "project": cwd.as_deref().map(base_name),
             "cwd": cwd,
             "branch": meta_rec.and_then(|r| r.get("gitBranch")).cloned().unwrap_or(Value::Null),
             "sessionId": meta_rec.and_then(|r| r.get("sessionId")).and_then(|v| v.as_str()).unwrap_or(stem),
@@ -400,6 +548,8 @@ pub fn build_data(file: &str) -> Value {
             "count": s.messages.len(),
             "turns": s.totals.3,
             "inTok": s.totals.0, "outTok": s.totals.1, "cacheTok": s.totals.2,
+            "credits": s.credits,
+            "tokenUsageAvailable": s.token_usage_available,
             "subagentCount": subagents.as_object().map(|o| o.len()).unwrap_or(0),
             "firstTs": s.first_ts, "lastTs": s.last_ts,
         },
@@ -409,7 +559,9 @@ pub fn build_data(file: &str) -> Value {
 }
 
 pub fn html_from_data(data: &Value) -> String {
-    let json = serde_json::to_string(data).unwrap_or_default().replace('<', "\\u003c");
+    let json = serde_json::to_string(data)
+        .unwrap_or_default()
+        .replace('<', "\\u003c");
     // Tab title uses the project name (already public via the export's filename), NOT the
     // conversation title: Clarity reports document.title as page metadata that masking can't
     // reach, and the conversation title is first-message text. The full title still renders
@@ -467,8 +619,10 @@ fn sanitize_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_underscore = false;
     for ch in s.chars() {
-        let bad = matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r')
-            || ch.is_whitespace();
+        let bad = matches!(
+            ch,
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r'
+        ) || ch.is_whitespace();
         if bad {
             if !prev_underscore {
                 out.push('_');
@@ -479,15 +633,20 @@ fn sanitize_name(s: &str) -> String {
             prev_underscore = false;
         }
     }
-    out.trim_matches(|c| c == '_' || c == '.' || c == '-').chars().take(60).collect()
+    out.trim_matches(|c| c == '_' || c == '.' || c == '-')
+        .chars()
+        .take(60)
+        .collect()
 }
 
 // Parse an ISO-8601 `ts` and render it as YYMMDDHHmm in local time (matches `new Date(ts)` + the
 // Date's local getters used by the original).
 fn fmt_ts_local(ts: &str) -> Option<String> {
-    chrono::DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%y%m%d%H%M").to_string())
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+        dt.with_timezone(&chrono::Local)
+            .format("%y%m%d%H%M")
+            .to_string()
+    })
 }
 
 // Derive the base name from already-built export `data` (avoids re-parsing for the HTML path).
@@ -511,4 +670,283 @@ pub fn export_base_name_from_data(data: &Value) -> String {
 // Build + shape the file, then derive the base name (JSONL export path, which has no `data` yet).
 pub fn export_base_name(file: &str) -> String {
     export_base_name_from_data(&build_data(file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn qoder_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ccbud-exporthtml-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        let file = root
+            .join(".qoder")
+            .join("projects")
+            .join("-work-project")
+            .join("session.jsonl");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        (root, file)
+    }
+
+    fn write_jsonl(path: &Path, records: &[Value]) {
+        let raw = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path, format!("{raw}\n")).unwrap();
+    }
+
+    fn streamed_assistant_records() -> Vec<Value> {
+        vec![
+            json!({
+                "type": "assistant",
+                "uuid": "wrap-1",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "",
+                    "content": [{ "type": "thinking", "thinking": "plan" }],
+                    "stop_reason": null,
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "wrap-2",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "ultimate",
+                    "content": [{ "type": "redacted_thinking", "data": "opaque" }],
+                    "stop_reason": null,
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "wrap-3",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "ultimate",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": { "file_path": "/work/a" },
+                    }],
+                    "usage": { "input_tokens": 7, "output_tokens": 3 },
+                    "stop_reason": "tool_use",
+                },
+            }),
+        ]
+    }
+
+    #[test]
+    fn qoder_jsonl_normalizes_streamed_assistant_records() {
+        let (root, file) = qoder_fixture("normalize");
+        write_jsonl(&file, &streamed_assistant_records());
+
+        let records = parse_jsonl(&file);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].get("uuid").and_then(Value::as_str),
+            Some("wrap-1")
+        );
+        let message = records[0].get("message").unwrap();
+        assert_eq!(
+            message.get("model").and_then(Value::as_str),
+            Some("ultimate")
+        );
+        assert_eq!(
+            message.get("stop_reason").and_then(Value::as_str),
+            Some("tool_use")
+        );
+        assert_eq!(
+            message
+                .get("usage")
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(Value::as_i64),
+            Some(7)
+        );
+        let content = message.get("content").and_then(Value::as_array).unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(
+            content[0].get("type").and_then(Value::as_str),
+            Some("thinking")
+        );
+        assert_eq!(
+            content[1].get("type").and_then(Value::as_str),
+            Some("tool_use")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ordinary_jsonl_keeps_streamed_records_unchanged() {
+        let (root, _) = qoder_fixture("ordinary");
+        let file = root.join("ordinary.jsonl");
+        write_jsonl(&file, &streamed_assistant_records());
+
+        let records = parse_jsonl(&file);
+        assert_eq!(records.len(), 3);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qoder_export_uses_record_metadata_and_reads_subagent_meta() {
+        let (root, file) = qoder_fixture("metadata");
+        write_jsonl(
+            &file,
+            &[
+                json!({
+                    "type": "workspace-directories",
+                    "sessionId": "session",
+                    "directories": ["/work/project"],
+                }),
+                json!({
+                    "type": "runtime-config",
+                    "sessionId": "session",
+                    "model": "ultimate",
+                }),
+                json!({
+                    "type": "ai-title",
+                    "sessionId": "session",
+                    "aiTitle": "Inline Qoder title",
+                }),
+                json!({
+                    "type": "user",
+                    "uuid": "user-1",
+                    "timestamp": "2026-08-04T08:00:00Z",
+                    "message": { "role": "user", "content": "User fallback title" },
+                }),
+                json!({
+                    "type": "assistant",
+                    "uuid": "assistant-1",
+                    "timestamp": "2026-08-04T08:01:00Z",
+                    "message": {
+                        "id": "answer-1",
+                        "role": "assistant",
+                        "model": "message-model",
+                        "content": [{ "type": "text", "text": "Done" }],
+                        "usage": { "input_tokens": 2, "output_tokens": 1 },
+                        "stop_reason": "end_turn",
+                    },
+                }),
+            ],
+        );
+        fs::write(
+            file.parent().unwrap().join("session-session.json"),
+            r#"{"title":"stale companion title","working_dir":"/stale/path"}"#,
+        )
+        .unwrap();
+
+        let subagent_dir = file.parent().unwrap().join("session").join("subagents");
+        fs::create_dir_all(&subagent_dir).unwrap();
+        write_jsonl(
+            &subagent_dir.join("agent-a.jsonl"),
+            &[
+                json!({
+                    "type": "user",
+                    "uuid": "sub-user",
+                    "message": { "role": "user", "content": "Investigate" },
+                }),
+                json!({
+                    "type": "assistant",
+                    "uuid": "sub-assistant",
+                    "message": {
+                        "id": "sub-answer",
+                        "role": "assistant",
+                        "model": "ultimate",
+                        "content": [{ "type": "text", "text": "Found it" }],
+                    },
+                }),
+            ],
+        );
+        fs::write(
+            subagent_dir.join("agent-a.meta.json"),
+            r#"{"toolUseId":"tool-a","agentType":"Explore","description":"trace"}"#,
+        )
+        .unwrap();
+
+        let data = build_data(&file.to_string_lossy());
+        let meta = data.get("meta").unwrap();
+        assert_eq!(meta.get("assistant").and_then(Value::as_str), Some("Qoder"));
+        assert_eq!(
+            meta.get("title").and_then(Value::as_str),
+            Some("Inline Qoder title")
+        );
+        assert_eq!(
+            meta.get("cwd").and_then(Value::as_str),
+            Some("/work/project")
+        );
+        assert_eq!(meta.get("project").and_then(Value::as_str), Some("project"));
+        assert_eq!(meta.get("model").and_then(Value::as_str), Some("ultimate"));
+        assert_eq!(meta.get("subagentCount").and_then(Value::as_u64), Some(1));
+        let subagent = data
+            .get("subagents")
+            .and_then(|subagents| subagents.get("tool-a"))
+            .unwrap();
+        assert_eq!(
+            subagent.get("type").and_then(Value::as_str),
+            Some("Explore")
+        );
+        assert_eq!(
+            subagent.get("description").and_then(Value::as_str),
+            Some("trace")
+        );
+        assert_eq!(subagent.get("count").and_then(Value::as_u64), Some(2));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qoder_export_falls_back_to_top_level_cwd_and_assistant_model() {
+        let (root, file) = qoder_fixture("metadata-fallback");
+        write_jsonl(
+            &file,
+            &[
+                json!({
+                    "type": "user",
+                    "uuid": "user-1",
+                    "sessionId": "session",
+                    "cwd": "/legacy/work",
+                    "message": { "role": "user", "content": "Fallback title" },
+                }),
+                json!({
+                    "type": "assistant",
+                    "uuid": "assistant-1",
+                    "message": {
+                        "id": "answer-1",
+                        "role": "assistant",
+                        "model": "legacy-model",
+                        "content": [{ "type": "text", "text": "Done" }],
+                    },
+                }),
+            ],
+        );
+
+        let data = build_data(&file.to_string_lossy());
+        let meta = data.get("meta").unwrap();
+        assert_eq!(
+            meta.get("cwd").and_then(Value::as_str),
+            Some("/legacy/work")
+        );
+        assert_eq!(meta.get("project").and_then(Value::as_str), Some("work"));
+        assert_eq!(
+            meta.get("model").and_then(Value::as_str),
+            Some("legacy-model")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

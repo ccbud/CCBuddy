@@ -494,7 +494,27 @@ fn build_data(config: &Value, active: &str) -> HashMap<String, Day> {
         let mut files = vec![];
         collect_jsonl(&root.join("projects"), 0, &mut files);
         files.sort();
+        // Qoder projects/ trees can be macOS-protected: route those files through the guarded
+        // reader (helper fallback + cache, warmed in one batch) so 用量 counts the same sessions
+        // the 对话 view can browse. Wrapper records that repeat a message id are handled by the
+        // usual dedup (max-total wins) and partial snapshots lack output_tokens, so nothing
+        // double-counts.
+        let qoder_files: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| crate::qoder::looks_qoder_path(f))
+            .cloned()
+            .collect();
+        crate::qoder::prefetch(&qoder_files);
         for file in files {
+            if crate::qoder::looks_qoder_path(&file) {
+                let Ok(bytes) = crate::qoder::read_bytes(&file) else { continue };
+                for line in String::from_utf8_lossy(&bytes).lines() {
+                    if let Some(rec) = parse_claude_line(line.trim()) {
+                        claude_recs.push(rec);
+                    }
+                }
+                continue;
+            }
             let Some(mut lines) = LossyLines::open(&file) else { continue };
             while let Some(line) = lines.next_line() {
                 if let Some(rec) = parse_claude_line(line.trim()) {

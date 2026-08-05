@@ -98,7 +98,7 @@ body {
 .msg-name .dot { width: 14px; height: 14px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; }
 .msg.assistant .msg-name .dot { background: var(--accent); color: #fff; }
 
-.bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 13px 18px; box-shadow: var(--shadow-sm); }
+.bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 12px; box-shadow: var(--shadow-sm); }
 .msg.assistant .body { color: var(--text); }
 
 /* markdown */
@@ -157,6 +157,24 @@ pre.code code, .prose pre code { color: var(--code-fg); }
 .tool-agent { border-left-color: var(--accent); } .tool-net { border-left-color: #3f9aa8; }
 .tool-todo { border-left-color: #6b73c9; } .tool-mcp { border-left-color: #3fa090; }
 .tool-ask { border-left-color: #c9a13f; } .tool-default { border-left-color: var(--border-strong); }
+
+/* Skill envelopes are timeline metadata, so they use a neutral tool card without a speaker. */
+.skill-load-event { scroll-margin-top: 70px; }
+.tool-skill { border-left-color: #7d78b5; margin: 0; }
+.skill-load-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12.5px; }
+.skill-loaded-label { color: var(--text-dim); font-weight: 600; flex-shrink: 0; }
+.skill-load-name { color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-weight: 700; flex-shrink: 0; }
+.skill-snapshot { border-top: 1px solid var(--border); }
+.skill-snapshot > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 7px; padding: 8px 12px; color: var(--text-dim); font-size: 11.5px; font-weight: 600; }
+.skill-snapshot > summary::-webkit-details-marker { display: none; }
+.skill-snapshot > summary:hover { background: var(--surface-2); color: var(--text); }
+.skill-caret { color: var(--text-faint); font-size: 16px; line-height: 1; transform-origin: center; transition: transform .14s ease; }
+.skill-snapshot[open] .skill-caret { transform: rotate(90deg); }
+.skill-size { margin-left: auto; color: var(--text-faint); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10px; font-weight: 500; }
+.skill-snapshot-body { border-top: 1px solid var(--border); padding: 2px 12px 12px; }
+.skill-snapshot-body .lbl { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin: 9px 0 4px; }
+.skill-source { padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); color: var(--text-dim); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.skill-snapshot-code { max-height: 620px; margin: 0; overflow: auto; white-space: pre; }
 
 /* diff */
 .diff { font-family: ui-monospace, Menlo, monospace; font-size: 12px; border-radius: 7px; overflow: hidden; border: 1px solid var(--border); }

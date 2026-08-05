@@ -68,25 +68,99 @@ pub(crate) fn parse_lines(text: &str) -> Vec<Value> {
     out
 }
 
-pub(crate) fn read_head(file: &Path, max: usize) -> String {
-    use std::io::Read;
-    let mut f = match fs::File::open(file) {
-        Ok(f) => f,
-        Err(_) => return String::new(),
-    };
+fn read_head_result(file: &Path, max: usize) -> std::io::Result<String> {
+    use std::io::{BufRead, BufReader, Read};
+    // Qoder data can be protected as "Other Application Data" on macOS. Its reader first
+    // attempts the normal filesystem path and uses the installed Qoder CLI only for EPERM;
+    // keep the same bounded-head contract used by list metadata after that read succeeds.
+    if crate::qoder::looks_qoder_path(file) {
+        let mut bytes = crate::qoder::read_bytes(file)?;
+        bytes.truncate(max);
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let mut file = fs::File::open(file)?;
     let mut buf = vec![0u8; max];
-    let n = f.read(&mut buf).unwrap_or(0);
-    buf.truncate(n);
-    String::from_utf8_lossy(&buf).into_owned()
+    let read = file.read(&mut buf)?;
+    buf.truncate(read);
+    // SessionMeta may exceed the ordinary list window because it can embed base instructions and
+    // dynamic tools. Extend ONLY when the first record itself has no newline yet; a later partial
+    // record can be ignored, avoiding an accidental multi-megabyte image/tool-result read.
+    let prefix_len = buf.len().min(4096);
+    let compact_prefix: String = String::from_utf8_lossy(&buf[..prefix_len])
+        .chars()
+        .filter(|value| !value.is_ascii_whitespace())
+        .collect();
+    let codex_session_meta = compact_prefix
+        .find("\"type\":\"session_meta\"")
+        .is_some_and(|position| position < 512);
+    if codex_session_meta && read == max && !buf.contains(&b'\n') {
+        let mut reader = BufReader::new(file);
+        let _ = reader.read_until(b'\n', &mut buf)?;
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+pub(crate) fn read_head(file: &Path, max: usize) -> String {
+    read_head_result(file, max).unwrap_or_default()
+}
+
+fn read_session_text(file: &Path) -> std::io::Result<String> {
+    if crate::qoder::looks_qoder_path(file) {
+        crate::qoder::read_text(file)
+    } else {
+        fs::read_to_string(file)
+    }
+}
+
+fn read_session_bytes(file: &Path) -> std::io::Result<Vec<u8>> {
+    if crate::qoder::looks_qoder_path(file) {
+        crate::qoder::read_bytes(file)
+    } else {
+        fs::read(file)
+    }
+}
+
+/// Verbatim bytes for raw export. Qoder sessions may require the guarded Qoder CLI fallback on
+/// macOS; all other sources retain the ordinary filesystem read used before Qoder support.
+pub(crate) fn raw_session_bytes(file: &str) -> std::io::Result<Vec<u8>> {
+    read_session_bytes(Path::new(file))
+}
+
+pub(crate) fn session_read_error(file: &Path, error: &std::io::Error) -> Value {
+    let kind = match error.kind() {
+        std::io::ErrorKind::NotFound => "notFound",
+        std::io::ErrorKind::PermissionDenied => "permissionDenied",
+        _ => "readFailed",
+    };
+    json!({
+        "error": {
+            "kind": kind,
+            "file": file.to_string_lossy(),
+            "message": error.to_string(),
+        }
+    })
 }
 
 fn usage_of(u: &Value) -> Value {
-    json!({
+    let mut usage = json!({
         "inputTokens": u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "outputTokens": u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheRead": u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheCreation": u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-    })
+    });
+    let object = usage.as_object_mut().unwrap();
+    // Qoder supplies billing/context facts alongside its zeroed token counters. Keep them on the
+    // per-turn usage object without adding empty fields to ordinary Claude Code messages.
+    for (source, target) in [
+        ("credits", "credits"),
+        ("original_credits", "originalCredits"),
+        ("context_usage_ratio", "contextUsageRatio"),
+    ] {
+        if let Some(value) = u.get(source).filter(|value| value.is_number()) {
+            object.insert(target.to_string(), value.clone());
+        }
+    }
+    usage
 }
 
 fn content_text(content: &Value) -> String {
@@ -199,13 +273,14 @@ pub(crate) fn foreign_kind(file: &Path) -> Option<Foreign> {
 }
 
 /// Cached soft-delete verdict for one file: a Claude session's flag (rides its first line, so it's
-/// final for a given mtime), or "this belongs to another CLI" (Codex rollout / foreign source,
-/// whose flag lives in a sidecar and can flip WITHOUT touching the file — so only the format
-/// verdict is cached, never the flag).
+/// final for a given mtime), or "this belongs to another CLI" (Codex rollout / Qoder session /
+/// foreign source, whose flag lives in a sidecar and can flip WITHOUT touching the file — so only
+/// the format verdict is cached, never the flag).
 #[derive(Clone, Copy)]
 enum DelKind {
     Claude(bool),
     Codex,
+    Qoder,
     Foreign(Foreign),
 }
 
@@ -229,9 +304,12 @@ fn is_session_deleted(file: &Path) -> bool {
         .ok()
         .and_then(|c| c.get(file).filter(|(cmt, _)| *cmt == mt).map(|(_, k)| *k));
     let kind = cached.unwrap_or_else(|| {
-        // Foreign sources are recognized by path shape alone — no read needed.
+        // Foreign sources are recognized by path shape alone — no read needed. Qoder is
+        // Claude-FORMAT but another tool's file, so its flag lives in the sidecar too.
         let kind = if let Some(fk) = foreign_kind(file) {
             DelKind::Foreign(fk)
+        } else if crate::qoder::looks_qoder_path(file) {
+            DelKind::Qoder
         } else {
             // Read the same window session_meta uses: a Codex rollout's first (session_meta) line
             // embeds the full system prompt (~22 KB), so a smaller head truncates it, parse yields
@@ -253,6 +331,7 @@ fn is_session_deleted(file: &Path) -> bool {
     match kind {
         DelKind::Claude(del) => del,
         DelKind::Codex => crate::codex::is_deleted(file),
+        DelKind::Qoder => crate::qoder::is_deleted(file),
         DelKind::Foreign(Foreign::Grok) => crate::grok::is_deleted(file),
         DelKind::Foreign(Foreign::Copilot) => crate::copilot::is_deleted(file),
         DelKind::Foreign(Foreign::Antigravity) => crate::antigravity::is_deleted(file),
@@ -301,6 +380,14 @@ pub struct Norm {
     pub last_ts: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub forked_from_id: Option<String>,
+    pub is_subagent: bool,
+    pub agent_path: Option<String>,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub agent_depth: Option<i64>,
     pub git_branch: Option<String>,
     pub version: Option<String>,
 }
@@ -315,6 +402,14 @@ impl Default for Norm {
             last_ts: None,
             cwd: None,
             session_id: None,
+            thread_id: None,
+            parent_thread_id: None,
+            forked_from_id: None,
+            is_subagent: false,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+            agent_depth: None,
             git_branch: None,
             version: None,
         }
@@ -331,6 +426,8 @@ pub(crate) fn image_block(url: &str) -> Option<Value> {
 fn shape_messages(recs: &[Value]) -> Shaped {
     let mut messages = vec![];
     let (mut tin, mut tout, mut tcr, mut tcc, mut turns) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut credits = 0.0f64;
+    let mut has_credits = false;
     let mut model: Option<String> = None;
     let mut first_ts: Option<String> = None;
     let mut last_ts: Option<String> = None;
@@ -369,6 +466,10 @@ fn shape_messages(recs: &[Value]) -> Shaped {
                 tout += u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0);
                 tcr += u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0);
                 tcc += u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0);
+                if let Some(value) = u.get("credits").and_then(|v| v.as_f64()) {
+                    credits += value;
+                    has_credits = true;
+                }
                 turns += 1;
             }
             if let Some(sr) = lm.get("_stopReason").and_then(|v| v.as_str()) {
@@ -377,9 +478,19 @@ fn shape_messages(recs: &[Value]) -> Shaped {
         }
         messages.push(msg);
     }
+    let mut totals = json!({ "in": tin, "out": tout, "cacheRead": tcr, "cacheCreation": tcc, "turns": turns });
+    if has_credits {
+        let totals = totals.as_object_mut().unwrap();
+        totals.insert("credits".into(), json!(credits));
+        // Qoder's source log may omit usable token accounting while still providing real credits.
+        // Flag that state so the UI does not misrepresent unavailable token counts as zero usage.
+        if tin == 0 && tout == 0 && tcr == 0 && tcc == 0 {
+            totals.insert("tokenUsageAvailable".into(), json!(false));
+        }
+    }
     Shaped {
         messages,
-        totals: json!({ "in": tin, "out": tout, "cacheRead": tcr, "cacheCreation": tcc, "turns": turns }),
+        totals,
         model,
         first_ts,
         last_ts,
@@ -434,10 +545,10 @@ fn all_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
     dirs
 }
 /// A sibling data tree next to a dir entry's `projects/`. Every configured dir is probed for
-/// EVERY layout (Claude Code writes `<dir>/projects/…`, Codex and Grok `<dir>/sessions/…`,
-/// Copilot `<dir>/session-state/…`, Antigravity `<dir>/conversations/*.db`), so `~/.codex`,
-/// `~/.grok`, `~/.copilot`, `~/.gemini/antigravity-cli` are just configured dirs rather than
-/// special cases.
+/// EVERY layout (Claude Code AND Qoder write `<dir>/projects/…`, Codex and Grok
+/// `<dir>/sessions/…`, Copilot `<dir>/session-state/…`, Antigravity `<dir>/conversations/*.db`),
+/// so `~/.codex`, `~/.grok`, `~/.copilot`, `~/.gemini/antigravity-cli`, `~/.qoder` are just
+/// configured dirs rather than special cases.
 fn sibling_dir(projects_dir: &Path, name: &str) -> Option<PathBuf> {
     projects_dir.parent().map(|b| b.join(name))
 }
@@ -543,8 +654,20 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         }
     }
     let built = build_session_meta(file, dir_name, dir_id, dir_label)?;
-    if let Ok(mut cache) = meta_cache().lock() {
-        cache.insert(file.to_path_buf(), (mt, size, built.clone()));
+    // A permission failure is recoverable without changing the transcript's mtime/size (for
+    // example after the user grants macOS App Data access) — never memoize that placeholder row,
+    // otherwise it would stay "(conversation)" until the process restarts. Every OTHER read
+    // error is memoized like a normal row: the mtime/size key already invalidates it when the
+    // file changes, and skipping the memo would re-read a broken transcript on every refresh.
+    let awaiting_grant = built
+        .get("readError")
+        .and_then(|e| e.get("kind"))
+        .and_then(|k| k.as_str())
+        == Some("permissionDenied");
+    if !awaiting_grant {
+        if let Ok(mut cache) = meta_cache().lock() {
+            cache.insert(file.to_path_buf(), (mt, size, built.clone()));
+        }
     }
     Some(built)
 }
@@ -563,21 +686,62 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
     }
     let meta = fs::metadata(file).ok()?;
     let size = meta.len();
-    let head = read_head(file, 131072);
-    let recs = parse_lines(&head);
+    let qoder = crate::qoder::looks_qoder_path(file);
+    // Qoder stores title/workspace/runtime records throughout the transcript, and its first JSON
+    // line can itself exceed the ordinary 128 KiB list window. Read the full file once (the row
+    // cache makes this a one-time cost per mtime/size); other formats retain the bounded head.
+    let raw = if qoder {
+        crate::qoder::read_text(file)
+    } else {
+        read_head_result(file, 131072)
+    };
+    let (parsed_recs, read_error) = match raw {
+        Ok(raw) => (parse_lines(&raw), Value::Null),
+        Err(error) => (
+            vec![],
+            session_read_error(file, &error)
+                .get("error")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+    };
+    let qoder_title = if qoder {
+        crate::qoder::session_title_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_cwd = if qoder {
+        crate::qoder::working_dir_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_model = if qoder {
+        crate::qoder::model_from(&parsed_recs)
+    } else {
+        None
+    };
+    let recs = if qoder {
+        crate::qoder::normalize_records(&parsed_recs)
+    } else {
+        parsed_recs
+    };
     // Codex rollouts (a dir's sessions/ tree, or snapshots imported into the app store) list
     // through the codex shaper — the record format shares nothing with Claude's.
     if crate::codex::looks_codex(&recs) {
         return crate::codex::session_meta_from(file, &recs, dir_id, dir_label);
     }
+    // Qoder sessions use Claude-like user/assistant envelopes plus inline title/workspace/runtime
+    // records and atomic assistant content wrappers. normalize_records makes the message stream
+    // Claude-shaped; Qoder-specific metadata remains app-sidecar + inline JSONL data.
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
         .or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let agent_rec = recs.iter().find(|r| r.get("agentId").is_some());
     let msgs: Vec<Value> = recs.iter().filter_map(line_to_message).collect();
-    let (cc_title, cc_tags, cc_deleted) = read_ccbud(&recs);
-    let auto_title = first_user_text(&msgs);
+    let (cc_title, cc_tags, cc_deleted) =
+        if qoder { crate::qoder::sidecar_meta(file) } else { read_ccbud(&recs) };
+    let auto_title = qoder_title.unwrap_or_else(|| first_user_text(&msgs));
     let mut model: Option<String> = None;
     for r in &recs {
         if r.get("type").and_then(|v| v.as_str()) == Some("assistant") {
@@ -586,18 +750,26 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
             }
         }
     }
+    if qoder_model.is_some() {
+        model = qoder_model;
+    }
     let subagent = agent_rec.is_some();
-    let cwd = meta_rec
+    let top_level_cwd = meta_rec
         .and_then(|r| r.get("cwd"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| decode_dir_name(dir_name));
+        .map(|s| s.to_string());
+    let cwd = (if qoder {
+        qoder_cwd.or(top_level_cwd)
+    } else {
+        top_level_cwd
+    })
+    .or_else(|| decode_dir_name(dir_name));
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let mt = mtime_ms(file);
     Some(json!({
-        "id": format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }),
+        "id": if qoder { format!("qoder:{}", stem) } else { format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }) },
         "file": file.to_string_lossy(),
-        "source": "disk",
+        "source": if qoder { "qoder" } else { "disk" },
         "dirId": dir_id,
         "dirLabel": dir_label,
         "sessionId": meta_rec.and_then(|r| r.get("sessionId")).and_then(|v| v.as_str()).unwrap_or(&stem),
@@ -611,41 +783,241 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
         "isSubagent": subagent,
         "imported": dir_id == "__imported__",
         "deleted": cc_deleted,
+        "readError": read_error,
         "createdAt": record_created_ms(&recs, file),
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
     }))
 }
 
+fn canonical_codex_key(session: &Value) -> Option<String> {
+    if session.get("source").and_then(Value::as_str) != Some("codex") {
+        return None;
+    }
+    if session.get("canonicalThreadIdValid").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let thread_id = session.get("threadId").and_then(Value::as_str)?;
+    let dir_id = session.get("dirId").and_then(Value::as_str).unwrap_or("");
+    Some(format!("{dir_id}\0{thread_id}"))
+}
+
+fn codex_canonical_filename(session: &Value) -> bool {
+    let Some(thread_id) = session.get("threadId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(file) = session.get("file").and_then(Value::as_str) else {
+        return false;
+    };
+    let stem = Path::new(file).file_stem().and_then(|value| value.to_str()).unwrap_or("");
+    stem == thread_id || stem.strip_suffix(thread_id).is_some_and(|prefix| prefix.ends_with('-'))
+}
+
+fn codex_candidate_preferred(candidate: &Value, current: &Value) -> bool {
+    let candidate_file = candidate.get("file").and_then(Value::as_str).unwrap_or("");
+    let current_file = current.get("file").and_then(Value::as_str).unwrap_or("");
+    let thread_id = candidate
+        .get("threadId")
+        .and_then(Value::as_str)
+        .or_else(|| current.get("threadId").and_then(Value::as_str))
+        .unwrap_or("");
+
+    // Codex's completed state DB is authoritative when its rollout_path still exists. Both
+    // candidates already passed ccbud's first-SessionMeta parse, so a matching path also verifies
+    // that the DB row belongs to this canonical id.
+    let preferred_path = [candidate_file, current_file]
+        .into_iter()
+        .filter(|file| !file.is_empty())
+        .find_map(|file| crate::codex::preferred_rollout_path(Path::new(file), thread_id));
+    if let Some(preferred) = preferred_path {
+        let candidate_matches = Path::new(candidate_file) == preferred.as_path();
+        let current_matches = Path::new(current_file) == preferred.as_path();
+        if candidate_matches != current_matches {
+            return candidate_matches;
+        }
+    }
+
+    let imported = |value: &Value| value.get("imported").and_then(Value::as_bool).unwrap_or(false);
+    if imported(candidate) != imported(current) {
+        return !imported(candidate);
+    }
+    let archived = |file: &str| {
+        Path::new(file)
+            .components()
+            .any(|part| part.as_os_str().to_str() == Some("archived_sessions"))
+    };
+    if archived(candidate_file) != archived(current_file) {
+        return !archived(candidate_file);
+    }
+    let number = |value: &Value, field: &str| value.get(field).and_then(Value::as_f64).unwrap_or(0.0);
+    for field in ["lastActivity", "createdAt"] {
+        let candidate_value = number(candidate, field);
+        let current_value = number(current, field);
+        if candidate_value != current_value {
+            return candidate_value > current_value;
+        }
+    }
+    if codex_canonical_filename(candidate) != codex_canonical_filename(current) {
+        return codex_canonical_filename(candidate);
+    }
+    let candidate_size = number(candidate, "sizeKB");
+    let current_size = number(current, "sizeKB");
+    if candidate_size != current_size {
+        return candidate_size > current_size;
+    }
+    candidate_file > current_file
+}
+
+fn dedupe_canonical_codex_sessions(sessions: Vec<Value>) -> Vec<Value> {
+    let mut out = Vec::with_capacity(sessions.len());
+    let mut positions = std::collections::HashMap::<String, usize>::new();
+    for session in sessions {
+        let Some(key) = canonical_codex_key(&session) else {
+            out.push(session);
+            continue;
+        };
+        if let Some(index) = positions.get(&key).copied() {
+            if codex_candidate_preferred(&session, &out[index]) {
+                out[index] = session;
+            }
+        } else {
+            positions.insert(key, out.len());
+            out.push(session);
+        }
+    }
+    out
+}
+
+fn limit_with_codex_ancestors(sessions: Vec<Value>, limit: usize) -> Vec<Value> {
+    if sessions.len() <= limit {
+        return sessions;
+    }
+    let mut positions = std::collections::HashMap::<String, usize>::new();
+    for (index, session) in sessions.iter().enumerate() {
+        if let Some(key) = canonical_codex_key(session) {
+            positions.insert(key, index);
+        }
+    }
+    let mut included: std::collections::HashSet<usize> = (0..limit).collect();
+    let mut queue: Vec<usize> = (0..limit).collect();
+    let mut cursor = 0usize;
+    while cursor < queue.len() {
+        let index = queue[cursor];
+        cursor += 1;
+        let session = &sessions[index];
+        if canonical_codex_key(session).is_none() {
+            continue;
+        }
+        let dir_id = session.get("dirId").and_then(Value::as_str).unwrap_or("");
+        let direct_parent = session.get("parentThreadId").and_then(Value::as_str);
+        let root_parent = session
+            .get("isSubagent")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then(|| session.get("rootSessionId").and_then(Value::as_str))
+            .flatten();
+        let parent_index = [direct_parent, root_parent]
+            .into_iter()
+            .flatten()
+            .find_map(|parent_id| positions.get(&format!("{dir_id}\0{parent_id}")).copied());
+        let Some(parent_index) = parent_index else {
+            continue;
+        };
+        if included.insert(parent_index) {
+            queue.push(parent_index);
+        }
+    }
+    sessions
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, session)| included.contains(&index).then_some(session))
+        .collect()
+}
+
 pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
     // The recycle bin spans every dir and shows only soft-deleted sessions; every other view
     // is scoped to its dir and hides them.
     let trash = active == TRASH_ID;
-    // Read (memoized) metas for EVERY candidate, then select + order on the content-derived
-    // createdAt — both the sort AND the limit cut key on the session's own first-record time,
-    // so a title/tag rewrite (which resets fs times) can neither reshuffle nor evict a row.
-    // The meta cache turns the full walk into stats for unchanged files.
+    // Read (memoized) metas for EVERY candidate, then dedupe/order before the limit cut. Most
+    // formats use content-derived CreatedAt so title/tag rewrites cannot reshuffle rows; Codex
+    // uses rollout UpdatedAt because its custom metadata is sidecar-only and Codex defines latest
+    // that way. The meta cache turns the full walk into stats for unchanged files.
     let mut live: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    let mut out: Vec<Value> = Vec::new();
+    let mut candidates: Vec<(PathBuf, String, String, String)> = Vec::new();
     each_session_file(config, |file, dir_name, id, label| {
         live.insert(file.clone());
         if !trash && active != "all" && id != active {
             return;
         }
-        if let Some(m) = session_meta(&file, &dir_name, id, label) {
-            if m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) == trash {
-                out.push(m);
-            }
-        }
+        candidates.push((file, dir_name, id.to_string(), label.to_string()));
     });
+    // Warm the qoder helper cache in ONE batch before the per-row reads — on a macOS install with
+    // protected app data, every stale row would otherwise spawn its own helper process.
+    let qoder_files: Vec<PathBuf> = candidates
+        .iter()
+        .map(|(file, _, _, _)| file.clone())
+        .filter(|file| crate::qoder::looks_qoder_path(file))
+        .collect();
+    crate::qoder::prefetch(&qoder_files);
+    let mut out: Vec<Value> = Vec::new();
+    for (file, dir_name, id, label) in &candidates {
+        if let Some(m) = session_meta(file, dir_name, id, label) {
+            out.push(m);
+        }
+    }
     // Drop memo entries for files that no longer exist, so removed dirs don't pin stale rows.
     if let Ok(mut cache) = meta_cache().lock() {
         cache.retain(|k, _| live.contains(k));
     }
-    let key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
-    out.sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal));
-    out.truncate(limit);
-    out
+    // Collapse only true physical duplicates (same dir + canonical thread id) BEFORE limit.
+    // Threads that merely share rootSessionId are distinct root/subagent nodes and remain intact.
+    let mut out = dedupe_canonical_codex_sessions(out);
+    // Apply recycle-bin visibility to the selected logical representative, not to each physical
+    // candidate. Otherwise deleting the authoritative copy could make a stale duplicate reappear
+    // in the normal list while the same logical thread also sits in the recycle bin.
+    out.retain(|session| {
+        session.get("deleted").and_then(Value::as_bool).unwrap_or(false) == trash
+    });
+    let key = |v: &Value| {
+        // Codex defines "latest" as UpdatedAt (rollout mtime); its title/tags live in a sidecar,
+        // so this timestamp is not dirtied by ccbud edits. Keep the stable CreatedAt policy for
+        // formats whose transcript itself is rewritten when metadata changes.
+        let field = if v.get("source").and_then(Value::as_str) == Some("codex") {
+            "lastActivity"
+        } else {
+            "createdAt"
+        };
+        v.get(field).and_then(Value::as_f64).unwrap_or(0.0)
+    };
+    out.sort_by(|a, b| {
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let updated = |value: &Value| {
+                    value.get("lastActivity").and_then(Value::as_f64).unwrap_or(0.0)
+                };
+                updated(b)
+                    .partial_cmp(&updated(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                let a_id = a
+                    .get("threadId")
+                    .or_else(|| a.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let b_id = b
+                    .get("threadId")
+                    .or_else(|| b.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                b_id.cmp(a_id)
+            })
+    });
+    // Soft-cap Codex trees: include the parent/root chain of every selected child so a busy tree
+    // cannot show orphan subagents merely because its older root fell just below the limit.
+    limit_with_codex_ancestors(out, limit)
 }
 
 pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
@@ -656,9 +1028,10 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
         let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("(unknown)").to_string();
         let la = s.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let ct = s.get("createdAt").and_then(|v| v.as_f64()).unwrap_or(la);
+        let sk = if s.get("source").and_then(Value::as_str) == Some("codex") { la } else { ct };
         let g = groups.entry(cwd.clone()).or_insert_with(|| {
             order.push(cwd.clone());
-            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0, "createdAt": 0.0 })
+            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0, "createdAt": 0.0, "sortActivity": 0.0 })
         });
         g["sessions"].as_array_mut().unwrap().push(s.clone());
         if la > g["lastActivity"].as_f64().unwrap_or(0.0) {
@@ -667,31 +1040,50 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
         if ct > g["createdAt"].as_f64().unwrap_or(0.0) {
             g["createdAt"] = json!(ct);
         }
+        if sk > g["sortActivity"].as_f64().unwrap_or(0.0) {
+            g["sortActivity"] = json!(sk);
+        }
     }
-    // Sort sessions + groups by creation time (stable across tag/title edits), newest first.
-    let sort_key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    // Codex's latest semantic is rollout UpdatedAt; other formats retain CreatedAt so in-file
+    // title/tag edits cannot reorder them. Apply the same source-aware rule to rows and projects.
+    let sort_key = |v: &Value| {
+        let field = if v.get("source").and_then(Value::as_str) == Some("codex") {
+            "lastActivity"
+        } else {
+            "createdAt"
+        };
+        v.get(field).and_then(Value::as_f64).unwrap_or(0.0)
+    };
     let mut arr: Vec<Value> = order.into_iter().filter_map(|k| groups.remove(&k)).collect();
     for g in &mut arr {
         g["sessions"].as_array_mut().unwrap().sort_by(|a, b| {
             sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-    arr.sort_by(|a, b| sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
+    arr.sort_by(|a, b| {
+        let key = |value: &Value| {
+            value.get("sortActivity").and_then(Value::as_f64).unwrap_or(0.0)
+        };
+        key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for group in &mut arr {
+        if let Some(object) = group.as_object_mut() {
+            object.remove("sortActivity");
+        }
+    }
     arr
 }
 
 pub fn dir_stats(config: &Value) -> Vec<Value> {
     // Per-dir counts exclude soft-deleted sessions (they're hidden from those views); the deleted
-    // ones are tallied separately into the synthetic recycle-bin bucket.
+    // ones are tallied separately into the synthetic recycle-bin bucket. Reuse list_sessions so
+    // counts reflect canonical logical rows rather than duplicate physical rollout files.
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    let mut trash = 0i64;
-    each_session_file(config, |file, _dn, id, _label| {
-        if is_session_deleted(&file) {
-            trash += 1;
-        } else {
-            *counts.entry(id.to_string()).or_insert(0) += 1;
-        }
-    });
+    for session in list_sessions(config, "all", usize::MAX) {
+        let id = session.get("dirId").and_then(Value::as_str).unwrap_or("");
+        *counts.entry(id.to_string()).or_insert(0) += 1;
+    }
+    let trash = list_sessions(config, TRASH_ID, usize::MAX).len() as i64;
     let mut out: Vec<Value> = all_dirs(config)
         .into_iter()
         .map(|(id, label, pd)| {
@@ -784,6 +1176,7 @@ pub(crate) fn apply_skill_names(main_messages: &[Value], subs: &mut serde_json::
 /// keyed by the spawning tool_use id so the renderer can nest them. {} when none. (history.js readSubagents)
 fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
     let p = Path::new(file);
+    let qoder = crate::qoder::looks_qoder_path(p);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let dir = match p.parent() {
         Some(d) => d.join(stem).join("subagents"),
@@ -794,24 +1187,49 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
         Ok(e) => e,
         Err(_) => return by_tool,
     };
+    let mut agent_files: Vec<(String, PathBuf)> = vec![];
     for ent in entries.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
-        if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
-            continue;
+        if name.starts_with("agent-") && name.ends_with(".jsonl") {
+            agent_files.push((name, ent.path()));
         }
+    }
+    // A protected qoder session's subagent transcripts + meta sidecars warm in one helper batch
+    // instead of two spawns per agent.
+    if qoder {
+        let mut warm: Vec<PathBuf> = vec![];
+        for (name, path) in &agent_files {
+            warm.push(path.clone());
+            let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl");
+            warm.push(dir.join(format!("agent-{}.meta.json", agent_id)));
+        }
+        crate::qoder::prefetch(&warm);
+    }
+    for (name, transcript_path) in agent_files {
         let agent_id = name
             .trim_start_matches("agent-")
             .trim_end_matches(".jsonl")
             .to_string();
-        let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+        let meta_path = dir.join(format!("agent-{}.meta.json", agent_id));
+        let meta_raw = if qoder {
+            crate::qoder::read_text(&meta_path)
+        } else {
+            fs::read_to_string(&meta_path)
+        };
+        let meta: Value = meta_raw
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| json!({}));
-        let raw = match fs::read_to_string(ent.path()) {
+        let raw = match read_session_text(&transcript_path) {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let recs = parse_lines(&raw);
+        let parsed = parse_lines(&raw);
+        let recs = if qoder {
+            crate::qoder::normalize_records(&parsed)
+        } else {
+            parsed
+        };
         let shaped = shape_messages(&recs);
         let key = meta
             .get("toolUseId")
@@ -827,7 +1245,7 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
             key,
             json!({
                 "agentId": agent_id,
-                "file": ent.path().to_string_lossy(),
+                "file": transcript_path.to_string_lossy(),
                 "type": agent_type,
                 "description": meta.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 "skill": skill_from_recs(&recs),
@@ -853,6 +1271,7 @@ fn read_subagent_files(file: &Path) -> Vec<(String, Vec<u8>)> {
         Some(d) => d,
         None => return vec![],
     };
+    let qoder = crate::qoder::looks_qoder_path(file);
     let mut out = vec![];
     if let Ok(entries) = fs::read_dir(&dir) {
         for ent in entries.flatten() {
@@ -863,7 +1282,12 @@ fn read_subagent_files(file: &Path) -> Vec<(String, Vec<u8>)> {
             let name = ent.file_name().to_string_lossy().into_owned();
             let lower = name.to_lowercase();
             if lower.starts_with("agent-") && (lower.ends_with(".jsonl") || lower.ends_with(".meta.json")) {
-                if let Ok(bytes) = fs::read(&p) {
+                let bytes = if qoder {
+                    crate::qoder::read_bytes(&p)
+                } else {
+                    fs::read(&p)
+                };
+                if let Ok(bytes) = bytes {
                     out.push((name, bytes));
                 }
             }
@@ -883,7 +1307,7 @@ pub fn session_has_subagents(file: &str) -> bool {
 /// (a plain .jsonl export otherwise). Round-trips through import_zip / splitBundle.
 pub fn export_bundle(file: &str) -> std::io::Result<Vec<u8>> {
     let path = Path::new(file);
-    let main = fs::read(path)?;
+    let main = read_session_bytes(path)?;
     let main_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -933,14 +1357,15 @@ pub(crate) fn read_import_meta(file: &str) -> Option<Value> {
 
 pub fn get_session(file: &str) -> Value {
     let path = Path::new(file);
+    let qoder = crate::qoder::looks_qoder_path(path);
     // Foreign sources route by container shape BEFORE the text read — Antigravity sessions are
     // SQLite, and grok/copilot jsonl would otherwise fall through to the Claude shaper.
     match foreign_kind(path) {
         Some(Foreign::Antigravity) => return crate::antigravity::session_from(file),
         Some(fk) => {
-            let raw = match fs::read_to_string(path) {
+            let raw = match read_session_text(path) {
                 Ok(s) => s,
-                Err(_) => return Value::Null,
+                Err(error) => return session_read_error(path, &error),
             };
             let recs = parse_lines(&raw);
             return match fk {
@@ -950,14 +1375,34 @@ pub fn get_session(file: &str) -> Value {
         }
         None => {}
     }
-    let raw = match fs::read_to_string(path) {
+    let raw = match read_session_text(path) {
         Ok(s) => s,
-        Err(_) => return Value::Null,
+        Err(error) => return session_read_error(path, &error),
     };
-    let recs = parse_lines(&raw);
-    if crate::codex::looks_codex(&recs) {
-        return crate::codex::session_from_recs(file, &recs);
+    let parsed_recs = parse_lines(&raw);
+    if crate::codex::looks_codex(&parsed_recs) {
+        return crate::codex::session_from_recs(file, &parsed_recs);
     }
+    let qoder_title = if qoder {
+        crate::qoder::session_title_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_cwd = if qoder {
+        crate::qoder::working_dir_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_model = if qoder {
+        crate::qoder::model_from(&parsed_recs)
+    } else {
+        None
+    };
+    let recs = if qoder {
+        crate::qoder::normalize_records(&parsed_recs)
+    } else {
+        parsed_recs
+    };
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
@@ -971,11 +1416,22 @@ pub fn get_session(file: &str) -> Value {
         .iter()
         .find(|r| r.get("type").and_then(|v| v.as_str()) == Some("summary") && r.get("summary").is_some())
         .and_then(|r| r.get("summary").cloned());
-    let (cc_title, cc_tags, cc_deleted) = read_ccbud(&recs);
+    // Qoder detail mirrors build_session_meta: normalized atomic wrappers, inline metadata, and
+    // app-owned title/tags/delete overrides without rewriting another CLI's transcript.
+    let (cc_title, cc_tags, cc_deleted) =
+        if qoder { crate::qoder::sidecar_meta(path) } else { read_ccbud(&recs) };
     let shaped = shape_messages(&recs);
-    let auto_title = first_user_text(&shaped.messages);
+    let auto_title = qoder_title.unwrap_or_else(|| first_user_text(&shaped.messages));
     let subagent = agent_rec.is_some();
-    let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let top_level_cwd = meta_rec
+        .and_then(|r| r.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let cwd = if qoder {
+        qoder_cwd.or(top_level_cwd)
+    } else {
+        top_level_cwd
+    };
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let base_id = meta_rec
         .and_then(|r| r.get("sessionId"))
@@ -989,13 +1445,16 @@ pub fn get_session(file: &str) -> Value {
     };
     let mut subs = if subagent { serde_json::Map::new() } else { read_subagents(file) };
     apply_skill_names(&shaped.messages, &mut subs);
-    let import_meta = read_import_meta(file);
+    // Live Qoder files are never imported snapshots; avoid probing a protected sibling sidecar.
+    let import_meta = if qoder { None } else { read_import_meta(file) };
 
     json!({
         "meta": {
-            "id": format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }),
+            "id": if qoder { format!("qoder:{}", stem) } else { format!("disk:{}{}", stem, if subagent { ":sub" } else { "" }) },
             "file": file,
-            "source": "disk",
+            "source": if qoder { "qoder" } else { "disk" },
+            // Renderer falls back to Claude when null (the app's home turf carries no label).
+            "assistant": if qoder { json!("Qoder") } else { Value::Null },
             "title": cc_title.clone().unwrap_or_else(|| auto_title.clone()),
             "autoTitle": auto_title,
             "tags": cc_tags,
@@ -1012,7 +1471,7 @@ pub fn get_session(file: &str) -> Value {
             "imported": import_meta.is_some(),
             "importedFrom": import_meta.as_ref().and_then(|m| m.get("originalPath")).cloned().unwrap_or(Value::Null),
             "importedAt": import_meta.as_ref().and_then(|m| m.get("importedAt")).cloned().unwrap_or(Value::Null),
-            "model": shaped.model,
+            "model": qoder_model.or(shaped.model),
             "totals": shaped.totals,
             "messages": shaped.messages.len(),
             "subagentCount": subs.len(),
@@ -1077,17 +1536,141 @@ fn icount(hay: &str, needle: &str) -> usize {
     c
 }
 
-/// Strip harness-injected blocks from user prose — mirrors the renderer's stripInjected, so what
+/// Mirror of the renderer's formatCodexBootstrap (conversations.js / runtime.js): Codex records
+/// its initial AGENTS.md instructions + environment snapshot as one XML-ish user text block, and
+/// the panel renders it as compact Markdown — search must index that same Markdown, not the raw
+/// transport shape. None = not a bootstrap message (ordinary prose passes through untouched).
+fn format_codex_bootstrap(source: &str) -> Option<String> {
+    static AGENTS_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static ENV_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static ROOT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let agents_re = AGENTS_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?is)^\s*#\s+AGENTS\.md instructions for ([^\r\n]+).*?<INSTRUCTIONS\b[^>]*>(.*?)</INSTRUCTIONS>",
+        )
+        .unwrap()
+    });
+    let env_re = ENV_RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<environment_context\b[^>]*>(.*?)</environment_context>").unwrap()
+    });
+    let root_re =
+        ROOT_RE.get_or_init(|| regex::Regex::new(r"(?is)<root\b[^>]*>(.*?)</root>").unwrap());
+    let agents = agents_re.captures(source)?;
+
+    // Dynamic per-name regexes are fine here: at most one bootstrap message exists per session.
+    let tag = |block: &str, name: &str| -> String {
+        regex::Regex::new(&format!(r"(?is)<{name}\b[^>]*>(.*?)</{name}>"))
+            .ok()
+            .and_then(|re| re.captures(block).and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string())))
+            .unwrap_or_default()
+    };
+    let attr = |block: &str, name: &str, attribute: &str| -> String {
+        regex::Regex::new(&format!(r#"(?i)<{name}\b[^>]*\b{attribute}=["']([^"']+)["']"#))
+            .ok()
+            .and_then(|re| re.captures(block).and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string())))
+            .unwrap_or_default()
+    };
+    let code = |value: &str| -> String {
+        if value.is_empty() { String::new() } else { format!("`{}`", value) }
+    };
+
+    let mut parts: Vec<String> =
+        vec![format!("# AGENTS.md instructions for {}", agents.get(1).map(|m| m.as_str().trim()).unwrap_or(""))];
+    let instructions = agents.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+    if !instructions.is_empty() {
+        let lines: Vec<&str> = instructions.lines().filter(|line| !line.trim().is_empty()).collect();
+        parts.push(if lines.len() == 1 {
+            format!("**INSTRUCTIONS:** {}", lines[0].trim())
+        } else {
+            format!("**INSTRUCTIONS:**\n\n{}", instructions)
+        });
+    }
+
+    let env = env_re.captures(source);
+    if let Some(env) = &env {
+        let block = env.get(1).map(|m| m.as_str()).unwrap_or("");
+        let roots: Vec<String> = root_re
+            .captures_iter(block)
+            .filter_map(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
+            .filter(|r| !r.is_empty())
+            .map(|r| code(&r))
+            .collect();
+        let fields: Vec<(&str, String)> = vec![
+            ("environment_context", code(&tag(block, "cwd"))),
+            ("shell", tag(block, "shell")),
+            ("current_date", tag(block, "current_date")),
+            ("timezone", tag(block, "timezone")),
+            ("workspace_roots", roots.join(", ")),
+            ("permission_profile", attr(block, "permission_profile", "type")),
+            ("file_system", attr(block, "file_system", "type")),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .collect();
+        if !fields.is_empty() {
+            parts.push(
+                fields
+                    .iter()
+                    .map(|(name, value)| format!("**{}:** {}", name, value))
+                    .collect::<Vec<_>>()
+                    .join("  \n"),
+            );
+        }
+    }
+
+    let mut rest = source.replacen(agents.get(0).map(|m| m.as_str()).unwrap_or(""), "", 1);
+    if let Some(env) = &env {
+        rest = rest.replacen(env.get(0).map(|m| m.as_str()).unwrap_or(""), "", 1);
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() {
+        parts.push(rest.to_string());
+    }
+    Some(parts.join("\n\n").trim().to_string())
+}
+
+/// Strip harness-injected blocks from user prose — MUST stay rule-for-rule in sync with the
+/// renderer's stripInjected (conversations.js) and the export viewer's copy (runtime.js), so what
 /// the big search matches is exactly what the in-conversation search (and the panel) will show.
+/// The Codex AGENTS bootstrap reformats to the same Markdown the panel renders; task-notification
+/// envelopes keep their human-facing <result> body; the transport metadata (ids, status, summary)
+/// is dropped and must therefore never be searchable.
 fn strip_injected(s: &str) -> String {
+    static SKILL_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static TASK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RESULT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // Same rule order as the JS: the Codex AGENTS bootstrap is reformatted FIRST, then the
+    // envelope rules run over the (possibly rewritten) text.
+    let bootstrap = format_codex_bootstrap(s);
+    let s: &str = bootstrap.as_deref().unwrap_or(s);
+    // A turn that is nothing but a <skill> envelope is Codex's recorded skill-instruction
+    // injection — runtime context the panel suppresses wholesale, so search must too. Prose that
+    // merely quotes <skill> markup alongside other text stays searchable.
+    let skill_re = SKILL_RE
+        .get_or_init(|| regex::Regex::new(r"(?is)^\s*<skill\b[^>]*>.*</skill>\s*$").unwrap());
+    if skill_re.is_match(s) {
+        return String::new();
+    }
+    let task_re = TASK_RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<task-notification\b[^>]*>.*?</task-notification>").unwrap()
+    });
+    let result_re =
+        RESULT_RE.get_or_init(|| regex::Regex::new(r"(?is)<result\b[^>]*>(.*?)</result>").unwrap());
     let re = RE.get_or_init(|| {
         regex::Regex::new(
             r"(?s)<system-reminder>.*?</system-reminder>|<command-[a-z-]+>.*?</command-[a-z-]+>|<local-command-[a-z]+>.*?</local-command-[a-z]+>",
         )
         .unwrap()
     });
-    re.replace_all(s, "").trim().to_string()
+    let unwrapped = task_re.replace_all(s, |caps: &regex::Captures| {
+        result_re
+            .captures(caps.get(0).map(|m| m.as_str()).unwrap_or(""))
+            .and_then(|c| c.get(1))
+            .map(|m| format!("\n{}\n", m.as_str().trim()))
+            .unwrap_or_default()
+    });
+    re.replace_all(&unwrapped, "").trim().to_string()
 }
 
 fn tool_result_search_text(c: &Value) -> String {
@@ -1144,6 +1727,11 @@ fn extract_search_text(messages: &[Value]) -> String {
                     }
                 }
                 "thinking" => push(b.get("thinking").and_then(|v| v.as_str()).unwrap_or("")),
+                "skill_load" => {
+                    push(b.get("name").and_then(Value::as_str).unwrap_or(""));
+                    push(b.get("path").and_then(Value::as_str).unwrap_or(""));
+                    push(b.get("snapshot").and_then(Value::as_str).unwrap_or(""));
+                }
                 "tool_use" => {
                     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let input = b.get("input").map(|i| i.to_string()).unwrap_or_default();
@@ -1192,11 +1780,16 @@ fn thread_scan(path: &Path, q: &str, raw_safe: bool) -> Option<(std::sync::Arc<S
         // cached, so the decode is paid once per file version.
         crate::antigravity::normalize_db(path).messages
     } else {
-        let raw = fs::read_to_string(path).ok()?;
+        let raw = read_session_text(path).ok()?;
         if raw_safe && ifind(&raw, q, 0).is_none() {
             return None;
         }
-        let recs = parse_lines(&raw);
+        let parsed = parse_lines(&raw);
+        let recs = if crate::qoder::looks_qoder_path(path) {
+            crate::qoder::normalize_records(&parsed)
+        } else {
+            parsed
+        };
         match fk {
             Some(Foreign::Grok) => crate::grok::normalize(&recs, None).messages,
             Some(Foreign::Copilot) => crate::copilot::normalize(&recs).messages,
@@ -1268,7 +1861,13 @@ fn scan_session(file: &Path, q: &str, raw_safe: bool) -> Option<Value> {
     for name in names {
         if let Some((text, pos)) = thread_scan(&dir.join(&name), q, raw_safe) {
             let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_string();
-            let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+            let meta_path = dir.join(format!("agent-{}.meta.json", agent_id));
+            let meta_raw = if crate::qoder::looks_qoder_path(file) {
+                crate::qoder::read_text(&meta_path)
+            } else {
+                fs::read_to_string(&meta_path)
+            };
+            let meta: Value = meta_raw
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| json!({}));
@@ -1310,20 +1909,28 @@ pub fn search_sessions(config: &Value, active: &str, query: &str, limit: usize) 
     // Python's json.dumps default) escape it as \uXXXX, which a byte scan would miss; those
     // queries always take the parse+extract path (cached, so paid once per file version).
     let raw_safe = q.bytes().all(|b| b.is_ascii() && b != b'"' && b != b'\\' && b >= 0x20);
-    let mut files: Vec<(PathBuf, f64)> = vec![];
-    each_session_file(config, |file, dir_name, id, label| {
-        if !trash && active != "all" && id != active {
-            return;
-        }
-        // Same content-derived key the list orders by (memoized), so the candidate cap below
-        // keeps exactly the sessions the list can show.
-        let ct = session_meta(&file, &dir_name, id, label)
-            .and_then(|m| m.get("createdAt").and_then(|v| v.as_f64()))
-            .unwrap_or_else(|| created_ms(&file));
-        files.push((file, ct));
-    });
-    files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    files.truncate(600); // the list view's own cap — search what the list can show
+    // Reuse the list's pre-limit canonical-thread dedupe, directory/trash scope, and ordering.
+    // Otherwise duplicate physical rollouts could consume the 600-file search window even though
+    // the sidebar shows only their selected representative.
+    let files: Vec<(PathBuf, f64)> = list_sessions(config, active, 600)
+        .into_iter()
+        .filter_map(|session| {
+            let file = PathBuf::from(session.get("file")?.as_str()?);
+            let created = session
+                .get("createdAt")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| created_ms(&file));
+            Some((file, created))
+        })
+        .collect();
+    // One batch helper call instead of a spawn per protected qoder file inside the worker loop
+    // (repeat scans of unchanged files are then served by the extraction + helper caches).
+    let qoder_files: Vec<PathBuf> = files
+        .iter()
+        .map(|(file, _)| file.clone())
+        .filter(|file| crate::qoder::looks_qoder_path(file))
+        .collect();
+    crate::qoder::prefetch(&qoder_files);
     let hits = std::sync::Mutex::new(Vec::<(f64, Value)>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
@@ -1369,6 +1976,18 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
             Foreign::Copilot => crate::copilot::set_meta(file, patch),
             Foreign::Antigravity => crate::antigravity::set_meta(file, patch),
         };
+        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Ok(mut cache) = meta_cache().lock() {
+                cache.remove(target);
+            }
+        }
+        return r;
+    }
+    // Qoder sessions are Claude-format but another tool's live files: title/tags/delete go to
+    // the shared sidecar (keyed qoder:<uuid>) instead of an in-file rewrite. The sidecar edit
+    // doesn't touch the file (no mtime bump), so the list-meta memo is dropped by hand.
+    if crate::qoder::looks_qoder_path(target) {
+        let r = crate::qoder::set_meta(file, patch);
         if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             if let Ok(mut cache) = meta_cache().lock() {
                 cache.remove(target);
@@ -1495,12 +2114,12 @@ pub fn delete_session_file(file: &str, config: &Value) -> Value {
     if !target.is_file() {
         return json!({ "ok": false, "reason": "missing" });
     }
-    // A LIVE Codex rollout or foreign-CLI session is another tool's file — the app only ever
-    // soft-deletes those via the sidecar and never rewrites them (see set_ccbud), so "delete
-    // forever" must not rm the source either. Imported codex COPIES (marked by an .import.json)
-    // are our own snapshots and stay hard-deletable, like Claude sessions the app manages in
-    // the configured dirs.
-    if foreign_kind(target).is_some() {
+    // A LIVE Codex rollout, Qoder session, or foreign-CLI session is another tool's file — the
+    // app only ever soft-deletes those via the sidecar and never rewrites them (see set_ccbud),
+    // so "delete forever" must not rm the source either. Imported codex COPIES (marked by an
+    // .import.json) are our own snapshots and stay hard-deletable, like Claude sessions the app
+    // manages in the configured dirs.
+    if foreign_kind(target).is_some() || crate::qoder::looks_qoder_path(target) {
         return json!({ "ok": false, "reason": "foreign" });
     }
     let head = parse_lines(&read_head(target, 131072));
@@ -1653,6 +2272,37 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn records_to_jsonl(records: &[Value]) -> String {
+    let mut text = records
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push('\n');
+    text
+}
+
+/// A qoder transcript imported into the app store loses its container path and would otherwise
+/// re-parse as raw Claude records: queued commands vanish, redacted duplicates render, atomic
+/// wrappers stay fragmented, and qoder's own title is lost. Sniffed by CONTENT (import copies and
+/// bundle zips carry no .qoder path), the copy is rewritten up front — normalized records, with
+/// the qoder title carried onto the first line's __ccbud__ so the import keeps its name.
+fn qoder_import_raw(recs: &[Value]) -> Option<(String, Vec<Value>)> {
+    if !crate::qoder::looks_qoder_records(recs) {
+        return None;
+    }
+    let mut normalized = crate::qoder::normalize_records(recs);
+    if let Some(title) = crate::qoder::session_title_from(recs) {
+        if let Some(first) = normalized.iter_mut().find(|r| r.is_object()) {
+            let obj = first.as_object_mut().unwrap();
+            let mut cc = obj.get("__ccbud__").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            cc.entry("title".to_string()).or_insert_with(|| json!(title));
+            obj.insert("__ccbud__".into(), Value::Object(cc));
+        }
+    }
+    Some((records_to_jsonl(&normalized), normalized))
+}
+
 /// Snapshot a transcript (already read into `raw`) plus its subagent sidecars into the import store,
 /// laid out like a native projects/ tree + a provenance sidecar. `subagents`: (filename, bytes) to
 /// drop under `<baseId>/subagents/` — names are basename-reduced and pattern-checked so a crafted
@@ -1661,6 +2311,13 @@ fn now_ms() -> i64 {
 fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents: &[(String, Vec<u8>)]) -> i32 {
     let recs = parse_lines(raw);
     let is_codex = crate::codex::looks_codex(&recs);
+    // Qoder content is rewritten to Claude shape before storing — the has_msg gate below then
+    // sees the materialized queued-command user turns too.
+    let (qoder_text, recs) = match qoder_import_raw(&recs) {
+        Some((text, normalized)) => (Some(text), normalized),
+        None => (None, recs),
+    };
+    let raw = qoder_text.as_deref().unwrap_or(raw);
     let has_msg = recs.iter().any(|r| {
         let t = r.get("type").and_then(|v| v.as_str());
         (t == Some("user") || t == Some("assistant")) && r.get("message").is_some()
@@ -1701,6 +2358,15 @@ fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents
                 let safe = Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let lower = safe.to_lowercase();
                 if lower.starts_with("agent-") && (lower.ends_with(".jsonl") || lower.ends_with(".meta.json")) {
+                    // A qoder session's subagent transcripts carry the same atomic wrappers —
+                    // the parent's sniff decides, so the whole stored copy is Claude-shaped.
+                    if qoder_text.is_some() && lower.ends_with(".jsonl") {
+                        if let Ok(text) = std::str::from_utf8(bytes) {
+                            let normalized = crate::qoder::normalize_records(&parse_lines(text));
+                            let _ = fs::write(sub_dir.join(safe), records_to_jsonl(&normalized));
+                            continue;
+                        }
+                    }
                     let _ = fs::write(sub_dir.join(safe), bytes);
                 }
             }
@@ -1729,7 +2395,7 @@ fn import_one(src: &str) -> i32 {
     if foreign_kind(src_path).is_some() {
         return 0;
     }
-    let raw = match fs::read_to_string(src) {
+    let raw = match read_session_text(src_path) {
         Ok(s) => s,
         Err(_) => return 0,
     };
@@ -2011,6 +2677,226 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // Qoder writes Claude-like atomic event wrappers plus inline metadata into its own tree.
+    // Rows and detail must use that metadata, merge one assistant response's content blocks,
+    // retain queued commands as user turns, nest subagents, and remain searchable/exportable.
+    #[test]
+    fn qoder_sessions_route_end_to_end() {
+        let base = std::env::temp_dir().join("ccbud-qoder-route-test");
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join(".qoder");
+        let proj = root.join("projects").join("-tmp-qproj");
+        fs::create_dir_all(&proj).unwrap();
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        let sess = proj.join(format!("{}.jsonl", uuid));
+        let records = vec![
+            json!({ "type": "agent-setting", "agentSetting": "triage", "entrypoint": "sdk-cli", "sessionId": uuid }),
+            json!({ "type": "last-prompt", "sessionId": uuid, "lastPrompt": "last prompt fallback" }),
+            json!({ "type": "ai-title", "sessionId": uuid, "aiTitle": "Qoder 会话" }),
+            json!({ "type": "workspace-directories", "sessionId": uuid, "directories": ["/tmp/qproj"] }),
+            json!({ "type": "runtime-config", "sessionId": uuid, "model": "ultimate", "reasoningEffort": "high" }),
+            json!({
+                "type": "user", "uuid": "u1", "timestamp": "2026-06-04T09:47:27.966Z",
+                "message": { "role": "user", "content": "qoder needle axolotl" },
+                "sessionId": uuid, "version": "1.1.13"
+            }),
+            json!({
+                "type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": "2026-06-04T09:47:32.116Z",
+                "message": { "id": "msg_1", "type": "message", "role": "assistant", "model": "wire-model", "content": [
+                    { "type": "redacted_thinking", "data": "must not render" }
+                ]}, "sessionId": uuid
+            }),
+            json!({
+                "type": "assistant", "uuid": "a2", "parentUuid": "a1", "timestamp": "2026-06-04T09:47:32.216Z",
+                "message": { "id": "msg_1", "type": "message", "role": "assistant", "content": [
+                    { "type": "thinking", "thinking": "considering" }
+                ]}, "sessionId": uuid
+            }),
+            json!({
+                "type": "assistant", "uuid": "a3", "parentUuid": "a2", "timestamp": "2026-06-04T09:47:32.316Z",
+                "message": { "id": "msg_1", "type": "message", "role": "assistant", "content": [
+                    { "type": "text", "text": "done" }
+                ]}, "sessionId": uuid
+            }),
+            json!({
+                "type": "assistant", "uuid": "a4", "parentUuid": "a3", "timestamp": "2026-06-04T09:47:32.416Z",
+                "message": {
+                    "id": "msg_1", "type": "message", "role": "assistant", "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 100, "cache_creation_input_tokens": 7, "cache_read_input_tokens": 50, "output_tokens": 30 },
+                    "content": [{ "type": "tool_use", "id": "tu1", "name": "Task", "input": {} }]
+                }, "sessionId": uuid
+            }),
+            json!({
+                "type": "attachment", "attachment": { "type": "queued_command", "prompt": "queued narwhal follow-up", "commandMode": false },
+                "uuid": "u2", "parentUuid": "a4", "timestamp": "2026-06-04T09:47:35.000Z", "sessionId": uuid
+            }),
+        ];
+        let raw = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&sess, raw).unwrap();
+        let sub = proj.join(uuid).join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(
+            sub.join("agent-q1.jsonl"),
+            format!("{{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"q1\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"sub quetzal done\"}}]}},\"sessionId\":\"{}\",\"timestamp\":\"2026-06-04T09:47:40.000Z\"}}\n", uuid),
+        )
+        .unwrap();
+        fs::write(
+            sub.join("agent-q1.meta.json"),
+            "{\"agentType\":\"general-purpose\",\"description\":\"d\",\"toolUseId\":\"tu1\"}",
+        )
+        .unwrap();
+
+        let config = json!({ "historyDirs": [ root.to_string_lossy() ] });
+        let rows = list_sessions(&config, "all", 50);
+        assert_eq!(rows.len(), 1, "rows: {:?}", rows);
+        let r = &rows[0];
+        assert_eq!(r["source"], "qoder");
+        assert_eq!(r["id"], format!("qoder:{}", uuid));
+        assert_eq!(r["title"], "Qoder 会话");
+        assert_eq!(r["autoTitle"], "Qoder 会话");
+        assert_eq!(r["cwd"], "/tmp/qproj");
+        assert_eq!(r["model"], "ultimate");
+        assert_eq!(r["deleted"], false);
+
+        let file = r["file"].as_str().unwrap();
+        let d = get_session(file);
+        assert_eq!(d["meta"]["assistant"], "Qoder");
+        assert_eq!(d["meta"]["source"], "qoder");
+        assert_eq!(d["meta"]["id"], format!("qoder:{}", uuid));
+        assert_eq!(d["meta"]["title"], "Qoder 会话");
+        assert_eq!(d["meta"]["model"], "ultimate");
+        assert_eq!(d["meta"]["subagentCount"], 1);
+        assert_eq!(d["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(d["messages"][0]["content"], "qoder needle axolotl"); // string-content user turn
+        let assistant_blocks = d["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(
+            assistant_blocks
+                .iter()
+                .filter_map(|block| block.get("type").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["thinking", "text", "tool_use"]
+        );
+        assert_eq!(d["messages"][1]["usage"]["inputTokens"], 100);
+        assert_eq!(d["messages"][1]["stopReason"], "end_turn");
+        assert_eq!(d["messages"][2]["role"], "user");
+        assert_eq!(d["messages"][2]["content"], "queued narwhal follow-up");
+        assert_eq!(d["subagents"]["tu1"]["messages"][0]["content"][0]["text"], "sub quetzal done");
+
+        // another tool's live file: delete-forever must refuse and leave it on disk
+        let del = delete_session_file(file, &config);
+        assert_eq!(del["reason"], "foreign");
+        assert!(Path::new(file).is_file());
+
+        // content search reaches the main thread and the subagent transcript
+        let hits = search_sessions(&config, "all", "axolotl", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0]["agent"], "main");
+        let hits = search_sessions(&config, "all", "narwhal", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0]["agent"], "main");
+        let hits = search_sessions(&config, "all", "quetzal", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0]["agent"], "tu1");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn session_read_errors_are_structured() {
+        let base = std::env::temp_dir().join(format!(
+            "ccbud-session-read-error-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let project = base.join(".qoder").join("projects").join("-tmp-error");
+        fs::create_dir_all(&project).unwrap();
+
+        let missing = project.join("missing.jsonl");
+        let detail = get_session(&missing.to_string_lossy());
+        assert_eq!(detail["error"]["kind"], "notFound");
+
+        let invalid = project.join("invalid.jsonl");
+        fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        let detail = get_session(&invalid.to_string_lossy());
+        assert_eq!(detail["error"]["kind"], "readFailed");
+
+        let denied = session_read_error(
+            &invalid,
+            &std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(denied["error"]["kind"], "permissionDenied");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // The Rust search extractor and the renderer's stripInjected must agree: a task-notification
+    // envelope surfaces only its <result> body — transport metadata must never be searchable.
+    #[test]
+    fn strip_injected_unwraps_task_notifications() {
+        let s = strip_injected(
+            "before <task-notification id=\"t1\">\n<status>completed</status>\n<summary>transport-noise</summary>\n<result>\nDone **ok**\n</result>\n</task-notification> after",
+        );
+        assert!(s.contains("before") && s.contains("after"));
+        assert!(s.contains("Done **ok**"));
+        assert!(!s.contains("transport-noise"));
+        assert!(!s.contains("task-notification"));
+        // an envelope without a <result> vanishes wholesale, like a system-reminder
+        let gone = strip_injected("x <task-notification><status>running</status></task-notification> y");
+        assert!(gone.contains('x') && gone.contains('y') && !gone.contains("running"));
+        // the pre-existing rules still apply after the unwrap
+        assert_eq!(strip_injected("hi<system-reminder>meta</system-reminder>"), "hi");
+        // a standalone Codex <skill> injection vanishes; quoting one alongside prose does not
+        assert_eq!(strip_injected("  <skill name=\"x\">skill-body</skill>\n"), "");
+        assert!(strip_injected("see <skill>quoted</skill> here").contains("quoted"));
+    }
+
+    // The Codex AGENTS bootstrap must index as the SAME compact Markdown the panel renders
+    // (formatCodexBootstrap parity) — not as the raw XML-ish transport shape.
+    #[test]
+    fn strip_injected_formats_codex_bootstrap_like_the_panel() {
+        let raw = "# AGENTS.md instructions for /work/proj\n\n<INSTRUCTIONS>\nAlways run tests.\n</INSTRUCTIONS>\n\n<environment_context>\n  <cwd>/work/proj</cwd>\n  <shell>zsh</shell>\n  <root>/work/proj</root>\n  <permission_profile type=\"workspace-write\" />\n</environment_context>";
+        let s = strip_injected(raw);
+        assert!(s.starts_with("# AGENTS.md instructions for /work/proj"), "{s}");
+        assert!(s.contains("**INSTRUCTIONS:** Always run tests."), "{s}");
+        assert!(s.contains("**environment_context:** `/work/proj`"), "{s}");
+        assert!(s.contains("**shell:** zsh"), "{s}");
+        assert!(s.contains("**workspace_roots:** `/work/proj`"), "{s}");
+        assert!(s.contains("**permission_profile:** workspace-write"), "{s}");
+        assert!(!s.contains("<INSTRUCTIONS") && !s.contains("<environment_context"), "{s}");
+        // multi-line instructions keep their block form
+        let multi = strip_injected("# AGENTS.md instructions for /p\n<INSTRUCTIONS>\na\nb\n</INSTRUCTIONS>");
+        assert!(multi.contains("**INSTRUCTIONS:**\n\na\nb"), "{multi}");
+        // ordinary prose is untouched
+        assert_eq!(strip_injected("ordinary prose"), "ordinary prose");
+    }
+
+    // Imported qoder content is rewritten to Claude shape (wrappers merged, queued commands
+    // materialized) with qoder's own title carried onto __ccbud__; Claude content passes through.
+    #[test]
+    fn qoder_imports_are_normalized_with_title() {
+        let recs = vec![
+            json!({ "type": "ai-title", "aiTitle": "Qoder 导入标题" }),
+            json!({ "type": "assistant", "uuid": "w1", "message": { "id": "m1", "role": "assistant", "content": [{ "type": "thinking", "thinking": "t" }] } }),
+            json!({ "type": "assistant", "uuid": "w2", "message": { "id": "m1", "role": "assistant", "content": [{ "type": "text", "text": "done" }] } }),
+            json!({ "type": "attachment", "attachment": { "type": "queued_command", "prompt": "queued prompt" } }),
+        ];
+        let (text, normalized) = qoder_import_raw(&recs).expect("sniffs as qoder");
+        let assistants: Vec<&Value> = normalized.iter().filter(|r| r["type"] == "assistant").collect();
+        assert_eq!(assistants.len(), 1, "wrappers merged: {:?}", normalized);
+        assert_eq!(assistants[0]["message"]["content"].as_array().unwrap().len(), 2);
+        assert!(normalized
+            .iter()
+            .any(|r| r["type"] == "user" && r["message"]["content"] == "queued prompt"));
+        let first: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first["__ccbud__"]["title"], "Qoder 导入标题");
+        assert!(qoder_import_raw(&[json!({ "type": "user", "message": { "content": "hi" } })]).is_none());
     }
 
     // A live Codex rollout (a work dir's sessions/ tree, no .import.json) must NEVER be hard-deleted
