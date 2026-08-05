@@ -1275,9 +1275,18 @@ fn icount(hay: &str, needle: &str) -> usize {
 /// Task-notification envelopes keep their human-facing <result> body; the transport metadata
 /// (ids, status, summary) is dropped and must therefore never be searchable.
 fn strip_injected(s: &str) -> String {
+    static SKILL_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static TASK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static RESULT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // A turn that is nothing but a <skill> envelope is Codex's recorded skill-instruction
+    // injection — runtime context the panel suppresses wholesale, so search must too. Prose that
+    // merely quotes <skill> markup alongside other text stays searchable.
+    let skill_re = SKILL_RE
+        .get_or_init(|| regex::Regex::new(r"(?is)^\s*<skill\b[^>]*>.*</skill>\s*$").unwrap());
+    if skill_re.is_match(s) {
+        return String::new();
+    }
     let task_re = TASK_RE.get_or_init(|| {
         regex::Regex::new(r"(?is)<task-notification\b[^>]*>.*?</task-notification>").unwrap()
     });
@@ -2473,6 +2482,9 @@ mod tests {
         assert!(gone.contains('x') && gone.contains('y') && !gone.contains("running"));
         // the pre-existing rules still apply after the unwrap
         assert_eq!(strip_injected("hi<system-reminder>meta</system-reminder>"), "hi");
+        // a standalone Codex <skill> injection vanishes; quoting one alongside prose does not
+        assert_eq!(strip_injected("  <skill name=\"x\">skill-body</skill>\n"), "");
+        assert!(strip_injected("see <skill>quoted</skill> here").contains("quoted"));
     }
 
     // Imported qoder content is rewritten to Claude shape (wrappers merged, queued commands
