@@ -92,6 +92,55 @@ function splitLine(rec) {
   return { t, p: rec, ts };
 }
 
+// The FIRST SessionMeta belongs to this physical rollout. A forked/subagent rollout may copy
+// ancestor SessionMeta records after it, so later ones must never replace the canonical thread
+// identity. `session_id` is shared by the whole multi-agent tree; `id` is the unique thread key.
+function canonicalThreadMeta(payload) {
+  payload = payload && typeof payload === 'object' ? payload : {};
+  const source = payload.source && typeof payload.source === 'object' ? payload.source : {};
+  const threadSource = payload.thread_source && typeof payload.thread_source === 'object' ? payload.thread_source : {};
+  const subagent = source.subagent || source.sub_agent || threadSource.subagent || threadSource.sub_agent || null;
+  let detail = null;
+  if (subagent && typeof subagent === 'object') {
+    detail = subagent.thread_spawn || subagent.review || subagent.compact || subagent.other || null;
+    if (!detail || typeof detail !== 'object') {
+      detail = Object.values(subagent).find((value) => value && typeof value === 'object' && !Array.isArray(value)) || null;
+    }
+  }
+  detail = detail && typeof detail === 'object' ? detail : {};
+  // `id` is mandatory in a valid Codex SessionMeta. Never promote the tree-shared session_id to
+  // canonical status; malformed/legacy records can still fall back to the filename for display.
+  const threadId = payload.id || payload.thread_id || null;
+  const rootSessionId = payload.session_id || threadId;
+  const parentThreadId = payload.parent_thread_id || detail.parent_thread_id || null;
+  const threadSourceKind = typeof payload.thread_source === 'string' ? payload.thread_source.toLowerCase() : '';
+  return {
+    threadId,
+    rootSessionId,
+    parentThreadId,
+    forkedFromId: payload.forked_from_id || null,
+    isSubagent: !!subagent || threadSourceKind === 'subagent'
+      || !!payload.agent_path || !!payload.agent_nickname
+      || (!!parentThreadId && threadId !== rootSessionId),
+    // Current Codex writes these canonical fields at SessionMeta top level. Older multi-agent
+    // rollouts kept them only inside source.subagent.<kind>, so retain that as a fallback.
+    agentPath: payload.agent_path || detail.agent_path || null,
+    agentNickname: payload.agent_nickname || detail.agent_nickname || null,
+    agentRole: payload.agent_role || payload.agent_type || detail.agent_role || detail.agent_type || null,
+    agentDepth: Number.isFinite(detail.depth) ? detail.depth : null,
+  };
+}
+
+function subagentTitle(n) {
+  if (!n || !n.isSubagent) return '';
+  const pathLabel = String(n.agentPath || '').replace(/^\/?root\/?/, '');
+  return [n.agentNickname, pathLabel].filter(Boolean).join(' · ') || 'Codex subagent';
+}
+
+function isCanonicalThreadId(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
 // Harness-injected user turns (environment/permissions/instructions wrappers) that aren't
 // human prose — hidden from the timeline, exactly like Claude's isMeta records.
 function isMetaUserText(t) {
@@ -107,6 +156,19 @@ function isAgentsBootstrap(t) {
   const source = String(t || '').trimStart();
   return /^#\s+AGENTS\.md instructions for [^\r\n]+/i.test(source)
     && /<INSTRUCTIONS\b[^>]*>[\s\S]*?<\/INSTRUCTIONS>/i.test(source);
+}
+
+// Codex records a loaded Skill as a synthetic user turn. Preserve the embedded snapshot instead
+// of re-reading SKILL.md: it is the exact version that influenced this historical turn. Only an
+// entire, well-formed envelope is recognized so quoted <skill> markup remains ordinary prose.
+function skillLoadBlock(t) {
+  const source = String(t || '');
+  const match = /^\s*<skill>\s*<name>([\s\S]*?)<\/name>\s*<path>([\s\S]*?)<\/path>([\s\S]*)<\/skill>\s*$/i.exec(source);
+  if (!match) return null;
+  const name = match[1].trim();
+  const path = match[2].trim();
+  if (!name || !path) return null;
+  return { type: 'skill_load', name, path, snapshot: match[3] };
 }
 
 function joinedText(content, kinds) {
@@ -303,13 +365,28 @@ function imageBlock(url) {
 function normalize(recs) {
   const messages = [];
   const totals = { in: 0, out: 0, cacheRead: 0, cacheCreation: 0, turns: 0 };
-  let model = null, cwd = null, sessionId = null, gitBranch = null, version = null;
+  let model = null, cwd = null, sessionId = null, threadId = null, parentThreadId = null;
+  let forkedFromId = null, isSubagent = false, agentPath = null, agentNickname = null;
+  let agentRole = null, agentDepth = null, gitBranch = null, version = null, sawSessionMeta = false;
 
   for (const rec of recs || []) {
     if (!rec || typeof rec !== 'object') continue;
     const { t, p, ts } = splitLine(rec);
     const withTs = (m) => { if (ts) m.ts = ts; return m; };
     if (t === 'session_meta') {
+      if (!sawSessionMeta) {
+        sawSessionMeta = true;
+        const identity = canonicalThreadMeta(p);
+        threadId = identity.threadId;
+        sessionId = identity.rootSessionId;
+        parentThreadId = identity.parentThreadId;
+        forkedFromId = identity.forkedFromId;
+        isSubagent = identity.isSubagent;
+        agentPath = identity.agentPath;
+        agentNickname = identity.agentNickname;
+        agentRole = identity.agentRole;
+        agentDepth = identity.agentDepth;
+      }
       if (!sessionId) sessionId = p.session_id || p.id || null;
       if (!cwd) cwd = p.cwd || null;
       if (!version) version = p.cli_version || null;
@@ -355,6 +432,11 @@ function normalize(recs) {
           }
         } else if (p.role === 'user') {
           const text = joinedUserText(content);
+          const skill = skillLoadBlock(text);
+          if (skill) {
+            messages.push(withTs({ role: 'user', _meta: true, content: [skill] }));
+            continue;
+          }
           if (isMetaUserText(text)) continue;
           const blocks = [];
           if (text.trim()) blocks.push({ type: 'text', text });
@@ -416,17 +498,26 @@ function normalize(recs) {
   const firstTs = (messages.find((m) => m.ts) || {}).ts || null;
   let lastTs = null;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].ts) { lastTs = messages[i].ts; break; }
-  return { messages, totals, model, firstTs, lastTs, cwd, sessionId, gitBranch, version };
+  return {
+    messages, totals, model, firstTs, lastTs, cwd, sessionId, threadId, parentThreadId,
+    forkedFromId, isSubagent, agentPath, agentNickname, agentRole, agentDepth, gitBranch, version,
+  };
 }
 
-/** (cwd, sessionId) from a codex head — used by the import path to lay out the store copy. */
+/** (cwd, canonical threadId) from a Codex head — used to name an imported store copy. */
 function headIds(recs) {
   for (const rec of recs || []) {
     if (!rec || typeof rec !== 'object') continue;
     const { t, p } = splitLine(rec);
-    if (t === 'session_meta') return { cwd: p.cwd || null, sessionId: p.session_id || p.id || null };
+    // Every subagent in a tree shares session_id. The FIRST SessionMeta.id is the only safe
+    // import key; using session_id makes sibling rollouts overwrite/skip one another.
+    if (t === 'session_meta') return {
+      cwd: p.cwd || null,
+      sessionId: p.id || p.thread_id || null,
+      rootSessionId: p.session_id || p.id || null,
+    };
   }
-  return { cwd: null, sessionId: null };
+  return { cwd: null, sessionId: null, rootSessionId: null };
 }
 
 /* ---------- sidecar customization (~/.ccbud/codex-meta.json): { "<stem>": {title?, tagList?, delete?} } ---------- */
@@ -528,16 +619,23 @@ function sessionMetaFrom(file, recs, dm, st) {
   // Live rollouts customize via the sidecar (never rewrite another tool's files); imported
   // COPIES are our own files, where the in-file __ccbud__ applies.
   const cc = hasImportSidecar(file) ? fileCcbud(recs) : sidecarMeta(file);
-  let autoTitle = firstUserText(n.messages) || firstEventUserTitle(recs);
-  if (!autoTitle && (!st || st.size > 131072)) autoTitle = scanEventUserTitle(file);
+  let transcriptTitle = firstUserText(n.messages) || firstEventUserTitle(recs);
+  if (!transcriptTitle && (!st || st.size > 131072)) transcriptTitle = scanEventUserTitle(file);
+  const autoTitle = subagentTitle(n) || transcriptTitle;
   const stem = stemOf(file);
+  const rowScope = (dm && dm.id) || '';
   return {
-    id: 'codex:' + stem,
+    id: 'codex:' + rowScope + ':' + stem,
     file,
     source: 'codex',
     dirId: dm ? dm.id : null,
     dirLabel: dm ? dm.label : null,
-    sessionId: n.sessionId || stem,
+    sessionId: n.threadId || n.sessionId || stem,
+    threadId: n.threadId || n.sessionId || stem,
+    canonicalThreadIdValid: isCanonicalThreadId(n.threadId),
+    rootSessionId: n.sessionId || n.threadId || stem,
+    parentThreadId: n.parentThreadId,
+    forkedFromId: n.forkedFromId,
     cwd: n.cwd,
     project: baseName(n.cwd),
     gitBranch: n.gitBranch,
@@ -545,7 +643,11 @@ function sessionMetaFrom(file, recs, dm, st) {
     autoTitle,
     tags: cc.tags,
     model: n.model,
-    isSubagent: false,
+    isSubagent: n.isSubagent,
+    agentPath: n.agentPath,
+    agentNickname: n.agentNickname,
+    agentRole: n.agentRole,
+    agentDepth: n.agentDepth,
     imported: !!(dm && dm.imported),
     deleted: cc.deleted || false,
     lastActivity: st ? st.mtimeMs : 0,
@@ -560,7 +662,7 @@ function sessionFromRecs(file, recs) {
   try { imported = JSON.parse(fs.readFileSync(String(file).replace(/\.jsonl$/, '.import.json'), 'utf8')); } catch (_) {}
   // Same sidecar-vs-in-file split as sessionMetaFrom.
   const cc = imported ? fileCcbud(recs) : sidecarMeta(file);
-  const autoTitle = firstUserText(n.messages) || firstEventUserTitle(recs);
+  const autoTitle = subagentTitle(n) || firstUserText(n.messages) || firstEventUserTitle(recs);
   const stem = stemOf(file);
   return {
     meta: {
@@ -572,12 +674,21 @@ function sessionFromRecs(file, recs) {
       autoTitle,
       tags: cc.tags,
       summary: null,
-      sessionId: n.sessionId || stem,
+      sessionId: n.threadId || n.sessionId || stem,
+      threadId: n.threadId || n.sessionId || stem,
+      canonicalThreadIdValid: isCanonicalThreadId(n.threadId),
+      rootSessionId: n.sessionId || n.threadId || stem,
+      parentThreadId: n.parentThreadId,
+      forkedFromId: n.forkedFromId,
       cwd: n.cwd,
       project: baseName(n.cwd),
       gitBranch: n.gitBranch,
       version: n.version,
-      isSubagent: false,
+      isSubagent: n.isSubagent,
+      agentPath: n.agentPath,
+      agentNickname: n.agentNickname,
+      agentRole: n.agentRole,
+      agentDepth: n.agentDepth,
       deleted: cc.deleted || false,
       imported: !!imported,
       importedFrom: imported ? imported.originalPath : null,

@@ -69,7 +69,7 @@ pub(crate) fn parse_lines(text: &str) -> Vec<Value> {
 }
 
 fn read_head_result(file: &Path, max: usize) -> std::io::Result<String> {
-    use std::io::Read;
+    use std::io::{BufRead, BufReader, Read};
     // Qoder data can be protected as "Other Application Data" on macOS. Its reader first
     // attempts the normal filesystem path and uses the installed Qoder CLI only for EPERM;
     // keep the same bounded-head contract used by list metadata after that read succeeds.
@@ -78,10 +78,25 @@ fn read_head_result(file: &Path, max: usize) -> std::io::Result<String> {
         bytes.truncate(max);
         return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
-    let mut f = fs::File::open(file)?;
+    let mut file = fs::File::open(file)?;
     let mut buf = vec![0u8; max];
-    let n = f.read(&mut buf)?;
-    buf.truncate(n);
+    let read = file.read(&mut buf)?;
+    buf.truncate(read);
+    // SessionMeta may exceed the ordinary list window because it can embed base instructions and
+    // dynamic tools. Extend ONLY when the first record itself has no newline yet; a later partial
+    // record can be ignored, avoiding an accidental multi-megabyte image/tool-result read.
+    let prefix_len = buf.len().min(4096);
+    let compact_prefix: String = String::from_utf8_lossy(&buf[..prefix_len])
+        .chars()
+        .filter(|value| !value.is_ascii_whitespace())
+        .collect();
+    let codex_session_meta = compact_prefix
+        .find("\"type\":\"session_meta\"")
+        .is_some_and(|position| position < 512);
+    if codex_session_meta && read == max && !buf.contains(&b'\n') {
+        let mut reader = BufReader::new(file);
+        let _ = reader.read_until(b'\n', &mut buf)?;
+    }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -127,12 +142,25 @@ pub(crate) fn session_read_error(file: &Path, error: &std::io::Error) -> Value {
 }
 
 fn usage_of(u: &Value) -> Value {
-    json!({
+    let mut usage = json!({
         "inputTokens": u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "outputTokens": u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheRead": u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheCreation": u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-    })
+    });
+    let object = usage.as_object_mut().unwrap();
+    // Qoder supplies billing/context facts alongside its zeroed token counters. Keep them on the
+    // per-turn usage object without adding empty fields to ordinary Claude Code messages.
+    for (source, target) in [
+        ("credits", "credits"),
+        ("original_credits", "originalCredits"),
+        ("context_usage_ratio", "contextUsageRatio"),
+    ] {
+        if let Some(value) = u.get(source).filter(|value| value.is_number()) {
+            object.insert(target.to_string(), value.clone());
+        }
+    }
+    usage
 }
 
 fn content_text(content: &Value) -> String {
@@ -352,6 +380,14 @@ pub struct Norm {
     pub last_ts: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub forked_from_id: Option<String>,
+    pub is_subagent: bool,
+    pub agent_path: Option<String>,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub agent_depth: Option<i64>,
     pub git_branch: Option<String>,
     pub version: Option<String>,
 }
@@ -366,6 +402,14 @@ impl Default for Norm {
             last_ts: None,
             cwd: None,
             session_id: None,
+            thread_id: None,
+            parent_thread_id: None,
+            forked_from_id: None,
+            is_subagent: false,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+            agent_depth: None,
             git_branch: None,
             version: None,
         }
@@ -382,6 +426,8 @@ pub(crate) fn image_block(url: &str) -> Option<Value> {
 fn shape_messages(recs: &[Value]) -> Shaped {
     let mut messages = vec![];
     let (mut tin, mut tout, mut tcr, mut tcc, mut turns) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut credits = 0.0f64;
+    let mut has_credits = false;
     let mut model: Option<String> = None;
     let mut first_ts: Option<String> = None;
     let mut last_ts: Option<String> = None;
@@ -420,6 +466,10 @@ fn shape_messages(recs: &[Value]) -> Shaped {
                 tout += u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0);
                 tcr += u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0);
                 tcc += u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0);
+                if let Some(value) = u.get("credits").and_then(|v| v.as_f64()) {
+                    credits += value;
+                    has_credits = true;
+                }
                 turns += 1;
             }
             if let Some(sr) = lm.get("_stopReason").and_then(|v| v.as_str()) {
@@ -428,9 +478,19 @@ fn shape_messages(recs: &[Value]) -> Shaped {
         }
         messages.push(msg);
     }
+    let mut totals = json!({ "in": tin, "out": tout, "cacheRead": tcr, "cacheCreation": tcc, "turns": turns });
+    if has_credits {
+        let totals = totals.as_object_mut().unwrap();
+        totals.insert("credits".into(), json!(credits));
+        // Qoder's source log may omit usable token accounting while still providing real credits.
+        // Flag that state so the UI does not misrepresent unavailable token counts as zero usage.
+        if tin == 0 && tout == 0 && tcr == 0 && tcc == 0 {
+            totals.insert("tokenUsageAvailable".into(), json!(false));
+        }
+    }
     Shaped {
         messages,
-        totals: json!({ "in": tin, "out": tout, "cacheRead": tcr, "cacheCreation": tcc, "turns": turns }),
+        totals,
         model,
         first_ts,
         last_ts,
@@ -730,14 +790,158 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
     }))
 }
 
+fn canonical_codex_key(session: &Value) -> Option<String> {
+    if session.get("source").and_then(Value::as_str) != Some("codex") {
+        return None;
+    }
+    if session.get("canonicalThreadIdValid").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let thread_id = session.get("threadId").and_then(Value::as_str)?;
+    let dir_id = session.get("dirId").and_then(Value::as_str).unwrap_or("");
+    Some(format!("{dir_id}\0{thread_id}"))
+}
+
+fn codex_canonical_filename(session: &Value) -> bool {
+    let Some(thread_id) = session.get("threadId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(file) = session.get("file").and_then(Value::as_str) else {
+        return false;
+    };
+    let stem = Path::new(file).file_stem().and_then(|value| value.to_str()).unwrap_or("");
+    stem == thread_id || stem.strip_suffix(thread_id).is_some_and(|prefix| prefix.ends_with('-'))
+}
+
+fn codex_candidate_preferred(candidate: &Value, current: &Value) -> bool {
+    let candidate_file = candidate.get("file").and_then(Value::as_str).unwrap_or("");
+    let current_file = current.get("file").and_then(Value::as_str).unwrap_or("");
+    let thread_id = candidate
+        .get("threadId")
+        .and_then(Value::as_str)
+        .or_else(|| current.get("threadId").and_then(Value::as_str))
+        .unwrap_or("");
+
+    // Codex's completed state DB is authoritative when its rollout_path still exists. Both
+    // candidates already passed ccbud's first-SessionMeta parse, so a matching path also verifies
+    // that the DB row belongs to this canonical id.
+    let preferred_path = [candidate_file, current_file]
+        .into_iter()
+        .filter(|file| !file.is_empty())
+        .find_map(|file| crate::codex::preferred_rollout_path(Path::new(file), thread_id));
+    if let Some(preferred) = preferred_path {
+        let candidate_matches = Path::new(candidate_file) == preferred.as_path();
+        let current_matches = Path::new(current_file) == preferred.as_path();
+        if candidate_matches != current_matches {
+            return candidate_matches;
+        }
+    }
+
+    let imported = |value: &Value| value.get("imported").and_then(Value::as_bool).unwrap_or(false);
+    if imported(candidate) != imported(current) {
+        return !imported(candidate);
+    }
+    let archived = |file: &str| {
+        Path::new(file)
+            .components()
+            .any(|part| part.as_os_str().to_str() == Some("archived_sessions"))
+    };
+    if archived(candidate_file) != archived(current_file) {
+        return !archived(candidate_file);
+    }
+    let number = |value: &Value, field: &str| value.get(field).and_then(Value::as_f64).unwrap_or(0.0);
+    for field in ["lastActivity", "createdAt"] {
+        let candidate_value = number(candidate, field);
+        let current_value = number(current, field);
+        if candidate_value != current_value {
+            return candidate_value > current_value;
+        }
+    }
+    if codex_canonical_filename(candidate) != codex_canonical_filename(current) {
+        return codex_canonical_filename(candidate);
+    }
+    let candidate_size = number(candidate, "sizeKB");
+    let current_size = number(current, "sizeKB");
+    if candidate_size != current_size {
+        return candidate_size > current_size;
+    }
+    candidate_file > current_file
+}
+
+fn dedupe_canonical_codex_sessions(sessions: Vec<Value>) -> Vec<Value> {
+    let mut out = Vec::with_capacity(sessions.len());
+    let mut positions = std::collections::HashMap::<String, usize>::new();
+    for session in sessions {
+        let Some(key) = canonical_codex_key(&session) else {
+            out.push(session);
+            continue;
+        };
+        if let Some(index) = positions.get(&key).copied() {
+            if codex_candidate_preferred(&session, &out[index]) {
+                out[index] = session;
+            }
+        } else {
+            positions.insert(key, out.len());
+            out.push(session);
+        }
+    }
+    out
+}
+
+fn limit_with_codex_ancestors(sessions: Vec<Value>, limit: usize) -> Vec<Value> {
+    if sessions.len() <= limit {
+        return sessions;
+    }
+    let mut positions = std::collections::HashMap::<String, usize>::new();
+    for (index, session) in sessions.iter().enumerate() {
+        if let Some(key) = canonical_codex_key(session) {
+            positions.insert(key, index);
+        }
+    }
+    let mut included: std::collections::HashSet<usize> = (0..limit).collect();
+    let mut queue: Vec<usize> = (0..limit).collect();
+    let mut cursor = 0usize;
+    while cursor < queue.len() {
+        let index = queue[cursor];
+        cursor += 1;
+        let session = &sessions[index];
+        if canonical_codex_key(session).is_none() {
+            continue;
+        }
+        let dir_id = session.get("dirId").and_then(Value::as_str).unwrap_or("");
+        let direct_parent = session.get("parentThreadId").and_then(Value::as_str);
+        let root_parent = session
+            .get("isSubagent")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then(|| session.get("rootSessionId").and_then(Value::as_str))
+            .flatten();
+        let parent_index = [direct_parent, root_parent]
+            .into_iter()
+            .flatten()
+            .find_map(|parent_id| positions.get(&format!("{dir_id}\0{parent_id}")).copied());
+        let Some(parent_index) = parent_index else {
+            continue;
+        };
+        if included.insert(parent_index) {
+            queue.push(parent_index);
+        }
+    }
+    sessions
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, session)| included.contains(&index).then_some(session))
+        .collect()
+}
+
 pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
     // The recycle bin spans every dir and shows only soft-deleted sessions; every other view
     // is scoped to its dir and hides them.
     let trash = active == TRASH_ID;
-    // Read (memoized) metas for EVERY candidate, then select + order on the content-derived
-    // createdAt — both the sort AND the limit cut key on the session's own first-record time,
-    // so a title/tag rewrite (which resets fs times) can neither reshuffle nor evict a row.
-    // The meta cache turns the full walk into stats for unchanged files.
+    // Read (memoized) metas for EVERY candidate, then dedupe/order before the limit cut. Most
+    // formats use content-derived CreatedAt so title/tag rewrites cannot reshuffle rows; Codex
+    // uses rollout UpdatedAt because its custom metadata is sidecar-only and Codex defines latest
+    // that way. The meta cache turns the full walk into stats for unchanged files.
     let mut live: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut candidates: Vec<(PathBuf, String, String, String)> = Vec::new();
     each_session_file(config, |file, dir_name, id, label| {
@@ -758,19 +962,62 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for (file, dir_name, id, label) in &candidates {
         if let Some(m) = session_meta(file, dir_name, id, label) {
-            if m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) == trash {
-                out.push(m);
-            }
+            out.push(m);
         }
     }
     // Drop memo entries for files that no longer exist, so removed dirs don't pin stale rows.
     if let Ok(mut cache) = meta_cache().lock() {
         cache.retain(|k, _| live.contains(k));
     }
-    let key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
-    out.sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal));
-    out.truncate(limit);
-    out
+    // Collapse only true physical duplicates (same dir + canonical thread id) BEFORE limit.
+    // Threads that merely share rootSessionId are distinct root/subagent nodes and remain intact.
+    let mut out = dedupe_canonical_codex_sessions(out);
+    // Apply recycle-bin visibility to the selected logical representative, not to each physical
+    // candidate. Otherwise deleting the authoritative copy could make a stale duplicate reappear
+    // in the normal list while the same logical thread also sits in the recycle bin.
+    out.retain(|session| {
+        session.get("deleted").and_then(Value::as_bool).unwrap_or(false) == trash
+    });
+    let key = |v: &Value| {
+        // Codex defines "latest" as UpdatedAt (rollout mtime); its title/tags live in a sidecar,
+        // so this timestamp is not dirtied by ccbud edits. Keep the stable CreatedAt policy for
+        // formats whose transcript itself is rewritten when metadata changes.
+        let field = if v.get("source").and_then(Value::as_str) == Some("codex") {
+            "lastActivity"
+        } else {
+            "createdAt"
+        };
+        v.get(field).and_then(Value::as_f64).unwrap_or(0.0)
+    };
+    out.sort_by(|a, b| {
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let updated = |value: &Value| {
+                    value.get("lastActivity").and_then(Value::as_f64).unwrap_or(0.0)
+                };
+                updated(b)
+                    .partial_cmp(&updated(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                let a_id = a
+                    .get("threadId")
+                    .or_else(|| a.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let b_id = b
+                    .get("threadId")
+                    .or_else(|| b.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                b_id.cmp(a_id)
+            })
+    });
+    // Soft-cap Codex trees: include the parent/root chain of every selected child so a busy tree
+    // cannot show orphan subagents merely because its older root fell just below the limit.
+    limit_with_codex_ancestors(out, limit)
 }
 
 pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
@@ -781,9 +1028,10 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
         let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("(unknown)").to_string();
         let la = s.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let ct = s.get("createdAt").and_then(|v| v.as_f64()).unwrap_or(la);
+        let sk = if s.get("source").and_then(Value::as_str) == Some("codex") { la } else { ct };
         let g = groups.entry(cwd.clone()).or_insert_with(|| {
             order.push(cwd.clone());
-            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0, "createdAt": 0.0 })
+            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0, "createdAt": 0.0, "sortActivity": 0.0 })
         });
         g["sessions"].as_array_mut().unwrap().push(s.clone());
         if la > g["lastActivity"].as_f64().unwrap_or(0.0) {
@@ -792,31 +1040,50 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
         if ct > g["createdAt"].as_f64().unwrap_or(0.0) {
             g["createdAt"] = json!(ct);
         }
+        if sk > g["sortActivity"].as_f64().unwrap_or(0.0) {
+            g["sortActivity"] = json!(sk);
+        }
     }
-    // Sort sessions + groups by creation time (stable across tag/title edits), newest first.
-    let sort_key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    // Codex's latest semantic is rollout UpdatedAt; other formats retain CreatedAt so in-file
+    // title/tag edits cannot reorder them. Apply the same source-aware rule to rows and projects.
+    let sort_key = |v: &Value| {
+        let field = if v.get("source").and_then(Value::as_str) == Some("codex") {
+            "lastActivity"
+        } else {
+            "createdAt"
+        };
+        v.get(field).and_then(Value::as_f64).unwrap_or(0.0)
+    };
     let mut arr: Vec<Value> = order.into_iter().filter_map(|k| groups.remove(&k)).collect();
     for g in &mut arr {
         g["sessions"].as_array_mut().unwrap().sort_by(|a, b| {
             sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-    arr.sort_by(|a, b| sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
+    arr.sort_by(|a, b| {
+        let key = |value: &Value| {
+            value.get("sortActivity").and_then(Value::as_f64).unwrap_or(0.0)
+        };
+        key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for group in &mut arr {
+        if let Some(object) = group.as_object_mut() {
+            object.remove("sortActivity");
+        }
+    }
     arr
 }
 
 pub fn dir_stats(config: &Value) -> Vec<Value> {
     // Per-dir counts exclude soft-deleted sessions (they're hidden from those views); the deleted
-    // ones are tallied separately into the synthetic recycle-bin bucket.
+    // ones are tallied separately into the synthetic recycle-bin bucket. Reuse list_sessions so
+    // counts reflect canonical logical rows rather than duplicate physical rollout files.
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    let mut trash = 0i64;
-    each_session_file(config, |file, _dn, id, _label| {
-        if is_session_deleted(&file) {
-            trash += 1;
-        } else {
-            *counts.entry(id.to_string()).or_insert(0) += 1;
-        }
-    });
+    for session in list_sessions(config, "all", usize::MAX) {
+        let id = session.get("dirId").and_then(Value::as_str).unwrap_or("");
+        *counts.entry(id.to_string()).or_insert(0) += 1;
+    }
+    let trash = list_sessions(config, TRASH_ID, usize::MAX).len() as i64;
     let mut out: Vec<Value> = all_dirs(config)
         .into_iter()
         .map(|(id, label, pd)| {
@@ -1362,6 +1629,11 @@ fn extract_search_text(messages: &[Value]) -> String {
                     }
                 }
                 "thinking" => push(b.get("thinking").and_then(|v| v.as_str()).unwrap_or("")),
+                "skill_load" => {
+                    push(b.get("name").and_then(Value::as_str).unwrap_or(""));
+                    push(b.get("path").and_then(Value::as_str).unwrap_or(""));
+                    push(b.get("snapshot").and_then(Value::as_str).unwrap_or(""));
+                }
                 "tool_use" => {
                     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let input = b.get("input").map(|i| i.to_string()).unwrap_or_default();
@@ -1539,20 +1811,20 @@ pub fn search_sessions(config: &Value, active: &str, query: &str, limit: usize) 
     // Python's json.dumps default) escape it as \uXXXX, which a byte scan would miss; those
     // queries always take the parse+extract path (cached, so paid once per file version).
     let raw_safe = q.bytes().all(|b| b.is_ascii() && b != b'"' && b != b'\\' && b >= 0x20);
-    let mut files: Vec<(PathBuf, f64)> = vec![];
-    each_session_file(config, |file, dir_name, id, label| {
-        if !trash && active != "all" && id != active {
-            return;
-        }
-        // Same content-derived key the list orders by (memoized), so the candidate cap below
-        // keeps exactly the sessions the list can show.
-        let ct = session_meta(&file, &dir_name, id, label)
-            .and_then(|m| m.get("createdAt").and_then(|v| v.as_f64()))
-            .unwrap_or_else(|| created_ms(&file));
-        files.push((file, ct));
-    });
-    files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    files.truncate(600); // the list view's own cap — search what the list can show
+    // Reuse the list's pre-limit canonical-thread dedupe, directory/trash scope, and ordering.
+    // Otherwise duplicate physical rollouts could consume the 600-file search window even though
+    // the sidebar shows only their selected representative.
+    let files: Vec<(PathBuf, f64)> = list_sessions(config, active, 600)
+        .into_iter()
+        .filter_map(|session| {
+            let file = PathBuf::from(session.get("file")?.as_str()?);
+            let created = session
+                .get("createdAt")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| created_ms(&file));
+            Some((file, created))
+        })
+        .collect();
     // One batch helper call instead of a spawn per protected qoder file inside the worker loop
     // (repeat scans of unchanged files are then served by the extraction + helper caches).
     let qoder_files: Vec<PathBuf> = files

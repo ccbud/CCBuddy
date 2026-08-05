@@ -21,6 +21,7 @@ const CAP_THINKING: usize = 16000;
 const CAP_RESULT: usize = 24000;
 const CAP_PROMPT: usize = 9000;
 const CAP_CONTENT: usize = 14000;
+const CAP_SKILL_SNAPSHOT: usize = 131072;
 
 fn cap(s: &str, n: usize) -> String {
     if s.chars().count() > n {
@@ -56,12 +57,23 @@ fn parse_jsonl(file: &Path) -> Vec<Value> {
 }
 
 fn usage_of(u: &Value) -> Value {
-    json!({
+    let mut usage = json!({
         "in": u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "out": u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheRead": u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
         "cacheCreation": u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-    })
+    });
+    let object = usage.as_object_mut().unwrap();
+    for (source, target) in [
+        ("credits", "credits"),
+        ("original_credits", "originalCredits"),
+        ("context_usage_ratio", "contextUsageRatio"),
+    ] {
+        if let Some(value) = u.get(source).filter(|value| value.is_number()) {
+            object.insert(target.to_string(), value.clone());
+        }
+    }
+    usage
 }
 
 fn cap_content(content: &Value) -> Value {
@@ -79,6 +91,16 @@ fn cap_content(content: &Value) -> Value {
             match ty {
                 "text" => json!({ "type": "text", "text": cap(b.get("text").and_then(|t| t.as_str()).unwrap_or(""), CAP_TEXT) }),
                 "thinking" => json!({ "type": "thinking", "thinking": cap(b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""), CAP_THINKING) }),
+                "skill_load" => json!({
+                    "type": "skill_load",
+                    "name": b.get("name").cloned().unwrap_or(Value::Null),
+                    "path": b.get("path").cloned().unwrap_or(Value::Null),
+                    "snapshot": b
+                        .get("snapshot")
+                        .and_then(|v| v.as_str())
+                        .map(|v| json!(cap(v, CAP_SKILL_SNAPSHOT)))
+                        .unwrap_or(Value::Null),
+                }),
                 "tool_use" => {
                     let mut input = b.get("input").cloned().unwrap_or(json!({}));
                     if let Some(obj) = input.as_object_mut() {
@@ -234,12 +256,17 @@ struct Shaped {
     messages: Vec<Value>,
     model: Option<String>,
     totals: (i64, i64, i64, i64),
+    cache_creation: i64,
+    credits: Option<f64>,
+    token_usage_available: bool,
     first_ts: Option<String>,
     last_ts: Option<String>,
 }
 fn shape_session(recs: &[Value]) -> Shaped {
     let mut messages = vec![];
-    let (mut tin, mut tout, mut tcr, mut turns) = (0i64, 0i64, 0i64, 0i64);
+    let (mut tin, mut tout, mut tcr, mut tcc, mut turns) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut credits = 0.0f64;
+    let mut has_credits = false;
     let mut model = None;
     let mut first_ts = None;
     let mut last_ts = None;
@@ -264,6 +291,11 @@ fn shape_session(recs: &[Value]) -> Shaped {
             tin += u.get("in").and_then(|v| v.as_i64()).unwrap_or(0);
             tout += u.get("out").and_then(|v| v.as_i64()).unwrap_or(0);
             tcr += u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0);
+            tcc += u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0);
+            if let Some(value) = u.get("credits").and_then(|v| v.as_f64()) {
+                credits += value;
+                has_credits = true;
+            }
             turns += 1;
         }
         messages.push(lm);
@@ -272,6 +304,9 @@ fn shape_session(recs: &[Value]) -> Shaped {
         messages,
         model,
         totals: (tin, tout, tcr, turns),
+        cache_creation: tcc,
+        credits: has_credits.then_some(credits),
+        token_usage_available: !(has_credits && tin == 0 && tout == 0 && tcr == 0 && tcc == 0),
         first_ts,
         last_ts,
     }
@@ -338,7 +373,15 @@ fn read_subagents(file: &Path) -> Value {
                 "description": meta.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 "skill": crate::history::skill_from_recs(&recs),
                 "count": shaped.messages.len(),
-                "totals": { "in": shaped.totals.0, "out": shaped.totals.1, "cacheRead": shaped.totals.2, "turns": shaped.totals.3 },
+                "totals": {
+                    "in": shaped.totals.0,
+                    "out": shaped.totals.1,
+                    "cacheRead": shaped.totals.2,
+                    "cacheCreation": shaped.cache_creation,
+                    "turns": shaped.totals.3,
+                    "credits": shaped.credits,
+                    "tokenUsageAvailable": shaped.token_usage_available,
+                },
                 "messages": shaped.messages,
             }),
         );
@@ -361,21 +404,32 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
                         "role": msg.get("role").cloned().unwrap_or(Value::Null),
                         "content": cap_content(msg.get("content").unwrap_or(&Value::Null)),
                         "ts": msg.get("ts").cloned().unwrap_or(Value::Null),
-                        "meta": false,
+                        "meta": msg
+                            .get("meta")
+                            .or_else(|| msg.get("_meta"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
                     });
                     let o = out.as_object_mut().unwrap();
                     if let Some(md) = msg.get("modelActual") {
                         o.insert("model".into(), md.clone());
                     }
                     if let Some(u) = msg.get("usage") {
+                        let mut usage = json!({
+                            "in": u.get("inputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                            "out": u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                            "cacheRead": u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0),
+                            "cacheCreation": u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0),
+                        });
+                        let usage_object = usage.as_object_mut().unwrap();
+                        for field in ["credits", "originalCredits", "contextUsageRatio"] {
+                            if let Some(value) = u.get(field).filter(|value| value.is_number()) {
+                                usage_object.insert(field.to_string(), value.clone());
+                            }
+                        }
                         o.insert(
                             "usage".into(),
-                            json!({
-                                "in": u.get("inputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                                "out": u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                                "cacheRead": u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0),
-                                "cacheCreation": u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0),
-                            }),
+                            usage,
                         );
                     }
                     out
@@ -404,6 +458,8 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
             "inTok": t.get("in").cloned().unwrap_or(json!(0)),
             "outTok": t.get("out").cloned().unwrap_or(json!(0)),
             "cacheTok": t.get("cacheRead").cloned().unwrap_or(json!(0)),
+            "credits": t.get("credits").cloned().unwrap_or(Value::Null),
+            "tokenUsageAvailable": t.get("tokenUsageAvailable").cloned().unwrap_or(json!(true)),
             "subagentCount": 0,
             "firstTs": m.get("firstTs").cloned().unwrap_or(Value::Null),
             "lastTs": m.get("lastTs").cloned().unwrap_or(Value::Null),
@@ -492,6 +548,8 @@ pub fn build_data(file: &str) -> Value {
             "count": s.messages.len(),
             "turns": s.totals.3,
             "inTok": s.totals.0, "outTok": s.totals.1, "cacheTok": s.totals.2,
+            "credits": s.credits,
+            "tokenUsageAvailable": s.token_usage_available,
             "subagentCount": subagents.as_object().map(|o| o.len()).unwrap_or(0),
             "firstTs": s.first_ts, "lastTs": s.last_ts,
         },

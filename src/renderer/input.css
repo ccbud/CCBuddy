@@ -1371,6 +1371,30 @@ body {
 /* result-size chip pushed to the right edge of the result summary */
 .tool-res-size { margin-left: auto; font-family: ui-monospace, monospace; font-size: 9.5px; font-weight: 600; color: var(--caption); background: var(--chip-bg); padding: 1px 6px; border-radius: 5px; }
 
+/* Codex Skill context-load event: tool-card visual language, neutral timeline semantics. */
+.skill-name { flex-shrink: 0; font-family: var(--mono); font-size: calc(10.5px * var(--conv-fs, 1)); color: var(--fg); }
+.skill-snapshot > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+  color: var(--muted);
+  font-size: calc(10.5px * var(--conv-fs, 1));
+  font-weight: 600;
+}
+.skill-snapshot > summary::-webkit-details-marker { display: none; }
+.skill-snapshot[open] > summary { border-bottom: 1px solid var(--border); }
+.skill-caret { display: inline-block; transition: transform 0.14s var(--ease); }
+.skill-snapshot[open] > summary .skill-caret { transform: rotate(90deg); }
+.skill-snapshot-body { padding: 8px 10px 10px; }
+.skill-snapshot-body pre { margin: 0; }
+.skill-source { display: flex; align-items: baseline; gap: 7px; min-width: 0; margin-bottom: 7px; color: var(--caption); font-size: calc(10px * var(--conv-fs, 1)); }
+.skill-source code { overflow: hidden; color: var(--muted); font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-no-snapshot { padding: 6px 10px; color: var(--caption); font-size: calc(10.5px * var(--conv-fs, 1)); }
+
 /* Collapsed session sidebar: only the expand button may occupy the 34px strip. Without this the import
    (+) button stays in the flex row, overflows the narrow strip, and justify-center shoves the expand
    button left under the primary nav — leaving an empty, unclickable strip. !important beats `flex`. */

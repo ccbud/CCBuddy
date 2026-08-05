@@ -40,12 +40,18 @@ function baseName(p) {
 
 function usageOf(u) {
   if (!u) return null;
-  return {
+  const usage = {
     inputTokens: u.input_tokens || 0,
     outputTokens: u.output_tokens || 0,
     cacheRead: u.cache_read_input_tokens || 0,
     cacheCreation: u.cache_creation_input_tokens || 0,
   };
+  // Qoder records billing credits even when its transcript exposes no token counts. Keep these
+  // fields optional so the normalized shape for Claude Code sessions remains unchanged.
+  if (typeof u.credits === 'number' && Number.isFinite(u.credits)) usage.credits = u.credits;
+  if (typeof u.original_credits === 'number' && Number.isFinite(u.original_credits)) usage.originalCredits = u.original_credits;
+  if (typeof u.context_usage_ratio === 'number' && Number.isFinite(u.context_usage_ratio)) usage.contextUsageRatio = u.context_usage_ratio;
+  return usage;
 }
 
 function lineToMessage(rec) {
@@ -127,14 +133,40 @@ function parseLines(buf) {
 }
 
 function readChunk(file, size, max) {
+  let fd = null;
   try {
-    const fd = fs.openSync(file, 'r');
+    fd = fs.openSync(file, 'r');
     const len = Math.min(size, max);
-    const b = Buffer.alloc(len);
-    fs.readSync(fd, b, 0, len, 0);
-    fs.closeSync(fd);
-    return b.toString('utf8');
+    const chunks = [];
+    const first = Buffer.alloc(len);
+    const firstRead = fs.readSync(fd, first, 0, len, 0);
+    chunks.push(first.subarray(0, firstRead));
+    let offset = firstRead;
+    const firstPrefix = first.subarray(0, Math.min(firstRead, 4096)).toString('utf8');
+    const codexMetaMatch = /"type"\s*:\s*"session_meta"/.exec(firstPrefix);
+    const codexSessionMeta = !!codexMetaMatch && codexMetaMatch.index < 512;
+    // A Codex SessionMeta can itself exceed the ordinary list window (base instructions and
+    // dynamic tools live on that line). Complete that first record instead of handing the parser
+    // a truncated JSON object; this mirrors Codex's own line-oriented metadata reader.
+    // Only extend when the FIRST record itself exceeds the window. If the window already contains
+    // a newline, its final partial record can be ignored by parseLines; chasing that line could
+    // otherwise pull a multi-megabyte image/tool result into every list refresh.
+    while (codexSessionMeta && offset < size && first.subarray(0, firstRead).indexOf(10) < 0) {
+      const next = Buffer.alloc(Math.min(65536, size - offset));
+      const n = fs.readSync(fd, next, 0, next.length, offset);
+      if (!n) break;
+      const part = next.subarray(0, n);
+      const newline = part.indexOf(10);
+      if (newline >= 0) {
+        chunks.push(part.subarray(0, newline + 1));
+        break;
+      }
+      chunks.push(part);
+      offset += n;
+    }
+    return Buffer.concat(chunks).toString('utf8');
   } catch (_) { return ''; }
+  finally { if (fd != null) try { fs.closeSync(fd); } catch (_) {} }
 }
 
 // Shape parsed records into the renderer's message model (+ rollup totals / model / span). Shared
@@ -142,6 +174,7 @@ function readChunk(file, size, max) {
 function shapeMessages(recs) {
   const messages = [];
   const totals = { in: 0, out: 0, cacheRead: 0, cacheCreation: 0, turns: 0 };
+  let credits = 0, hasCredits = false;
   let model = null, firstTs = null, lastTs = null;
   for (const r of recs) {
     const lm = lineToMessage(r);
@@ -158,10 +191,22 @@ function shapeMessages(recs) {
       if (u) {
         totals.in += u.inputTokens; totals.out += u.outputTokens;
         totals.cacheRead += u.cacheRead; totals.cacheCreation += u.cacheCreation;
+        if (typeof u.credits === 'number' && Number.isFinite(u.credits)) {
+          credits += u.credits;
+          hasCredits = true;
+        }
         totals.turns += 1;
       }
     }
     messages.push(msg);
+  }
+  if (hasCredits) {
+    totals.credits = credits;
+    // Qoder currently writes real credit usage but zero for all four token counters. Expose that
+    // distinction explicitly so callers can render an unavailable value instead of a fake zero.
+    if (totals.in === 0 && totals.out === 0 && totals.cacheRead === 0 && totals.cacheCreation === 0) {
+      totals.tokenUsageAvailable = false;
+    }
   }
   return { messages, totals, model, firstTs, lastTs };
 }
@@ -390,8 +435,80 @@ function createHistoryWatcher(opts) {
     for (const f of [...metaCache.keys()]) {
       if (!liveFiles.has(f)) metaCache.delete(f);
     }
-    files.sort((a, b) => b.mtime - a.mtime);
-    return files.slice(0, limit || 400).map((s) => sessionMeta(s.file, s.dirName, s.isSub, s.dm)).filter(Boolean);
+    files.sort((a, b) => b.mtime - a.mtime || String(b.file).localeCompare(String(a.file)));
+    // Materialize before applying the limit: true duplicate Codex rollout paths must not consume
+    // slots and evict distinct threads. `session_id` is intentionally NOT part of this key because
+    // root + subagents share it; the canonical first SessionMeta.id is exposed as threadId.
+    const sessions = files.map((s) => sessionMeta(s.file, s.dirName, s.isSub, s.dm)).filter(Boolean);
+    return limitWithCodexAncestors(dedupeCanonicalCodexSessions(sessions), limit || 400);
+  }
+
+  function dedupeCanonicalCodexSessions(sessions) {
+    const out = [];
+    const positions = new Map();
+    const canonicalFile = (session) => {
+      const threadId = String(session.threadId || '');
+      const stem = path.basename(String(session.file || ''), '.jsonl');
+      return !!threadId && (stem === threadId || stem.endsWith('-' + threadId));
+    };
+    const prefer = (candidate, current) => {
+      // Keep separate configured roots/import stores independent even when they contain the same
+      // logical transcript. Without Codex's SQLite index in this legacy backend, UpdatedAt
+      // (rollout mtime) is the closest official fallback; filename/size/path only break ties.
+      const activityDelta = (candidate.lastActivity || 0) - (current.lastActivity || 0);
+      if (activityDelta) return activityDelta > 0;
+      const createdDelta = (candidate.createdAt || 0) - (current.createdAt || 0);
+      if (createdDelta) return createdDelta > 0;
+      const canonicalDelta = Number(canonicalFile(candidate)) - Number(canonicalFile(current));
+      if (canonicalDelta) return canonicalDelta > 0;
+      const sizeDelta = (candidate.sizeKB || 0) - (current.sizeKB || 0);
+      if (sizeDelta) return sizeDelta > 0;
+      return String(candidate.file || '') > String(current.file || '');
+    };
+    (sessions || []).forEach((session) => {
+      if (!session || session.source !== 'codex' || !session.canonicalThreadIdValid || !session.threadId) {
+        out.push(session);
+        return;
+      }
+      const key = `${session.dirId || ''}\u0000${session.threadId}`;
+      const existing = positions.get(key);
+      if (existing == null) {
+        positions.set(key, out.length);
+        out.push(session);
+      } else if (prefer(session, out[existing])) {
+        out[existing] = session;
+      }
+    });
+    return out.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0)
+      || String(b.threadId || b.id || '').localeCompare(String(a.threadId || a.id || '')));
+  }
+
+  // The limit is a soft cap for Codex trees: when a recent child makes the cut, include its parent
+  // chain (and root) even if those older rollout files rank below the cap. This prevents an orphan
+  // child from appearing without the conversation that spawned it.
+  function limitWithCodexAncestors(sessions, limit) {
+    if (sessions.length <= limit) return sessions;
+    const positions = new Map();
+    sessions.forEach((session, index) => {
+      if (session && session.source === 'codex' && session.canonicalThreadIdValid && session.threadId) {
+        positions.set(`${session.dirId || ''}\u0000${session.threadId}`, index);
+      }
+    });
+    const included = new Set(sessions.slice(0, limit).map((_, index) => index));
+    const queue = [...included];
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const session = sessions[queue[cursor]];
+      if (!session || session.source !== 'codex' || !session.canonicalThreadIdValid) continue;
+      const parentIds = [session.parentThreadId, session.isSubagent ? session.rootSessionId : null]
+        .filter((id, index, ids) => id != null && ids.indexOf(id) === index);
+      let parent = null;
+      for (const parentId of parentIds) {
+        const found = positions.get(`${session.dirId || ''}\u0000${parentId}`);
+        if (found != null) { parent = found; break; }
+      }
+      if (parent != null && !included.has(parent)) { included.add(parent); queue.push(parent); }
+    }
+    return sessions.filter((_, index) => included.has(index));
   }
 
   function listProjects(activeId, limit) {
@@ -413,7 +530,13 @@ function createHistoryWatcher(opts) {
   /** Per-directory session counts (for the settings list + directory switcher). */
   function dirStats() {
     const counts = {};
-    eachSessionFile((file, dirName, isSub, dm) => { const id = dm ? dm.id : 'default'; counts[id] = (counts[id] || 0) + 1; });
+    // Count the same canonical rows the sidebar can show, not raw rollout files. Distinct Codex
+    // subagents still count; only true same-thread physical duplicates are collapsed.
+    for (const session of listSessions('all', Number.MAX_SAFE_INTEGER)) {
+      if (!session || session.deleted) continue;
+      const id = session.dirId || 'default';
+      counts[id] = (counts[id] || 0) + 1;
+    }
     return dirs().map((dm) => {
       // A dir "exists" when EITHER data tree is on disk — ~/.codex has only sessions/.
       let exists = false;
