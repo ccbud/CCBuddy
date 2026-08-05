@@ -139,13 +139,23 @@
     return '<div class="subagent"><details class="subagent-d"><summary><span class="subagent-ico">🤖</span><span class="subagent-title">子代理 · ' + esc(subName) + '</span><span class="subagent-desc">' + esc(sub.description || '') + '</span><span class="subagent-count">' + (sub.count || 0) + ' 条 · ' + fmtTok((sub.totals && sub.totals.out) || 0) + '↓</span></summary><div class="subagent-body"><div class="thread">' + renderThread(sub.messages || []) + '</div></div></details></div>';
   }
 
-  function isReminder(t) { return /<(system-reminder|command-name|local-command)/.test(t); }
-  function renderBlocks(content) {
+  function stripInjected(text) {
+    return String(text || '')
+      .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, function (block) {
+        var result = /<result\b[^>]*>([\s\S]*?)<\/result>/i.exec(block);
+        return result ? '\n' + result[1].trim() + '\n' : '';
+      })
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, '')
+      .replace(/<local-command-[a-z]+>[\s\S]*?<\/local-command-[a-z]+>/g, '')
+      .trim();
+  }
+  function renderBlocks(content, cleanUserText) {
     var blocks = Array.isArray(content) ? content : (typeof content === 'string' ? [{ type: 'text', text: content }] : []);
     var out = '';
     blocks.forEach(function (b) {
       if (!b) return;
-      if (b.type === 'text') { if (b.text && b.text.trim()) out += '<div class="prose">' + md(b.text) + '</div>'; }
+      if (b.type === 'text') { var text = cleanUserText ? stripInjected(b.text) : b.text; if (text && text.trim()) out += '<div class="prose">' + md(text) + '</div>'; }
       else if (b.type === 'thinking') { if (b.thinking && b.thinking.trim()) { var first = b.thinking.split('\n').filter(function (x) { return x.trim(); })[0] || ''; out += '<details class="thinking"><summary>💭 思考 · ' + esc(trunc(first, 64)) + '</summary><div class="prose">' + md(b.thinking) + '</div></details>'; } }
       else if (b.type === 'tool_use') out += renderTool(b);
       else if (b.type === 'image') { var s = b.source || {}; out += s.data ? '<img class="msg-img" style="max-width:340px;border-radius:10px;border:1px solid var(--border);margin:6px 0" src="data:' + esc(s.media_type || 'image/png') + ';base64,' + esc(s.data) + '">' : '<div class="tool-desc">🖼 image' + (s.oversized ? ' (large, omitted)' : '') + '</div>'; }
@@ -158,7 +168,7 @@
   }
   function msgVisible(m) {
     var bl = Array.isArray(m.content) ? m.content : (typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : []);
-    if (m.role === 'user') { var vis = bl.filter(function (b) { return b && (b.type === 'text' || b.type === 'image'); }); if (!vis.length) return false; var txt = vis.map(function (b) { return b.text || ''; }).join(''); return !isReminder(txt); }
+    if (m.role === 'user') { var vis = bl.filter(function (b) { return b && (b.type === 'text' || b.type === 'image'); }); if (!vis.length) return false; var hasImage = vis.some(function (b) { return b.type === 'image'; }); var txt = vis.map(function (b) { return b.type === 'text' ? stripInjected(b.text) : ''; }).filter(Boolean).join('\n'); return hasImage || !!txt; }
     return bl.some(function (b) { return b && (b.type === 'text' || b.type === 'thinking' || b.type === 'tool_use' || b.type === 'image'); });
   }
   // tags for sidebar/filtering
@@ -171,7 +181,7 @@
     var out = '';
     (msgs || []).forEach(function (m) {
       if (!msgVisible(m)) return;
-      var body = renderBlocks(m.content); if (!body) return;
+      var body = renderBlocks(m.content, m.role === 'user'); if (!body) return;
       if (m.role === 'user') out += '<div class="msg user" data-role="user"><div class="msg-name">👤 你</div><div class="bubble">' + body + '</div></div>';
       else { var tg = msgTags(m); out += '<div class="msg assistant" data-role="assistant" data-tool="' + (tg.tool ? 1 : 0) + '" data-sub="' + (tg.sub ? 1 : 0) + '"><div class="msg-name"><span class="dot">✦</span>' + esc(AST) + '</div><div class="body">' + body + turnMeta(m) + '</div></div>'; }
     });

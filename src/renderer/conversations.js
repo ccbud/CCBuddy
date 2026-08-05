@@ -112,12 +112,16 @@
     if (typeof c === 'string') return c ? [{ type: 'text', text: c }] : [];
     return Array.isArray(c) ? c : [];
   }
-  // Strip the harness-injected blocks Claude Code appends to user turns — environment
-  // <system-reminder>s, slash-command expansions (<command-*>), and local-command output
-  // (<local-command-*>) — leaving the human prose. Returns '' when a turn was nothing but
-  // injected content, so a pure slash-command / lone reminder turn still renders as nothing.
+  // Strip harness-injected blocks from user turns while keeping their human-facing content.
+  // A task notification is an XML envelope whose <result> is the actual Markdown response;
+  // its IDs, status, summary, usage, and other transport metadata are not useful in the thread.
+  // Returns '' when a turn contains injected metadata only.
   function stripInjected(text) {
     return String(text || '')
+      .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, (block) => {
+        const result = /<result\b[^>]*>([\s\S]*?)<\/result>/i.exec(block);
+        return result ? `\n${result[1].trim()}\n` : '';
+      })
       .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
       .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, '')
       .replace(/<local-command-[a-z]+>[\s\S]*?<\/local-command-[a-z]+>/g, '')
@@ -735,7 +739,7 @@
         .map((b) => (b.type === 'text' ? { type: 'text', text: stripInjected(b.text) } : b))
         .filter((b) => b.type === 'image' || b.text);
       if (!clean.length) return '';
-      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 px-4 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
+      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-4 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
     }
     let body = '';
     blocks.forEach((b) => {
@@ -1165,8 +1169,8 @@
     messages.forEach((m, i) => {
       if (m.role !== 'user') return;
       const vis = normContent(m.content).filter((b) => b.type === 'text');
-      const tv = vis.map((b) => b.text || '').join(' ').trim();
-      if (!tv || tv.includes('<system-reminder>') || tv.includes('<command-name>') || tv.includes('<local-command')) return;
+      const tv = vis.map((b) => stripInjected(b.text)).filter(Boolean).join(' ').trim();
+      if (!tv) return;
       toc.push(`<div class="toc-item text-xs text-caption py-1 px-1.75 rounded-[5px] cursor-pointer truncate transition-all duration-100 hover:bg-chip-bg hover:text-fg" data-go="${i}" data-tip="${esc(tv.slice(0, 200))}">👤 ${esc(tv.slice(0, 32) || '…')}</div>`);
     });
     $('convToc').innerHTML = toc.join('');

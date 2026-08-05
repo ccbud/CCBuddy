@@ -4909,7 +4909,7 @@ body {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 11px;
-  padding: 12px 16px;
+  padding: 16px;
   box-shadow: var(--card-shadow);
 }
 .msg.assistant .msg-body {
