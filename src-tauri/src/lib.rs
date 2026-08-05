@@ -1194,6 +1194,15 @@ async fn history_export_html(payload: Value) -> Result<Value, String> {
         .to_string();
     // Build the export data once, then reuse it for both the HTML body and the filename.
     let data = exporthtml::build_data(&file);
+    // An unreadable main transcript surfaces as a command error (renderer reports it) instead of
+    // silently saving an empty viewer page.
+    if let Some(error) = data.get("error") {
+        return Err(error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("session read failed")
+            .to_string());
+    }
     let html = exporthtml::html_from_data(&data);
     let base = exporthtml::export_base_name_from_data(&data);
     match rfd::AsyncFileDialog::new().set_file_name(format!("{}.html", base)).save_file().await {
