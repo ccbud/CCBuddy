@@ -4909,8 +4909,11 @@ body {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 11px;
-  padding: 16px;
+  padding: 12px;
   box-shadow: var(--card-shadow);
+}
+.msg.user .msg-body > .blk-text:first-child > :first-child {
+  margin-top: 0;
 }
 .msg.assistant .msg-body {
   padding: 2px 0 2px 12px;

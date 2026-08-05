@@ -9,7 +9,8 @@
  *
  * A rollout line is `{timestamp, type, payload}` with type ∈ {session_meta, turn_context,
  * response_item, event_msg, compacted}. Conversation content lives in response_item payloads;
- * event_msg mostly duplicates it (ignored) but its token_count records carry per-turn usage.
+ * event_msg mostly duplicates it; token_count carries usage, and user_message is a bounded title
+ * fallback when an image-heavy response_item is too large for the list view's head read.
  * Very old Codex builds wrote payload objects directly per line (no envelope) — handled by
  * treating such a line as its own payload.
  *
@@ -99,6 +100,15 @@ function isMetaUserText(t) {
     .some((p) => t.startsWith(p));
 }
 
+// Codex injects the workspace AGENTS instructions as a user-role transport message. Keep it in
+// the transcript (the renderer turns it into readable Markdown), but mark it as metadata so it
+// never becomes the conversation title or a user navigation point.
+function isAgentsBootstrap(t) {
+  const source = String(t || '').trimStart();
+  return /^#\s+AGENTS\.md instructions for [^\r\n]+/i.test(source)
+    && /<INSTRUCTIONS\b[^>]*>[\s\S]*?<\/INSTRUCTIONS>/i.test(source);
+}
+
 function joinedText(content, kinds) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -106,6 +116,117 @@ function joinedText(content, kinds) {
     .filter((b) => b && kinds.includes(b.type))
     .map((b) => b.text || '')
     .join('\n');
+}
+
+// A Codex image prompt is serialized as three transport blocks around the actual prose:
+//   <image name=[Image #1] path="...">, input_image, </image>
+// Surface only the safe/readable name while preserving the real input_image block separately.
+function imageTransportLabel(text) {
+  const source = String(text || '').trim();
+  if (!/^<image\b[^>]*>$/i.test(source)) return null;
+  const match = /\bname\s*=\s*(?:["']([^"']+)["']|(\[[^\]]+\])|([^\s>]+))/i.exec(source);
+  return match ? (match[1] || match[2] || match[3] || '').trim() : '[Image]';
+}
+
+function joinedUserText(content) {
+  if (!Array.isArray(content)) return typeof content === 'string' ? content : '';
+  const hasImage = content.some((b) => b && b.type === 'input_image');
+  return content
+    .filter((b) => b && (b.type === 'input_text' || b.type === 'text'))
+    .map((b) => {
+      const text = b.text || '';
+      if (!hasImage) return text;
+      if (/^\s*<\/image>\s*$/i.test(text)) return '';
+      const label = imageTransportLabel(text);
+      return label == null ? text : label;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function eventUserDisplayText(payload) {
+  const message = String((payload && payload.message) || '').trim();
+  const imageCount = (Array.isArray(payload && payload.images) ? payload.images.length : 0)
+    + (Array.isArray(payload && payload.local_images) ? payload.local_images.length : 0);
+  const labels = [];
+  for (let i = 0; i < imageCount; i++) labels.push('[Image #' + (i + 1) + ']');
+  return (labels.join(' ') + (labels.length && message ? ' ' : '') + message).trim();
+}
+
+function eventUserTitleFromRecord(rec) {
+  if (!rec || typeof rec !== 'object') return '';
+  const { t, p } = splitLine(rec);
+  if (t !== 'event_msg' || !p || p.type !== 'user_message') return '';
+  const text = eventUserDisplayText(p);
+  return text ? firstUserText([{ role: 'user', content: [{ type: 'text', text }] }]) : '';
+}
+
+function firstEventUserTitle(recs) {
+  for (const rec of recs || []) {
+    const title = eventUserTitleFromRecord(rec);
+    if (title) return title;
+  }
+  return '';
+}
+
+// List rows normally shape only the first 128 KiB. An image-first response_item can be one much
+// larger JSON line, so the bounded read drops it and everything after it. If no title was found,
+// scan forward without retaining oversized lines and use Codex's following user_message event.
+function scanEventUserTitle(file) {
+  const CHUNK = 64 * 1024;
+  const MAX_SCAN = 64 * 1024 * 1024;
+  const MAX_LINE = 256 * 1024;
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.allocUnsafe(CHUNK);
+    let scanned = 0;
+    let parts = [];
+    let lineBytes = 0;
+    let dropping = false;
+
+    const append = (piece) => {
+      if (dropping || !piece.length) return;
+      if (lineBytes + piece.length > MAX_LINE) {
+        dropping = true;
+        parts = [];
+        lineBytes = 0;
+        return;
+      }
+      parts.push(Buffer.from(piece));
+      lineBytes += piece.length;
+    };
+    const finishLine = () => {
+      let title = '';
+      if (!dropping && lineBytes) {
+        try { title = eventUserTitleFromRecord(JSON.parse(Buffer.concat(parts, lineBytes).toString('utf8').trim())); } catch (_) {}
+      }
+      parts = [];
+      lineBytes = 0;
+      dropping = false;
+      return title;
+    };
+
+    while (scanned < MAX_SCAN) {
+      const n = fs.readSync(fd, buf, 0, Math.min(CHUNK, MAX_SCAN - scanned), null);
+      if (!n) break;
+      scanned += n;
+      let start = 0;
+      for (let i = 0; i < n; i++) {
+        if (buf[i] !== 10) continue;
+        append(buf.subarray(start, i));
+        const title = finishLine();
+        if (title) return title;
+        start = i + 1;
+      }
+      append(buf.subarray(start, n));
+    }
+    return finishLine();
+  } catch (_) {
+    return '';
+  } finally {
+    if (fd != null) { try { fs.closeSync(fd); } catch (_) {} }
+  }
 }
 
 /** argv → display command: unwrap the ["bash","-lc", script] convention, else shell-ish join. */
@@ -233,7 +354,7 @@ function normalize(recs) {
             messages.push(withTs(m));
           }
         } else if (p.role === 'user') {
-          const text = joinedText(content, ['input_text', 'text']);
+          const text = joinedUserText(content);
           if (isMetaUserText(text)) continue;
           const blocks = [];
           if (text.trim()) blocks.push({ type: 'text', text });
@@ -242,7 +363,11 @@ function normalize(recs) {
               if (b && b.type === 'input_image') { const img = imageBlock(b.image_url); if (img) blocks.push(img); }
             }
           }
-          if (blocks.length) messages.push(withTs({ role: 'user', content: blocks }));
+          if (blocks.length) {
+            const message = { role: 'user', content: blocks };
+            if (isAgentsBootstrap(text)) message._meta = true;
+            messages.push(withTs(message));
+          }
         } // system / developer turns: harness plumbing, not conversation
       } else if (it === 'reasoning') {
         let txt = joinedText(p.summary, ['summary_text', 'text']);
@@ -403,7 +528,8 @@ function sessionMetaFrom(file, recs, dm, st) {
   // Live rollouts customize via the sidecar (never rewrite another tool's files); imported
   // COPIES are our own files, where the in-file __ccbud__ applies.
   const cc = hasImportSidecar(file) ? fileCcbud(recs) : sidecarMeta(file);
-  const autoTitle = firstUserText(n.messages);
+  let autoTitle = firstUserText(n.messages) || firstEventUserTitle(recs);
+  if (!autoTitle && (!st || st.size > 131072)) autoTitle = scanEventUserTitle(file);
   const stem = stemOf(file);
   return {
     id: 'codex:' + stem,
@@ -434,7 +560,7 @@ function sessionFromRecs(file, recs) {
   try { imported = JSON.parse(fs.readFileSync(String(file).replace(/\.jsonl$/, '.import.json'), 'utf8')); } catch (_) {}
   // Same sidecar-vs-in-file split as sessionMetaFrom.
   const cc = imported ? fileCcbud(recs) : sidecarMeta(file);
-  const autoTitle = firstUserText(n.messages);
+  const autoTitle = firstUserText(n.messages) || firstEventUserTitle(recs);
   const stem = stemOf(file);
   return {
     meta: {

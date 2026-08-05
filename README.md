@@ -4,104 +4,56 @@
 
 # CC Buddy
 
-### Coding CLI Buddy
+**Manage and review completed Coding Agent CLI sessions.**
 
-**Point Claude Code at any Anthropic-compatible provider — one click, all local.**
+[![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-5b6cff?style=flat-square)](#installation) [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-5b6cff?style=flat-square)](#-installation)
-[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
-
-[Installation](#-installation) · [Quick Start](#-quick-start) · [How it works](#-how-it-works)
-
-**English** · [简体中文](./README.zh-CN.md)
+[Download](https://github.com/ccbud/ccbud/releases) · **English** · [简体中文](./README.zh-CN.md)
 
 </div>
 
 ---
 
-**CC Buddy** (`CC` coding CLI + `Buddy`) is a cross-platform desktop app that runs a tiny **local gateway** between Claude Code and any Anthropic-compatible provider — Kimi, DeepSeek, GLM, MiMo and more. Add your providers once, switch with a single click, and let CC Buddy wire up Claude Code for you. **You never touch an environment variable.**
-
-<div align="center">
-  <img src="docs/img/services.jpg" alt="CC Buddy — services view" width="820">
-</div>
-
-- **One-click Connect** — CC Buddy writes `~/.claude/settings.json` for you, and restores it exactly when you disconnect.
-- **Switch in a click** — keep many providers side by side; tap a card to switch instantly.
-- **Automatic model mapping** — Claude's default model names are routed to the active provider's models for you.
-- **Stays on your machine** — the gateway binds to `127.0.0.1`; nothing leaves your computer.
-
-## 📥 Installation
-
-### Download (recommended)
-
-Grab the latest build for your platform from the **[Releases page](https://github.com/ccbud/ccbud/releases)**:
-
-| Platform | File |
-| :-- | :-- |
-| **macOS** (Apple Silicon & Intel) | `.dmg` |
-| **Windows** | `.exe` installer |
-| **Linux** | `.AppImage` / `.deb` |
-
-> **macOS Gatekeeper:** if the first launch is blocked, right-click the app → **Open**, or run
-> `xattr -dr com.apple.quarantine "/Applications/CC Buddy.app"`.
-
-### Homebrew (macOS)
-
-```bash
-brew install --cask ccbud/tap/ccbud   # first install
-brew upgrade --cask ccbud             # later upgrades
-```
-
-### Staying up to date
-
-CC Buddy checks for new releases on launch (and daily) and surfaces them under **Settings → About & Updates**. App updates are delivered through the Tauri updater when available; Homebrew users can also run `brew upgrade --cask ccbud`.
-
-### Build from source
-
-```bash
-git clone https://github.com/ccbud/ccbud.git
-cd ccbud
-npm install
-npm start                 # run the Tauri app in development
-
-# package a distributable for your OS:
-npm run dist:mac          # or: dist:win · dist:linux
-```
-
-## 🚀 Quick Start
-
-**1 · Add a provider**
-Open CC Buddy, click **`+`**, pick a preset (GLM · DeepSeek · MiMo · Kimi …) or enter a custom base URL, and paste your API key.
-
-<div align="center"><img src="docs/img/switch.jpg" alt="Add and switch providers" width="760"></div>
-
-**2 · Connect**
-Hit the big **Connect** button. CC Buddy points Claude Code at the local gateway by writing `env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN` into `~/.claude/settings.json` — backing up whatever was there before.
-
-**3 · Use Claude Code**
-Start a new Claude Code session and you're on your chosen provider. Switch anytime by clicking another card; hit **Disconnect** to restore your original settings, untouched. Keep CC Buddy running while you work — closing the window tucks it into the menu bar / tray.
-
-## 🔧 How it works
+**CC Buddy** is a cross-platform desktop app for managing and reviewing local Coding Agent CLI sessions. It does not run the agent for you; it turns histories already written by your CLIs into readable, searchable timelines. After a task finishes, you can trace its goal, decisions, tool calls, subagents, changes, failures, and final outcome. An optional local gateway is included for model API conversion.
 
 ```text
-Claude Code ──(ANTHROPIC_BASE_URL = 127.0.0.1:port)──▶ CC Buddy gateway ──▶ active provider
-                                                          │
-                                          · swaps in the upstream's real token
-                                          · routes / maps model names
-                                          · rewrites the model name in the response
-                                            back to the name the client asked for
+CLI session histories ──▶ CC Buddy ──▶ browse · search · trace · export · review
 ```
 
-CC Buddy never edits your providers' own configs — it just runs a forwarding server on your machine. When you use a model alias, the gateway rewrites the `model` field in the response (including the streaming `message_start`) back to the alias, so Claude Code always sees the name it requested. If you don't set `ANTHROPIC_MODEL`, Claude's default `claude-*` model names are mapped to the active provider's main model (with `haiku` → its small model).
+## Session review
 
-## 📸 A look inside
+Reads local histories from **Claude Code, Codex CLI, Qoder CLI, Grok Build CLI, GitHub Copilot CLI, and Antigravity CLI**.
 
-| | |
-| :--: | :--: |
-| <img src="docs/img/switch.jpg" width="420"><br>Switch providers and map models in a click | <img src="docs/img/monitor.jpg" width="420"><br>Watch every request flow through, live |
-| <img src="docs/img/usage.jpg" width="420"><br>Usage at a glance — even from the menu bar | <img src="docs/img/privacy.jpg" width="420"><br>Redact sensitive data before it ever leaves |
+- **Reconstruct the run** — render Markdown, thinking, tool calls and results, patches, images, recorded model/token metadata, and main/subagent threads.
+- **Find the moment** — auto-discover histories, group by source and project, and search across sessions or inside one conversation.
+- **Manage the archive** — rename, tag, filter, recycle, add custom history roots, follow active sessions, and import compatible JSONL/ZIP transcripts.
+- **Continue the review** — export raw session files/bundles (JSONL, ZIP, or DB) or portable HTML; on macOS, open the main and subagent transcripts in Claude or ChatGPT for analysis.
 
-## 📄 License
+## Included: local API gateway
 
-Released under the [GPL-3.0](./LICENSE) license.
+As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** on both client and provider sides, passing through matching protocols or translating between them. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Preset, custom, and plugin-backed providers support switching and model mapping.
+
+The gateway binds to `127.0.0.1`; inference requests still go to the provider you select.
+
+## Installation
+
+Download the latest build for macOS, Windows, or Linux from [Releases](https://github.com/ccbud/ccbud/releases).
+
+Homebrew (macOS):
+
+```bash
+brew install --cask ccbud/tap/ccbud
+```
+
+## Development
+
+With Node.js and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) installed:
+
+```bash
+git clone https://github.com/ccbud/ccbud.git && cd ccbud
+npm install && npm start
+```
+
+## License
+
+Released under [GPL-3.0](./LICENSE).

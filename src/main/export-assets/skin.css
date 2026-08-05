@@ -98,7 +98,7 @@ body {
 .msg-name .dot { width: 14px; height: 14px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; }
 .msg.assistant .msg-name .dot { background: var(--accent); color: #fff; }
 
-.bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 13px 18px; box-shadow: var(--shadow-sm); }
+.bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 12px; box-shadow: var(--shadow-sm); }
 .msg.assistant .body { color: var(--text); }
 
 /* markdown */

@@ -112,6 +112,63 @@
     if (typeof c === 'string') return c ? [{ type: 'text', text: c }] : [];
     return Array.isArray(c) ? c : [];
   }
+  // Codex records its initial AGENTS instructions and environment snapshot as two text blocks in
+  // one user message. Turn that XML-ish transport shape into compact Markdown for the transcript.
+  function formatCodexBootstrap(text) {
+    const source = String(text || '');
+    const agents = /^\s*#\s+AGENTS\.md instructions for ([^\r\n]+)[\s\S]*?<INSTRUCTIONS\b[^>]*>([\s\S]*?)<\/INSTRUCTIONS>/i.exec(source);
+    if (!agents) return null;
+
+    const env = /<environment_context\b[^>]*>([\s\S]*?)<\/environment_context>/i.exec(source);
+    const parts = ['# AGENTS.md instructions for ' + agents[1].trim()];
+    const instructions = agents[2].trim();
+    if (instructions) {
+      const lines = instructions.split(/\r?\n/).filter((line) => line.trim());
+      parts.push(lines.length === 1
+        ? '**INSTRUCTIONS:** ' + lines[0].trim()
+        : '**INSTRUCTIONS:**\n\n' + instructions);
+    }
+
+    if (env) {
+      const block = env[1];
+      const tag = (name) => {
+        const match = new RegExp('<' + name + '\\b[^>]*>([\\s\\S]*?)<\\/' + name + '>', 'i').exec(block);
+        return match ? match[1].trim() : '';
+      };
+      const attr = (name, attribute) => {
+        const match = new RegExp("<" + name + "\\b[^>]*\\b" + attribute + "=[\"']([^\"']+)[\"']", "i").exec(block);
+        return match ? match[1].trim() : '';
+      };
+      const code = (value) => {
+        const tick = String.fromCharCode(96);
+        return value ? tick + value + tick : '';
+      };
+      const roots = [];
+      const rootRe = /<root\b[^>]*>([\s\S]*?)<\/root>/gi;
+      let root;
+      while ((root = rootRe.exec(block)) !== null) {
+        if (root[1].trim()) roots.push(code(root[1].trim()));
+      }
+      const fields = [
+        ['environment_context', code(tag('cwd'))],
+        ['shell', tag('shell')],
+        ['current_date', tag('current_date')],
+        ['timezone', tag('timezone')],
+        ['workspace_roots', roots.join(', ')],
+        ['permission_profile', attr('permission_profile', 'type')],
+        ['file_system', attr('file_system', 'type')],
+      ].filter((field) => field[1]);
+      if (fields.length) {
+        parts.push(fields.map((field) => '**' + field[0] + ':** ' + field[1]).join('  \n'));
+      }
+    }
+
+    let rest = source.replace(agents[0], '');
+    if (env) rest = rest.replace(env[0], '');
+    rest = rest.trim();
+    if (rest) parts.push(rest);
+    return parts.join('\n\n').trim();
+  }
   // Strip harness-injected blocks from user turns while keeping their human-facing content.
   // A task notification is an XML envelope whose <result> is the actual Markdown response;
   // its IDs, status, summary, usage, and other transport metadata are not useful in the thread.
@@ -119,7 +176,9 @@
   // prompt is runtime context rather than a user message, so it should not be displayed.
   // Returns '' when a turn contains injected metadata only.
   function stripInjected(text) {
-    const source = String(text || '');
+    let source = String(text || '');
+    const bootstrap = formatCodexBootstrap(source);
+    if (bootstrap != null) source = bootstrap;
     // Only suppress the standalone Codex injection. Keep ordinary prose intact when a user is
     // discussing or quoting <skill> markup alongside their own text.
     if (/^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/i.test(source)) return '';
@@ -749,7 +808,7 @@
         .map((b) => (b.type === 'text' ? { type: 'text', text: stripInjected(b.text) } : b))
         .filter((b) => b.type === 'image' || b.text);
       if (!clean.length) return '';
-      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-4 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
+      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
     }
     let body = '';
     blocks.forEach((b) => {
@@ -1177,9 +1236,9 @@
     const messages = activeMessages(); // TOC follows the session shown in the main panel
     const toc = [];
     messages.forEach((m, i) => {
-      if (m.role !== 'user') return;
+      if (m.role !== 'user' || m._meta || m.meta) return;
       const vis = normContent(m.content).filter((b) => b.type === 'text');
-      const tv = vis.map((b) => stripInjected(b.text)).filter(Boolean).join(' ').trim();
+      const tv = vis.map((b) => stripInjected(b.text)).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
       if (!tv) return;
       toc.push(`<div class="toc-item text-xs text-caption py-1 px-1.75 rounded-[5px] cursor-pointer truncate transition-all duration-100 hover:bg-chip-bg hover:text-fg" data-go="${i}" data-tip="${esc(tv.slice(0, 200))}">👤 ${esc(tv.slice(0, 32) || '…')}</div>`);
     });

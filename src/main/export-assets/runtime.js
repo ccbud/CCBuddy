@@ -139,8 +139,65 @@
     return '<div class="subagent"><details class="subagent-d"><summary><span class="subagent-ico">🤖</span><span class="subagent-title">子代理 · ' + esc(subName) + '</span><span class="subagent-desc">' + esc(sub.description || '') + '</span><span class="subagent-count">' + (sub.count || 0) + ' 条 · ' + fmtTok((sub.totals && sub.totals.out) || 0) + '↓</span></summary><div class="subagent-body"><div class="thread">' + renderThread(sub.messages || []) + '</div></div></details></div>';
   }
 
+  function formatCodexBootstrap(text) {
+    var source = String(text || '');
+    var agents = /^\s*#\s+AGENTS\.md instructions for ([^\r\n]+)[\s\S]*?<INSTRUCTIONS\b[^>]*>([\s\S]*?)<\/INSTRUCTIONS>/i.exec(source);
+    if (!agents) return null;
+
+    var env = /<environment_context\b[^>]*>([\s\S]*?)<\/environment_context>/i.exec(source);
+    var parts = ['# AGENTS.md instructions for ' + agents[1].trim()];
+    var instructions = agents[2].trim();
+    if (instructions) {
+      var lines = instructions.split(/\r?\n/).filter(function (line) { return line.trim(); });
+      parts.push(lines.length === 1
+        ? '**INSTRUCTIONS:** ' + lines[0].trim()
+        : '**INSTRUCTIONS:**\n\n' + instructions);
+    }
+
+    if (env) {
+      var block = env[1];
+      var tag = function (name) {
+        var match = new RegExp('<' + name + '\\b[^>]*>([\\s\\S]*?)<\\/' + name + '>', 'i').exec(block);
+        return match ? match[1].trim() : '';
+      };
+      var attr = function (name, attribute) {
+        var match = new RegExp("<" + name + "\\b[^>]*\\b" + attribute + "=[\"']([^\"']+)[\"']", "i").exec(block);
+        return match ? match[1].trim() : '';
+      };
+      var code = function (value) {
+        var tick = String.fromCharCode(96);
+        return value ? tick + value + tick : '';
+      };
+      var roots = [];
+      var rootRe = /<root\b[^>]*>([\s\S]*?)<\/root>/gi;
+      var root;
+      while ((root = rootRe.exec(block)) !== null) {
+        if (root[1].trim()) roots.push(code(root[1].trim()));
+      }
+      var fields = [
+        ['environment_context', code(tag('cwd'))],
+        ['shell', tag('shell')],
+        ['current_date', tag('current_date')],
+        ['timezone', tag('timezone')],
+        ['workspace_roots', roots.join(', ')],
+        ['permission_profile', attr('permission_profile', 'type')],
+        ['file_system', attr('file_system', 'type')],
+      ].filter(function (field) { return field[1]; });
+      if (fields.length) {
+        parts.push(fields.map(function (field) { return '**' + field[0] + ':** ' + field[1]; }).join('  \n'));
+      }
+    }
+
+    var rest = source.replace(agents[0], '');
+    if (env) rest = rest.replace(env[0], '');
+    rest = rest.trim();
+    if (rest) parts.push(rest);
+    return parts.join('\n\n').trim();
+  }
   function stripInjected(text) {
     var source = String(text || '');
+    var bootstrap = formatCodexBootstrap(source);
+    if (bootstrap != null) source = bootstrap;
     if (/^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/i.test(source)) return '';
     return source
       .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, function (block) {
