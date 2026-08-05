@@ -140,7 +140,9 @@
   }
 
   function stripInjected(text) {
-    return String(text || '')
+    var source = String(text || '');
+    if (/^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/i.test(source)) return '';
+    return source
       .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, function (block) {
         var result = /<result\b[^>]*>([\s\S]*?)<\/result>/i.exec(block);
         return result ? '\n' + result[1].trim() + '\n' : '';

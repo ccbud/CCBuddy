@@ -125,9 +125,15 @@
   // Strip harness-injected blocks from user turns while keeping their human-facing content.
   // A task notification is an XML envelope whose <result> is the actual Markdown response;
   // its IDs, status, summary, usage, and other transport metadata are not useful in the thread.
+  // Codex also records loaded skill instructions as a standalone <skill> envelope; that whole
+  // prompt is runtime context rather than a user message, so it should not be displayed.
   // Returns '' when a turn contains injected metadata only.
   function stripInjected(text) {
-    return String(text || '')
+    const source = String(text || '');
+    // Only suppress the standalone Codex injection. Keep ordinary prose intact when a user is
+    // discussing or quoting <skill> markup alongside their own text.
+    if (/^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/i.test(source)) return '';
+    return source
       .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/gi, (block) => {
         const result = /<result\b[^>]*>([\s\S]*?)<\/result>/i.exec(block);
         return result ? `\n${result[1].trim()}\n` : '';
