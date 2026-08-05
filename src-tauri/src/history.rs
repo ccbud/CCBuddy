@@ -595,9 +595,16 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
     }
     let built = build_session_meta(file, dir_name, dir_id, dir_label)?;
     // A permission failure is recoverable without changing the transcript's mtime/size (for
-    // example after the user grants macOS App Data access). Never memoize that placeholder row,
-    // otherwise it would stay "(conversation)" until the process restarts.
-    if built.get("readError").map(Value::is_null).unwrap_or(true) {
+    // example after the user grants macOS App Data access) — never memoize that placeholder row,
+    // otherwise it would stay "(conversation)" until the process restarts. Every OTHER read
+    // error is memoized like a normal row: the mtime/size key already invalidates it when the
+    // file changes, and skipping the memo would re-read a broken transcript on every refresh.
+    let awaiting_grant = built
+        .get("readError")
+        .and_then(|e| e.get("kind"))
+        .and_then(|k| k.as_str())
+        == Some("permissionDenied");
+    if !awaiting_grant {
         if let Ok(mut cache) = meta_cache().lock() {
             cache.insert(file.to_path_buf(), (mt, size, built.clone()));
         }

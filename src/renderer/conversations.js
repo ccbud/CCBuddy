@@ -607,7 +607,11 @@
     const loadError = ipcReadFailed ? { kind: 'readFailed' } : (detail && detail.error);
     if (loadError || !detail) {
       const kind = loadError && loadError.kind;
-      const key = kind === 'permissionDenied'
+      // conv.permissionDenied walks the user through macOS System Settings — that guidance only
+      // fits macOS (the helper-backed Qoder read path); elsewhere a permission failure shows the
+      // generic read-failure copy (both keys keep the retry timer armed).
+      const isMac = /mac/i.test(navigator.platform || '');
+      const key = kind === 'permissionDenied' && isMac
         ? 'conv.permissionDenied'
         : !loadError || kind === 'notFound'
           ? 'conv.notFound'
