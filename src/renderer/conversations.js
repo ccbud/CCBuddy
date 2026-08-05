@@ -992,7 +992,7 @@
     const out = (s.totals && s.totals.out) || 0;
     const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓`;
     const desc = s.description ? ` · <span class="font-normal text-muted">${esc(s.description)}</span>` : '';
-    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(subName(s))}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body pl-3 pr-1 py-1.5 bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
+    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(subName(s))}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
   }
   // Render one subagent's whole thread (recursively wiring its own inline subagents via renderMessage →
   // renderToolCard). idx=null so nested turns carry no data-mi (they're outside main-window navigation).

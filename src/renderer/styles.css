@@ -5164,6 +5164,12 @@ pre.cb-has-gutter > code {
   border-left: 2.5px solid var(--brand);
   scroll-margin-top: 12px;
 }
+.subagent-inline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+}
 .subagent-inline[open] > summary .sub-caret {
   transform: rotate(90deg);
 }

@@ -2129,6 +2129,12 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   border-left: 2.5px solid var(--brand);
   scroll-margin-top: 12px;
 }
+.subagent-inline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+}
 .subagent-inline[open] > summary .sub-caret { transform: rotate(90deg); }
 /* Landing flash when jumped to from the subagent picker — a bright ring that fades, hard to miss. */
 .subagent-inline.sub-flash { border-radius: 4px; animation: subFlash 2.2s var(--ease); }
@@ -2791,4 +2797,3 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
    (transform), and the markup also carries scale utilities (the `scale` property) → they double.
    Kill the utility scale only (translate is left alone, so card hover-lifts still work). */
 .nav-item, .btn, .hero-action, .fab { scale: none !important; }
-
