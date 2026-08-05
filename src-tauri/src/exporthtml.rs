@@ -33,15 +33,26 @@ fn cap(s: &str, n: usize) -> String {
 }
 
 fn parse_jsonl(file: &Path) -> Vec<Value> {
-    let raw = match fs::read_to_string(file) {
+    let qoder = crate::qoder::looks_qoder_path(file);
+    let raw = match if qoder {
+        crate::qoder::read_text(file)
+    } else {
+        fs::read_to_string(file)
+    } {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    raw.split('\n')
+    let records: Vec<Value> = raw
+        .split('\n')
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .collect()
+        .collect();
+    if qoder {
+        crate::qoder::normalize_records(&records)
+    } else {
+        records
+    }
 }
 
 fn usage_of(u: &Value) -> Value {
@@ -138,9 +149,18 @@ fn line_to_msg(rec: &Value) -> Option<Value> {
     });
     if ty == "assistant" {
         let o = out.as_object_mut().unwrap();
-        o.insert("model".into(), m.get("model").cloned().unwrap_or(Value::Null));
-        o.insert("usage".into(), m.get("usage").map(usage_of).unwrap_or(Value::Null));
-        o.insert("stop".into(), m.get("stop_reason").cloned().unwrap_or(Value::Null));
+        o.insert(
+            "model".into(),
+            m.get("model").cloned().unwrap_or(Value::Null),
+        );
+        o.insert(
+            "usage".into(),
+            m.get("usage").map(usage_of).unwrap_or(Value::Null),
+        );
+        o.insert(
+            "stop".into(),
+            m.get("stop_reason").cloned().unwrap_or(Value::Null),
+        );
     }
     Some(out)
 }
@@ -178,7 +198,9 @@ fn command_label(raw: &str) -> String {
 fn first_user_text(messages: &[Value]) -> String {
     let mut fallback = String::new();
     for m in messages {
-        if m.get("role").and_then(|r| r.as_str()) != Some("user") || m.get("meta").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user")
+            || m.get("meta").and_then(|v| v.as_bool()).unwrap_or(false)
+        {
             continue;
         }
         let raw = content_text(m.get("content").unwrap_or(&Value::Null));
@@ -201,7 +223,11 @@ fn first_user_text(messages: &[Value]) -> String {
     fallback.chars().take(100).collect()
 }
 fn base_name(p: &str) -> String {
-    p.split('/').filter(|s| !s.is_empty()).last().unwrap_or(p).to_string()
+    p.split('/')
+        .filter(|s| !s.is_empty())
+        .last()
+        .unwrap_or(p)
+        .to_string()
 }
 
 struct Shaped {
@@ -242,13 +268,21 @@ fn shape_session(recs: &[Value]) -> Shaped {
         }
         messages.push(lm);
     }
-    Shaped { messages, model, totals: (tin, tout, tcr, turns), first_ts, last_ts }
+    Shaped {
+        messages,
+        model,
+        totals: (tin, tout, tcr, turns),
+        first_ts,
+        last_ts,
+    }
 }
 
 fn read_subagents(file: &Path) -> Value {
-    let dir = file
-        .parent()
-        .map(|p| p.join(file.file_stem().and_then(|s| s.to_str()).unwrap_or("")).join("subagents"));
+    let qoder = crate::qoder::looks_qoder_path(file);
+    let dir = file.parent().map(|p| {
+        p.join(file.file_stem().and_then(|s| s.to_str()).unwrap_or(""))
+            .join("subagents")
+    });
     let dir = match dir {
         Some(d) => d,
         None => return json!({}),
@@ -263,8 +297,17 @@ fn read_subagents(file: &Path) -> Value {
         if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
             continue;
         }
-        let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_string();
-        let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+        let agent_id = name
+            .trim_start_matches("agent-")
+            .trim_end_matches(".jsonl")
+            .to_string();
+        let meta_path = dir.join(format!("agent-{}.meta.json", agent_id));
+        let meta_raw = if qoder {
+            crate::qoder::read_text(&meta_path)
+        } else {
+            fs::read_to_string(&meta_path)
+        };
+        let meta: Value = meta_raw
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(json!({}));
@@ -329,7 +372,11 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
         })
         .unwrap_or_default();
     let t = m.get("totals").cloned().unwrap_or_else(|| json!({}));
-    let title = m.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = m
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     json!({
         "meta": {
             "title": if title.is_empty() { "(conversation)".to_string() } else { title },
@@ -356,6 +403,7 @@ fn build_from_session(sess: Value, assistant: &str) -> Value {
 
 pub fn build_data(file: &str) -> Value {
     let path = Path::new(file);
+    let qoder = crate::qoder::looks_qoder_path(path);
     // Foreign sources first — container-shape routing (one of them is SQLite, not jsonl).
     match crate::history::foreign_kind(path) {
         Some(crate::history::Foreign::Grok) => {
@@ -377,14 +425,37 @@ pub fn build_data(file: &str) -> Value {
     }
     // Qoder sessions are Claude-format (the shaping below applies as-is) — brand the exported
     // page and prefer qoder's own stored title over first-user-text.
-    let qoder = crate::qoder::looks_qoder_path(path);
-    let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
+    let meta_rec = recs
+        .iter()
+        .find(|r| r.get("cwd").is_some())
+        .or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let s = shape_session(&recs);
-    let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str());
+    let top_level_cwd = meta_rec
+        .and_then(|r| r.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let cwd = if qoder {
+        crate::qoder::working_dir_from(&recs).or(top_level_cwd)
+    } else {
+        top_level_cwd
+    };
     let title = {
-        let t = (if qoder { crate::qoder::session_title(path) } else { None })
-            .unwrap_or_else(|| first_user_text(&s.messages));
-        if t.is_empty() { "(conversation)".to_string() } else { t }
+        let t = (if qoder {
+            crate::qoder::session_title_from(&recs)
+        } else {
+            None
+        })
+        .unwrap_or_else(|| first_user_text(&s.messages));
+        if t.is_empty() {
+            "(conversation)".to_string()
+        } else {
+            t
+        }
+    };
+    let model = if qoder {
+        crate::qoder::model_from(&recs).or(s.model.clone())
+    } else {
+        s.model.clone()
     };
     let stem = path.file_stem().and_then(|x| x.to_str()).unwrap_or("");
     let mut subagents = read_subagents(path);
@@ -397,8 +468,8 @@ pub fn build_data(file: &str) -> Value {
             "title": title,
             // The viewer runtime labels turns `meta.assistant || 'Claude'`.
             "assistant": if qoder { json!("Qoder") } else { Value::Null },
-            "model": s.model,
-            "project": cwd.map(base_name),
+            "model": model,
+            "project": cwd.as_deref().map(base_name),
             "cwd": cwd,
             "branch": meta_rec.and_then(|r| r.get("gitBranch")).cloned().unwrap_or(Value::Null),
             "sessionId": meta_rec.and_then(|r| r.get("sessionId")).and_then(|v| v.as_str()).unwrap_or(stem),
@@ -415,7 +486,9 @@ pub fn build_data(file: &str) -> Value {
 }
 
 pub fn html_from_data(data: &Value) -> String {
-    let json = serde_json::to_string(data).unwrap_or_default().replace('<', "\\u003c");
+    let json = serde_json::to_string(data)
+        .unwrap_or_default()
+        .replace('<', "\\u003c");
     // Tab title uses the project name (already public via the export's filename), NOT the
     // conversation title: Clarity reports document.title as page metadata that masking can't
     // reach, and the conversation title is first-message text. The full title still renders
@@ -473,8 +546,10 @@ fn sanitize_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_underscore = false;
     for ch in s.chars() {
-        let bad = matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r')
-            || ch.is_whitespace();
+        let bad = matches!(
+            ch,
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r'
+        ) || ch.is_whitespace();
         if bad {
             if !prev_underscore {
                 out.push('_');
@@ -485,15 +560,20 @@ fn sanitize_name(s: &str) -> String {
             prev_underscore = false;
         }
     }
-    out.trim_matches(|c| c == '_' || c == '.' || c == '-').chars().take(60).collect()
+    out.trim_matches(|c| c == '_' || c == '.' || c == '-')
+        .chars()
+        .take(60)
+        .collect()
 }
 
 // Parse an ISO-8601 `ts` and render it as YYMMDDHHmm in local time (matches `new Date(ts)` + the
 // Date's local getters used by the original).
 fn fmt_ts_local(ts: &str) -> Option<String> {
-    chrono::DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%y%m%d%H%M").to_string())
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+        dt.with_timezone(&chrono::Local)
+            .format("%y%m%d%H%M")
+            .to_string()
+    })
 }
 
 // Derive the base name from already-built export `data` (avoids re-parsing for the HTML path).
@@ -517,4 +597,283 @@ pub fn export_base_name_from_data(data: &Value) -> String {
 // Build + shape the file, then derive the base name (JSONL export path, which has no `data` yet).
 pub fn export_base_name(file: &str) -> String {
     export_base_name_from_data(&build_data(file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn qoder_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ccbud-exporthtml-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        let file = root
+            .join(".qoder")
+            .join("projects")
+            .join("-work-project")
+            .join("session.jsonl");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        (root, file)
+    }
+
+    fn write_jsonl(path: &Path, records: &[Value]) {
+        let raw = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path, format!("{raw}\n")).unwrap();
+    }
+
+    fn streamed_assistant_records() -> Vec<Value> {
+        vec![
+            json!({
+                "type": "assistant",
+                "uuid": "wrap-1",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "",
+                    "content": [{ "type": "thinking", "thinking": "plan" }],
+                    "stop_reason": null,
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "wrap-2",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "ultimate",
+                    "content": [{ "type": "redacted_thinking", "data": "opaque" }],
+                    "stop_reason": null,
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "wrap-3",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "ultimate",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": { "file_path": "/work/a" },
+                    }],
+                    "usage": { "input_tokens": 7, "output_tokens": 3 },
+                    "stop_reason": "tool_use",
+                },
+            }),
+        ]
+    }
+
+    #[test]
+    fn qoder_jsonl_normalizes_streamed_assistant_records() {
+        let (root, file) = qoder_fixture("normalize");
+        write_jsonl(&file, &streamed_assistant_records());
+
+        let records = parse_jsonl(&file);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].get("uuid").and_then(Value::as_str),
+            Some("wrap-1")
+        );
+        let message = records[0].get("message").unwrap();
+        assert_eq!(
+            message.get("model").and_then(Value::as_str),
+            Some("ultimate")
+        );
+        assert_eq!(
+            message.get("stop_reason").and_then(Value::as_str),
+            Some("tool_use")
+        );
+        assert_eq!(
+            message
+                .get("usage")
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(Value::as_i64),
+            Some(7)
+        );
+        let content = message.get("content").and_then(Value::as_array).unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(
+            content[0].get("type").and_then(Value::as_str),
+            Some("thinking")
+        );
+        assert_eq!(
+            content[1].get("type").and_then(Value::as_str),
+            Some("tool_use")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ordinary_jsonl_keeps_streamed_records_unchanged() {
+        let (root, _) = qoder_fixture("ordinary");
+        let file = root.join("ordinary.jsonl");
+        write_jsonl(&file, &streamed_assistant_records());
+
+        let records = parse_jsonl(&file);
+        assert_eq!(records.len(), 3);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qoder_export_uses_record_metadata_and_reads_subagent_meta() {
+        let (root, file) = qoder_fixture("metadata");
+        write_jsonl(
+            &file,
+            &[
+                json!({
+                    "type": "workspace-directories",
+                    "sessionId": "session",
+                    "directories": ["/work/project"],
+                }),
+                json!({
+                    "type": "runtime-config",
+                    "sessionId": "session",
+                    "model": "ultimate",
+                }),
+                json!({
+                    "type": "ai-title",
+                    "sessionId": "session",
+                    "aiTitle": "Inline Qoder title",
+                }),
+                json!({
+                    "type": "user",
+                    "uuid": "user-1",
+                    "timestamp": "2026-08-04T08:00:00Z",
+                    "message": { "role": "user", "content": "User fallback title" },
+                }),
+                json!({
+                    "type": "assistant",
+                    "uuid": "assistant-1",
+                    "timestamp": "2026-08-04T08:01:00Z",
+                    "message": {
+                        "id": "answer-1",
+                        "role": "assistant",
+                        "model": "message-model",
+                        "content": [{ "type": "text", "text": "Done" }],
+                        "usage": { "input_tokens": 2, "output_tokens": 1 },
+                        "stop_reason": "end_turn",
+                    },
+                }),
+            ],
+        );
+        fs::write(
+            file.parent().unwrap().join("session-session.json"),
+            r#"{"title":"stale companion title","working_dir":"/stale/path"}"#,
+        )
+        .unwrap();
+
+        let subagent_dir = file.parent().unwrap().join("session").join("subagents");
+        fs::create_dir_all(&subagent_dir).unwrap();
+        write_jsonl(
+            &subagent_dir.join("agent-a.jsonl"),
+            &[
+                json!({
+                    "type": "user",
+                    "uuid": "sub-user",
+                    "message": { "role": "user", "content": "Investigate" },
+                }),
+                json!({
+                    "type": "assistant",
+                    "uuid": "sub-assistant",
+                    "message": {
+                        "id": "sub-answer",
+                        "role": "assistant",
+                        "model": "ultimate",
+                        "content": [{ "type": "text", "text": "Found it" }],
+                    },
+                }),
+            ],
+        );
+        fs::write(
+            subagent_dir.join("agent-a.meta.json"),
+            r#"{"toolUseId":"tool-a","agentType":"Explore","description":"trace"}"#,
+        )
+        .unwrap();
+
+        let data = build_data(&file.to_string_lossy());
+        let meta = data.get("meta").unwrap();
+        assert_eq!(meta.get("assistant").and_then(Value::as_str), Some("Qoder"));
+        assert_eq!(
+            meta.get("title").and_then(Value::as_str),
+            Some("Inline Qoder title")
+        );
+        assert_eq!(
+            meta.get("cwd").and_then(Value::as_str),
+            Some("/work/project")
+        );
+        assert_eq!(meta.get("project").and_then(Value::as_str), Some("project"));
+        assert_eq!(meta.get("model").and_then(Value::as_str), Some("ultimate"));
+        assert_eq!(meta.get("subagentCount").and_then(Value::as_u64), Some(1));
+        let subagent = data
+            .get("subagents")
+            .and_then(|subagents| subagents.get("tool-a"))
+            .unwrap();
+        assert_eq!(
+            subagent.get("type").and_then(Value::as_str),
+            Some("Explore")
+        );
+        assert_eq!(
+            subagent.get("description").and_then(Value::as_str),
+            Some("trace")
+        );
+        assert_eq!(subagent.get("count").and_then(Value::as_u64), Some(2));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qoder_export_falls_back_to_top_level_cwd_and_assistant_model() {
+        let (root, file) = qoder_fixture("metadata-fallback");
+        write_jsonl(
+            &file,
+            &[
+                json!({
+                    "type": "user",
+                    "uuid": "user-1",
+                    "sessionId": "session",
+                    "cwd": "/legacy/work",
+                    "message": { "role": "user", "content": "Fallback title" },
+                }),
+                json!({
+                    "type": "assistant",
+                    "uuid": "assistant-1",
+                    "message": {
+                        "id": "answer-1",
+                        "role": "assistant",
+                        "model": "legacy-model",
+                        "content": [{ "type": "text", "text": "Done" }],
+                    },
+                }),
+            ],
+        );
+
+        let data = build_data(&file.to_string_lossy());
+        let meta = data.get("meta").unwrap();
+        assert_eq!(
+            meta.get("cwd").and_then(Value::as_str),
+            Some("/legacy/work")
+        );
+        assert_eq!(meta.get("project").and_then(Value::as_str), Some("work"));
+        assert_eq!(
+            meta.get("model").and_then(Value::as_str),
+            Some("legacy-model")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

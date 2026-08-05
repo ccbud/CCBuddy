@@ -35,6 +35,9 @@
   let collapsed = new Set(); // collapsed project cwds
   let lastRender = { file: null, count: -1 };
   let currentDetail = null; // last-loaded session detail (for export)
+  let detailRequestSeq = 0; // drops a late historyGet result after another session/request took over
+  let detailRequest = null; // latest in-flight { seq, file }; also prevents timer requests piling up
+  let detailRetryPending = false; // permission/read failures retry on the existing 4s safety-net timer
   // Which session occupies the main panel: 'main' (the root thread) or a subagent key (its tool_use
   // id in detail.subagents). Each subagent is an independent session, so it gets the WHOLE panel —
   // switched via the agent list in the right nav, not nested inline. Reset to 'main' on open.
@@ -525,6 +528,19 @@
     const rs = document.querySelector('.conv-resizer-right');
     if (nav) nav.classList.toggle('hidden', !openFile);
     if (rs) rs.classList.toggle('hidden', !openFile);
+    if (!openFile) detailRetryPending = false;
+  }
+
+  // Drop all transcript-derived UI while a different session loads or the current read fails.
+  // openFile/openId deliberately stay untouched, so the selected row and navigation rail remain
+  // present and a later retry can recover in place without showing data from the previous session.
+  function clearLoadedDetail() {
+    currentDetail = null;
+    searchDocs = null;
+    subIndex = null;
+    renderAgentTabs(null);
+    const stats = $('convStats'); if (stats) stats.innerHTML = '';
+    const toc = $('convToc'); if (toc) toc.innerHTML = '';
   }
 
   async function openConversation(id, file) {
@@ -534,7 +550,9 @@
     openId = id; openFile = file || null;
     syncConvNav();
     activeAgent = 'main'; // new conversation always opens on its main thread
-    searchDocs = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
+    detailRetryPending = false;
+    clearLoadedDetail();
+    vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
     const eb = $('convExportBtn'); if (eb) eb.disabled = !openFile;
     const cp = $('convCopyPathBtn'); if (cp) cp.disabled = !openFile;
@@ -559,11 +577,46 @@
 
   async function rerenderDetail(force) {
     if (!openFile) return;
+    const requestedFile = openFile;
+    // The live/error retry timer can fire while a slower helper-backed Qoder read is still running.
+    // One request for the currently-selected file is enough; a genuinely different selection may
+    // start immediately and its newer sequence invalidates this result.
+    if (detailRequest && detailRequest.file === requestedFile) {
+      if (force) detailRequest.force = true; // preserve a language-change/re-open forced paint
+      return;
+    }
+    const request = { seq: ++detailRequestSeq, file: requestedFile, force: !!force };
+    detailRequest = request;
     let detail = null;
-    try { detail = await api.historyGet(openFile); } catch (_) {}
+    let ipcReadFailed = false;
+    try { detail = await api.historyGet(requestedFile); } catch (_) { ipcReadFailed = true; }
+    if (detailRequest === request) detailRequest = null;
+    // A→B (or A→B→A) can leave older IPC calls in flight. Never let their success/error overwrite
+    // the latest selection, even when the path happens to match again after an intervening click.
+    if (openFile !== requestedFile || request.seq !== detailRequestSeq) return;
+    force = request.force;
     const host = $('convDetail');
     if (!host) return;
-    if (!detail) { host.innerHTML = `<div class="conv-empty">${esc(L('conv.notFound'))}</div>`; lastRender = { file: null, count: -1 }; return; }
+    // A failed read is distinct from a missing/moved transcript. Keep openFile intact so the
+    // selected row + navigation rail remain open and a later retry (for example after granting
+    // macOS access to Qoder's data) can recover in place.
+    const loadError = ipcReadFailed ? { kind: 'readFailed' } : (detail && detail.error);
+    if (loadError || !detail) {
+      const kind = loadError && loadError.kind;
+      const key = kind === 'permissionDenied'
+        ? 'conv.permissionDenied'
+        : !loadError || kind === 'notFound'
+          ? 'conv.notFound'
+          : 'conv.readFailed';
+      host.innerHTML = `<div class="conv-empty">${esc(L(key))}</div>`;
+      clearLoadedDetail();
+      // A missing/moved path is not expected to recover in place. Permission and transient read/IPC
+      // failures are retried by the unified timer, including old (non-live) sessions.
+      detailRetryPending = key !== 'conv.notFound';
+      lastRender = { file: null, count: -1 };
+      return;
+    }
+    detailRetryPending = false;
     currentDetail = detail;
     subIndex = null; // call-site map is rebuilt lazily against the freshly-loaded subagents
 
@@ -1710,10 +1763,10 @@
       await applyImportResult(r);
     });
 
-    // Safety-net auto-refresh: while an in-progress (live) session is open, re-read it on a timer in
-    // case a file-watch event is missed. rerenderDetail's skip-guard makes this a no-op when nothing
-    // changed and only repaints when the view is pinned to the bottom, so it never disrupts reading.
-    setInterval(() => { if (openFile && openSessionLive()) rerenderDetail(false); }, 4000);
+    // Unified safety-net: live sessions still refresh when a file-watch event is missed, while a
+    // permission/transient read error retries even for an old session after macOS access is granted.
+    // rerenderDetail coalesces ticks while a helper-backed read is already in flight.
+    setInterval(() => { if (openFile && (detailRetryPending || openSessionLive())) rerenderDetail(false); }, 4000);
   }
 
   window.ccbudConversations = {

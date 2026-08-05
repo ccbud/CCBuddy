@@ -68,16 +68,62 @@ pub(crate) fn parse_lines(text: &str) -> Vec<Value> {
     out
 }
 
-pub(crate) fn read_head(file: &Path, max: usize) -> String {
+fn read_head_result(file: &Path, max: usize) -> std::io::Result<String> {
     use std::io::Read;
-    let mut f = match fs::File::open(file) {
-        Ok(f) => f,
-        Err(_) => return String::new(),
-    };
+    // Qoder data can be protected as "Other Application Data" on macOS. Its reader first
+    // attempts the normal filesystem path and uses the installed Qoder CLI only for EPERM;
+    // keep the same bounded-head contract used by list metadata after that read succeeds.
+    if crate::qoder::looks_qoder_path(file) {
+        let mut bytes = crate::qoder::read_bytes(file)?;
+        bytes.truncate(max);
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let mut f = fs::File::open(file)?;
     let mut buf = vec![0u8; max];
-    let n = f.read(&mut buf).unwrap_or(0);
+    let n = f.read(&mut buf)?;
     buf.truncate(n);
-    String::from_utf8_lossy(&buf).into_owned()
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+pub(crate) fn read_head(file: &Path, max: usize) -> String {
+    read_head_result(file, max).unwrap_or_default()
+}
+
+fn read_session_text(file: &Path) -> std::io::Result<String> {
+    if crate::qoder::looks_qoder_path(file) {
+        crate::qoder::read_text(file)
+    } else {
+        fs::read_to_string(file)
+    }
+}
+
+fn read_session_bytes(file: &Path) -> std::io::Result<Vec<u8>> {
+    if crate::qoder::looks_qoder_path(file) {
+        crate::qoder::read_bytes(file)
+    } else {
+        fs::read(file)
+    }
+}
+
+/// Verbatim bytes for raw export. Qoder sessions may require the guarded Qoder CLI fallback on
+/// macOS; all other sources retain the ordinary filesystem read used before Qoder support.
+pub(crate) fn raw_session_bytes(file: &str) -> std::io::Result<Vec<u8>> {
+    read_session_bytes(Path::new(file))
+}
+
+fn session_read_error(file: &Path, error: &std::io::Error) -> Value {
+    let kind = match error.kind() {
+        std::io::ErrorKind::NotFound => "notFound",
+        std::io::ErrorKind::PermissionDenied => "permissionDenied",
+        _ => "readFailed",
+    };
+    json!({
+        "error": {
+            "kind": kind,
+            "file": file.to_string_lossy(),
+            "message": error.to_string(),
+        }
+    })
 }
 
 fn usage_of(u: &Value) -> Value {
@@ -548,8 +594,13 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         }
     }
     let built = build_session_meta(file, dir_name, dir_id, dir_label)?;
-    if let Ok(mut cache) = meta_cache().lock() {
-        cache.insert(file.to_path_buf(), (mt, size, built.clone()));
+    // A permission failure is recoverable without changing the transcript's mtime/size (for
+    // example after the user grants macOS App Data access). Never memoize that placeholder row,
+    // otherwise it would stay "(conversation)" until the process restarts.
+    if built.get("readError").map(Value::is_null).unwrap_or(true) {
+        if let Ok(mut cache) = meta_cache().lock() {
+            cache.insert(file.to_path_buf(), (mt, size, built.clone()));
+        }
     }
     Some(built)
 }
@@ -568,18 +619,53 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
     }
     let meta = fs::metadata(file).ok()?;
     let size = meta.len();
-    let head = read_head(file, 131072);
-    let recs = parse_lines(&head);
+    let qoder = crate::qoder::looks_qoder_path(file);
+    // Qoder stores title/workspace/runtime records throughout the transcript, and its first JSON
+    // line can itself exceed the ordinary 128 KiB list window. Read the full file once (the row
+    // cache makes this a one-time cost per mtime/size); other formats retain the bounded head.
+    let raw = if qoder {
+        crate::qoder::read_text(file)
+    } else {
+        read_head_result(file, 131072)
+    };
+    let (parsed_recs, read_error) = match raw {
+        Ok(raw) => (parse_lines(&raw), Value::Null),
+        Err(error) => (
+            vec![],
+            session_read_error(file, &error)
+                .get("error")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+    };
+    let qoder_title = if qoder {
+        crate::qoder::session_title_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_cwd = if qoder {
+        crate::qoder::working_dir_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_model = if qoder {
+        crate::qoder::model_from(&parsed_recs)
+    } else {
+        None
+    };
+    let recs = if qoder {
+        crate::qoder::normalize_records(&parsed_recs)
+    } else {
+        parsed_recs
+    };
     // Codex rollouts (a dir's sessions/ tree, or snapshots imported into the app store) list
     // through the codex shaper — the record format shares nothing with Claude's.
     if crate::codex::looks_codex(&recs) {
         return crate::codex::session_meta_from(file, &recs, dir_id, dir_label);
     }
-    // Qoder sessions are Claude-FORMAT files in another tool's tree (~/.qoder/projects): the
-    // normal shaping below applies, but the row brands as qoder, custom title/tags/delete live
-    // in the app-owned sidecar, and the `<uuid>-session.json` companion supplies qoder's own
-    // title (beats first-user-text) plus a cwd fallback.
-    let qoder = crate::qoder::looks_qoder_path(file);
+    // Qoder sessions use Claude-like user/assistant envelopes plus inline title/workspace/runtime
+    // records and atomic assistant content wrappers. normalize_records makes the message stream
+    // Claude-shaped; Qoder-specific metadata remains app-sidecar + inline JSONL data.
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
@@ -588,8 +674,7 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
     let msgs: Vec<Value> = recs.iter().filter_map(line_to_message).collect();
     let (cc_title, cc_tags, cc_deleted) =
         if qoder { crate::qoder::sidecar_meta(file) } else { read_ccbud(&recs) };
-    let auto_title = (if qoder { crate::qoder::session_title(file) } else { None })
-        .unwrap_or_else(|| first_user_text(&msgs));
+    let auto_title = qoder_title.unwrap_or_else(|| first_user_text(&msgs));
     let mut model: Option<String> = None;
     for r in &recs {
         if r.get("type").and_then(|v| v.as_str()) == Some("assistant") {
@@ -598,13 +683,20 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
             }
         }
     }
+    if qoder_model.is_some() {
+        model = qoder_model;
+    }
     let subagent = agent_rec.is_some();
-    let cwd = meta_rec
+    let top_level_cwd = meta_rec
         .and_then(|r| r.get("cwd"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| if qoder { crate::qoder::working_dir(file) } else { None })
-        .or_else(|| decode_dir_name(dir_name));
+        .map(|s| s.to_string());
+    let cwd = (if qoder {
+        qoder_cwd.or(top_level_cwd)
+    } else {
+        top_level_cwd
+    })
+    .or_else(|| decode_dir_name(dir_name));
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let mt = mtime_ms(file);
     Some(json!({
@@ -624,6 +716,7 @@ fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str
         "isSubagent": subagent,
         "imported": dir_id == "__imported__",
         "deleted": cc_deleted,
+        "readError": read_error,
         "createdAt": record_created_ms(&recs, file),
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
@@ -797,6 +890,7 @@ pub(crate) fn apply_skill_names(main_messages: &[Value], subs: &mut serde_json::
 /// keyed by the spawning tool_use id so the renderer can nest them. {} when none. (history.js readSubagents)
 fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
     let p = Path::new(file);
+    let qoder = crate::qoder::looks_qoder_path(p);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let dir = match p.parent() {
         Some(d) => d.join(stem).join("subagents"),
@@ -816,15 +910,27 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
             .trim_start_matches("agent-")
             .trim_end_matches(".jsonl")
             .to_string();
-        let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+        let meta_path = dir.join(format!("agent-{}.meta.json", agent_id));
+        let meta_raw = if qoder {
+            crate::qoder::read_text(&meta_path)
+        } else {
+            fs::read_to_string(&meta_path)
+        };
+        let meta: Value = meta_raw
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| json!({}));
-        let raw = match fs::read_to_string(ent.path()) {
+        let transcript_path = ent.path();
+        let raw = match read_session_text(&transcript_path) {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let recs = parse_lines(&raw);
+        let parsed = parse_lines(&raw);
+        let recs = if qoder {
+            crate::qoder::normalize_records(&parsed)
+        } else {
+            parsed
+        };
         let shaped = shape_messages(&recs);
         let key = meta
             .get("toolUseId")
@@ -866,6 +972,7 @@ fn read_subagent_files(file: &Path) -> Vec<(String, Vec<u8>)> {
         Some(d) => d,
         None => return vec![],
     };
+    let qoder = crate::qoder::looks_qoder_path(file);
     let mut out = vec![];
     if let Ok(entries) = fs::read_dir(&dir) {
         for ent in entries.flatten() {
@@ -876,7 +983,12 @@ fn read_subagent_files(file: &Path) -> Vec<(String, Vec<u8>)> {
             let name = ent.file_name().to_string_lossy().into_owned();
             let lower = name.to_lowercase();
             if lower.starts_with("agent-") && (lower.ends_with(".jsonl") || lower.ends_with(".meta.json")) {
-                if let Ok(bytes) = fs::read(&p) {
+                let bytes = if qoder {
+                    crate::qoder::read_bytes(&p)
+                } else {
+                    fs::read(&p)
+                };
+                if let Ok(bytes) = bytes {
                     out.push((name, bytes));
                 }
             }
@@ -896,7 +1008,7 @@ pub fn session_has_subagents(file: &str) -> bool {
 /// (a plain .jsonl export otherwise). Round-trips through import_zip / splitBundle.
 pub fn export_bundle(file: &str) -> std::io::Result<Vec<u8>> {
     let path = Path::new(file);
-    let main = fs::read(path)?;
+    let main = read_session_bytes(path)?;
     let main_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -946,14 +1058,15 @@ pub(crate) fn read_import_meta(file: &str) -> Option<Value> {
 
 pub fn get_session(file: &str) -> Value {
     let path = Path::new(file);
+    let qoder = crate::qoder::looks_qoder_path(path);
     // Foreign sources route by container shape BEFORE the text read — Antigravity sessions are
     // SQLite, and grok/copilot jsonl would otherwise fall through to the Claude shaper.
     match foreign_kind(path) {
         Some(Foreign::Antigravity) => return crate::antigravity::session_from(file),
         Some(fk) => {
-            let raw = match fs::read_to_string(path) {
+            let raw = match read_session_text(path) {
                 Ok(s) => s,
-                Err(_) => return Value::Null,
+                Err(error) => return session_read_error(path, &error),
             };
             let recs = parse_lines(&raw);
             return match fk {
@@ -963,14 +1076,34 @@ pub fn get_session(file: &str) -> Value {
         }
         None => {}
     }
-    let raw = match fs::read_to_string(path) {
+    let raw = match read_session_text(path) {
         Ok(s) => s,
-        Err(_) => return Value::Null,
+        Err(error) => return session_read_error(path, &error),
     };
-    let recs = parse_lines(&raw);
-    if crate::codex::looks_codex(&recs) {
-        return crate::codex::session_from_recs(file, &recs);
+    let parsed_recs = parse_lines(&raw);
+    if crate::codex::looks_codex(&parsed_recs) {
+        return crate::codex::session_from_recs(file, &parsed_recs);
     }
+    let qoder_title = if qoder {
+        crate::qoder::session_title_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_cwd = if qoder {
+        crate::qoder::working_dir_from(&parsed_recs)
+    } else {
+        None
+    };
+    let qoder_model = if qoder {
+        crate::qoder::model_from(&parsed_recs)
+    } else {
+        None
+    };
+    let recs = if qoder {
+        crate::qoder::normalize_records(&parsed_recs)
+    } else {
+        parsed_recs
+    };
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
@@ -984,20 +1117,22 @@ pub fn get_session(file: &str) -> Value {
         .iter()
         .find(|r| r.get("type").and_then(|v| v.as_str()) == Some("summary") && r.get("summary").is_some())
         .and_then(|r| r.get("summary").cloned());
-    // Qoder detail: same Claude shaping, qoder branding + sidecar meta + companion title/cwd
-    // (mirrors build_session_meta).
-    let qoder = crate::qoder::looks_qoder_path(path);
+    // Qoder detail mirrors build_session_meta: normalized atomic wrappers, inline metadata, and
+    // app-owned title/tags/delete overrides without rewriting another CLI's transcript.
     let (cc_title, cc_tags, cc_deleted) =
         if qoder { crate::qoder::sidecar_meta(path) } else { read_ccbud(&recs) };
     let shaped = shape_messages(&recs);
-    let auto_title = (if qoder { crate::qoder::session_title(path) } else { None })
-        .unwrap_or_else(|| first_user_text(&shaped.messages));
+    let auto_title = qoder_title.unwrap_or_else(|| first_user_text(&shaped.messages));
     let subagent = agent_rec.is_some();
-    let cwd = meta_rec
+    let top_level_cwd = meta_rec
         .and_then(|r| r.get("cwd"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| if qoder { crate::qoder::working_dir(path) } else { None });
+        .map(|s| s.to_string());
+    let cwd = if qoder {
+        qoder_cwd.or(top_level_cwd)
+    } else {
+        top_level_cwd
+    };
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let base_id = meta_rec
         .and_then(|r| r.get("sessionId"))
@@ -1011,7 +1146,8 @@ pub fn get_session(file: &str) -> Value {
     };
     let mut subs = if subagent { serde_json::Map::new() } else { read_subagents(file) };
     apply_skill_names(&shaped.messages, &mut subs);
-    let import_meta = read_import_meta(file);
+    // Live Qoder files are never imported snapshots; avoid probing a protected sibling sidecar.
+    let import_meta = if qoder { None } else { read_import_meta(file) };
 
     json!({
         "meta": {
@@ -1036,7 +1172,7 @@ pub fn get_session(file: &str) -> Value {
             "imported": import_meta.is_some(),
             "importedFrom": import_meta.as_ref().and_then(|m| m.get("originalPath")).cloned().unwrap_or(Value::Null),
             "importedAt": import_meta.as_ref().and_then(|m| m.get("importedAt")).cloned().unwrap_or(Value::Null),
-            "model": shaped.model,
+            "model": qoder_model.or(shaped.model),
             "totals": shaped.totals,
             "messages": shaped.messages.len(),
             "subagentCount": subs.len(),
@@ -1216,11 +1352,16 @@ fn thread_scan(path: &Path, q: &str, raw_safe: bool) -> Option<(std::sync::Arc<S
         // cached, so the decode is paid once per file version.
         crate::antigravity::normalize_db(path).messages
     } else {
-        let raw = fs::read_to_string(path).ok()?;
+        let raw = read_session_text(path).ok()?;
         if raw_safe && ifind(&raw, q, 0).is_none() {
             return None;
         }
-        let recs = parse_lines(&raw);
+        let parsed = parse_lines(&raw);
+        let recs = if crate::qoder::looks_qoder_path(path) {
+            crate::qoder::normalize_records(&parsed)
+        } else {
+            parsed
+        };
         match fk {
             Some(Foreign::Grok) => crate::grok::normalize(&recs, None).messages,
             Some(Foreign::Copilot) => crate::copilot::normalize(&recs).messages,
@@ -1292,7 +1433,13 @@ fn scan_session(file: &Path, q: &str, raw_safe: bool) -> Option<Value> {
     for name in names {
         if let Some((text, pos)) = thread_scan(&dir.join(&name), q, raw_safe) {
             let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_string();
-            let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+            let meta_path = dir.join(format!("agent-{}.meta.json", agent_id));
+            let meta_raw = if crate::qoder::looks_qoder_path(file) {
+                crate::qoder::read_text(&meta_path)
+            } else {
+                fs::read_to_string(&meta_path)
+            };
+            let meta: Value = meta_raw
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| json!({}));
@@ -1765,7 +1912,7 @@ fn import_one(src: &str) -> i32 {
     if foreign_kind(src_path).is_some() {
         return 0;
     }
-    let raw = match fs::read_to_string(src) {
+    let raw = match read_session_text(src_path) {
         Ok(s) => s,
         Err(_) => return 0,
     };
@@ -2049,10 +2196,9 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    // Qoder writes Claude-FORMAT transcripts into its own tree (.qoder/projects/…): rows must
-    // brand as qoder with the `<uuid>-session.json` title, detail must run the Claude shaper
-    // (incl. nested subagents), hard-delete must refuse (another tool's file), and content
-    // search must reach both the main thread and subagent transcripts.
+    // Qoder writes Claude-like atomic event wrappers plus inline metadata into its own tree.
+    // Rows and detail must use that metadata, merge one assistant response's content blocks,
+    // retain queued commands as user turns, nest subagents, and remain searchable/exportable.
     #[test]
     fn qoder_sessions_route_end_to_end() {
         let base = std::env::temp_dir().join("ccbud-qoder-route-test");
@@ -2062,22 +2208,55 @@ mod tests {
         fs::create_dir_all(&proj).unwrap();
         let uuid = "11111111-1111-4111-8111-111111111111";
         let sess = proj.join(format!("{}.jsonl", uuid));
-        fs::write(
-            &sess,
-            format!(
-                "{{\"type\":\"agent-setting\",\"agentSetting\":\"triage\",\"entrypoint\":\"sdk-cli\",\"sessionId\":\"{u}\"}}\n\
-                 {{\"type\":\"user\",\"uuid\":\"u1\",\"timestamp\":\"2026-06-04T09:47:27.966Z\",\"message\":{{\"role\":\"user\",\"content\":\"qoder needle axolotl\"}},\"cwd\":\"/tmp/qproj\",\"sessionId\":\"{u}\",\"version\":\"1.0.8\"}}\n\
-                 {{\"type\":\"assistant\",\"uuid\":\"a1\",\"parentUuid\":\"u1\",\"timestamp\":\"2026-06-04T09:47:32.116Z\",\"message\":{{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"qoder-auto\",\"stop_reason\":\"end_turn\",\"usage\":{{\"input_tokens\":100,\"cache_creation_input_tokens\":7,\"cache_read_input_tokens\":50,\"output_tokens\":30}},\"content\":[{{\"type\":\"text\",\"text\":\"done\"}},{{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"Task\",\"input\":{{}}}}]}},\"sessionId\":\"{u}\"}}\n",
-                u = uuid
-            ),
-        )
-        .unwrap();
-        // qoder's own metadata companion: its title must win over first-user-text
-        fs::write(
-            proj.join(format!("{}-session.json", uuid)),
-            "{\"title\":\"Qoder 会话\",\"working_dir\":\"/tmp/qproj\"}",
-        )
-        .unwrap();
+        let records = vec![
+            json!({ "type": "agent-setting", "agentSetting": "triage", "entrypoint": "sdk-cli", "sessionId": uuid }),
+            json!({ "type": "last-prompt", "sessionId": uuid, "lastPrompt": "last prompt fallback" }),
+            json!({ "type": "ai-title", "sessionId": uuid, "aiTitle": "Qoder 会话" }),
+            json!({ "type": "workspace-directories", "sessionId": uuid, "directories": ["/tmp/qproj"] }),
+            json!({ "type": "runtime-config", "sessionId": uuid, "model": "ultimate", "reasoningEffort": "high" }),
+            json!({
+                "type": "user", "uuid": "u1", "timestamp": "2026-06-04T09:47:27.966Z",
+                "message": { "role": "user", "content": "qoder needle axolotl" },
+                "sessionId": uuid, "version": "1.1.13"
+            }),
+            json!({
+                "type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": "2026-06-04T09:47:32.116Z",
+                "message": { "id": "msg_1", "type": "message", "role": "assistant", "model": "wire-model", "content": [
+                    { "type": "redacted_thinking", "data": "must not render" }
+                ]}, "sessionId": uuid
+            }),
+            json!({
+                "type": "assistant", "uuid": "a2", "parentUuid": "a1", "timestamp": "2026-06-04T09:47:32.216Z",
+                "message": { "id": "msg_1", "type": "message", "role": "assistant", "content": [
+                    { "type": "thinking", "thinking": "considering" }
+                ]}, "sessionId": uuid
+            }),
+            json!({
+                "type": "assistant", "uuid": "a3", "parentUuid": "a2", "timestamp": "2026-06-04T09:47:32.316Z",
+                "message": { "id": "msg_1", "type": "message", "role": "assistant", "content": [
+                    { "type": "text", "text": "done" }
+                ]}, "sessionId": uuid
+            }),
+            json!({
+                "type": "assistant", "uuid": "a4", "parentUuid": "a3", "timestamp": "2026-06-04T09:47:32.416Z",
+                "message": {
+                    "id": "msg_1", "type": "message", "role": "assistant", "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 100, "cache_creation_input_tokens": 7, "cache_read_input_tokens": 50, "output_tokens": 30 },
+                    "content": [{ "type": "tool_use", "id": "tu1", "name": "Task", "input": {} }]
+                }, "sessionId": uuid
+            }),
+            json!({
+                "type": "attachment", "attachment": { "type": "queued_command", "prompt": "queued narwhal follow-up", "commandMode": false },
+                "uuid": "u2", "parentUuid": "a4", "timestamp": "2026-06-04T09:47:35.000Z", "sessionId": uuid
+            }),
+        ];
+        let raw = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&sess, raw).unwrap();
         let sub = proj.join(uuid).join("subagents");
         fs::create_dir_all(&sub).unwrap();
         fs::write(
@@ -2100,7 +2279,7 @@ mod tests {
         assert_eq!(r["title"], "Qoder 会话");
         assert_eq!(r["autoTitle"], "Qoder 会话");
         assert_eq!(r["cwd"], "/tmp/qproj");
-        assert_eq!(r["model"], "qoder-auto");
+        assert_eq!(r["model"], "ultimate");
         assert_eq!(r["deleted"], false);
 
         let file = r["file"].as_str().unwrap();
@@ -2109,8 +2288,22 @@ mod tests {
         assert_eq!(d["meta"]["source"], "qoder");
         assert_eq!(d["meta"]["id"], format!("qoder:{}", uuid));
         assert_eq!(d["meta"]["title"], "Qoder 会话");
+        assert_eq!(d["meta"]["model"], "ultimate");
         assert_eq!(d["meta"]["subagentCount"], 1);
+        assert_eq!(d["messages"].as_array().unwrap().len(), 3);
         assert_eq!(d["messages"][0]["content"], "qoder needle axolotl"); // string-content user turn
+        let assistant_blocks = d["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(
+            assistant_blocks
+                .iter()
+                .filter_map(|block| block.get("type").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["thinking", "text", "tool_use"]
+        );
+        assert_eq!(d["messages"][1]["usage"]["inputTokens"], 100);
+        assert_eq!(d["messages"][1]["stopReason"], "end_turn");
+        assert_eq!(d["messages"][2]["role"], "user");
+        assert_eq!(d["messages"][2]["content"], "queued narwhal follow-up");
         assert_eq!(d["subagents"]["tu1"]["messages"][0]["content"][0]["text"], "sub quetzal done");
 
         // another tool's live file: delete-forever must refuse and leave it on disk
@@ -2122,9 +2315,40 @@ mod tests {
         let hits = search_sessions(&config, "all", "axolotl", 10);
         assert_eq!(hits.len(), 1, "{:?}", hits);
         assert_eq!(hits[0]["agent"], "main");
+        let hits = search_sessions(&config, "all", "narwhal", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0]["agent"], "main");
         let hits = search_sessions(&config, "all", "quetzal", 10);
         assert_eq!(hits.len(), 1, "{:?}", hits);
         assert_eq!(hits[0]["agent"], "tu1");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn session_read_errors_are_structured() {
+        let base = std::env::temp_dir().join(format!(
+            "ccbud-session-read-error-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let project = base.join(".qoder").join("projects").join("-tmp-error");
+        fs::create_dir_all(&project).unwrap();
+
+        let missing = project.join("missing.jsonl");
+        let detail = get_session(&missing.to_string_lossy());
+        assert_eq!(detail["error"]["kind"], "notFound");
+
+        let invalid = project.join("invalid.jsonl");
+        fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        let detail = get_session(&invalid.to_string_lossy());
+        assert_eq!(detail["error"]["kind"], "readFailed");
+
+        let denied = session_read_error(
+            &invalid,
+            &std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(denied["error"]["kind"], "permissionDenied");
 
         let _ = fs::remove_dir_all(&base);
     }

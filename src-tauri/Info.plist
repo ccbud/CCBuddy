@@ -4,5 +4,7 @@
 <dict>
   <key>CFBundleDisplayName</key>
   <string>CC Buddy</string>
+  <key>NSAppDataUsageDescription</key>
+  <string>CC Buddy reads local Qoder and other coding CLI session history to display it in the app.</string>
 </dict>
 </plist>

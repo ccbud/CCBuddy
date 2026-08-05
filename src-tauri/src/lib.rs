@@ -1168,7 +1168,7 @@ async fn history_export_raw(file: String) -> Result<Value, String> {
             None => Ok(json!({ "canceled": true })),
         }
     } else {
-        let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+        let data = history::raw_session_bytes(&file).map_err(|e| e.to_string())?;
         match rfd::AsyncFileDialog::new()
             .add_filter("JSONL", &["jsonl"])
             .set_file_name(format!("{}.jsonl", base))
