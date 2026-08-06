@@ -1,0 +1,128 @@
+pre code { background: none !important; padding: 0 !important; font-size: inherit; color: inherit; }
+pre.wrap { white-space: pre-wrap; word-break: break-all; }
+pre.cmd { color: var(--green); }
+
+/* Unified code blocks (tool results: Read syntax-highlighted by language, Write) with a GitHub-style
+   line-number gutter. Markdown code blocks reuse the gutter via .cb-has-gutter (added post-highlight
+   in highlight()). The hljs GitHub-Dark theme paints token colors; we own the frame + gutter. */
+pre.cb { padding: 0 !important; border-radius: 8px; overflow: hidden; line-height: 1.55; font-size: 11.5px; }
+pre.cb > code { display: block; overflow-x: auto; padding: 9px 12px !important; white-space: pre; }
+pre.cb.cb-plain > code { white-space: pre-wrap; word-break: break-word; }
+/* gutter layout — applies to .cb tool blocks AND marked-rendered markdown code blocks */
+pre.cb-has-gutter, .blk-text pre.cb-has-gutter { display: flex; padding: 0 !important; }
+pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; padding: 9px 12px !important; white-space: pre; }
+.cb-gutter {
+  flex: 0 0 auto;
+  padding: 9px 10px 9px 14px;
+  text-align: right;
+  color: var(--caption);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  -webkit-user-select: none;
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+  line-height: inherit;
+  opacity: 0.65;
+}
+
+/* Markdown file viewer (Read/Write of .md): a rendered preview ↔ highlighted source, via tabs. */
+.md-doc { border-radius: 8px; overflow: hidden; }
+.md-tabs { display: flex; gap: 3px; margin-bottom: 6px; }
+.md-tab {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 11px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--caption);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.md-tab:hover { color: var(--fg); }
+.md-tab.active { color: var(--brand-text); background: var(--brand-soft); }
+.md-pane.md-preview {
+  padding: 12px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: calc(12.5px * var(--conv-fs, 1));
+  line-height: 1.6;
+  overflow-x: auto;
+}
+.md-pane.md-preview > :first-child { margin-top: 0; }
+.md-pane.md-preview > :last-child { margin-bottom: 0; }
+
+/* Code blocks force a dark bg globally (intended, looks right in dark theme). In LIGHT theme that dark
+   bg pairs with the ACTIVE light hljs token palette (dark token colors) → low contrast / hard to read.
+   Give light-theme conversation code blocks a light surface so those tokens read (mirrors .dr-pre).
+   Dark theme is deliberately left untouched. Specificity (0,2,1) + !important beats the global `pre`
+   !important and the inline Tailwind bg/text utilities; hljs token spans keep their own colors. */
+[data-theme="light"] .conv-detail pre {
+  background: #f6f8fa !important;
+  color: #24292e;
+  border-color: var(--border);
+}
+
+/* Code blocks in the timeline follow the 会话正文字号 factor too — `pre` is global (drawer,
+   settings export block keep their own sizes), so the scale is scoped to .conv-detail. */
+.conv-detail pre { font-size: calc(11px * var(--conv-fs, 1)); }
+.conv-detail pre.cb { font-size: calc(11.5px * var(--conv-fs, 1)); }
+
+.thinking {
+  background: rgba(255, 159, 10, 0.04);
+  border: 1px solid rgba(255, 159, 10, 0.12);
+  border-radius: 7px;
+  margin: 6px 0;
+}
+
+.thinking summary {
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: calc(11px * var(--conv-fs, 1));
+  font-weight: 500;
+  color: var(--amber-text);
+  outline: none;
+}
+
+.thinking-body {
+  padding: 0 10px 8px;
+  font-size: calc(11.5px * var(--conv-fs, 1));
+  color: var(--muted);
+  line-height: 1.48;
+  border-top: 1px solid rgba(255, 159, 10, 0.08);
+  margin-top: 3px;
+  padding-top: 7px;
+}
+
+/* Resizable 3-column conversation layout. Left/right panels have min widths + drag handles; their
+   width is driven by a CSS var (set by JS, persisted) so the .collapsed override can still win. The
+   middle column is flex-grow with no fixed width, so it absorbs all remaining space. */
+.conv-resizer { flex: 0 0 5px; align-self: stretch; cursor: col-resize; background: transparent; position: relative; z-index: 15; }
+.conv-resizer::after { content: ''; position: absolute; inset: 0 2px; border-radius: 2px; transition: background 0.12s; }
+.conv-resizer:hover::after, .conv-resizer.dragging::after { background: var(--brand); }
+.conv-layout.resizing { cursor: col-resize; user-select: none; }
+.conv-layout.resizing .conv-sidebar, .conv-layout.resizing .conv-nav { transition: none; } /* no lag while dragging */
+.conv-layout:has(.conv-sidebar.collapsed) .conv-resizer-left,
+.conv-layout:has(.conv-nav.collapsed) .conv-resizer-right { display: none; }
+
+/* Inline subagent transcript nested under the call that spawned it (expand-at-call-site). */
+.subagent-inline {
+  border-top: 1px solid var(--border-strong);
+  border-left: 2.5px solid var(--brand);
+  scroll-margin-top: 12px;
+}
+.subagent-inline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+}
+.subagent-inline[open] > summary .sub-caret { transform: rotate(90deg); }
+/* Landing flash when jumped to from the subagent picker — a bright ring that fades, hard to miss. */
+.subagent-inline.sub-flash { border-radius: 4px; animation: subFlash 2.2s var(--ease); }
+@keyframes subFlash {
+  0%   { box-shadow: 0 0 0 3px var(--brand), 0 0 16px 3px var(--brand-soft); }
+  55%  { box-shadow: 0 0 0 3px var(--brand), 0 0 16px 3px var(--brand-soft); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
+}

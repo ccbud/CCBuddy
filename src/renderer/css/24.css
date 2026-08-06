@@ -1,0 +1,18 @@
+/* ===== Post-restore reconciliation (where utility markup conflicts with restored CSS) ===== */
+
+/* Switch knob: markup utilities set the `translate` property, which STACKS on the original
+   CSS `transform: translateX(15px)` → knob double-shifts (30px) and overruns onto the label.
+   Kill the utility translate so the original transform alone drives it. */
+.switch .track,
+.switch .track::after { translate: none !important; }
+
+/* History-dir list: a post-migration feature the original CSS never covered, so its rows had
+   no spacing. Stack with a gap so they're not glued together. */
+.hist-dir-list { display: flex; flex-direction: column; gap: 10px; }
+/* Light theme: white rows on a white card vanish — give them a faint fill + clearer edge */
+[data-theme="light"] .hist-dir-row { background: #f4f2ec; border-color: rgba(41, 38, 31, 0.14); }
+
+/* Same stacking issue for scale: these get their :active/:hover scale from the restored CSS
+   (transform), and the markup also carries scale utilities (the `scale` property) → they double.
+   Kill the utility scale only (translate is left alone, so card hover-lifts still work). */
+.nav-item, .btn, .hero-action, .fab { scale: none !important; }

@@ -1,0 +1,109 @@
+.hero-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--chip-bg);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.22s var(--ease);
+}
+
+.panel-hero.connected .hero-icon {
+  background: var(--green-soft);
+  color: var(--green-text);
+}
+
+.hero-title {
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.hero-desc {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 2.5px;
+  line-height: 1.35;
+}
+
+.hero-desc b { color: var(--fg); font-weight: 500; }
+
+.hero-action {
+  border: none;
+  border-radius: 9px;
+  padding: 8px 18px;
+  font: 600 12px/1 var(--sans);
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  background: linear-gradient(180deg, var(--brand-2) 0%, var(--brand) 100%);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(204,120,92,.25), 0 4px 12px rgba(204,120,92,.18);
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.hero-action:hover {
+  box-shadow: 0 2px 4px rgba(204,120,92,.3), 0 8px 20px rgba(204,120,92,.22);
+}
+
+.hero-action:active { transform: scale(0.98); }
+
+.panel-hero.connected .hero-action {
+  background: var(--red-soft);
+  color: var(--red-text);
+  box-shadow: none;
+  border: 1px solid var(--red-border);
+}
+
+.panel-hero.connected .hero-action:hover {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+
+.hero-hint {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg);
+  background: var(--primary-soft);
+  border-left: 2px solid var(--primary);
+}
+
+.hero-hint.warn {
+  background: var(--amber-soft);
+  border-left-color: var(--amber);
+}
+
+/* ── Toolbar ── */
+.panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 2px;
+}
+
+.panel-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--caption);
+}
+
+.toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.caption {
+  font-size: 12px;
+  color: var(--caption);
+}

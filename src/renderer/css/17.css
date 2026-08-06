@@ -1,0 +1,118 @@
+.conv-empty { color: var(--muted); font-size: 12px; text-align: center; line-height: 1.5; }
+
+.search-highlight {
+  background: rgba(255, 200, 50, 0.35);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.search-highlight.current {
+  background: #f1c40f;
+  color: #111;
+  box-shadow: 0 0 0 1.5px rgba(241, 196, 15, 0.5);
+}
+
+/* CSS Custom Highlight API — in-conversation search paints matches with NO DOM mutation (Range-based),
+   so typing doesn't reflow a huge thread per keystroke. (::highlight only supports a few paint props.) */
+::highlight(cd-search) { background-color: rgba(255, 200, 50, 0.40); }
+::highlight(cd-current) { background-color: #f1c40f; color: #111; }
+
+/* Messages */
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  animation: panelIn 0.18s var(--ease);
+}
+
+.msg-role {
+  font-size: calc(10px * var(--conv-fs, 1));
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--caption);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.msg.user .msg-body {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 12px;
+  box-shadow: var(--card-shadow);
+}
+.msg.user .msg-body > .blk-text:first-child > :first-child { margin-top: 0; }
+
+.msg.assistant .msg-body {
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border-strong);
+}
+
+.msg.assistant.streaming .msg-body { border-left-color: var(--green); }
+
+.live-pill {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--green-text);
+  background: var(--green-soft);
+  border-radius: 99px;
+  padding: 1px 5px;
+  text-transform: none;
+}
+
+/* 会话正文字号 (设置 › 常规 › 会话): --conv-fs is a scale factor set on :root by the renderer
+   (13px body == 1, absent == default). Every reading-surface size in the message timeline
+   multiplies by it, so 大/特大/自定义 scale the whole log proportionally — layout stays real px
+   (no zoom), keeping the scroll/anchor math exact. */
+.msg-body { font-size: calc(13px * var(--conv-fs, 1)); line-height: 1.58; }
+
+.blk-text p { margin-bottom: 8px; }
+.blk-text p:last-child { margin-bottom: 0; }
+.blk-text h1, .blk-text h2, .blk-text h3 { font-size: calc(14px * var(--conv-fs, 1)); font-weight: 700; margin: 14px 0 6px; }
+.blk-text ul, .blk-text ol { margin: 6px 0; padding-left: 18px; }
+.blk-text code { font-family: var(--mono); font-size: calc(11px * var(--conv-fs, 1)); background: var(--chip-bg); padding: 1px 4px; border-radius: 3px; }
+.blk-text pre { margin: 8px 0; }
+
+/* The settings-page live preview reads the same var, so it always matches the real timeline. */
+.conv-font-preview-text { font-size: calc(13px * var(--conv-fs, 1)); line-height: 1.58; color: var(--fg); }
+
+.msg-img { max-width: 300px; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
+
+.img-redacted {
+  font-size: calc(11px * var(--conv-fs, 1));
+  color: var(--muted);
+  padding: 7px 9px;
+  background: var(--chip-bg);
+  border-radius: 6px;
+  display: inline-block;
+}
+
+.turn-meta {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.turn-meta span {
+  font-size: calc(9.5px * var(--conv-fs, 1));
+  font-family: var(--mono);
+  color: var(--caption);
+  background: var(--chip-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+pre {
+  background: #0c0e12 !important;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 7px;
+  padding: 10px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.48;
+  color: #e8edf4;
+}

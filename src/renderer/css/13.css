@@ -1,0 +1,110 @@
+/* Collapsed session sidebar: only the expand button may occupy the 34px strip. Without this the import
+   (+) button stays in the flex row, overflows the narrow strip, and justify-center shoves the expand
+   button left under the primary nav — leaving an empty, unclickable strip. !important beats `flex`. */
+.conv-sidebar.collapsed .conv-search > :not(#btnCollapseConvList) { display: none !important; }
+
+.conv-sidebar {
+  width: var(--conv-left-w, 248px); /* drag-resizable; JS sets the var, .collapsed overrides below */
+  min-width: 200px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  /* No width transition: animating the width reflows the (large) message area every frame — noticeable
+     jank once a thread has many messages loaded. Collapse instantly (a single reflow) instead. */
+  overflow: hidden;
+}
+
+.conv-sidebar.collapsed {
+  width: 34px;
+  min-width: 34px;
+  overflow: visible;
+}
+
+.conv-sidebar.collapsed .conv-search {
+  padding: 0;
+  height: 100%;
+  border-bottom: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conv-sidebar.collapsed .conv-search .search-field { display: none; }
+
+.conv-sidebar.collapsed .conv-search .tool-btn {
+  width: 100%;
+  height: 100%;
+  min-height: 72px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+}
+
+.conv-sidebar.collapsed .conv-list { display: none; }
+
+.conv-search {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+}
+
+.conv-search .tool-btn {
+  flex-shrink: 0;
+}
+
+/* Collapse/expand morphs these buttons' size/border/radius. `.tool-btn` sets `transition: all`, so those
+   layout changes animate while the sidebar width snaps instantly → visible jitter in the search row.
+   Restrict the two collapse toggles to color transitions (id beats `.tool-btn`) so layout snaps cleanly. */
+#btnCollapseConvList, #btnCollapseConvNav { transition-property: color, background-color, border-color; }
+
+.search-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 4px 0 8px;
+  transition: border-color 0.12s;
+}
+
+.search-field:focus-within {
+  border-color: var(--primary);
+}
+
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 5px 0;
+  color: var(--fg);
+  font-size: 11.5px;
+  outline: none;
+}
+
+.search-clear {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--caption);
+  font: 500 10px/1 var(--sans);
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, background 0.12s;
+}
+
+.search-clear:hover {
+  color: var(--fg);
+  background: var(--chip-bg);
+}
+
+.conv-list { flex: 1; overflow-y: auto; }

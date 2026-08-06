@@ -113,8 +113,5 @@ const out2x = path.join(__dirname, 'iconTemplate@2x.png');
 fs.writeFileSync(out1x, generatePng(22, 1));
 fs.writeFileSync(out2x, generatePng(44, 2));
 
-// Copy to source folder
-fs.copyFileSync(out1x, path.join(__dirname, '..', 'src', 'main', 'iconTemplate.png'));
-fs.copyFileSync(out2x, path.join(__dirname, '..', 'src', 'main', 'iconTemplate@2x.png'));
-
+// build/iconTemplate.png is the tray icon the Rust backend embeds (include_bytes! in lib.rs).
 console.log('Successfully generated minimalist template icons.');
