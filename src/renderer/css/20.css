@@ -1,0 +1,110 @@
+.stat-row:last-child { border-bottom: none; }
+.stat-row .k { color: var(--caption); }
+.stat-row .v { font-family: var(--mono); font-size: 11.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
+
+.conv-toc { overflow-y: auto; flex: 1; padding: 0 7px 10px; }
+
+.toc-item {
+  font-size: 12px;
+  color: var(--caption);
+  padding: 4px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.1s;
+}
+
+.toc-item:hover { background: var(--chip-bg); color: var(--fg); }
+
+/* ── Sheet (modal) ── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.sheet {
+  width: 580px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow: hidden;                 /* the body scrolls, not the whole sheet */
+  background: var(--bg-elev);
+  backdrop-filter: blur(40px);
+  border: 1px solid var(--window-border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.18);
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: inherit;
+  z-index: 2;
+}
+
+.sheet-head h3 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.sheet-body {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* Keep each section at its natural height so the body overflows and SCROLLS,
+   instead of flex-compressing a child (e.g. the overflow:hidden <details>,
+   whose auto min-size becomes 0) and clipping its content unreachably. */
+.sheet-body > * { flex-shrink: 0; }
+
+.sheet-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  background: inherit;
+  z-index: 2;
+}
+
+.sheet-foot .spacer { flex: 1; }
+
+.preset-block { display: flex; flex-direction: column; gap: 7px; }
+
+.preset-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.preset-chip {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 4.5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-family: inherit;
+}
+
+.preset-chip:hover { border-color: var(--brand); color: var(--brand); }
+.preset-chip.selected { background: var(--brand); border-color: transparent; color: #fff; }

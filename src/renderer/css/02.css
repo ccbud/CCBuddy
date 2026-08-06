@@ -1,0 +1,111 @@
+/* NOTE: do NOT add `margin:0`/`padding:0` here — this block is UNLAYERED and would beat
+   Tailwind's layered spacing utilities, flattening every utility-only element (this was the
+   real cause of the "everything cramped" look). Preflight (@layer base) already zeroes
+   margin/padding and is correctly overridden by utilities. */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  height: 100vh;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--fg);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.drag-region { -webkit-app-region: drag; }
+.no-drag, .btn, .tool-btn, .nav-item, .fab, .switch, select, input, textarea, summary { -webkit-app-region: no-drag; }
+
+/* The app-wide `user-select: none` (chrome shouldn't be selectable) also blocked copying the
+   conversation transcript. Re-enable text selection for the message panels (main + request inspector). */
+.conv-detail, .conv-detail *, #reqDrawerBody, #reqDrawerBody * { -webkit-user-select: text; user-select: text; }
+/* Gateway URL / export snippet are copyable content read-outs — keep them selectable so the user
+   can grab a fragment (the app-wide `user-select: none` would otherwise block it). */
+#endpoint, #exportBlock, .endpoint, .code-block {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ── Shell ── */
+.app-window {
+  display: flex;
+  height: 100vh;
+  background: var(--bg-app);
+  /* No CSS backdrop-filter here: --bg-app is ~94% opaque, so a 52px blur was nearly invisible yet
+     repainted the ENTIRE window every frame (the main resize/scroll jank). Native macOS vibrancy
+     ('under-window', set in main.js createWindow) supplies the subtle frosting that does show. */
+  border: 1px solid var(--window-border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: inset 0 0.5px 0 rgba(255,255,255,.12);
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 196px;
+  display: flex;
+  flex-direction: column;
+  padding: 48px 10px 14px;
+  background: var(--bg-sidebar);
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden; /* clip labels mid-animation so they don't wrap while the sidebar is briefly narrow */
+  transition: width 0.22s var(--ease);
+}
+/* The divider is a pseudo-element that starts BELOW the titlebar / traffic-light zone (rather than a
+   full-height border-right). When collapsed to 52px the border used to run right up against the macOS
+   traffic-light buttons, which looked jarring; starting it lower keeps the top clean. */
+.sidebar::after {
+  content: '';
+  position: absolute;
+  top: 44px;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
+.sidebar.collapsed {
+  width: 52px;
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+/* Settings view must FILL the scroll viewport (not grow with content) so only the content column
+   scrolls while the sub-nav stays put. Overrides `.panel { flex: 0 0 auto }` (id beats class). */
+#view-settings { flex: 1 1 0%; min-height: 0; }
+
+/* Settings sub-nav (二级菜单) — a bounded left column, collapsible with auto-shrinking width */
+/* Settings view: left-align it (override .panel's `margin: 0 auto`) so the sub-nav sits flush after the
+   main sidebar instead of floating in the centre with a big empty gap on its left. */
+#view-settings { margin-left: 0; margin-right: auto; }
+
+.settings-subnav {
+  width: 148px;
+  align-self: stretch;                  /* divider runs the full height of the section */
+  border-right: 1px solid var(--border);
+  padding-right: 16px;
+  margin-right: 2px;
+  min-height: 232px;
+  overflow: hidden;                     /* clip labels mid-animation instead of letting them wrap */
+  transition: width 0.2s var(--ease);
+}
+/* Keep each item on one line — during the expand animation the sub-nav is briefly narrow, and without
+   this the labels wrap to two lines until it finishes. */
+.settings-subnav-item { white-space: nowrap; }
+.settings-subnav.collapsed {
+  width: 44px;
+  padding-right: 8px;
+}
+.settings-subnav.collapsed .settings-subnav-label { display: none; }
+.settings-subnav.collapsed .settings-subnav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+  gap: 0;
+}

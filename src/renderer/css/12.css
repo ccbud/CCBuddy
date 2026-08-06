@@ -1,0 +1,119 @@
+.raw-log-wrap summary { padding: 9px 14px; cursor: pointer; font-size: 12px; font-weight: 600; outline: none; }
+
+.raw-log {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--caption);
+  padding: 8px 14px 12px;
+  max-height: 150px;
+  overflow-y: auto;
+  line-height: 1.55;
+}
+
+/* Status badge shown next to the "网关日志" summary, so the panel reads as live even when empty. */
+.raw-log-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.raw-log-badge .rl-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--caption);
+  flex-shrink: 0;
+}
+.raw-log-badge.on { color: var(--green-text); }
+.raw-log-badge.on .rl-dot { background: var(--green); }
+
+.raw-log-empty { color: var(--caption); padding: 3px 0; font-style: italic; }
+
+.raw-log-line {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.raw-log-line .rl-lv {
+  flex-shrink: 0;
+  width: 42px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+}
+.raw-log-line .rl-msg { color: var(--fg); flex: 1; min-width: 0; }
+.raw-log-line .rl-t { color: var(--caption); flex-shrink: 0; padding-left: 12px; text-align: right; }
+.raw-log-line.lv-error .rl-lv { color: var(--red-text); }
+.raw-log-line.lv-warn .rl-lv { color: var(--amber-text); }
+.raw-log-line.lv-info .rl-lv { color: var(--green-text); }
+
+/* ── Conversations ── */
+.conv-layout {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Export toast (transient confirmation after a JSONL/HTML export) */
+.conv-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--fg);
+  color: var(--bg-app);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 9px 16px;
+  border-radius: 9px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease);
+  z-index: 400;
+}
+.conv-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.conv-toast.err { background: var(--red); color: #fff; }
+
+/* Tool-card category accent (left rail) — lets you scan what each step is doing */
+.tool-card { border-left-width: 3px; }
+.tool-exec { border-left-color: #f59e0b; }   /* run / Bash */
+.tool-read { border-left-color: #3b82f6; }   /* read */
+.tool-write { border-left-color: #5a9a55; }  /* edit / write — soft olive (skin.css) */
+.tool-search { border-left-color: #a855f7; } /* grep / glob */
+.tool-task { border-left-color: #ec4899; }   /* subagent */
+.tool-net { border-left-color: #06b6d4; }    /* web */
+.tool-todo { border-left-color: #6366f1; }   /* todos */
+.tool-mcp { border-left-color: #14b8a6; }    /* mcp */
+.tool-default { border-left-color: var(--border-strong); }
+/* result-size chip pushed to the right edge of the result summary */
+.tool-res-size { margin-left: auto; font-family: ui-monospace, monospace; font-size: 9.5px; font-weight: 600; color: var(--caption); background: var(--chip-bg); padding: 1px 6px; border-radius: 5px; }
+
+/* Codex Skill context-load event: tool-card visual language, neutral timeline semantics. */
+.skill-name { flex-shrink: 0; font-family: var(--mono); font-size: calc(10.5px * var(--conv-fs, 1)); color: var(--fg); }
+.skill-snapshot > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: calc(10.5px * var(--conv-fs, 1));
+  font-weight: 600;
+}
+.skill-snapshot > summary::-webkit-details-marker { display: none; }
+.skill-snapshot[open] > summary { border-bottom: 1px solid var(--border); }
+.skill-caret { display: inline-block; transition: transform 0.14s var(--ease); }
+.skill-snapshot[open] > summary .skill-caret { transform: rotate(90deg); }
+.skill-snapshot-body { padding: 8px 10px 10px; }
+.skill-snapshot-body pre { margin: 0; }
+.skill-source { display: flex; align-items: baseline; gap: 7px; min-width: 0; margin-bottom: 7px; color: var(--caption); font-size: calc(10px * var(--conv-fs, 1)); }
+.skill-source code { overflow: hidden; color: var(--muted); font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-no-snapshot { padding: 6px 10px; color: var(--caption); font-size: calc(10.5px * var(--conv-fs, 1)); }

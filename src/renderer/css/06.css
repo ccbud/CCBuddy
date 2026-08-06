@@ -1,0 +1,112 @@
+.caption.warn { color: var(--amber-text); }
+
+.muted { color: var(--muted); }
+.small { font-size: 11px; }
+.mono { font-family: var(--mono); }
+
+/* ── Buttons ── */
+.btn {
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 12px;
+  font: 500 12px/1 var(--sans);
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, transform 0.1s;
+}
+
+.btn:hover {
+  background: var(--chip-bg);
+  border-color: var(--border-strong);
+}
+
+.btn:active { transform: scale(0.985); }
+
+.btn-primary {
+  background: var(--primary);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-primary:hover { background: var(--primary-hover); }
+
+.btn-sm {
+  padding: 4px 9px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.btn.ghost:hover {
+  background: var(--chip-bg);
+  color: var(--fg);
+}
+
+.tool-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elev);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.14s;
+}
+
+.tool-btn:hover {
+  color: var(--fg);
+  background: var(--chip-bg);
+  border-color: var(--border-strong);
+}
+
+.tool-btn span { display: flex; align-items: center; justify-content: center; }
+
+.fab {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  background: linear-gradient(180deg, #FFAB40 0%, var(--orange) 100%);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(255, 149, 0, .28);
+  transition: transform 0.14s var(--ease);
+}
+
+.fab:hover { transform: scale(1.06); }
+
+/* ── Providers ── */
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.provider {
+  display: grid;
+  grid-template-columns: 14px 36px 1fr minmax(72px, auto) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px 8px 7px;
+  min-height: 52px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: var(--card-shadow);
+  cursor: pointer;
+  position: relative;
+  transition: all 0.18s var(--ease);
+}
