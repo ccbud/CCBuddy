@@ -24,12 +24,20 @@ targets:
       - path: Resources
         buildPhase: resources
       - path: ../LICENSE
+        group: Resources
+        createIntermediateGroups: false
         buildPhase: resources
       - path: ../build/icon.png
+        group: Resources
+        createIntermediateGroups: false
         buildPhase: resources
       - path: ../src-tauri/icons/icon.icns
+        group: Resources
+        createIntermediateGroups: false
         buildPhase: resources
       - path: ../src/renderer/assets
+        group: Resources
+        createIntermediateGroups: false
         buildPhase: resources
       - path: Vendor/bifrost-http
         buildPhase:
