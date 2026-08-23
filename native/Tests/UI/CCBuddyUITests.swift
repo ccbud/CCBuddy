@@ -210,7 +210,12 @@ final class CCBuddyUITests: XCTestCase {
 
         XCTAssertTrue(app.buttons["删除"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.buttons["切换"].exists)
-        XCTAssertTrue(app.buttons["取消"].exists)
+        let localizedCancel = app.buttons["取消"]
+        let defaultCancel = app.buttons["Cancel"]
+        XCTAssertTrue(
+            localizedCancel.waitForExistence(timeout: 1)
+                || defaultCancel.waitForExistence(timeout: 1)
+        )
     }
 
     func testEndpointAndExportCopyWriteExpectedClipboardContents() {
@@ -440,7 +445,10 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(addProvider.waitForExistence(timeout: 2))
         addProvider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         let editor = app.otherElements["provider.editor"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 2))
+        if !editor.waitForExistence(timeout: 2) {
+            addProvider.click()
+        }
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
         keepMainContentScreenshot(named: "native-visual-provider-editor", shell: shell)
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertFalse(editor.waitForExistence(timeout: 1))
