@@ -1,0 +1,243 @@
+import Foundation
+
+/// Optional production capabilities layered on top of the read-only history provider.
+///
+/// Tests and embedders may continue supplying a plain `ConversationHistoryProviding`. The live
+/// store uses these hooks to keep the rebuildable catalog current after FSEvents and explicit
+/// mutations without making the producer files anything other than authoritative.
+protocol ConversationIndexedHistoryProviding: ConversationHistoryProviding {
+    func startIndexing(onRevision: @escaping @Sendable (Int64) -> Void)
+    func stopIndexing()
+    func reconcileIndex() throws
+    func refreshIndex(for files: [URL]) throws
+}
+
+/// Metadata and content-search facade backed by the app-owned SQLite catalog.
+///
+/// Detail reads deliberately bypass SQLite and use `HistorySessionLoader`, so replay, analysis,
+/// raw/ZIP export, and standalone HTML export always see the current producer-owned transcript.
+struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
+    let configuration: HistoryConfiguration
+    let database: ConversationIndexDatabase
+    let loader: HistorySessionLoader
+    let coordinator: ConversationCatalogCoordinator
+
+    init(
+        configuration: HistoryConfiguration,
+        database: ConversationIndexDatabase,
+        loader: HistorySessionLoader? = nil,
+        coordinator: ConversationCatalogCoordinator? = nil
+    ) {
+        self.configuration = configuration
+        self.database = database
+        let resolvedLoader = loader ?? HistorySessionLoader(configuration: configuration)
+        self.loader = resolvedLoader
+        self.coordinator = coordinator ?? ConversationCatalogCoordinator(
+            configuration: configuration,
+            database: database,
+            loader: resolvedLoader
+        )
+    }
+
+    init(
+        historyDirs: [String],
+        active: String = "all",
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        importsRoot: URL? = nil,
+        databaseFile: URL? = nil
+    ) throws {
+        let configuration = HistoryConfiguration(
+            historyDirs: historyDirs,
+            active: active,
+            homeDirectory: homeDirectory,
+            importsRoot: importsRoot
+        )
+        let file = databaseFile ?? configuration.appDataRoot
+            .appendingPathComponent("conversation-index-v1.sqlite3")
+        self.init(
+            configuration: configuration,
+            database: try ConversationIndexDatabase(file: file)
+        )
+    }
+
+    func listSessions(limit: Int = 400) throws -> [HistorySessionMetadata] {
+        guard limit > 0 else { return [] }
+        let filter = activeFilter
+        let indexed = try database.listEntries(
+            scope: filter.scope,
+            deleted: filter.deleted,
+            limit: .max
+        ).map(\.metadata).filter { allowedScopeIDs.contains($0.dirID) }
+        let canonical = HistoryCatalogProjection.canonicalizedCodexSessions(
+            indexed,
+            homeDirectory: configuration.homeDirectory
+        )
+        let ordered = HistoryCatalogProjection.activityOrdered(canonical)
+        return HistoryCatalogProjection.limitedKeepingCodexAncestors(ordered, limit: limit)
+    }
+
+    func listProjects(limit: Int = 600) throws -> [HistoryProject] {
+        HistoryCatalogProjection.projects(from: try listSessions(limit: limit))
+    }
+
+    func search(query rawQuery: String, limit: Int = 120) throws -> [HistorySearchHit] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, limit > 0 else { return [] }
+
+        // Preserve the legacy contract exactly: search only the first 600 activity-ordered,
+        // canonical sessions and return the first matching transcript per session.
+        let sessions = try listSessions(limit: 600)
+        let filter = activeFilter
+        let batch = try database.candidateDocuments(
+            for: query,
+            scope: filter.scope,
+            deleted: filter.deleted,
+            limit: nil
+        )
+        var documentsByPath: [String: [ConversationIndexDocument]] = [:]
+        for candidate in batch.documents {
+            documentsByPath[candidate.entry.sourcePath, default: []].append(candidate.document)
+        }
+
+        var hits: [HistorySearchHit] = []
+        for metadata in sessions {
+            let path = ConversationIndexDatabase.normalizedPath(metadata.file)
+            let documents = documentsByPath[path, default: []].sorted(by: Self.documentComesFirst)
+            guard let match = documents.lazy.compactMap({ document -> HistorySearchHit? in
+                guard let range = document.text.range(of: query, options: [.caseInsensitive]) else {
+                    return nil
+                }
+                let offset = range.lowerBound.utf16Offset(in: document.text)
+                let span = Self.span(at: offset, in: document.messageSpans)
+                return HistorySearchHit(
+                    sessionID: metadata.sessionID,
+                    file: metadata.file,
+                    source: metadata.source,
+                    agent: document.transcriptID,
+                    agentType: document.agentType,
+                    sequence: span?.sequence,
+                    snippet: Self.snippet(in: document.text, around: range, context: 56),
+                    count: Self.occurrenceCount(of: query, in: document.text)
+                )
+            }).first else { continue }
+            hits.append(match)
+            if hits.count == limit { break }
+        }
+        return hits
+    }
+
+    func getSession(file: URL) throws -> HistorySession {
+        try loader.getSession(file: file)
+    }
+
+    func conversationScopeSnapshot() -> ConversationScopeSnapshot? {
+        do {
+            let live = HistoryCatalogProjection.canonicalizedCodexSessions(
+                try database.listEntries(deleted: false, limit: .max)
+                    .map(\.metadata)
+                    .filter { allowedScopeIDs.contains($0.dirID) },
+                homeDirectory: configuration.homeDirectory
+            )
+            let trash = HistoryCatalogProjection.canonicalizedCodexSessions(
+                try database.listEntries(deleted: true, limit: .max)
+                    .map(\.metadata)
+                    .filter { allowedScopeIDs.contains($0.dirID) },
+                homeDirectory: configuration.homeDirectory
+            )
+            return ConversationScopeSnapshot(
+                sessionCounts: Dictionary(grouping: live, by: \.dirID).mapValues(\.count),
+                trashCount: trash.count,
+                isAuthoritative: true
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    func startIndexing(onRevision: @escaping @Sendable (Int64) -> Void) {
+        coordinator.start(onRevision: onRevision)
+    }
+
+    func stopIndexing() {
+        coordinator.stop()
+    }
+
+    func reconcileIndex() throws {
+        try coordinator.reconcileNow()
+    }
+
+    func refreshIndex(for files: [URL]) throws {
+        try coordinator.refreshNow(files: files)
+    }
+
+    private var activeFilter: (scope: String?, deleted: Bool) {
+        switch configuration.active {
+        case "all": (nil, false)
+        case "__trash__": (nil, true)
+        default: (configuration.active, false)
+        }
+    }
+
+    private var allowedScopeIDs: Set<String> {
+        Set(configuration.historyDirs + ["__imported__"])
+    }
+
+    private static func documentComesFirst(
+        _ lhs: ConversationIndexDocument,
+        _ rhs: ConversationIndexDocument
+    ) -> Bool {
+        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+        return lhs.transcriptID < rhs.transcriptID
+    }
+
+    private static func span(
+        at utf16Offset: Int,
+        in spans: [ConversationIndexMessageSpan]
+    ) -> ConversationIndexMessageSpan? {
+        if let containing = spans.first(where: {
+            utf16Offset >= $0.utf16Location
+                && utf16Offset < $0.utf16Location + max(1, $0.utf16Length)
+        }) {
+            return containing
+        }
+        return spans.first(where: { $0.utf16Location >= utf16Offset }) ?? spans.last
+    }
+
+    private static func occurrenceCount(of query: String, in text: String) -> Int {
+        var count = 0
+        var cursor = text.startIndex
+        while cursor < text.endIndex,
+              let range = text.range(
+                  of: query,
+                  options: [.caseInsensitive],
+                  range: cursor..<text.endIndex
+              ) {
+            count += 1
+            cursor = range.upperBound
+        }
+        return count
+    }
+
+    private static func snippet(
+        in text: String,
+        around match: Range<String.Index>,
+        context: Int
+    ) -> String {
+        let start = text.index(
+            match.lowerBound,
+            offsetBy: -context,
+            limitedBy: text.startIndex
+        ) ?? text.startIndex
+        let end = text.index(
+            match.upperBound,
+            offsetBy: context,
+            limitedBy: text.endIndex
+        ) ?? text.endIndex
+        let body = text[start..<end]
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return (start > text.startIndex ? "…" : "")
+            + body
+            + (end < text.endIndex ? "…" : "")
+    }
+}

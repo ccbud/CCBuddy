@@ -1,0 +1,611 @@
+import Foundation
+
+struct ConversationIndexScanResult: Equatable, Sendable {
+    var discovered: Int = 0
+    var parsed: Int = 0
+    var unchanged: Int = 0
+    var removed: Int = 0
+    var failed: Int = 0
+    var generation: Int64 = 0
+
+    var hasChanges: Bool { parsed > 0 || removed > 0 }
+}
+
+struct ConversationIndexScopeAvailabilityToken: Equatable, Sendable {
+    var directoryIdentities: [String]
+    var availableDiscoveryRoots: [String] = []
+    var missingDiscoveryRoots: [String] = []
+}
+
+/// A scope may be reconciled only when the same non-nil token is observed immediately before and
+/// after discovery. A missing root, an unreadable directory, or an atomic root replacement thus
+/// retains the warm catalog instead of turning a transient filesystem failure into data loss.
+protocol ConversationIndexScopeAvailabilityChecking: Sendable {
+    func token(for directory: HistoryDirectory) -> ConversationIndexScopeAvailabilityToken?
+}
+
+struct ConversationIndexFileSystemAvailability: ConversationIndexScopeAvailabilityChecking,
+    @unchecked Sendable {
+    private let fileManager: FileManager
+    private let maximumDepth: Int
+
+    init(fileManager: FileManager = FileManager(), maximumDepth: Int = 8) {
+        self.fileManager = fileManager
+        self.maximumDepth = max(1, maximumDepth)
+    }
+
+    func token(for directory: HistoryDirectory) -> ConversationIndexScopeAvailabilityToken? {
+        let base = directory.baseURL.standardizedFileURL
+        guard let baseIdentity = directoryIdentity(base, rejectSymbolicLink: false),
+              let baseChildren = directoryContents(base) else { return nil }
+
+        var identities = [baseIdentity]
+        var availableRoots: [String] = []
+        var missingRoots: [String] = []
+        let children = Set(baseChildren.map { $0.standardizedFileURL.path })
+        for root in Self.discoveryRoots(for: directory) {
+            let root = root.standardizedFileURL
+            guard fileManager.fileExists(atPath: root.path) else {
+                // If enumeration observed the name but a later stat did not, the tree changed
+                // during the proof. Treat it as unavailable rather than a stable missing root.
+                guard !children.contains(root.path) else { return nil }
+                identities.append(root.path + "|missing")
+                missingRoots.append(root.path)
+                continue
+            }
+            guard collectDirectoryIdentities(
+                root,
+                depth: 0,
+                identities: &identities
+            ) else { return nil }
+            availableRoots.append(root.path)
+        }
+        return ConversationIndexScopeAvailabilityToken(
+            directoryIdentities: identities.sorted(),
+            availableDiscoveryRoots: availableRoots.sorted(),
+            missingDiscoveryRoots: missingRoots.sorted()
+        )
+    }
+
+    private static func discoveryRoots(for directory: HistoryDirectory) -> [URL] {
+        [
+            directory.projectsURL,
+            directory.sessionsURL,
+            directory.baseURL.appendingPathComponent("archived_sessions", isDirectory: true),
+            directory.baseURL.appendingPathComponent("session-state", isDirectory: true),
+            directory.baseURL.appendingPathComponent("conversations", isDirectory: true),
+        ]
+    }
+
+    private func collectDirectoryIdentities(
+        _ directory: URL,
+        depth: Int,
+        identities: inout [String]
+    ) -> Bool {
+        guard let identity = directoryIdentity(directory, rejectSymbolicLink: true),
+              let children = directoryContents(directory) else { return false }
+        identities.append(identity)
+        guard depth < maximumDepth else { return true }
+
+        for child in children {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: child.path),
+                  let type = attributes[.type] as? FileAttributeType else { return false }
+            switch type {
+            case .typeDirectory:
+                guard collectDirectoryIdentities(
+                    child,
+                    depth: depth + 1,
+                    identities: &identities
+                ) else { return false }
+            case .typeSymbolicLink:
+                // Discovery intentionally skips linked descendants. Their presence is stable
+                // scope state, but their target must never participate in availability.
+                identities.append(child.standardizedFileURL.path + "|symlink")
+            default:
+                continue
+            }
+        }
+        return true
+    }
+
+    private func directoryIdentity(
+        _ directory: URL,
+        rejectSymbolicLink: Bool
+    ) -> String? {
+        let values = try? directory.resourceValues(forKeys: [.isSymbolicLinkKey])
+        if rejectSymbolicLink, values?.isSymbolicLink == true { return nil }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: directory.path),
+              let type = attributes[.type] as? FileAttributeType,
+              type == .typeDirectory else { return nil }
+        let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value
+        let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970
+        return [
+            directory.standardizedFileURL.path,
+            device.map(String.init) ?? "?",
+            inode.map(String.init) ?? "?",
+            modified.map { String(format: "%.9f", $0) } ?? "?",
+        ].joined(separator: "|")
+    }
+
+    private func directoryContents(_ directory: URL) -> [URL]? {
+        try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ).sorted { $0.path < $1.path }
+    }
+}
+
+protocol ConversationIndexScanStoring: Sendable {
+    func scannerEntries() throws -> [ConversationIndexEntry]
+    func generation() throws -> Int64
+    @discardableResult func replace(_ session: ConversationIndexedSession) throws -> Int64
+    func reconcile(
+        scope: String,
+        seenPaths: Set<String>,
+        allowEmpty: Bool
+    ) throws -> ConversationIndexReconciliation
+}
+
+extension ConversationIndexDatabase: ConversationIndexScanStoring {
+    func scannerEntries() throws -> [ConversationIndexEntry] {
+        try listEntries(deleted: nil, limit: .max)
+    }
+}
+
+protocol ConversationIndexSourceRegistering: Sendable {
+    func manifest(
+        for candidate: HistoryFileCandidate,
+        format: HistoryTranscriptFormat,
+        configuration: HistoryConfiguration
+    ) throws -> ConversationDependencyManifest
+    func discoverCandidates(
+        configuration: HistoryConfiguration,
+        activeOnly: Bool
+    ) -> [HistoryFileCandidate]
+    func eventImpact(
+        _ eventFiles: [URL],
+        knownManifests: [ConversationDependencyManifest],
+        configuration: HistoryConfiguration
+    ) -> ConversationSourceEventImpact
+}
+
+extension ConversationSourceAdapterRegistry: ConversationIndexSourceRegistering {}
+
+/// Synchronous scanner used from the coordinator's detached worker.
+///
+/// One lock covers discovery, parsing, replacement, and reconciliation. Concurrent full scans and
+/// watcher scans therefore queue instead of interleaving catalog generations or publishing stale
+/// manifests. Producer files are never mutated; every successful projection replacement is one
+/// database transaction.
+final class ConversationIndexScanner: @unchecked Sendable {
+    private struct Discovery {
+        var candidates: [HistoryFileCandidate]
+        var directories: [HistoryDirectory]
+        var availabilityBefore: [String: ConversationIndexScopeAvailabilityToken]
+    }
+
+    private let configuration: HistoryConfiguration
+    private let catalog: any ConversationIndexScanStoring
+    private let loader: any HistorySessionLoading
+    private let registry: any ConversationIndexSourceRegistering
+    private let availability: any ConversationIndexScopeAvailabilityChecking
+    private let fileManager: FileManager
+    private let scanLock = NSLock()
+
+    private var manifestsByPath: [String: ConversationDependencyManifest] = [:]
+    private var lastGeneration: Int64
+
+    init(
+        configuration: HistoryConfiguration,
+        database: ConversationIndexDatabase,
+        qoderReader: QoderFileReader = .shared,
+        registry: ConversationSourceAdapterRegistry = .init(),
+        fileManager: FileManager = FileManager()
+    ) {
+        self.configuration = configuration
+        catalog = database
+        loader = HistorySessionLoader(
+            configuration: configuration,
+            qoderReader: qoderReader,
+            adapters: registry
+        )
+        self.registry = registry
+        availability = ConversationIndexFileSystemAvailability(fileManager: fileManager)
+        self.fileManager = fileManager
+        lastGeneration = (try? database.generation()) ?? 0
+    }
+
+    init(
+        configuration: HistoryConfiguration,
+        database: ConversationIndexDatabase,
+        loader: any HistorySessionLoading,
+        registry: ConversationSourceAdapterRegistry = .init(),
+        availability: (any ConversationIndexScopeAvailabilityChecking)? = nil,
+        fileManager: FileManager = FileManager()
+    ) {
+        self.configuration = configuration
+        catalog = database
+        self.loader = loader
+        self.registry = registry
+        self.availability = availability
+            ?? ConversationIndexFileSystemAvailability(fileManager: fileManager)
+        self.fileManager = fileManager
+        lastGeneration = (try? database.generation()) ?? 0
+    }
+
+    init(
+        configuration: HistoryConfiguration,
+        catalog: any ConversationIndexScanStoring,
+        loader: any HistorySessionLoading,
+        registry: any ConversationIndexSourceRegistering,
+        availability: any ConversationIndexScopeAvailabilityChecking,
+        fileManager: FileManager = FileManager()
+    ) {
+        self.configuration = configuration
+        self.catalog = catalog
+        self.loader = loader
+        self.registry = registry
+        self.availability = availability
+        self.fileManager = fileManager
+        lastGeneration = (try? catalog.generation()) ?? 0
+    }
+
+    var manifests: [ConversationDependencyManifest] {
+        withScanLock {
+            manifestsByPath.values.sorted {
+                Self.path(of: $0.candidate) < Self.path(of: $1.candidate)
+            }
+        }
+    }
+
+    /// Includes configured producer trees plus dependency files outside those trees (for example
+    /// Codex state SQLite and CCBuddy metadata sidecars). The watcher accepts missing/file paths
+    /// and anchors them at their nearest existing parent.
+    var watchRoots: [URL] {
+        withScanLock { watchRootsWithoutLock() }
+    }
+
+    var generation: Int64 {
+        withScanLock { lastGeneration }
+    }
+
+    func scanAll() throws -> ConversationIndexScanResult {
+        try withScanLock {
+            try scanAllWithoutLock()
+        }
+    }
+
+    /// Applies a watcher batch. `eventImpact` selects already-known owners; discovery additionally
+    /// finds new candidates and safely reconciles deletions. `forceDiscovery` does not force every
+    /// unchanged transcript to parse—use `scanAll()` for a dropped-event full verification.
+    func scan(
+        changedPaths: [URL],
+        forceDiscovery: Bool = false
+    ) throws -> ConversationIndexScanResult {
+        try withScanLock {
+            try scanChangedPathsWithoutLock(
+                changedPaths.map(\.standardizedFileURL),
+                forceDiscovery: forceDiscovery
+            )
+        }
+    }
+
+    private func scanAllWithoutLock() throws -> ConversationIndexScanResult {
+        let discovery = beginDiscovery()
+        var result = ConversationIndexScanResult(discovered: discovery.candidates.count)
+        var entriesByPath = try indexedEntriesByPath()
+        let ordered = Self.newestFirst(Self.unique(discovery.candidates))
+        loader.prefetch(ordered)
+        try process(
+            ordered,
+            entriesByPath: &entriesByPath,
+            result: &result
+        )
+        try reconcile(
+            discovery,
+            entriesByPath: &entriesByPath,
+            result: &result
+        )
+        result.generation = try catalog.generation()
+        lastGeneration = result.generation
+        return result
+    }
+
+    private func scanChangedPathsWithoutLock(
+        _ changedPaths: [URL],
+        forceDiscovery: Bool
+    ) throws -> ConversationIndexScanResult {
+        let knownManifests = manifestsByPath.values.sorted {
+            Self.path(of: $0.candidate) < Self.path(of: $1.candidate)
+        }
+        let impact = registry.eventImpact(
+            changedPaths,
+            knownManifests: knownManifests,
+            configuration: configuration
+        )
+        let shouldDiscover = forceDiscovery || impact.requiresDiscovery
+        let discovery = shouldDiscover ? beginDiscovery() : nil
+        var entriesByPath = try indexedEntriesByPath()
+
+        let work: [HistoryFileCandidate]
+        if let discovery {
+            let discoveredByPath = Dictionary(
+                uniqueKeysWithValues: Self.unique(discovery.candidates).map {
+                    (Self.path(of: $0), $0)
+                }
+            )
+            let impactedPaths = Set(impact.candidates.map(Self.path))
+            var paths = impactedPaths
+            paths.formUnion(discoveredByPath.keys.filter { entriesByPath[$0] == nil })
+            work = paths.sorted().compactMap { discoveredByPath[$0] }
+        } else {
+            work = Self.unique(impact.candidates)
+        }
+
+        var result = ConversationIndexScanResult(
+            discovered: discovery?.candidates.count ?? work.count
+        )
+        let ordered = Self.newestFirst(work)
+        loader.prefetch(ordered)
+        try process(
+            ordered,
+            entriesByPath: &entriesByPath,
+            result: &result
+        )
+        if let discovery {
+            try reconcile(
+                discovery,
+                entriesByPath: &entriesByPath,
+                result: &result
+            )
+        }
+        result.generation = try catalog.generation()
+        lastGeneration = result.generation
+        return result
+    }
+
+    private func beginDiscovery() -> Discovery {
+        let resolver = HistoryPathResolver(configuration: configuration)
+        let directories = resolver.directories(activeOnly: false)
+        var availabilityBefore: [String: ConversationIndexScopeAvailabilityToken] = [:]
+        for directory in directories {
+            availabilityBefore[directory.id] = availability.token(for: directory)
+        }
+        return Discovery(
+            candidates: registry.discoverCandidates(
+                configuration: configuration,
+                activeOnly: false
+            ),
+            directories: directories,
+            availabilityBefore: availabilityBefore
+        )
+    }
+
+    private func process(
+        _ candidates: [HistoryFileCandidate],
+        entriesByPath: inout [String: ConversationIndexEntry],
+        result: inout ConversationIndexScanResult
+    ) throws {
+        for candidate in candidates {
+            let path = Self.path(of: candidate)
+            let entry = entriesByPath[path]
+            if let preflight = preflight(candidate, entry: entry),
+               entry?.fingerprint == preflight.fingerprint {
+                manifestsByPath[path] = preflight.manifest
+                result.unchanged += 1
+                continue
+            }
+
+            let loaded: LoadedHistorySession
+            do {
+                loaded = try loadRetryingDependencyChange(candidate)
+            } catch {
+                result.failed += 1
+                continue
+            }
+            guard let fingerprint = Self.fingerprint(
+                manifest: loaded.manifest,
+                snapshot: loaded.dependencySnapshot
+            ) else {
+                result.failed += 1
+                continue
+            }
+
+            let indexed = ConversationIndexedSession(
+                projection: loaded.projection,
+                scope: candidate.directory.id,
+                fingerprint: fingerprint
+            )
+            let replacementGeneration = try catalog.replace(indexed)
+            lastGeneration = replacementGeneration
+            entriesByPath[path] = ConversationIndexEntry(
+                sourcePath: path,
+                metadata: loaded.projection.metadata,
+                scope: candidate.directory.id,
+                fingerprint: fingerprint,
+                indexedAt: Date()
+            )
+            manifestsByPath[path] = loaded.manifest
+            result.parsed += 1
+        }
+    }
+
+    private func loadRetryingDependencyChange(
+        _ candidate: HistoryFileCandidate
+    ) throws -> LoadedHistorySession {
+        do {
+            return try loader.load(candidate, consistency: .dependencyStable)
+        } catch HistorySessionLoadError.dependenciesChanged {
+            return try loader.load(candidate, consistency: .dependencyStable)
+        }
+    }
+
+    private func preflight(
+        _ candidate: HistoryFileCandidate,
+        entry: ConversationIndexEntry?
+    ) -> (
+        manifest: ConversationDependencyManifest,
+        fingerprint: ConversationIndexFingerprint
+    )? {
+        let path = Self.path(of: candidate)
+        let format = candidate.formatHint
+            ?? manifestsByPath[path].flatMap { Self.format(for: $0.source) }
+            ?? entry.flatMap { Self.format(for: $0.metadata.source) }
+        guard let format,
+              let manifest = try? registry.manifest(
+                  for: candidate,
+                  format: format,
+                  configuration: configuration
+              ) else { return nil }
+        let snapshot = manifest.snapshot(fileManager: fileManager)
+        guard let fingerprint = Self.fingerprint(manifest: manifest, snapshot: snapshot) else {
+            return nil
+        }
+        return (manifest, fingerprint)
+    }
+
+    private func reconcile(
+        _ discovery: Discovery,
+        entriesByPath: inout [String: ConversationIndexEntry],
+        result: inout ConversationIndexScanResult
+    ) throws {
+        let seenByScope = Dictionary(grouping: discovery.candidates, by: { $0.directory.id })
+            .mapValues { Set($0.map(Self.path)) }
+        for directory in discovery.directories {
+            guard let before = discovery.availabilityBefore[directory.id],
+                  let after = availability.token(for: directory),
+                  before == after else { continue }
+            let indexedInScope = entriesByPath.values.filter { $0.scope == directory.id }
+            let availableRoots = after.availableDiscoveryRoots.map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            }
+            // A producer container which never existed is a valid empty source. Once the catalog
+            // has rows beneath it, however, disappearance/unavailability is not proof of deletion.
+            // Preserve the entire scope until every indexed primary path still has an available
+            // discovery root.
+            guard indexedInScope.allSatisfy({ entry in
+                let file = URL(fileURLWithPath: entry.sourcePath)
+                return availableRoots.contains { Self.contains(file, in: $0) }
+            }) else { continue }
+            let reconciliation = try catalog.reconcile(
+                scope: directory.id,
+                seenPaths: seenByScope[directory.id, default: []],
+                allowEmpty: true
+            )
+            lastGeneration = reconciliation.generation
+            result.removed += reconciliation.removedPaths.count
+            for path in reconciliation.removedPaths {
+                entriesByPath.removeValue(forKey: path)
+                manifestsByPath.removeValue(forKey: path)
+            }
+        }
+    }
+
+    private func indexedEntriesByPath() throws -> [String: ConversationIndexEntry] {
+        Dictionary(uniqueKeysWithValues: try catalog.scannerEntries().map {
+            ($0.sourcePath, $0)
+        })
+    }
+
+    private func watchRootsWithoutLock() -> [URL] {
+        let configured = HistoryPathResolver(configuration: configuration)
+            .watchRoots()
+            .map(\.standardizedFileURL)
+        var result = configured
+        var seen = Set(configured.map(\.path))
+        for dependency in manifestsByPath.values.flatMap(\.dependencies) {
+            let file = dependency.file.standardizedFileURL
+            let covered = configured.contains { root in
+                Self.contains(file, in: root)
+            }
+            if !covered, seen.insert(file.path).inserted { result.append(file) }
+        }
+        return result.sorted { $0.path < $1.path }
+    }
+
+    private func withScanLock<T>(_ operation: () throws -> T) rethrows -> T {
+        scanLock.lock()
+        defer { scanLock.unlock() }
+        return try operation()
+    }
+
+    private static func fingerprint(
+        manifest: ConversationDependencyManifest,
+        snapshot: ConversationDependencySnapshot
+    ) -> ConversationIndexFingerprint? {
+        guard let primary = manifest.primary,
+              let stamp = snapshot.stamp(for: primary.file, role: primary.role),
+              stamp.kind == .regularFile,
+              let nanoseconds = stamp.modifiedAtNanoseconds,
+              let sizeBytes = stamp.sizeBytes else { return nil }
+        return ConversationIndexFingerprint(
+            modificationTime: Date(
+                timeIntervalSince1970: Double(nanoseconds) / 1_000_000_000
+            ),
+            sizeBytes: sizeBytes,
+            dependencyFingerprint: snapshot.fingerprint
+        )
+    }
+
+    private static func format(for source: HistorySource) -> HistoryTranscriptFormat? {
+        switch source {
+        case .claude: .claude
+        case .codex: .codex
+        case .qoder: .qoder
+        case .grok: .grok
+        case .copilot: .copilot
+        case .antigravity: .antigravity
+        }
+    }
+
+    private static func unique(
+        _ candidates: [HistoryFileCandidate]
+    ) -> [HistoryFileCandidate] {
+        var result: [HistoryFileCandidate] = []
+        var positions: [String: Int] = [:]
+        for candidate in candidates {
+            let path = Self.path(of: candidate)
+            if let position = positions[path] {
+                if result[position].formatHint == nil, candidate.formatHint != nil {
+                    result[position] = candidate
+                }
+            } else {
+                positions[path] = result.count
+                result.append(candidate)
+            }
+        }
+        return result
+    }
+
+    private static func newestFirst(
+        _ candidates: [HistoryFileCandidate]
+    ) -> [HistoryFileCandidate] {
+        candidates.sorted { left, right in
+            let leftStamp = primaryStamp(left)
+            let rightStamp = primaryStamp(right)
+            if leftStamp != rightStamp { return leftStamp > rightStamp }
+            return path(of: left) < path(of: right)
+        }
+    }
+
+    private static func primaryStamp(_ candidate: HistoryFileCandidate) -> Int64 {
+        let dependency = ConversationSourceDependency(
+            file: candidate.file,
+            role: candidate.formatHint == .antigravity ? .primaryDatabase : .primaryTranscript
+        )
+        return ConversationDependencyStamp.read(dependency).modifiedAtNanoseconds ?? .min
+    }
+
+    private static func path(of candidate: HistoryFileCandidate) -> String {
+        candidate.file.standardizedFileURL.path
+    }
+
+    private static func contains(_ child: URL, in parent: URL) -> Bool {
+        let childComponents = child.standardizedFileURL.pathComponents
+        let parentComponents = parent.standardizedFileURL.pathComponents
+        return childComponents.count >= parentComponents.count
+            && childComponents.prefix(parentComponents.count).elementsEqual(parentComponents)
+    }
+}

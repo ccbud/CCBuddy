@@ -175,6 +175,8 @@ struct HistorySearchHit: Codable, Equatable, Identifiable, Sendable {
     var source: HistorySource
     var agent: String = "main"
     var agentType: String?
+    /// Parser-stable message position within `agent`; indexed hits use it for exact navigation.
+    var sequence: Int? = nil
     var snippet: String
     var count: Int
 

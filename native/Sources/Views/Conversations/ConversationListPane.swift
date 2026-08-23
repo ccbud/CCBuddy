@@ -292,7 +292,12 @@ struct ConversationListPane: View {
                                             hit: store.contentHit(for: session),
                                             searchQuery: store.listQuery
                                         ) {
-                                            Task { await store.select(session) }
+                                            Task {
+                                                await store.select(
+                                                    session,
+                                                    searchHit: store.contentHit(for: session)
+                                                )
+                                            }
                                         }
                                     }
                                 }

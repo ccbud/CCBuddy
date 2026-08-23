@@ -45,49 +45,25 @@ struct HistoryRepository: Sendable {
 
     func listSessions(limit: Int = 400) -> [HistorySessionMetadata] {
         guard limit > 0 else { return [] }
-        let candidates = pathResolver.discoverSessionFiles()
-        let qoderCandidates = candidates.filter { $0.formatHint == .qoder }
-        qoderReader.prefetch(
-            qoderCandidates.map(\.file)
-                + qoderCandidates.flatMap {
-                    HistorySubagentReader.qoderPrefetchFiles(mainFile: $0.file)
-                }
-        )
+        let loader = HistorySessionLoader(configuration: configuration, qoderReader: qoderReader)
+        let candidates = loader.discoverCandidates()
+        loader.prefetch(candidates)
         var sessions = candidates.compactMap { candidate in
-            try? readSession(candidate).metadata
+            try? loader.load(candidate, consistency: .bestEffort).session.metadata
         }
-        sessions = deduplicateCanonicalCodexSessions(sessions)
+        sessions = HistoryCatalogProjection.canonicalizedCodexSessions(
+            sessions,
+            homeDirectory: configuration.homeDirectory
+        )
 
         let trash = configuration.active == "__trash__"
         sessions.removeAll { $0.deleted != trash }
-        sessions.sort(by: sessionComesFirst)
-        return limitWithCodexAncestors(sessions, limit: limit)
+        sessions = HistoryCatalogProjection.activityOrdered(sessions)
+        return HistoryCatalogProjection.limitedKeepingCodexAncestors(sessions, limit: limit)
     }
 
     func listProjects(limit: Int = 600) -> [HistoryProject] {
-        let sessions = listSessions(limit: limit)
-        var order: [String] = []
-        var grouped: [String: [HistorySessionMetadata]] = [:]
-        for session in sessions {
-            let cwd = session.cwd ?? "(unknown)"
-            if grouped[cwd] == nil { order.append(cwd) }
-            grouped[cwd, default: []].append(session)
-        }
-        return order.compactMap { cwd in
-            guard let sessions = grouped[cwd], let first = sessions.first else { return nil }
-            return HistoryProject(
-                cwd: cwd,
-                name: first.project,
-                // The legacy renderer keeps every Codex root/subagent tree together and presents
-                // it depth-first. The repository list remains activity-ordered for limits and
-                // search, while the project surface mirrors that final row presentation.
-                sessions: orderProjectSessions(sessions.sorted(by: sessionComesFirst)),
-                lastActivity: sessions.map(\.lastActivity).max() ?? .distantPast
-            )
-        }.sorted {
-            if $0.lastActivity != $1.lastActivity { return $0.lastActivity > $1.lastActivity }
-            return $0.cwd > $1.cwd
-        }
+        HistoryCatalogProjection.projects(from: listSessions(limit: limit))
     }
 
     /// Mirrors the legacy `history_dirs` contract for settings: logical, non-deleted sessions are
@@ -114,59 +90,14 @@ struct HistoryRepository: Sendable {
     }
 
     func getSession(file: URL) throws -> HistorySession {
-        try readSession(pathResolver.validatedCandidate(for: file))
+        try HistorySessionLoader(
+            configuration: configuration,
+            qoderReader: qoderReader
+        ).getSession(file: file)
     }
 
     func getSession(filePath: String) throws -> HistorySession {
         try getSession(file: URL(fileURLWithPath: filePath))
-    }
-
-    private func readSession(_ candidate: HistoryFileCandidate) throws -> HistorySession {
-        if candidate.formatHint == .antigravity {
-            let facts = try HistoryFileFacts.read(candidate.file, records: [])
-            return AntigravityHistoryParser.parse(
-                candidate: candidate,
-                facts: facts,
-                appDataRoot: configuration.appDataRoot
-            )
-        }
-        let document = try HistoryJSONLDocument.read(
-            from: candidate.file,
-            qoderReader: qoderReader
-        )
-        let facts = try HistoryFileFacts.read(candidate.file, records: document.records)
-        let context = HistoryParseContext(
-            candidate: candidate,
-            document: document,
-            facts: facts,
-            homeDirectory: configuration.homeDirectory,
-            appDataRoot: configuration.appDataRoot
-        )
-        let format = candidate.formatHint ?? HistoryTranscriptFormat.detect(document.records)
-        let session: HistorySession
-        switch format {
-        case .claude: session = ClaudeHistoryParser.parse(context)
-        case .codex: session = CodexHistoryParser.parse(context)
-        case .qoder: session = QoderHistoryParser.parse(context)
-        case .grok: session = GrokHistoryParser.parse(context)
-        case .copilot: session = CopilotHistoryParser.parse(context)
-        case .antigravity:
-            session = AntigravityHistoryParser.parse(
-                candidate: candidate,
-                facts: facts,
-                appDataRoot: configuration.appDataRoot
-            )
-        case nil: throw HistoryError.unsupportedTranscript(candidate.file)
-        }
-        guard session.metadata.source == .claude || session.metadata.source == .qoder else {
-            return session
-        }
-        return HistorySubagentReader.attach(
-            to: session,
-            mainRecords: document.records,
-            qoder: format == .qoder,
-            qoderReader: qoderReader
-        )
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
