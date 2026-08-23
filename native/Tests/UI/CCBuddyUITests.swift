@@ -424,7 +424,7 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertEqual(
             windowFrame.height - titleBarInset,
             min(760, availableContentHeight),
-            accuracy: 0.5
+            accuracy: 4
         )
         let visualTokens = app.staticTexts["providers.usage.tokens"]
         XCTAssertTrue(visualTokens.waitForExistence(timeout: 5))

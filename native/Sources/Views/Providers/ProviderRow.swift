@@ -31,8 +31,6 @@ struct ProviderRow: View {
             RoundedRectangle(cornerRadius: 13)
                 .stroke(active ? Color.ccGreen.opacity(0.34) : Color.ccBorder)
         )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: select)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("provider.\(provider.id)")
         .accessibilityHint(
@@ -44,14 +42,22 @@ struct ProviderRow: View {
 
     private var wideContent: some View {
         HStack(spacing: 12) {
-            dragHandle
-            ProviderIconView(name: provider.name, icon: provider.icon, size: 36)
-            providerIdentity
-                .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(2)
-            Spacer(minLength: 8)
-            modelBadges
-                .fixedSize(horizontal: true, vertical: false)
+            Button(action: select) {
+                HStack(spacing: 12) {
+                    dragHandle
+                    ProviderIconView(name: provider.name, icon: provider.icon, size: 36)
+                    providerIdentity
+                        .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(2)
+                    Spacer(minLength: 8)
+                    modelBadges
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(appLanguage.localized("切换到\(provider.name)"))
             actionButtons
         }
     }
@@ -59,16 +65,29 @@ struct ProviderRow: View {
     private var compactContent: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 10) {
-                dragHandle
-                ProviderIconView(name: provider.name, icon: provider.icon, size: 36)
-                providerIdentity
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(2)
+                Button(action: select) {
+                    HStack(spacing: 10) {
+                        dragHandle
+                        ProviderIconView(name: provider.name, icon: provider.icon, size: 36)
+                        providerIdentity
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(appLanguage.localized("切换到\(provider.name)"))
                 actionButtons
             }
-            modelBadges
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 58)
+            Button(action: select) {
+                modelBadges
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 58)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(appLanguage.localized("切换到\(provider.name)"))
         }
     }
 
