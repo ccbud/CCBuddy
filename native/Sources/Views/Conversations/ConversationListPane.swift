@@ -1,22 +1,17 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ConversationListPane: View {
     @ObservedObject var store: ConversationStore
+    @ObservedObject var workbench: ConversationWorkbenchState
     @Environment(\.appLanguage) private var appLanguage
-    var historyDirectories: [String] = []
-    var selectHistoryScope: (String) -> Void = { _ in }
 
-    @State private var showingImporter = false
     @State private var previousIndexingState: ConversationIndexingState = .idle
     @State private var announcesIndexChanges = false
 
     var body: some View {
         VStack(spacing: 0) {
             listHeader
-            searchBar
-            if showsScopeBar { scopeBar }
             listContent
         }
         .conversationRailMaterial()
@@ -48,24 +43,16 @@ struct ConversationListPane: View {
                 ]
             )
         }
-        .fileImporter(
-            isPresented: $showingImporter,
-            allowedContentTypes: importTypes,
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let files):
-                Task { await store.importFiles(files) }
-            case .failure(let error):
-                store.reportActionError("导入失败：\(error.localizedDescription)")
-            }
-        }
         .accessibilityIdentifier("conversation.list")
     }
 
     private var listHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(scopeLabel)
+            Text(workbench.contextTitle(
+                projects: store.projects,
+                historyActive: store.historyActive,
+                language: appLanguage
+            ))
                 .font(.system(size: 22, weight: .semibold))
                 .tracking(-0.35)
                 .lineLimit(1)
@@ -83,12 +70,25 @@ struct ConversationListPane: View {
         // Match Wake's compact full-size-content header while retaining a drag surface.
         .padding(.top, 20)
         .padding(.bottom, 10)
+        .background(WindowDragRegion())
     }
 
     @ViewBuilder private var indexingStatus: some View {
         switch store.indexingState {
         case .idle:
-            EmptyView()
+            if case .unavailable(let message) = store.catalogWatcherState {
+                Button { store.retryIndexing() } label: {
+                    Label(appLanguage.localized("实时更新关闭"), systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.ccRed)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help(appLanguage.localized(message))
+                .accessibilityLabel(appLanguage.localized("会话实时更新状态"))
+                .accessibilityValue(appLanguage.localized(message))
+                .accessibilityIdentifier("conversation.watcher.retry")
+            }
         case .scanning(let completed, let total):
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
@@ -114,192 +114,6 @@ struct ConversationListPane: View {
         }
     }
 
-    private var searchBar: some View {
-        HStack(spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.ccCaption)
-                TextField(
-                    "搜索项目 / 会话 / 内容…",
-                    text: Binding(get: { store.listQuery }, set: { store.updateListQuery($0) })
-                )
-                .textFieldStyle(.plain)
-                .font(.system(size: 11.5))
-                .accessibilityIdentifier("conversation.list.search")
-
-                if !store.listQuery.isEmpty {
-                    Button { store.updateListQuery("") } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.ccCaption)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("清空搜索")
-                    .accessibilityIdentifier("conversation.list.search.clear")
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(Color.ccConversationSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-            if let progress = store.importProgress {
-                ProgressView(value: Double(progress.completed), total: Double(max(progress.total, 1)))
-                    .progressViewStyle(.circular)
-                    .controlSize(.small)
-                    .frame(width: 26, height: 26)
-                    .help(appLanguage.localized("正在导入 \(progress.completed)/\(progress.total)"))
-                    .accessibilityIdentifier("conversation.import.progress")
-            } else {
-                Button { showingImporter = true } label: {
-                    Text("+")
-                        .font(.system(size: 16, weight: .regular))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(ConversationToolButtonStyle())
-                .help(appLanguage.localized("导入 JSONL 或 ZIP"))
-                .disabled(store.isMutating)
-                .accessibilityLabel("导入会话")
-                .accessibilityIdentifier("conversation.import")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
-    }
-
-    private var scopeBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                scopeChip(
-                    appLanguage.localized("全部会话"),
-                    value: "all",
-                    symbol: "tray.full"
-                )
-
-                if showsDirectoryScopes {
-                    ForEach(normalizedHistoryDirectories, id: \.self) { directory in
-                        scopeChip(
-                            directory,
-                            value: directory,
-                            symbol: "folder",
-                            count: store.scopeSnapshot.sessionCounts[directory]
-                        )
-                    }
-                    if importedIsSelectable {
-                        scopeChip(
-                            appLanguage.localized("已导入"),
-                            value: "__imported__",
-                            symbol: "square.and.arrow.down",
-                            count: store.scopeSnapshot.importedCount
-                        )
-                    }
-                }
-
-                if trashIsSelectable {
-                    scopeChip(
-                        appLanguage.localized("回收站"),
-                        value: "__trash__",
-                        symbol: "trash",
-                        count: store.scopeSnapshot.trashCount,
-                        destructive: true
-                    )
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-        .frame(height: 34)
-        .background(Color.ccConversationList)
-        .conversationAccessibilityContainerIdentifier(
-            "conversation.scope",
-            label: appLanguage.localized("会话范围：\(scopeLabel)")
-        )
-    }
-
-    private func scopeChip(
-        _ label: String,
-        value: String,
-        symbol: String,
-        count: Int? = nil,
-        destructive: Bool = false
-    ) -> some View {
-        let selected = store.historyActive == value
-        return Button {
-            selectHistoryScope(value)
-        } label: {
-            HStack(spacing: 5) {
-                if value == "__imported__" || value == "__trash__" {
-                    Image(systemName: symbol)
-                        .font(.system(size: 9.5, weight: .medium))
-                }
-                Text(label)
-                    .lineLimit(1)
-                if let count {
-                    Text("\(count)")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background((selected ? Color.white : Color.ccForeground).opacity(0.10))
-                        .clipShape(Capsule())
-                }
-            }
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(
-                selected
-                    ? (destructive ? Color.ccRed : Color.ccForeground)
-                    : Color.ccMuted
-            )
-            .padding(.horizontal, 9)
-            .frame(height: 24)
-            .background(
-                selected
-                    ? (destructive ? Color.ccRedSoft : Color.ccConversationSelection)
-                    : Color.clear
-            )
-            .clipShape(Capsule())
-        }
-        .buttonStyle(ConversationPressableButtonStyle())
-        .help(label)
-        .accessibilityIdentifier("conversation.scope.\(stableIdentifier(value))")
-    }
-
-    private var normalizedHistoryDirectories: [String] {
-        ConversationScopePresentation.normalizedDirectories(historyDirectories)
-    }
-
-    private var importedIsSelectable: Bool {
-        store.scopeSnapshot.importedCount > 0 || store.historyActive == "__imported__"
-    }
-
-    private var trashIsSelectable: Bool {
-        store.scopeSnapshot.trashCount > 0 || store.historyActive == "__trash__"
-    }
-
-    private var showsDirectoryScopes: Bool {
-        normalizedHistoryDirectories.count + (importedIsSelectable ? 1 : 0) > 1
-    }
-
-    private var showsScopeBar: Bool {
-        ConversationScopePresentation.showsScopeBar(
-            directories: historyDirectories,
-            snapshot: store.scopeSnapshot,
-            active: store.historyActive
-        )
-    }
-
-    private var scopeLabel: String {
-        switch store.historyActive {
-        case "all": appLanguage.localized("全部会话")
-        case "__imported__": appLanguage.localized("已导入")
-        case "__trash__": appLanguage.localized("回收站")
-        default: store.historyActive
-        }
-    }
-
-    private var importTypes: [UTType] {
-        [UTType(filenameExtension: "jsonl"), UTType.zip].compactMap { $0 }
-    }
-
     @ViewBuilder private var listContent: some View {
         switch store.listState {
         case .idle where store.projects.isEmpty,
@@ -311,7 +125,7 @@ struct ConversationListPane: View {
             )
         case .failed(let message) where store.projects.isEmpty:
             ConversationListState(symbol: "exclamationmark.triangle", title: message) {
-                Button("重试") { store.requestReload() }
+                Button("重试") { store.retryIndexing() }
                     .buttonStyle(ConversationToolButtonStyle())
                     .accessibilityIdentifier("conversation.list.retry")
             }
@@ -382,19 +196,13 @@ struct ConversationListPane: View {
     }
 
     private var flatSessions: [HistorySessionMetadata] {
-        store.filteredProjects
+        workbench.filteredProjects(store.filteredProjects, historyActive: store.historyActive)
             .flatMap(\.sessions)
             .sorted { lhs, rhs in
                 if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
                 if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
                 return lhs.id < rhs.id
             }
-    }
-
-    private func stableIdentifier(_ value: String) -> String {
-        String(value.unicodeScalars.map { scalar in
-            CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "_"
-        })
     }
 }
 

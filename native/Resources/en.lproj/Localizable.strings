@@ -266,6 +266,8 @@
 "会话范围：{scope}" = "Session scope: {scope}";
 "会话路径不在已配置目录内：{path}" = "Session path is outside the configured directories: {path}";
 "会话没有可显示的消息" = "This session has no messages to display";
+"会话实时更新不可用，重试以重新连接" = "Live conversation updates are unavailable; retry to reconnect";
+"会话实时更新状态" = "Conversation live update status";
 "会话时间线" = "Conversation timeline";
 "会话索引失败：{error}" = "Conversation indexing failed: {error}";
 "会话索引已更新" = "Conversation index updated";
@@ -277,6 +279,7 @@
 "会话与用量统计的数据来源 —— 每个工作目录都会同时扫描 Claude Code 会话（projects/）与 Codex 会话（sessions/）。~/.claude 始终保留，检测到 Codex 时会自动加入 ~/.codex；若用 CLAUDE_CONFIG_DIR / CODEX_HOME 等指定了其他位置，在此添加，可在「会话」页切换查看。" = "Data source for sessions and usage — each work dir is scanned for Claude Code sessions (projects/) and Codex sessions (sessions/). ~/.claude is always included and ~/.codex is added automatically when Codex is installed; add other locations (e.g. CLAUDE_CONFIG_DIR / CODEX_HOME) here and switch in Sessions.";
 "会话与用量统计的数据来源。默认 ~/.claude；使用自定义 Claude 配置目录时可在这里添加。" = "Data sources for sessions and usage statistics. The default is ~/.claude; add custom Claude configuration directories here.";
 "会话正文将以这个大小显示 — 这是一段用于预览的示例文字。" = "Message text will render at this size — The quick brown fox jumps over the lazy dog.";
+"实时更新关闭" = "Live updates off";
 "会降低安全性；仅在自签名或企业代理证书导致连接失败时临时开启。" = "Reduces security. Enable temporarily only when self-signed or corporate proxy certificates prevent connection.";
 "会降低安全性。仅在自签名 / 企业代理证书导致连接失败时临时开启，平时请保持关闭。" = "Reduces security. Turn on only when a self-signed / corporate-proxy certificate breaks the connection; keep it off otherwise.";
 "活跃" = "Active";

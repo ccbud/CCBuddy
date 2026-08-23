@@ -650,6 +650,32 @@ final class ConversationStoreTests: XCTestCase {
         store.deactivate()
     }
 
+    func testListRetryReconcilesIndexedCatalogBeforeReloading() async throws {
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: "fixture",
+            projectsByScope: ["all": []]
+        )
+        let store = ConversationStore(repository: provider)
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        provider.emit(.finished(
+            ConversationIndexScanResult(generation: 0),
+            errorDescription: "cold catalog failed"
+        ))
+        await waitUntil {
+            store.listState == .failed("会话索引失败：cold catalog failed")
+        }
+
+        store.retryIndexing()
+        await waitUntil {
+            provider.reconcileCount == 1 && store.listState == .loaded
+        }
+
+        XCTAssertEqual(provider.reconcileCount, 1)
+        XCTAssertEqual(store.indexingState, .idle)
+        store.deactivate()
+    }
+
     func testLoadAndLatestSelectionWinWhenEarlierReadIsCancelled() async throws {
         let a = Self.metadata(id: "a", title: "Slow", tags: [], file: "/tmp/a.jsonl")
         let b = Self.metadata(id: "b", title: "Fast", tags: [], file: "/tmp/b.jsonl")
@@ -1050,6 +1076,7 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
         var starts = 0
         var stops = 0
         var scopes = 0
+        var reconciles = 0
         var nextListGate: DispatchSemaphore?
 
         init(
@@ -1089,6 +1116,7 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
     var startCount: Int { engine.lock.withLock { engine.starts } }
     var stopCount: Int { engine.lock.withLock { engine.stops } }
     var scopedCount: Int { engine.lock.withLock { engine.scopes } }
+    var reconcileCount: Int { engine.lock.withLock { engine.reconciles } }
 
     func listProjects(limit: Int) throws -> [HistoryProject] {
         let gate = engine.lock.withLock { () -> DispatchSemaphore? in
@@ -1134,7 +1162,9 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
         }
     }
 
-    func reconcileIndex() throws {}
+    func reconcileIndex() throws {
+        engine.lock.withLock { engine.reconciles += 1 }
+    }
     func refreshIndex(for files: [URL]) throws {}
 
     func setProjects(_ projects: [HistoryProject], for scope: String) {

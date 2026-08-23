@@ -1,22 +1,122 @@
 import Foundation
 
+struct CodexThreadQuickMetadata: Equatable, Sendable {
+    var id: String
+    var rolloutPath: URL
+    var cwd: String?
+    var title: String?
+    var name: String?
+    var model: String?
+    var tokensUsed: Int?
+    var createdAt: Date?
+    var updatedAt: Date?
+    var archived: Bool
+    var gitBranch: String?
+    var source: String?
+}
+
 /// Resolves Codex's completed state database and asks it for the authoritative physical rollout
 /// belonging to a canonical thread id. Every failure is intentionally a cache miss: JSONL
 /// metadata and deterministic candidate ordering remain the fallback.
 enum CodexStateDatabase {
+    /// Reads every relevant state database once and returns rows keyed by a standardized rollout
+    /// path. Optional columns are selected only when present so producer schema evolution cannot
+    /// turn an otherwise useful batch into an all-or-nothing failure.
+    static func quickMetadata(
+        for candidates: [URL],
+        homeDirectory: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: CodexThreadQuickMetadata] {
+        var byCodexHome: [String: (home: URL, candidates: [URL])] = [:]
+        for candidate in candidates {
+            guard let home = codexHome(for: candidate) else { continue }
+            let key = home.standardizedFileURL.path
+            if byCodexHome[key] == nil { byCodexHome[key] = (home, []) }
+            byCodexHome[key]?.candidates.append(candidate.standardizedFileURL)
+        }
+
+        var grouped: [String: (database: URL, candidates: [URL])] = [:]
+        for homeGroup in byCodexHome.values {
+            let database = stateDatabaseFile(
+                codexHome: homeGroup.home,
+                homeDirectory: homeDirectory,
+                environment: environment
+            )
+            let key = database.standardizedFileURL.path
+            if grouped[key] == nil { grouped[key] = (database, []) }
+            grouped[key]?.candidates.append(contentsOf: homeGroup.candidates)
+        }
+
+        var result: [String: CodexThreadQuickMetadata] = [:]
+        for group in grouped.values.sorted(by: { $0.database.path < $1.database.path }) {
+            guard let database = HistorySQLiteDatabase(group.database),
+                  database.textValue("SELECT status FROM backfill_state WHERE id = 1")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() == "complete" else { continue }
+            let columns = Set(database.rows("PRAGMA table_info(threads)").compactMap {
+                $0["name"]?.stringValue
+            })
+            guard columns.contains("rollout_path") else { continue }
+
+            let preferred = [
+                "id", "rollout_path", "cwd", "title", "name", "tokens_used", "archived",
+                "git_branch", "model", "source", "thread_source", "created_at_ms",
+                "updated_at_ms", "created_at", "updated_at",
+            ].filter(columns.contains)
+            let rawPaths = Array(Set(group.candidates.map(\.path))).sorted()
+            for chunkStart in stride(from: 0, to: rawPaths.count, by: 400) {
+                let chunk = Array(rawPaths[chunkStart..<min(chunkStart + 400, rawPaths.count)])
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                let sql = "SELECT \(preferred.joined(separator: ", ")) FROM threads "
+                    + "WHERE rollout_path IN (\(placeholders))"
+                for row in database.rows(sql, bindings: chunk) {
+                    guard let rawPath = nonempty(row["rollout_path"]?.stringValue) else { continue }
+                    let rollout = URL(fileURLWithPath: rawPath).standardizedFileURL
+                    let key = rollout.path
+                    let metadata = CodexThreadQuickMetadata(
+                        id: nonempty(row["id"]?.stringValue) ?? "",
+                        rolloutPath: rollout,
+                        cwd: nonempty(row["cwd"]?.stringValue),
+                        title: nonempty(row["title"]?.stringValue),
+                        name: nonempty(row["name"]?.stringValue),
+                        model: nonempty(row["model"]?.stringValue),
+                        tokensUsed: nonnegativeInt(row["tokens_used"]),
+                        createdAt: date(
+                            milliseconds: row["created_at_ms"],
+                            fallback: row["created_at"]
+                        ),
+                        updatedAt: date(
+                            milliseconds: row["updated_at_ms"],
+                            fallback: row["updated_at"]
+                        ),
+                        archived: boolean(row["archived"]),
+                        gitBranch: nonempty(row["git_branch"]?.stringValue),
+                        source: nonempty(row["source"]?.stringValue)
+                            ?? nonempty(row["thread_source"]?.stringValue)
+                    )
+                    if let current = result[key],
+                       (current.updatedAt ?? .distantPast) > (metadata.updatedAt ?? .distantPast) {
+                        continue
+                    }
+                    result[key] = metadata
+                }
+            }
+        }
+        return result
+    }
+
     static func preferredRolloutPath(
         for candidate: URL,
         threadID: String,
         homeDirectory: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        guard !threadID.isEmpty, let codexHome = codexHome(for: candidate) else { return nil }
-        let sqliteHome = configuredSQLiteHome(codexHome: codexHome, homeDirectory: homeDirectory)
-            ?? environment["CODEX_SQLITE_HOME"].flatMap {
-                resolveSQLiteHome($0, codexHome: codexHome, homeDirectory: homeDirectory)
-            }
-            ?? codexHome
-        let databaseFile = sqliteHome.appendingPathComponent("state_5.sqlite")
+        guard !threadID.isEmpty,
+              let databaseFile = stateDatabaseFile(
+                for: candidate,
+                homeDirectory: homeDirectory,
+                environment: environment
+              ) else { return nil }
         guard let database = HistorySQLiteDatabase(databaseFile),
               database.textValue("SELECT status FROM backfill_state WHERE id = 1") == "complete",
               let rollout = database.textValue(
@@ -26,6 +126,32 @@ enum CodexStateDatabase {
               !rollout.isEmpty else { return nil }
         let file = URL(fileURLWithPath: rollout).standardizedFileURL
         return ForeignHistorySupport.isOrdinaryFile(file) ? file : nil
+    }
+
+    private static func stateDatabaseFile(
+        for candidate: URL,
+        homeDirectory: URL,
+        environment: [String: String]
+    ) -> URL? {
+        guard let codexHome = codexHome(for: candidate) else { return nil }
+        return stateDatabaseFile(
+            codexHome: codexHome,
+            homeDirectory: homeDirectory,
+            environment: environment
+        )
+    }
+
+    private static func stateDatabaseFile(
+        codexHome: URL,
+        homeDirectory: URL,
+        environment: [String: String]
+    ) -> URL {
+        let sqliteHome = configuredSQLiteHome(codexHome: codexHome, homeDirectory: homeDirectory)
+            ?? environment["CODEX_SQLITE_HOME"].flatMap {
+                resolveSQLiteHome($0, codexHome: codexHome, homeDirectory: homeDirectory)
+            }
+            ?? codexHome
+        return sqliteHome.appendingPathComponent("state_5.sqlite").standardizedFileURL
     }
 
     static func codexHome(for rollout: URL) -> URL? {
@@ -120,5 +246,38 @@ enum CodexStateDatabase {
             if character == "#", quote == nil { return String(line[..<index]) }
         }
         return line
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private static func nonnegativeInt(_ value: HistorySQLiteValue?) -> Int? {
+        guard let raw = value?.int64Value, raw >= 0, raw <= Int64(Int.max) else { return nil }
+        return Int(raw)
+    }
+
+    private static func boolean(_ value: HistorySQLiteValue?) -> Bool {
+        if let integer = value?.int64Value { return integer != 0 }
+        switch value?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "yes": return true
+        default: return false
+        }
+    }
+
+    private static func date(
+        milliseconds: HistorySQLiteValue?,
+        fallback: HistorySQLiteValue?
+    ) -> Date? {
+        if let milliseconds = milliseconds?.doubleValue, milliseconds.isFinite, milliseconds > 0 {
+            return Date(timeIntervalSince1970: milliseconds / 1_000)
+        }
+        if let raw = fallback?.doubleValue, raw.isFinite, raw > 0 {
+            let seconds = raw > 10_000_000_000 ? raw / 1_000 : raw
+            return Date(timeIntervalSince1970: seconds)
+        }
+        return HistoryDateParser.parse(nonempty(fallback?.stringValue))
     }
 }

@@ -102,7 +102,10 @@ struct WindowConfigurator: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.styleMask.insert(.fullSizeContentView)
-        window.isMovableByWindowBackground = true
+        // Wake limits window dragging to the opaque column headers. Treating the whole window
+        // background as draggable makes empty list/detail surfaces steal ordinary clicks and is
+        // especially surprising around scroll views.
+        window.isMovableByWindowBackground = false
         // Keep the native title bar visually integrated while giving materials an opaque backing.
         // A clear, non-opaque window makes the desktop bleed through behind the traffic lights.
         window.backgroundColor = .windowBackgroundColor
@@ -132,4 +135,25 @@ struct WindowConfigurator: NSViewRepresentable {
         frame.origin.y = topEdge - frame.height
         window.setFrame(frame, display: true)
     }
+}
+
+/// An AppKit-backed drag region for full-size-content windows. Put this behind a solid SwiftUI
+/// header so the title bar remains visually part of that column while buttons and text fields in
+/// front continue to receive their normal events.
+struct WindowDragRegion: NSViewRepresentable {
+    final class DragView: NSView {
+        override var mouseDownCanMoveWindow: Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+    }
+
+    func makeNSView(context: Context) -> DragView {
+        let view = DragView()
+        view.setAccessibilityElement(false)
+        return view
+    }
+
+    func updateNSView(_ nsView: DragView, context: Context) {}
 }

@@ -36,6 +36,13 @@ struct HistoryCatalogThreadProjection: Codable, Equatable, Sendable {
 /// Rebuildable catalog input derived from the exact normalized session shown by the detail view.
 /// Raw producer files remain authoritative; this value contains only list/search projection data.
 struct HistoryCatalogProjection: Codable, Equatable, Sendable {
+    /// Search projections are derived cache data, so they must not grow with arbitrarily large
+    /// producer payloads. These byte limits mirror Wake's indexing boundaries without changing
+    /// the normalized `HistorySession` used by detail, replay, and export paths.
+    static let maximumMessageSearchTextBytes = 32 * 1024
+    static let maximumToolSearchTextBytes = 16 * 1024
+    static let maximumRawSearchTextBytes = 16 * 1024
+
     var metadata: HistorySessionMetadata
     var threads: [HistoryCatalogThreadProjection]
 
@@ -82,7 +89,7 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         return nil
     }
 
-    // MARK: - Exact legacy search document
+    // MARK: - Bounded legacy-compatible search document
 
     private static func thread(
         transcriptID: String,
@@ -126,17 +133,58 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         )
     }
 
-    /// Byte-for-byte equivalent to `HistoryRepository.search`'s searchable text for one message:
-    /// promoted text/tool/thinking content, injected transport removed from user blocks, and a
-    /// newline between every non-empty block.
+    /// Preserves `HistoryRepository.search`'s text ordering while bounding the derived SQLite
+    /// payload. Each tool/raw block is clipped first, then the complete message is clipped so a
+    /// message containing many individually small blocks cannot bypass the message limit.
     private static func legacySearchText(for message: HistoryMessage) -> String {
         var lines: [String] = []
         for block in message.content {
-            guard var text = HistoryParsingSupport.plainText(block), !text.isEmpty else { continue }
+            guard var text = HistoryParsingSupport.plainText(block) ?? block.raw?.jsonString,
+                  !text.isEmpty else { continue }
             if message.role == "user" { text = stripInjectedText(text) }
-            if !text.isEmpty { lines.append(text) }
+            guard !text.isEmpty else { continue }
+            lines.append(clippedSearchText(
+                text,
+                maximumUTF8Bytes: searchLimit(for: block)
+            ))
         }
-        return lines.joined(separator: "\n")
+        return clippedSearchText(
+            lines.joined(separator: "\n"),
+            maximumUTF8Bytes: maximumMessageSearchTextBytes
+        )
+    }
+
+    private static func searchLimit(for block: HistoryContentBlock) -> Int {
+        switch block.type {
+        case "text":
+            maximumMessageSearchTextBytes
+        case "thinking", "tool_use", "tool_result":
+            maximumToolSearchTextBytes
+        default:
+            maximumRawSearchTextBytes
+        }
+    }
+
+    /// Returns valid UTF-8 whose complete representation, including the marker, fits the limit.
+    /// Iterating by extended grapheme cluster also avoids splitting emoji or composed characters.
+    private static func clippedSearchText(
+        _ value: String,
+        maximumUTF8Bytes: Int
+    ) -> String {
+        guard value.utf8.count > maximumUTF8Bytes else { return value }
+
+        let marker = "\n… (truncated)"
+        let prefixLimit = max(0, maximumUTF8Bytes - marker.utf8.count)
+        var usedBytes = 0
+        var end = value.startIndex
+        while end < value.endIndex {
+            let next = value.index(after: end)
+            let characterBytes = value[end..<next].utf8.count
+            guard usedBytes + characterBytes <= prefixLimit else { break }
+            usedBytes += characterBytes
+            end = next
+        }
+        return String(value[..<end]) + marker
     }
 
     private static func stripInjectedText(_ text: String) -> String {

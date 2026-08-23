@@ -1,5 +1,11 @@
 import Foundation
 
+enum ConversationCatalogWatcherState: Equatable, Sendable {
+    case unknown
+    case active
+    case unavailable(String)
+}
+
 struct ConversationCatalogScanEvent: Equatable, Sendable {
     enum Phase: Equatable, Sendable {
         case started
@@ -13,6 +19,7 @@ struct ConversationCatalogScanEvent: Equatable, Sendable {
     var total: Int
     var failed: Int
     var errorDescription: String?
+    var watcherState: ConversationCatalogWatcherState
 
     var isTerminal: Bool { phase == .finished }
 
@@ -23,7 +30,8 @@ struct ConversationCatalogScanEvent: Equatable, Sendable {
             completed: 0,
             total: 0,
             failed: 0,
-            errorDescription: nil
+            errorDescription: nil,
+            watcherState: .unknown
         )
     }
 
@@ -34,7 +42,8 @@ struct ConversationCatalogScanEvent: Equatable, Sendable {
             completed: result.completed,
             total: result.discovered,
             failed: result.failed,
-            errorDescription: nil
+            errorDescription: nil,
+            watcherState: .unknown
         )
     }
 
@@ -48,7 +57,8 @@ struct ConversationCatalogScanEvent: Equatable, Sendable {
             completed: result.completed,
             total: result.discovered,
             failed: result.failed,
-            errorDescription: errorDescription
+            errorDescription: errorDescription,
+            watcherState: .unknown
         )
     }
 }
@@ -59,7 +69,10 @@ struct ConversationCatalogScanEvent: Equatable, Sendable {
 /// is intentionally a small lifecycle shell around the synchronous scanner: views subscribe only
 /// to ordered catalog events while every individual row replacement remains transactionally safe.
 final class ConversationCatalogCoordinator: @unchecked Sendable {
+    typealias WatcherStarter = @Sendable (ConversationHistoryWatcher) -> Bool
+
     let scanner: ConversationIndexScanner
+    private let database: ConversationIndexDatabase
 
     private let workerQueue = DispatchQueue(
         label: "dev.ccbud.conversation-catalog-coordinator",
@@ -72,10 +85,12 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
     private let workerQueueKey = DispatchSpecificKey<UInt8>()
     private let observerQueueKey = DispatchSpecificKey<UInt8>()
     private let stateLock = NSLock()
+    private let watcherStarter: WatcherStarter
     private var running = false
     private var runIdentifier: UUID?
     private var watcher: ConversationHistoryWatcher?
     private var watchedRootPaths = Set<String>()
+    private var watcherState: ConversationCatalogWatcherState = .unknown
     private var eventObserver: (@Sendable (ConversationCatalogScanEvent) -> Void)?
     private var eventObserverIdentifier: UUID?
     private var currentEvent: ConversationCatalogScanEvent?
@@ -86,8 +101,11 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         configuration: HistoryConfiguration,
         database: ConversationIndexDatabase,
         loader: (any HistorySessionLoading)? = nil,
-        scanner: ConversationIndexScanner? = nil
+        scanner: ConversationIndexScanner? = nil,
+        watcherStarter: @escaping WatcherStarter = { $0.start() }
     ) {
+        self.database = database
+        self.watcherStarter = watcherStarter
         if let scanner {
             self.scanner = scanner
         } else if let loader {
@@ -134,6 +152,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         let runIdentifier = UUID()
         self.runIdentifier = runIdentifier
         currentEvent = nil
+        watcherState = .unknown
         stateLock.unlock()
 
         // Scanner-derived startup state and watcher installation live on the same queue as scans.
@@ -144,24 +163,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             let initialEvent = ConversationCatalogScanEvent.started(
                 revision: self.scanner.generation
             )
-            let roots = self.scanner.watchRoots
-            let watcher = ConversationHistoryWatcher(
-                roots: roots,
-                callbackQueue: self.workerQueue
-            ) { [weak self] event in
-                self?.handle(event)
-            }
-            _ = watcher?.start()
-
-            self.stateLock.lock()
-            guard self.running, self.runIdentifier == runIdentifier else {
-                self.stateLock.unlock()
-                watcher?.stop()
-                return
-            }
-            self.watcher = watcher
-            self.watchedRootPaths = Set(roots.map { $0.standardizedFileURL.path })
-            self.stateLock.unlock()
+            _ = self.rearmWatcherIfNeeded()
             self.publish(initialEvent, identifier: runIdentifier)
 
             do {
@@ -188,6 +190,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
     }
 
     func stop() {
+        database.cancelDeferredMaintenance()
         stateLock.lock()
         running = false
         runIdentifier = nil
@@ -198,6 +201,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         let watcher = self.watcher
         self.watcher = nil
         watchedRootPaths.removeAll()
+        watcherState = .unknown
         stateLock.unlock()
         watcher?.stop()
         drainWorkerQueue()
@@ -282,7 +286,9 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             stateLock.unlock()
             return
         }
-        currentEvent = event
+        var deliveredEvent = event
+        deliveredEvent.watcherState = watcherState
+        currentEvent = deliveredEvent
         currentEventSequence &+= 1
         let sequence = currentEventSequence
         guard let observer = eventObserver,
@@ -293,7 +299,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         observerScheduledEventSequence = sequence
         stateLock.unlock()
         queueObserverDelivery(
-            event,
+            deliveredEvent,
             runIdentifier: identifier,
             observerIdentifier: observerIdentifier,
             observer: observer
@@ -359,6 +365,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             ConversationIndexScanCancellation
         ) throws -> ConversationIndexScanResult
     ) throws -> ConversationIndexScanResult {
+        database.cancelDeferredMaintenance()
         if let identifier {
             guard isCurrent(identifier) else { throw CancellationError() }
             publish(.started(revision: scanner.generation), identifier: identifier)
@@ -367,8 +374,9 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         let progress: ConversationIndexScanProgress?
         if let identifier {
             progress = { @Sendable [weak self] result in
-                guard result.completed == 1
-                        || result.completed.isMultiple(of: 24)
+                guard (result.metadataPublished > 0 && result.completed == 0)
+                        || result.completed == 1
+                        || (result.completed > 0 && result.completed.isMultiple(of: 24))
                         || (result.discovered > 0 && result.completed == result.discovered)
                 else { return }
                 self?.publish(.progress(result), identifier: identifier)
@@ -387,6 +395,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             guard isCurrent(identifier) else { throw CancellationError() }
             let rootsChanged = rearmWatcherIfNeeded()
             publish(.finished(result), identifier: identifier)
+            database.scheduleDeferredMaintenance()
             if rootsChanged { queueVerification(identifier: identifier) }
             return result
         } catch {
@@ -425,25 +434,53 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         let paths = Set(roots.map { $0.standardizedFileURL.path })
 
         stateLock.lock()
-        guard running, paths != watchedRootPaths else {
+        guard running else {
             stateLock.unlock()
             return false
         }
+        let watcherNeedsReplacement: Bool
+        switch watcherState {
+        case .active:
+            watcherNeedsReplacement = watcher == nil || paths != watchedRootPaths
+        case .unknown, .unavailable:
+            watcherNeedsReplacement = true
+        }
+        guard watcherNeedsReplacement else {
+            stateLock.unlock()
+            return false
+        }
+        stateLock.unlock()
+
         let replacement = ConversationHistoryWatcher(
             roots: roots,
             callbackQueue: workerQueue
         ) { [weak self] event in
             self?.handle(event)
         }
+        let started = replacement.map(watcherStarter) ?? false
+
+        stateLock.lock()
+        guard running else {
+            stateLock.unlock()
+            replacement?.stop()
+            return false
+        }
+        guard started, let replacement else {
+            watcherState = .unavailable("会话实时更新不可用，重试以重新连接")
+            stateLock.unlock()
+            replacement?.stop()
+            return false
+        }
         let previous = watcher
+        let rootsChanged = paths != watchedRootPaths
         watcher = replacement
         watchedRootPaths = paths
-        _ = replacement?.start()
+        watcherState = .active
         stateLock.unlock()
 
         // Start the replacement first to avoid an uncovered interval between streams.
         previous?.stop()
-        return true
+        return rootsChanged
     }
 
     private func onWorkerQueue<T>(_ work: () throws -> T) throws -> T {

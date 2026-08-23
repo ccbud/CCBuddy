@@ -1,7 +1,86 @@
+import Foundation
 import SwiftUI
+
+@MainActor
+final class ConversationWorkbenchState: ObservableObject {
+    enum Selection: Equatable {
+        case all
+        case agent(HistorySource)
+        case project(String)
+    }
+
+    @Published private(set) var selection: Selection = .all
+    @Published var agentsExpanded = true
+    @Published var projectsExpanded = true
+
+    func showAll() {
+        selection = .all
+    }
+
+    func select(agent: HistorySource) {
+        selection = selection == .agent(agent) ? .all : .agent(agent)
+    }
+
+    func select(project: String) {
+        selection = selection == .project(project) ? .all : .project(project)
+    }
+
+    func filteredProjects(
+        _ projects: [HistoryProject],
+        historyActive: String
+    ) -> [HistoryProject] {
+        guard historyActive == "all" else { return projects }
+
+        switch selection {
+        case .all:
+            return projects
+        case .agent(let source):
+            return projects.compactMap { project in
+                let sessions = project.sessions.filter { $0.source == source }
+                guard !sessions.isEmpty else { return nil }
+                return HistoryProject(
+                    cwd: project.cwd,
+                    name: project.name,
+                    sessions: sessions,
+                    lastActivity: sessions.map(\.lastActivity).max() ?? project.lastActivity
+                )
+            }
+        case .project(let cwd):
+            return projects.filter { $0.cwd == cwd }
+        }
+    }
+
+    func contextTitle(
+        projects: [HistoryProject],
+        historyActive: String,
+        language: AppLanguage
+    ) -> String {
+        switch historyActive {
+        case "all":
+            break
+        case "__imported__":
+            return language.localized("已导入")
+        case "__trash__":
+            return language.localized("回收站")
+        default:
+            return URL(fileURLWithPath: historyActive).lastPathComponent
+        }
+
+        switch selection {
+        case .all:
+            return language.localized("全部会话")
+        case .agent(let source):
+            return ConversationPresentation.sourceName(rawValue: source.rawValue)
+        case .project(let cwd):
+            return projects.first(where: { $0.cwd == cwd })?.name
+                ?? URL(fileURLWithPath: cwd).lastPathComponent
+        }
+    }
+}
 
 struct ConversationsView: View {
     @ObservedObject var store: ConversationStore
+    @ObservedObject var workbench: ConversationWorkbenchState
     var fontSize: Int?
     var historyDirectories: [String] = []
     var selectHistoryScope: (String) -> Void = { _ in }
@@ -12,8 +91,7 @@ struct ConversationsView: View {
         HStack(spacing: 0) {
             ConversationListPane(
                 store: store,
-                historyDirectories: historyDirectories,
-                selectHistoryScope: selectHistoryScope
+                workbench: workbench
             )
             .frame(width: 336)
 

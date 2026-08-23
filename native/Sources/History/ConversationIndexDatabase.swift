@@ -189,17 +189,22 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 /// App-owned, rebuildable SQLite catalog for conversation list and search data.
 ///
 /// The class intentionally exposes synchronous methods: the current history provider is invoked
-/// from detached tasks. A private lock serializes the single SQLite connection, while WAL keeps
-/// independent diagnostic/read connections from blocking normal writes.
+/// from detached tasks. Wake's split-connection model is preserved here: one lock/connection owns
+/// mutations while an independent query-only connection keeps list/detail reads responsive during
+/// indexing. WAL provides the snapshot boundary between them.
 final class ConversationIndexDatabase: @unchecked Sendable {
-    /// Version 2 preserves the warm derived index while adding deferred maintenance markers.
-    /// Version 1 could retain gigabytes of obsolete FTS segments after repeated replacement.
+    /// Version 2 preserves the warm derived index while adding bounded deferred-maintenance
+    /// markers. Version 1 could retain gigabytes of obsolete FTS segments after replacement.
     static let schemaVersion: Int32 = 2
 
     let file: URL
 
     private let lock = NSLock()
+    private let readLock = NSLock()
+    private let maintenanceStateLock = NSLock()
     private let connection: OpaquePointer
+    private var readConnection: OpaquePointer?
+    private var maintenanceToken: UUID?
     private let metadataEncoder: JSONEncoder
     private let metadataDecoder: JSONDecoder
     private var trigramFTSAvailable = false
@@ -236,8 +241,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             try configureConnection()
             trigramFTSAvailable = probeTrigramFTS()
             try initializeSchema()
+            readConnection = try Self.openReadConnection(standardized)
             try hardenPermissions()
         } catch {
+            if let readConnection { sqlite3_close(readConnection) }
             sqlite3_close(handle)
             throw error
         }
@@ -248,6 +255,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     deinit {
+        cancelDeferredMaintenance()
+        if let readConnection { sqlite3_close_v2(readConnection) }
         sqlite3_close_v2(connection)
     }
 
@@ -264,12 +273,20 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     func generation() throws -> Int64 {
-        try withLock { try currentGeneration() }
+        try withReadLock { connection in
+            try int64Value(
+                "SELECT generation FROM conversation_catalog_state WHERE singleton = 1",
+                connection: connection
+            )
+        }
     }
 
     func hasRows() throws -> Bool {
-        try withLock {
-            try int64Value("SELECT EXISTS(SELECT 1 FROM conversation_sessions LIMIT 1)") != 0
+        try withReadLock { connection in
+            try int64Value(
+                "SELECT EXISTS(SELECT 1 FROM conversation_sessions LIMIT 1)",
+                connection: connection
+            ) != 0
         }
     }
 
@@ -282,6 +299,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             let metadata = try metadataEncoder.encode(session.metadata)
             let fileSize = try sqliteInteger(session.fingerprint.sizeBytes, field: "file size")
             let indexedAt = Date()
+            let ftsWasDirty = try int64Value(
+                "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
+            ) != 0
+            let preserveDirtyFTS = !trigramFTSAvailable || ftsWasDirty
 
             let result = try transaction {
                 try execute(
@@ -346,12 +367,77 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         )
                     }
                 }
-                try markFTSState(dirty: !trigramFTSAvailable)
+                try markFTSState(dirty: preserveDirtyFTS)
                 try markMaintenancePending()
                 return try advanceGeneration()
             }
             try hardenPermissions()
             return result
+        }
+    }
+
+    /// Publishes Wake-style quick metadata in one transaction while retaining any previously
+    /// indexed documents. Callers deliberately supply a sentinel fingerprint so the subsequent
+    /// full parse is never mistaken for an unchanged session; a failed parse therefore leaves a
+    /// visible, retryable row instead of an empty list.
+    @discardableResult
+    func replaceMetadata(_ sessions: [ConversationIndexedSession]) throws -> Int64 {
+        try withLock {
+            var unique: [String: ConversationIndexedSession] = [:]
+            for session in sessions {
+                try validate(session)
+                unique[Self.normalizedPath(session.metadata.file)] = session
+            }
+            guard !unique.isEmpty else { return try currentGeneration() }
+
+            let indexedAt = Date()
+            let generation = try transaction {
+                for (path, session) in unique.sorted(by: { $0.key < $1.key }) {
+                    let metadata = try metadataEncoder.encode(session.metadata)
+                    let fileSize = try sqliteInteger(
+                        session.fingerprint.sizeBytes,
+                        field: "file size"
+                    )
+                    try execute(
+                        """
+                        INSERT INTO conversation_sessions (
+                            source_path, scope, source, created_at, last_activity,
+                            file_mtime, file_size, dependency_fingerprint,
+                            metadata_json, indexed_at, deleted, imported
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(source_path) DO UPDATE SET
+                            scope = excluded.scope,
+                            source = excluded.source,
+                            created_at = excluded.created_at,
+                            last_activity = excluded.last_activity,
+                            file_mtime = excluded.file_mtime,
+                            file_size = excluded.file_size,
+                            dependency_fingerprint = excluded.dependency_fingerprint,
+                            metadata_json = excluded.metadata_json,
+                            indexed_at = excluded.indexed_at,
+                            deleted = excluded.deleted,
+                            imported = excluded.imported
+                        """,
+                        bindings: [
+                            .text(path),
+                            .text(session.scope),
+                            .text(session.metadata.source.rawValue),
+                            .double(session.metadata.createdAt.timeIntervalSince1970),
+                            .double(session.metadata.lastActivity.timeIntervalSince1970),
+                            .double(session.fingerprint.modificationTime.timeIntervalSince1970),
+                            .integer(fileSize),
+                            session.fingerprint.dependencyFingerprint.map(SQLiteValue.text) ?? .null,
+                            .blob(metadata),
+                            .double(indexedAt.timeIntervalSince1970),
+                            .integer(session.metadata.deleted ? 1 : 0),
+                            .integer(session.metadata.imported ? 1 : 0),
+                        ]
+                    )
+                }
+                return try advanceGeneration()
+            }
+            try hardenPermissions()
+            return generation
         }
     }
 
@@ -361,6 +447,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         try withLock {
             let paths = Array(Set(paths.map { Self.normalizedPath($0) })).sorted()
             guard !paths.isEmpty else { return 0 }
+            let preserveDirtyFTS = try shouldKeepFTSDirty()
             let removed = try transaction {
                 var removed = 0
                 for path in paths {
@@ -372,7 +459,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     removed += Int(sqlite3_changes(connection))
                 }
                 if removed > 0 {
-                    try markFTSState(dirty: !trigramFTSAvailable)
+                    try markFTSState(dirty: preserveDirtyFTS)
                     try markMaintenancePending()
                     _ = try advanceGeneration()
                 }
@@ -414,6 +501,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 )
             }
 
+            let preserveDirtyFTS = try shouldKeepFTSDirty()
             let nextGeneration = try transaction {
                 for path in removedPaths {
                     try removeDocuments(for: path)
@@ -422,7 +510,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         bindings: [.text(path), .text(scope)]
                     )
                 }
-                try markFTSState(dirty: !trigramFTSAvailable)
+                try markFTSState(dirty: preserveDirtyFTS)
                 try markMaintenancePending()
                 return try advanceGeneration()
             }
@@ -435,7 +523,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     func storedFingerprints(scope: String? = nil) throws -> [String: ConversationIndexFingerprint] {
-        try withLock {
+        try withReadLock { connection in
             var sql = """
                 SELECT source_path, file_mtime, file_size, dependency_fingerprint
                 FROM conversation_sessions
@@ -447,18 +535,20 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             }
             sql += " ORDER BY source_path"
 
-            let statement = try prepare(sql, bindings: bindings)
+            let statement = try prepare(sql, bindings: bindings, connection: connection)
             defer { sqlite3_finalize(statement) }
             var result: [String: ConversationIndexFingerprint] = [:]
             while true {
                 let status = sqlite3_step(statement)
                 if status == SQLITE_DONE { return result }
-                guard status == SQLITE_ROW else { throw sqliteError("read fingerprints", status) }
-                let path = try textColumn(statement, 0, field: "source_path")
-                let size = sqlite3_column_int64(statement, 2)
-                guard size >= 0 else {
-                    throw ConversationIndexDatabaseError.corruptRow("negative file size for \(path)")
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read fingerprints", status, connection: connection)
                 }
+                guard let path = try? textColumn(statement, 0, field: "source_path") else {
+                    continue
+                }
+                let size = sqlite3_column_int64(statement, 2)
+                guard size >= 0 else { continue }
                 result[path] = ConversationIndexFingerprint(
                     modificationTime: Date(timeIntervalSince1970: sqlite3_column_double(statement, 1)),
                     sizeBytes: UInt64(size),
@@ -473,14 +563,24 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     func entry(forPath path: String) throws -> ConversationIndexEntry? {
-        try withLock {
+        try withReadLock { connection in
             let sql = Self.entrySelect + " WHERE source_path = ? LIMIT 1"
-            let statement = try prepare(sql, bindings: [.text(Self.normalizedPath(path))])
+            let statement = try prepare(
+                sql,
+                bindings: [.text(Self.normalizedPath(path))],
+                connection: connection
+            )
             defer { sqlite3_finalize(statement) }
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return nil }
-            guard status == SQLITE_ROW else { throw sqliteError("read session", status) }
-            return try decodeEntry(statement, offset: 0)
+            guard status == SQLITE_ROW else {
+                throw sqliteError("read session", status, connection: connection)
+            }
+            do {
+                return try decodeEntry(statement, offset: 0)
+            } catch ConversationIndexDatabaseError.corruptRow(_) {
+                return nil
+            }
         }
     }
 
@@ -495,7 +595,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         limit: Int = 400,
         offset: Int = 0
     ) throws -> [ConversationIndexEntry] {
-        try withLock {
+        try withReadLock { connection in
             guard limit > 0, offset >= 0 else { return [] }
             var conditions: [String] = []
             var bindings: [SQLiteValue] = []
@@ -514,17 +614,18 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             var sql = Self.entrySelect
             if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
             sql += " ORDER BY last_activity DESC, created_at DESC, source_path DESC"
-            if limit != .max {
-                sql += " LIMIT ? OFFSET ?"
-                bindings.append(.integer(Int64(limit)))
-                bindings.append(.integer(Int64(offset)))
-            }
-            return try queryEntries(sql, bindings: bindings)
+            return try queryEntries(
+                sql,
+                bindings: bindings,
+                connection: connection,
+                validLimit: limit,
+                validOffset: offset
+            )
         }
     }
 
     func scopeSummaries(deleted: Bool? = false) throws -> [ConversationIndexScopeSummary] {
-        try withLock {
+        try withReadLock { connection in
             var sql = """
                 SELECT scope, COUNT(*), MAX(last_activity)
                 FROM conversation_sessions
@@ -535,15 +636,18 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 bindings.append(.integer(deleted ? 1 : 0))
             }
             sql += " GROUP BY scope ORDER BY MAX(last_activity) DESC, scope"
-            let statement = try prepare(sql, bindings: bindings)
+            let statement = try prepare(sql, bindings: bindings, connection: connection)
             defer { sqlite3_finalize(statement) }
             var result: [ConversationIndexScopeSummary] = []
             while true {
                 let status = sqlite3_step(statement)
                 if status == SQLITE_DONE { return result }
-                guard status == SQLITE_ROW else { throw sqliteError("read scope summaries", status) }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read scope summaries", status, connection: connection)
+                }
+                guard let scope = try? textColumn(statement, 0, field: "scope") else { continue }
                 result.append(ConversationIndexScopeSummary(
-                    scope: try textColumn(statement, 0, field: "scope"),
+                    scope: scope,
                     sessionCount: Int(sqlite3_column_int64(statement, 1)),
                     lastActivity: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
                 ))
@@ -556,19 +660,26 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     func documents(forPath path: String) throws -> [ConversationIndexDocument] {
-        try withLock {
+        try withReadLock { connection in
             let statement = try prepare(
                 Self.documentSelect
                     + " WHERE d.session_path = ? ORDER BY d.sort_order, d.transcript_id",
-                bindings: [.text(Self.normalizedPath(path))]
+                bindings: [.text(Self.normalizedPath(path))],
+                connection: connection
             )
             defer { sqlite3_finalize(statement) }
             var result: [ConversationIndexDocument] = []
             while true {
                 let status = sqlite3_step(statement)
                 if status == SQLITE_DONE { return result }
-                guard status == SQLITE_ROW else { throw sqliteError("read documents", status) }
-                result.append(try decodeDocument(statement, offset: 0))
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read documents", status, connection: connection)
+                }
+                do {
+                    result.append(try decodeDocument(statement, offset: 0))
+                } catch ConversationIndexDatabaseError.corruptRow(_) {
+                    continue
+                }
             }
         }
     }
@@ -583,14 +694,19 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         deleted: Bool? = false,
         limit: Int? = nil
     ) throws -> ConversationIndexCandidateBatch {
-        try withLock {
+        try withReadLock { connection in
             let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty, limit.map({ $0 > 0 }) ?? true else {
                 return ConversationIndexCandidateBatch(documents: [], usedFallback: false)
             }
 
             let segments = query.split(whereSeparator: \.isWhitespace).map(String.init)
+            let ftsIsReady = try int64Value(
+                "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1",
+                connection: connection
+            ) == 0
             let canUseFTS = trigramFTSAvailable
+                && ftsIsReady
                 && !segments.isEmpty
                 && segments.allSatisfy { $0.count >= 3 }
                 && !query.unicodeScalars.contains(where: { $0.value == 0 })
@@ -603,7 +719,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                             source: source,
                             deleted: deleted,
                             limit: limit,
-                            useFTS: true
+                            useFTS: true,
+                            connection: connection
                         ),
                         usedFallback: false
                     )
@@ -619,7 +736,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     source: source,
                     deleted: deleted,
                     limit: limit,
-                    useFTS: false
+                    useFTS: false,
+                    connection: connection
                 ),
                 usedFallback: true
             )
@@ -637,9 +755,9 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Runs derived-index maintenance after a successful full scan. Ordinary passes are bounded;
-    /// a v1 catalog gets one background full compaction while its warm rows remain queryable.
-    /// Pending bits make repeated unchanged scans no-ops, and maintenance never advances generation.
+    /// Runs derived-index maintenance only after an idle delay. Passes are cancellable and avoid
+    /// full VACUUM; pending bits make repeated unchanged scans no-ops, and maintenance never
+    /// advances generation.
     func finishFullScanMaintenance(
         isCancelled: ConversationIndexScanCancellation = { false }
     ) throws {
@@ -658,6 +776,11 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 ) != 0
                 guard maintenancePending || oneTimeCompactionPending else { return }
 
+                // FTS rebuild and compaction can temporarily need another database-sized copy.
+                // Low disk is a normal condition for a disposable cache: leave the retry marker
+                // set and keep serving bounded fallback search instead of risking ENOSPC.
+                guard hasCapacityForMaintenance() else { return }
+
                 if trigramFTSAvailable {
                     let dirty = try int64Value(
                         "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
@@ -674,14 +797,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 }
 
                 if oneTimeCompactionPending {
-                    // Version 1 remains warm during startup. The first successful reconciliation
-                    // activates incremental auto-vacuum and compacts the old file. SQLite progress
-                    // and busy callbacks make active copying and lock acquisition cancellable;
-                    // an interrupted VACUUM leaves the original DB and retry bit intact.
+                    // Never run a full VACUUM automatically. It takes an exclusive writer and may
+                    // require a complete second copy of a large catalog. New catalogs already use
+                    // incremental auto-vacuum; legacy files simply transition to bounded cleanup.
                     try execute("PRAGMA auto_vacuum = INCREMENTAL")
-                    try executeCancellableMaintenance("VACUUM", cancellation: cancellation)
-                    // VACUUM itself completed; never repeat that heavy operation merely because a
-                    // cancellation or later WAL truncation meets a transient reader.
                     try execute(
                         "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
                             + "WHERE singleton = 1"
@@ -744,6 +863,30 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 try hardenPermissions()
             }
         }
+    }
+
+    /// Schedules cache-only cleanup after the interactive scan has gone idle. Rescheduling is a
+    /// cancellation signal for an older pass; list/search reads continue on their own connection.
+    func scheduleDeferredMaintenance(after delay: TimeInterval = 8) {
+        let token = UUID()
+        maintenanceStateLock.lock()
+        maintenanceToken = token
+        maintenanceStateLock.unlock()
+        Self.deferredMaintenanceQueue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+            guard let self, self.isMaintenanceCurrent(token) else { return }
+            try? self.finishFullScanMaintenance { [weak self] in
+                self?.isMaintenanceCurrent(token) != true
+            }
+            self.maintenanceStateLock.lock()
+            if self.maintenanceToken == token { self.maintenanceToken = nil }
+            self.maintenanceStateLock.unlock()
+        }
+    }
+
+    func cancelDeferredMaintenance() {
+        maintenanceStateLock.lock()
+        maintenanceToken = nil
+        maintenanceStateLock.unlock()
     }
 
     /// Clears only derived catalog/search data. Producer files are never opened or modified.
@@ -829,14 +972,14 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
         ) != 0
         if !hadFTSTable || dirty {
-            try transaction {
-                try execute(
-                    "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                        + "VALUES ('rebuild')"
-                )
-                try markFTSState(dirty: false)
-                try markMaintenancePending()
-            }
+            let documentCount = try int64Value(
+                "SELECT COUNT(*) FROM conversation_documents"
+            )
+            // Opening the app must never synchronously rebuild a potentially multi-gigabyte FTS
+            // table. An empty catalog is already complete; otherwise ordinary `instr` search is
+            // the safe fallback until explicitly deferred maintenance gets idle time.
+            try markFTSState(dirty: documentCount > 0)
+            if documentCount > 0 { try markMaintenancePending() }
         }
     }
 
@@ -971,16 +1114,31 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
     private func queryEntries(
         _ sql: String,
-        bindings: [SQLiteValue]
+        bindings: [SQLiteValue],
+        connection: OpaquePointer,
+        validLimit: Int,
+        validOffset: Int
     ) throws -> [ConversationIndexEntry] {
-        let statement = try prepare(sql, bindings: bindings)
+        let statement = try prepare(sql, bindings: bindings, connection: connection)
         defer { sqlite3_finalize(statement) }
         var result: [ConversationIndexEntry] = []
+        var validRowsSeen = 0
         while true {
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return result }
-            guard status == SQLITE_ROW else { throw sqliteError("read sessions", status) }
-            result.append(try decodeEntry(statement, offset: 0))
+            guard status == SQLITE_ROW else {
+                throw sqliteError("read sessions", status, connection: connection)
+            }
+            do {
+                let entry = try decodeEntry(statement, offset: 0)
+                defer { validRowsSeen += 1 }
+                guard validRowsSeen >= validOffset else { continue }
+                result.append(entry)
+                if validLimit != .max, result.count == validLimit { return result }
+            } catch ConversationIndexDatabaseError.corruptRow(_) {
+                // A rebuildable cache row must not make every otherwise-valid session disappear.
+                continue
+            }
         }
     }
 
@@ -990,7 +1148,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         source: HistorySource?,
         deleted: Bool?,
         limit: Int?,
-        useFTS: Bool
+        useFTS: Bool,
+        connection: OpaquePointer
     ) throws -> [ConversationIndexDocumentCandidate] {
         var bindings: [SQLiteValue] = []
         var conditions: [String] = []
@@ -1028,7 +1187,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             bindings.append(.integer(deleted ? 1 : 0))
         }
 
-        var sql = """
+        let sql = """
             SELECT s.source_path, s.scope, s.file_mtime, s.file_size,
                    s.dependency_fingerprint, s.metadata_json, s.indexed_at,
                    d.transcript_id, d.agent_type, d.sort_order, d.search_text,
@@ -1037,24 +1196,28 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             WHERE \(conditions.joined(separator: " AND "))
             ORDER BY s.last_activity DESC, d.sort_order, d.transcript_id
             """
-        if let limit {
-            sql += " LIMIT ?"
-            bindings.append(.integer(Int64(limit)))
-        }
-
-        let statement = try prepare(sql, bindings: bindings)
+        let statement = try prepare(sql, bindings: bindings, connection: connection)
         defer { sqlite3_finalize(statement) }
         var result: [ConversationIndexDocumentCandidate] = []
         while true {
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return result }
             guard status == SQLITE_ROW else {
-                throw sqliteError(useFTS ? "search FTS" : "search documents", status)
+                throw sqliteError(
+                    useFTS ? "search FTS" : "search documents",
+                    status,
+                    connection: connection
+                )
             }
-            result.append(ConversationIndexDocumentCandidate(
-                entry: try decodeEntry(statement, offset: 0),
-                document: try decodeDocument(statement, offset: 7)
-            ))
+            do {
+                result.append(ConversationIndexDocumentCandidate(
+                    entry: try decodeEntry(statement, offset: 0),
+                    document: try decodeDocument(statement, offset: 7)
+                ))
+                if let limit, result.count == limit { return result }
+            } catch ConversationIndexDatabaseError.corruptRow(_) {
+                continue
+            }
         }
     }
 
@@ -1204,10 +1367,32 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         )
     }
 
+    private func shouldKeepFTSDirty() throws -> Bool {
+        let wasDirty = try int64Value(
+            "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
+        ) != 0
+        return !trigramFTSAvailable || wasDirty
+    }
+
     private func markMaintenancePending() throws {
         try execute(
             "UPDATE conversation_catalog_state SET maintenance_pending = 1 WHERE singleton = 1"
         )
+    }
+
+    private func hasCapacityForMaintenance() -> Bool {
+        let values = try? file.deletingLastPathComponent().resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        )
+        guard let available = values?.volumeAvailableCapacityForImportantUsage else {
+            // Capacity probes are advisory; unsupported filesystems should retain existing
+            // cancellable behavior rather than permanently disabling maintenance.
+            return true
+        }
+        let fileSize = ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size])
+            as? NSNumber)?.int64Value ?? 0
+        let reserve = max(Int64(256 * 1_024 * 1_024), fileSize * 2)
+        return available > reserve
     }
 
     /// Returns false when an independent reader temporarily prevents truncation. That is benign:
@@ -1307,6 +1492,12 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         autoreleaseFrequency: .workItem
     )
 
+    private static let deferredMaintenanceQueue = DispatchQueue(
+        label: "dev.ccbud.conversation-index-deferred-maintenance",
+        qos: .background,
+        autoreleaseFrequency: .workItem
+    )
+
     private enum SQLiteValue {
         case null
         case integer(Int64)
@@ -1319,6 +1510,25 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return try body()
+    }
+
+    private func isMaintenanceCurrent(_ token: UUID) -> Bool {
+        maintenanceStateLock.lock()
+        defer { maintenanceStateLock.unlock() }
+        return maintenanceToken == token
+    }
+
+    private func withReadLock<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
+        readLock.lock()
+        defer { readLock.unlock() }
+        guard let readConnection else {
+            throw ConversationIndexDatabaseError.sqlite(
+                operation: "open read connection",
+                code: SQLITE_MISUSE,
+                detail: "query-only connection is unavailable"
+            )
+        }
+        return try body(readConnection)
     }
 
     private func transaction<T>(_ body: () throws -> T) throws -> T {
@@ -1405,11 +1615,16 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    private func prepare(_ sql: String, bindings: [SQLiteValue]) throws -> OpaquePointer {
+    private func prepare(
+        _ sql: String,
+        bindings: [SQLiteValue],
+        connection requestedConnection: OpaquePointer? = nil
+    ) throws -> OpaquePointer {
+        let target = requestedConnection ?? connection
         var statement: OpaquePointer?
-        let status = sqlite3_prepare_v2(connection, sql, -1, &statement, nil)
+        let status = sqlite3_prepare_v2(target, sql, -1, &statement, nil)
         guard status == SQLITE_OK, let statement else {
-            throw sqliteError("prepare statement", status)
+            throw sqliteError("prepare statement", status, connection: target)
         }
         do {
             for (offset, value) in bindings.enumerated() {
@@ -1472,12 +1687,16 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
     private func int64Value(
         _ sql: String,
-        bindings: [SQLiteValue] = []
+        bindings: [SQLiteValue] = [],
+        connection requestedConnection: OpaquePointer? = nil
     ) throws -> Int64 {
-        let statement = try prepare(sql, bindings: bindings)
+        let target = requestedConnection ?? connection
+        let statement = try prepare(sql, bindings: bindings, connection: target)
         defer { sqlite3_finalize(statement) }
         let status = sqlite3_step(statement)
-        guard status == SQLITE_ROW else { throw sqliteError("read integer", status) }
+        guard status == SQLITE_ROW else {
+            throw sqliteError("read integer", status, connection: target)
+        }
         return sqlite3_column_int64(statement, 0)
     }
 
@@ -1554,11 +1773,16 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         return result
     }
 
-    private func sqliteError(_ operation: String, _ status: Int32) -> Error {
-        ConversationIndexDatabaseError.sqlite(
+    private func sqliteError(
+        _ operation: String,
+        _ status: Int32,
+        connection requestedConnection: OpaquePointer? = nil
+    ) -> Error {
+        let target = requestedConnection ?? connection
+        return ConversationIndexDatabaseError.sqlite(
             operation: operation,
             code: status,
-            detail: String(cString: sqlite3_errmsg(connection))
+            detail: String(cString: sqlite3_errmsg(target))
         )
     }
 
@@ -1612,6 +1836,47 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 throw ConversationIndexDatabaseError.unsafeDatabaseFile(url)
             }
         }
+    }
+
+    private static func openReadConnection(_ file: URL) throws -> OpaquePointer {
+        var handle: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        let status = sqlite3_open_v2(file.path, &handle, flags, nil)
+        guard status == SQLITE_OK, let handle else {
+            let detail = handle.flatMap(sqlite3_errmsg).map(String.init(cString:))
+                ?? "unable to open query-only database"
+            if let handle { sqlite3_close(handle) }
+            throw ConversationIndexDatabaseError.sqlite(
+                operation: "open read connection",
+                code: status,
+                detail: detail
+            )
+        }
+        sqlite3_extended_result_codes(handle, 1)
+        let timeout = sqlite3_busy_timeout(handle, 250)
+        guard timeout == SQLITE_OK else {
+            let detail = String(cString: sqlite3_errmsg(handle))
+            sqlite3_close(handle)
+            throw ConversationIndexDatabaseError.sqlite(
+                operation: "configure read connection",
+                code: timeout,
+                detail: detail
+            )
+        }
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let queryOnly = sqlite3_exec(handle, "PRAGMA query_only = ON", nil, nil, &errorMessage)
+        guard queryOnly == SQLITE_OK else {
+            let detail = errorMessage.map { String(cString: $0) }
+                ?? String(cString: sqlite3_errmsg(handle))
+            sqlite3_free(errorMessage)
+            sqlite3_close(handle)
+            throw ConversationIndexDatabaseError.sqlite(
+                operation: "configure read connection",
+                code: queryOnly,
+                detail: detail
+            )
+        }
+        return handle
     }
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

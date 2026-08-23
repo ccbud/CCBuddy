@@ -45,6 +45,31 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(permissions.intValue & 0o777, 0o600)
     }
 
+    func testRepeatedOpenReadReleaseAndReopenClosesBothConnectionsCleanly() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        _ = try database?.replace(indexed(file: fixture.source, id: "lifecycle", scope: "scope"))
+
+        for _ in 0..<16 {
+            XCTAssertEqual(
+                try database?.listEntries(scope: "scope", deleted: nil, limit: 1)
+                    .map(\.metadata.id),
+                ["disk:lifecycle"]
+            )
+            database = nil
+            database = try ConversationIndexDatabase(file: fixture.database)
+            XCTAssertEqual(try database?.generation(), 1)
+        }
+        database = nil
+
+        XCTAssertEqual(
+            try ConversationIndexDatabase(file: fixture.database)
+                .listEntries(scope: "scope", deleted: nil, limit: 1)
+                .map(\.metadata.id),
+            ["disk:lifecycle"]
+        )
+    }
+
     func testTrigramAndShortQueryFallbackReturnMainAndSubagentCandidates() throws {
         let fixture = try Fixture()
         let database = try ConversationIndexDatabase(file: fixture.database)
@@ -107,6 +132,160 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertTrue(try database.candidateDocuments(for: "obsolete").documents.isEmpty)
         XCTAssertEqual(try database.candidateDocuments(for: "replacement").documents.count, 1)
         XCTAssertEqual(try database.generation(), 2)
+    }
+
+    func testCorruptMetadataRowDoesNotHideValidRows() throws {
+        let fixture = try Fixture()
+        let corruptFile = fixture.directory.appendingPathComponent("zz-corrupt.jsonl")
+        let validFile = fixture.directory.appendingPathComponent("aa-valid.jsonl")
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        _ = try database.replace(indexed(file: corruptFile, id: "corrupt", scope: "bad"))
+        _ = try database.replace(indexed(file: validFile, id: "valid", scope: "good"))
+
+        var rawHandle: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                fixture.database.path,
+                &rawHandle,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        let raw = try XCTUnwrap(rawHandle)
+        defer { sqlite3_close(raw) }
+        try executeRaw(
+            "UPDATE conversation_sessions SET metadata_json = X'FF' WHERE scope = 'bad'",
+            database: raw
+        )
+
+        XCTAssertEqual(
+            try database.listEntries(deleted: nil, limit: .max).map(\.metadata.id),
+            ["disk:valid"]
+        )
+        XCTAssertEqual(
+            try database.listEntries(deleted: nil, limit: 1).map(\.metadata.id),
+            ["disk:valid"],
+            "The SQL row limit must be backfilled after a corrupt newest row is skipped"
+        )
+        XCTAssertNil(try database.entry(for: corruptFile))
+        XCTAssertEqual(try database.entry(for: validFile)?.metadata.id, "disk:valid")
+    }
+
+    func testCorruptLatestMetadataRowDoesNotConsumeSearchCandidateLimit() throws {
+        let fixture = try Fixture()
+        let corruptFile = fixture.directory.appendingPathComponent("zz-corrupt-search.jsonl")
+        let validFile = fixture.directory.appendingPathComponent("aa-valid-search.jsonl")
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        var corrupt = indexed(
+            file: corruptFile,
+            id: "needle corrupt",
+            scope: "bad-search"
+        )
+        corrupt.metadata.lastActivity = Date(timeIntervalSince1970: 1_800_000_300)
+        var valid = indexed(
+            file: validFile,
+            id: "needle valid",
+            scope: "good-search"
+        )
+        valid.metadata.lastActivity = Date(timeIntervalSince1970: 1_800_000_200)
+        _ = try database.replace(corrupt)
+        _ = try database.replace(valid)
+
+        var rawHandle: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                fixture.database.path,
+                &rawHandle,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        let raw = try XCTUnwrap(rawHandle)
+        defer { sqlite3_close(raw) }
+        try executeRaw(
+            "UPDATE conversation_sessions SET metadata_json = X'FF' "
+                + "WHERE scope = 'bad-search'",
+            database: raw
+        )
+
+        let candidates = try database.candidateDocuments(for: "needle", limit: 1)
+        XCTAssertEqual(
+            candidates.documents.map(\.entry.metadata.id),
+            ["disk:needle valid"],
+            "The candidate limit must be backfilled after a corrupt newest row is skipped"
+        )
+    }
+
+    func testReadConnectionStaysResponsiveWhileWriterWaitsOnCompetingTransaction() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        _ = try database.replace(indexed(file: fixture.source, id: "baseline", scope: "scope"))
+
+        var blockerHandle: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                fixture.database.path,
+                &blockerHandle,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        let blocker = try XCTUnwrap(blockerHandle)
+        defer { sqlite3_close(blocker) }
+        try executeRaw("BEGIN IMMEDIATE", database: blocker)
+        var blockerReleased = false
+        defer {
+            if !blockerReleased { try? executeRaw("ROLLBACK", database: blocker) }
+        }
+
+        let writerResult = DatabaseMaintenanceResultProbe()
+        let writerStarted = DispatchSemaphore(value: 0)
+        let writerFinished = DispatchGroup()
+        let replacement = indexed(
+            file: fixture.source,
+            id: "replacement",
+            scope: "scope"
+        )
+        writerFinished.enter()
+        DispatchQueue.global(qos: .utility).async {
+            writerStarted.signal()
+            writerResult.run {
+                _ = try database.replace(replacement)
+            }
+            writerFinished.leave()
+        }
+        XCTAssertEqual(writerStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            writerFinished.wait(timeout: .now() + 0.15),
+            .timedOut,
+            "The catalog writer should be waiting on the competing transaction"
+        )
+
+        let readerResult = DatabaseEntryReadProbe()
+        let readerFinished = DispatchGroup()
+        readerFinished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            readerResult.load {
+                try database.listEntries(scope: "scope", deleted: nil, limit: .max)
+            }
+            readerFinished.leave()
+        }
+        XCTAssertEqual(
+            readerFinished.wait(timeout: .now() + 0.5),
+            .success,
+            "A read-only WAL snapshot should not wait for the catalog writer lock"
+        )
+        XCTAssertNil(readerResult.error)
+        XCTAssertEqual(readerResult.entries?.map(\.metadata.id), ["disk:baseline"])
+
+        try executeRaw("ROLLBACK", database: blocker)
+        blockerReleased = true
+        XCTAssertEqual(writerFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(writerResult.error)
+        XCTAssertEqual(try database.entry(for: fixture.source)?.metadata.id, "disk:replacement")
     }
 
     func testReconciliationIsScopedAndRejectsAccidentalEmptyDiscovery() throws {
@@ -180,7 +359,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(try fileSize(wal), firstWALSize)
     }
 
-    func testVersionOneMigrationKeepsWarmRowsAndDefersPhysicalCompaction() throws {
+    func testVersionOneMigrationKeepsWarmRowsWithoutAutomaticFullCompaction() throws {
         let fixture = try Fixture()
         var database: ConversationIndexDatabase? = try .init(file: fixture.database)
         let legacyText = String(repeating: "legacy transcript payload ", count: 80_000)
@@ -217,10 +396,14 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(try migrated.documents(for: fixture.source), legacyDocuments)
         XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
         XCTAssertEqual(try catalogStateValue("maintenance_pending", fixture.database), 0)
-        XCTAssertLessThan(try fileSize(fixture.database), warmSize)
+        XCTAssertGreaterThanOrEqual(
+            try fileSize(fixture.database) + 4_096,
+            warmSize,
+            "Deferred maintenance must not run a full VACUUM of the legacy catalog"
+        )
     }
 
-    func testVersionOneVacuumCanBeCancelledWhileWaitingForAnotherWriter() throws {
+    func testDeferredFTSMaintenanceCanBeCancelledWhileWaitingForAnotherWriter() throws {
         let fixture = try Fixture()
         var database: ConversationIndexDatabase? = try .init(file: fixture.database)
         _ = try database?.replace(indexed(file: fixture.source, id: "warm", scope: "scope"))
@@ -241,6 +424,10 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         )
         let blocker = try XCTUnwrap(blockerHandle)
         defer { sqlite3_close(blocker) }
+        try executeRaw(
+            "UPDATE conversation_catalog_state SET fts_dirty = 1 WHERE singleton = 1",
+            database: blocker
+        )
         try executeRaw("BEGIN IMMEDIATE", database: blocker)
         var blockerCommitted = false
         defer {
@@ -265,8 +452,25 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(
             finished.wait(timeout: .now() + 0.15),
             .timedOut,
-            "The one-time VACUUM should be waiting on the competing writer"
+            "Deferred maintenance should be waiting on the competing writer"
         )
+
+        let readerResult = DatabaseEntryReadProbe()
+        let readerFinished = DispatchGroup()
+        readerFinished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            readerResult.load {
+                try migrated.listEntries(scope: "scope", deleted: nil, limit: 1)
+            }
+            readerFinished.leave()
+        }
+        XCTAssertEqual(
+            readerFinished.wait(timeout: .now() + 0.5),
+            .success,
+            "Deferred maintenance must not block warm-catalog reads"
+        )
+        XCTAssertNil(readerResult.error)
+        XCTAssertEqual(readerResult.entries?.map(\.metadata.id), ["disk:warm"])
 
         let cancellationStarted = DispatchTime.now().uptimeNanoseconds
         cancellation.cancel()
@@ -284,40 +488,6 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         blockerCommitted = true
         try migrated.finishFullScanMaintenance()
         XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
-    }
-
-    func testVersionOneVacuumProgressCancellationRetainsWarmCatalogAndRetryMarker() throws {
-        let fixture = try Fixture()
-        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
-        _ = try database?.replace(indexed(file: fixture.source, id: "warm", scope: "scope"))
-        try database?.finishFullScanMaintenance()
-        database = nil
-        try prepareVersionOneCatalog(
-            fixture.database,
-            discardedBytes: 16 * 1_024 * 1_024,
-            liveBytes: 64 * 1_024 * 1_024
-        )
-        let legacySize = try fileSize(fixture.database)
-        let migrated = try ConversationIndexDatabase(file: fixture.database)
-        let cancellation = DatabasePollingCancellationProbe(cancelOnPoll: 2)
-
-        XCTAssertThrowsError(try migrated.finishFullScanMaintenance(
-            isCancelled: { @Sendable in cancellation.poll() }
-        )) { error in
-            XCTAssertTrue(error is CancellationError, String(describing: error))
-        }
-
-        XCTAssertGreaterThanOrEqual(cancellation.pollCount, 2)
-        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 1)
-        XCTAssertEqual(try catalogStateValue("maintenance_pending", fixture.database), 1)
-        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 0)
-        XCTAssertTrue(try migrated.hasRows())
-        XCTAssertGreaterThanOrEqual(try fileSize(fixture.database) + 4_096, legacySize)
-
-        try migrated.finishFullScanMaintenance()
-        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
-        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 2)
-        XCTAssertLessThan(try fileSize(fixture.database), legacySize)
     }
 
     func testConcurrentOpensSerializeVersionOneMigrationWithoutDroppingRows() throws {
@@ -610,27 +780,34 @@ private final class DatabaseCancellationProbe: @unchecked Sendable {
     }
 }
 
-private final class DatabasePollingCancellationProbe: @unchecked Sendable {
+private final class DatabaseEntryReadProbe: @unchecked Sendable {
     private let lock = NSLock()
-    private let cancellationPoll: Int
-    private var pollCountStorage = 0
+    private var entriesStorage: [ConversationIndexEntry]?
+    private var errorStorage: Error?
 
-    init(cancelOnPoll: Int) {
-        cancellationPoll = max(1, cancelOnPoll)
-    }
-
-    var pollCount: Int {
+    var entries: [ConversationIndexEntry]? {
         lock.lock()
         defer { lock.unlock() }
-        return pollCountStorage
+        return entriesStorage
     }
 
-    func poll() -> Bool {
+    var error: Error? {
         lock.lock()
-        pollCountStorage += 1
-        let shouldCancel = pollCountStorage >= cancellationPoll
-        lock.unlock()
-        return shouldCancel
+        defer { lock.unlock() }
+        return errorStorage
+    }
+
+    func load(_ operation: () throws -> [ConversationIndexEntry]) {
+        do {
+            let entries = try operation()
+            lock.lock()
+            entriesStorage = entries
+            lock.unlock()
+        } catch {
+            lock.lock()
+            errorStorage = error
+            lock.unlock()
+        }
     }
 }
 

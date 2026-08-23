@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import CCBuddy
 
@@ -72,6 +73,138 @@ final class HistorySessionLoaderTests: XCTestCase {
         XCTAssertEqual(projection.threads[0].searchText, "first\nthird")
         XCTAssertEqual(projection.threads[0].messageSpans.map(\.sequence), [0, 2])
         XCTAssertEqual(projection.threads[0].messageSpans[1].utf16Location, 6)
+    }
+
+    func testOversizedMessagesToolsAndRawBlocksProduceBoundedIndexButFullDetail() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("bounded-catalog-projection")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("projects/-large/session.jsonl")
+        let messageText = "message-head-"
+            + String(repeating: "message🙂", count: 12_000)
+            + "-message-tail"
+        let toolText = "tool-head-"
+            + String(repeating: "tool界", count: 12_000)
+            + "-tool-tail"
+        let toolResultText = "result-head-"
+            + String(repeating: "result📦", count: 12_000)
+            + "-result-tail"
+        let rawText = "raw-head-"
+            + String(repeating: "raw🧩", count: 12_000)
+            + "-raw-tail"
+        let toolContent = HistoryValue.array([
+            .object([
+                "type": .string("tool_use"),
+                "id": .string("oversized-tool"),
+                "name": .string("Read"),
+                "input": .object(["payload": .string(toolText)]),
+            ]),
+        ]).jsonString
+        let toolResultContent = HistoryValue.array([
+            .object([
+                "type": .string("tool_result"),
+                "tool_use_id": .string("oversized-tool"),
+                "content": .string(toolResultText),
+            ]),
+        ]).jsonString
+        let rawContent = HistoryValue.array([
+            .object([
+                "type": .string("producer_blob"),
+                "payload": .string(rawText),
+            ]),
+        ]).jsonString
+        try HistoryTestSupport.write([
+            HistoryTestSupport.claudeLine(
+                type: "user", role: "user",
+                contentJSON: HistoryValue.string(messageText).jsonString,
+                sessionID: "large", cwd: "/large",
+                timestamp: "2026-08-24T00:00:00Z"
+            ),
+            HistoryTestSupport.claudeLine(
+                type: "assistant", role: "assistant",
+                contentJSON: toolContent,
+                sessionID: "large", cwd: "/large",
+                timestamp: "2026-08-24T00:00:01Z"
+            ),
+            HistoryTestSupport.claudeLine(
+                type: "user", role: "user",
+                contentJSON: toolResultContent,
+                sessionID: "large", cwd: "/large",
+                timestamp: "2026-08-24T00:00:02Z"
+            ),
+            HistoryTestSupport.claudeLine(
+                type: "assistant", role: "assistant",
+                contentJSON: rawContent,
+                sessionID: "large", cwd: "/large",
+                timestamp: "2026-08-24T00:00:03Z"
+            ),
+        ], to: file)
+
+        let configuration = HistoryConfiguration(
+            historyDirs: [root.path],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let loader = HistorySessionLoader(configuration: configuration)
+        let candidate = try loader.pathResolver.validatedCandidate(for: file)
+        let loaded = try loader.load(candidate)
+        let thread = try XCTUnwrap(loaded.projection.threads.first)
+        let indexedSegments = thread.messageSpans.map {
+            (thread.searchText as NSString).substring(with: $0.utf16Range)
+        }
+
+        XCTAssertEqual(indexedSegments.count, 4)
+        XCTAssertLessThanOrEqual(
+            indexedSegments[0].utf8.count,
+            HistoryCatalogProjection.maximumMessageSearchTextBytes
+        )
+        XCTAssertLessThanOrEqual(
+            indexedSegments[1].utf8.count,
+            HistoryCatalogProjection.maximumToolSearchTextBytes
+        )
+        XCTAssertLessThanOrEqual(
+            indexedSegments[2].utf8.count,
+            HistoryCatalogProjection.maximumToolSearchTextBytes
+        )
+        XCTAssertLessThanOrEqual(
+            indexedSegments[3].utf8.count,
+            HistoryCatalogProjection.maximumRawSearchTextBytes
+        )
+        XCTAssertTrue(thread.searchText.contains("message-head"))
+        XCTAssertTrue(thread.searchText.contains("tool-head"))
+        XCTAssertTrue(thread.searchText.contains("result-head"))
+        XCTAssertTrue(thread.searchText.contains("raw-head"))
+        XCTAssertFalse(thread.searchText.contains("message-tail"))
+        XCTAssertFalse(thread.searchText.contains("tool-tail"))
+        XCTAssertFalse(thread.searchText.contains("result-tail"))
+        XCTAssertFalse(thread.searchText.contains("raw-tail"))
+
+        let database = try ConversationIndexDatabase(
+            file: root.appendingPathComponent("app/catalog.sqlite3")
+        )
+        _ = try database.replace(ConversationIndexedSession(
+            projection: loaded.projection,
+            fingerprint: ConversationIndexFingerprint(
+                modificationTime: loaded.session.metadata.lastActivity,
+                sizeBytes: loaded.session.metadata.sizeBytes
+            )
+        ))
+        let stored = try XCTUnwrap(try database.documents(for: file).first)
+        XCTAssertEqual(stored.text, thread.searchText)
+        XCTAssertLessThanOrEqual(
+            stored.text.utf8.count,
+            HistoryCatalogProjection.maximumMessageSearchTextBytes
+                + (2 * HistoryCatalogProjection.maximumToolSearchTextBytes)
+                + HistoryCatalogProjection.maximumRawSearchTextBytes
+                + 3
+        )
+
+        // Detail, replay, and export callers all reload this normalized raw session rather than
+        // reading the bounded SQLite projection.
+        let detail = try loader.getSession(file: file)
+        XCTAssertEqual(detail.messages[0].content[0].text, messageText)
+        XCTAssertEqual(detail.messages[1].content[0].input?["payload"]?.stringValue, toolText)
+        XCTAssertEqual(detail.messages[2].content[0].content?.stringValue, toolResultText)
+        XCTAssertEqual(detail.messages[3].content[0].raw?["payload"]?.stringValue, rawText)
     }
 
     func testSidecarAndWALDependenciesOwnEventsBeforeFilesExist() throws {
@@ -185,6 +318,326 @@ final class HistorySessionLoaderTests: XCTestCase {
         ).requiresProjectionRefresh)
     }
 
+    func testQuickMetadataUsesBoundedCompleteLinesDetectsFormatsAndIsolatesFailures() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-metadata-prefix")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let claude = root.appendingPathComponent("projects/-claude/claude.jsonl")
+        let qoder = root.appendingPathComponent("projects/-qoder/qoder.jsonl")
+        let partial = root.appendingPathComponent("projects/-partial/partial.jsonl")
+        let invalid = root.appendingPathComponent("projects/-invalid/invalid.jsonl")
+        let claudeLine = HistoryTestSupport.claudeLine(
+            type: "user", role: "user", contentJSON: #""bounded title""#,
+            sessionID: "bounded", cwd: "/bounded", timestamp: "2026-08-24T00:00:00Z"
+        )
+        try HistoryTestSupport.write([claudeLine], to: claude)
+        let handle = try FileHandle(forWritingTo: claude)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(String(
+            repeating: "this tail is deliberately not JSON and has no newline ",
+            count: 9_000
+        ).utf8))
+        try handle.close()
+
+        try HistoryTestSupport.write([
+            #"{"type":"runtime-config","sessionId":"qoder-detected","model":"qoder-model"}"#,
+            #"{"type":"user","sessionId":"qoder-detected","timestamp":"2026-08-24T00:00:00Z","message":{"role":"user","content":"qoder title"}}"#,
+        ], to: qoder)
+        try HistoryTestSupport.write([claudeLine], to: partial)
+        let partialHandle = try FileHandle(forWritingTo: partial)
+        try partialHandle.seekToEnd()
+        try partialHandle.write(contentsOf: Data(#"{"unfinished":""#.utf8) + Data([0xF0, 0x9F]))
+        try partialHandle.close()
+        try HistoryTestSupport.write([#"{"unknown":"producer"}"#], to: invalid)
+
+        let configuration = HistoryConfiguration(
+            historyDirs: [root.path], homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let loader = HistorySessionLoader(configuration: configuration)
+        let candidates = [claude, qoder, partial, invalid].map {
+            try! loader.pathResolver.validatedCandidate(for: $0)
+        }
+        let quick = loader.loadQuickMetadata(candidates)
+        let byFile = Dictionary(uniqueKeysWithValues: quick.map {
+            ($0.candidate.file.standardizedFileURL.path, $0)
+        })
+
+        XCTAssertEqual(quick.count, 3)
+        XCTAssertEqual(byFile[claude.standardizedFileURL.path]?.metadata.title, "bounded title")
+        XCTAssertEqual(byFile[claude.standardizedFileURL.path]?.metadata.diagnostics.malformedLines, 0)
+        XCTAssertEqual(byFile[qoder.standardizedFileURL.path]?.metadata.source, .qoder)
+        XCTAssertEqual(byFile[partial.standardizedFileURL.path]?.metadata.sessionID, "bounded")
+        XCTAssertNil(byFile[invalid.standardizedFileURL.path])
+        for value in quick {
+            XCTAssertNotNil(value.manifest.primary)
+            XCTAssertEqual(value.dependencySnapshot.fingerprint.count, 64)
+        }
+    }
+
+    func testQuickMetadataAcceptsCompleteEOFRecordWithoutTrailingNewline() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-metadata-no-newline")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("projects/-claude/single.jsonl")
+        let line = HistoryTestSupport.claudeLine(
+            type: "user", role: "user", contentJSON: #""single line title""#,
+            sessionID: "single-line", cwd: "/single-line",
+            timestamp: "2026-08-24T00:00:00Z"
+        )
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data(line.utf8).write(to: file)
+        let loader = HistorySessionLoader(historyDirs: [root.path], homeDirectory: root)
+        let candidate = try loader.pathResolver.validatedCandidate(for: file)
+
+        let quick = try XCTUnwrap(loader.loadQuickMetadata([candidate]).first)
+
+        XCTAssertEqual(quick.metadata.source, .claude)
+        XCTAssertEqual(quick.metadata.sessionID, "single-line")
+        XCTAssertEqual(quick.metadata.title, "single line title")
+    }
+
+    func testQuickQoderReadUsesInjectedPermissionAwareReader() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-qoder-reader")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let qoderRoot = root.appendingPathComponent(".qoder", isDirectory: true)
+        let file = qoderRoot.appendingPathComponent("projects/-project/session.jsonl")
+        try HistoryTestSupport.write([#"{"not":"a qoder transcript"}"#], to: file)
+        let supplied = Data(([
+            #"{"type":"runtime-config","sessionId":"reader-session","model":"reader-model"}"#,
+            #"{"type":"user","sessionId":"reader-session","timestamp":"2026-08-24T00:00:00Z","message":{"role":"user","content":"reader title"}}"#,
+        ].joined(separator: "\n") + "\n").utf8)
+        let access = QuickMetadataQoderAccess(data: supplied)
+        let reader = QoderFileReader(
+            fileAccess: access,
+            helperResolver: QuickMetadataQoderResolver(),
+            helperRunner: QuickMetadataQoderRunner()
+        )
+        let loader = HistorySessionLoader(
+            historyDirs: [qoderRoot.path], homeDirectory: root, qoderReader: reader
+        )
+        let candidate = try loader.pathResolver.validatedCandidate(for: file)
+        let quick = try XCTUnwrap(loader.loadQuickMetadata([candidate]).first)
+
+        XCTAssertEqual(access.readCount, 1)
+        XCTAssertEqual(quick.metadata.source, .qoder)
+        XCTAssertEqual(quick.metadata.sessionID, "reader-session")
+        XCTAssertEqual(quick.metadata.title, "reader title")
+    }
+
+    func testCodexQuickMetadataMergesCompletedStateAndFullLoadKeepsManualName() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-codex-state")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefixID = "511a7eed-4f83-46ba-afff-4e08b18c12f5"
+        let stateID = "622b8fee-5f94-47cb-bfff-5f19c29d23f6"
+        let rollout = root.appendingPathComponent(
+            "sessions/2026/08/24/rollout-\(prefixID).jsonl"
+        )
+        try HistoryTestSupport.write([
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:00Z", type: "session_meta",
+                payload: #"{"id":"\#(prefixID)","cwd":"/prefix-project","git":{"branch":"prefix"}}"#
+            ),
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:01Z", type: "response_item",
+                payload: #"{"type":"message","role":"user","content":[{"type":"input_text","text":"prefix title"}]}"#
+            ),
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:02Z", type: "response_item",
+                payload: #"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"full tail"}]}"#
+            ),
+        ], to: rollout)
+        try HistoryTestSupport.write(["sqlite_home = '.'"], to: root.appendingPathComponent("config.toml"))
+        try createSQLite(
+            root.appendingPathComponent("state_5.sqlite"),
+            sql: """
+            CREATE TABLE backfill_state (id INTEGER PRIMARY KEY, status TEXT);
+            INSERT INTO backfill_state VALUES (1, 'complete');
+            CREATE TABLE threads (
+              id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, name TEXT,
+              tokens_used INTEGER, archived INTEGER, git_branch TEXT, model TEXT,
+              source TEXT, created_at_ms INTEGER, updated_at_ms INTEGER
+            );
+            INSERT INTO threads VALUES (
+              '\(stateID)', '\(sqlEscaped(rollout.standardizedFileURL.path))',
+              '/state-project', 'state title', 'manual name', 1234, 0,
+              'state-branch', 'state-model', 'cli', 1787529600000, 1787529660000
+            );
+            """
+        )
+
+        let loader = HistorySessionLoader(
+            historyDirs: [root.path], homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let candidate = try loader.pathResolver.validatedCandidate(for: rollout)
+        let quick = try XCTUnwrap(loader.loadQuickMetadata([candidate]).first)
+        XCTAssertEqual(quick.metadata.title, "manual name")
+        XCTAssertEqual(quick.metadata.sessionID, stateID)
+        XCTAssertEqual(quick.metadata.threadID, stateID)
+        XCTAssertEqual(quick.metadata.cwd, "/state-project")
+        XCTAssertEqual(quick.metadata.project, "state-project")
+        XCTAssertEqual(quick.metadata.gitBranch, "state-branch")
+        XCTAssertEqual(quick.metadata.model, "state-model")
+        XCTAssertEqual(quick.metadata.totals.inputTokens, 1234)
+        XCTAssertEqual(quick.metadata.createdAt.timeIntervalSince1970, 1_787_529_600, accuracy: 0.1)
+        XCTAssertEqual(quick.metadata.lastActivity.timeIntervalSince1970, 1_787_529_660, accuracy: 0.1)
+
+        let full = try loader.load(candidate)
+        XCTAssertEqual(full.session.metadata.title, "manual name")
+        XCTAssertEqual(full.session.metadata.sessionID, stateID)
+        XCTAssertEqual(full.session.messages.last?.content.first?.text, "full tail")
+    }
+
+    func testCodexStatePublishesQuickMetadataWhenFirstRecordExceedsPrefixBudget() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-codex-large-first-line")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefixID = "711a7eed-4f83-46ba-afff-4e08b18c12f5"
+        let stateID = "822b8fee-5f94-47cb-bfff-5f19c29d23f6"
+        let rollout = root.appendingPathComponent(
+            "sessions/2026/08/24/rollout-\(prefixID).jsonl"
+        )
+        let padding = String(
+            repeating: "x",
+            count: HistorySessionLoader.maximumQuickReadBytes + 4_096
+        )
+        let oversized = HistoryTestSupport.codexLine(
+            timestamp: "2026-08-24T00:00:00Z",
+            type: "session_meta",
+            payload: #"{"id":"\#(prefixID)","cwd":"/prefix","padding":"\#(padding)"}"#
+        )
+        try HistoryTestSupport.write([oversized], to: rollout)
+        try HistoryTestSupport.write(
+            ["sqlite_home = '.'"],
+            to: root.appendingPathComponent("config.toml")
+        )
+        try createSQLite(
+            root.appendingPathComponent("state_5.sqlite"),
+            sql: """
+            CREATE TABLE backfill_state (id INTEGER PRIMARY KEY, status TEXT);
+            INSERT INTO backfill_state VALUES (1, 'complete');
+            CREATE TABLE threads (
+              id TEXT, rollout_path TEXT, cwd TEXT, name TEXT,
+              tokens_used INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER
+            );
+            INSERT INTO threads VALUES (
+              '\(stateID)', '\(sqlEscaped(rollout.standardizedFileURL.path))',
+              '/state-only', 'state-only title', 4321, 1787529600000, 1787529660000
+            );
+            """
+        )
+        let configuration = HistoryConfiguration(
+            historyDirs: [root.path],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let loader = HistorySessionLoader(configuration: configuration)
+        let candidate = try loader.pathResolver.validatedCandidate(for: rollout)
+
+        let quick = try XCTUnwrap(loader.loadQuickMetadata([candidate]).first)
+
+        XCTAssertEqual(quick.metadata.source, .codex)
+        XCTAssertEqual(quick.metadata.sessionID, stateID)
+        XCTAssertEqual(quick.metadata.title, "state-only title")
+        XCTAssertEqual(quick.metadata.cwd, "/state-only")
+        XCTAssertEqual(quick.metadata.totals.inputTokens, 4321)
+
+        let index = try ConversationIndexDatabase(
+            file: root.appendingPathComponent("app/scanner.sqlite")
+        )
+        let scanner = ConversationIndexScanner(configuration: configuration, database: index)
+        let progress = QuickMetadataScanProgressProbe()
+        let result = try scanner.scanAll { value in progress.append(value) }
+
+        XCTAssertEqual(result.metadataPublished, 1)
+        XCTAssertEqual(result.parsed, 1)
+        XCTAssertTrue(progress.results.contains {
+            $0.metadataPublished == 1 && $0.parsed == 0
+        })
+        XCTAssertEqual(try index.entry(for: rollout)?.metadata.title, "state-only title")
+    }
+
+    func testCodexStateSchemaDegradesAndIncompleteBackfillFallsBackToPrefix() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-codex-schema")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rollout = root.appendingPathComponent("sessions/2026/08/24/rollout-schema.jsonl")
+        try HistoryTestSupport.write(["{}"], to: rollout)
+        try HistoryTestSupport.write(["sqlite_home = '.'"], to: root.appendingPathComponent("config.toml"))
+        let database = root.appendingPathComponent("state_5.sqlite")
+        try createSQLite(database, sql: """
+            CREATE TABLE backfill_state (id INTEGER PRIMARY KEY, status TEXT);
+            INSERT INTO backfill_state VALUES (1, 'complete');
+            CREATE TABLE threads (rollout_path TEXT, title TEXT);
+            INSERT INTO threads VALUES ('\(sqlEscaped(rollout.standardizedFileURL.path))', 'schema title');
+            """)
+        let degraded = CodexStateDatabase.quickMetadata(
+            for: [rollout], homeDirectory: root, environment: [:]
+        )
+        XCTAssertEqual(degraded[rollout.standardizedFileURL.path]?.title, "schema title")
+        XCTAssertNil(degraded[rollout.standardizedFileURL.path]?.model)
+
+        try executeSQLite(database, sql: "DELETE FROM backfill_state")
+        XCTAssertTrue(CodexStateDatabase.quickMetadata(
+            for: [rollout], homeDirectory: root, environment: [:]
+        ).isEmpty)
+    }
+
+    func testAntigravityQuickMetadataDoesNotOpenConversationSteps() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("quick-antigravity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("conversations/antigravity-id.db")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("not a sqlite database and intentionally unreadable as steps".utf8)
+            .write(to: file)
+        let loader = HistorySessionLoader(historyDirs: [root.path], homeDirectory: root)
+        let candidate = try loader.pathResolver.validatedCandidate(for: file)
+        let quick = try XCTUnwrap(loader.loadQuickMetadata([candidate]).first)
+
+        XCTAssertEqual(quick.metadata.source, .antigravity)
+        XCTAssertEqual(quick.metadata.sessionID, "antigravity-id")
+        XCTAssertEqual(quick.metadata.title, "antigravity-id")
+        XCTAssertEqual(quick.manifest.primary?.role, .primaryDatabase)
+    }
+
+    private func createSQLite(_ file: URL, sql: String) throws {
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(file.path, &connection), SQLITE_OK)
+        guard let connection else { throw NSError(domain: "SQLiteTest", code: 1) }
+        defer { sqlite3_close(connection) }
+        try executeSQLite(connection, sql: sql)
+    }
+
+    private func executeSQLite(_ file: URL, sql: String) throws {
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(file.path, &connection), SQLITE_OK)
+        guard let connection else { throw NSError(domain: "SQLiteTest", code: 2) }
+        defer { sqlite3_close(connection) }
+        try executeSQLite(connection, sql: sql)
+    }
+
+    private func executeSQLite(_ connection: OpaquePointer, sql: String) throws {
+        var message: UnsafeMutablePointer<CChar>?
+        let status = sqlite3_exec(connection, sql, nil, nil, &message)
+        defer { sqlite3_free(message) }
+        guard status == SQLITE_OK else {
+            throw NSError(
+                domain: "SQLiteTest", code: Int(status),
+                userInfo: [
+                    NSLocalizedDescriptionKey: message.map { String(cString: $0) } ?? "SQLite error",
+                ]
+            )
+        }
+    }
+
+    private func sqlEscaped(_ value: String) -> String {
+        return value.replacingOccurrences(of: "'", with: "''")
+    }
+
     private func makeMetadata(file: URL) -> HistorySessionMetadata {
         HistorySessionMetadata(
             id: "disk:projection",
@@ -200,5 +653,80 @@ final class HistorySessionLoaderTests: XCTestCase {
             lastActivity: .distantPast,
             sizeBytes: 0
         )
+    }
+}
+
+private final class QuickMetadataScanProgressProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [ConversationIndexScanResult] = []
+
+    var results: [ConversationIndexScanResult] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ result: ConversationIndexScanResult) {
+        lock.lock()
+        storage.append(result)
+        lock.unlock()
+    }
+}
+
+private final class QuickMetadataQoderAccess: QoderFileAccessing, @unchecked Sendable {
+    private let system = SystemQoderFileAccess()
+    private let data: Data
+    private let lock = NSLock()
+    private var reads = 0
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    var readCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reads
+    }
+
+    func readData(at file: URL) throws -> Data {
+        lock.lock()
+        reads += 1
+        lock.unlock()
+        return data
+    }
+
+    func probeReadable(at file: URL) throws {
+        try system.probeReadable(at: file)
+    }
+
+    func stamp(of file: URL) throws -> QoderFileStamp {
+        return try system.stamp(of: file)
+    }
+}
+
+private struct QuickMetadataQoderResolver: QoderHelperResolving {
+    func trustedHelper(for dataRoot: URL) throws -> URL {
+        return dataRoot.appendingPathComponent("unused-helper")
+    }
+}
+
+private struct QuickMetadataQoderRunner: QoderHelperRunning {
+    func read(
+        helper: URL,
+        target: URL,
+        outputLimit: Int,
+        timeout: TimeInterval
+    ) throws -> Data {
+        throw QoderFileReadError.helperFailed("unexpected helper read")
+    }
+
+    func readBatch(
+        helper: URL,
+        targets: [URL],
+        outputLimit: Int,
+        timeout: TimeInterval
+    ) throws -> [URL: Data] {
+        throw QoderFileReadError.helperFailed("unexpected helper batch")
     }
 }

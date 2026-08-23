@@ -21,9 +21,9 @@ struct ConversationTimelinePane: View {
                 }
                 toolbar
             } else {
-                // The content view extends under the native title bar. This is the detail
-                // column's non-interactive drag surface when no session header is present.
-                Color.clear.frame(height: 36)
+                WindowDragRegion()
+                    .frame(height: 52)
+                    .background(Color.ccConversationBackground)
             }
             detail
         }
@@ -113,6 +113,7 @@ struct ConversationTimelinePane: View {
         // Match Wake's compact full-size-content header while retaining a drag surface.
         .padding(.top, 20)
         .padding(.bottom, 12)
+        .background(WindowDragRegion())
     }
 
     private func sessionTitle(_ metadata: HistorySessionMetadata) -> some View {

@@ -76,6 +76,70 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertTrue(scanner.watchRoots.map(\.path).contains(sidecar.path))
     }
 
+    func testColdFullScanPublishesActiveQuickMetadataBeforeOtherScopesAndFullParse() throws {
+        var environment = try makeEnvironment("scanner-active-scope-first")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let activeScope = environment.historyRoot.path
+        let otherRoot = environment.root.appendingPathComponent("newer-history", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        environment.configuration.historyDirs = [activeScope, otherRoot.path]
+        environment.configuration.active = activeScope
+
+        let directories = HistoryPathResolver(configuration: environment.configuration)
+            .directories(activeOnly: false)
+        environment.directory = try XCTUnwrap(directories.first { $0.id == activeScope })
+        var otherEnvironment = environment
+        otherEnvironment.directory = try XCTUnwrap(directories.first { $0.id == otherRoot.path })
+
+        let activeOlder = try makeCandidate(
+            environment,
+            name: "active-older.jsonl",
+            format: .claude,
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let unrelatedNewer = try makeCandidate(
+            otherEnvironment,
+            name: "unrelated-newer.jsonl",
+            format: .codex,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let registry = ScannerTestRegistry(candidates: [unrelatedNewer, activeOlder])
+        let loader = ScannerTestLoader(
+            configuration: environment.configuration,
+            registry: registry,
+            providesQuickMetadata: true
+        )
+        let database = try ConversationIndexDatabase(file: environment.database)
+        let catalog = ScannerRecordingCatalog(database: database)
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: catalog,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+        let progress = ScannerProgressProbe()
+
+        let result = try scanner.scanAll { value in progress.append(value) }
+
+        XCTAssertEqual(result.parsed, 2)
+        XCTAssertEqual(result.metadataPublished, 2)
+        XCTAssertEqual(loader.quickMetadataBatches, [
+            [activeOlder.file.path],
+            [unrelatedNewer.file.path],
+        ])
+        XCTAssertEqual(loader.prefetchBatches, [[activeOlder.file.path, unrelatedNewer.file.path]])
+        XCTAssertEqual(loader.loadPaths, [activeOlder.file.path, unrelatedNewer.file.path])
+        XCTAssertEqual(catalog.mutations, [
+            .metadata([activeOlder.file.path]),
+            .metadata([unrelatedNewer.file.path]),
+            .full(activeOlder.file.path),
+            .full(unrelatedNewer.file.path),
+        ])
+        XCTAssertEqual(progress.results.first?.metadataPublished, 1)
+        XCTAssertEqual(progress.results.first?.parsed, 0)
+    }
+
     func testRetriesOneDependencyChangeThenReportsStableFailureWithoutReplacing() throws {
         let environment = try makeEnvironment("scanner-retry")
         defer { try? FileManager.default.removeItem(at: environment.root) }
@@ -115,6 +179,57 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertEqual(loader.loadPaths, [candidate.file.path, candidate.file.path])
         XCTAssertEqual(try database.entry(for: candidate.file)?.fingerprint, indexedFingerprint)
         XCTAssertFalse(failed.hasChanges)
+    }
+
+    func testFullParseFailureRetainsQuickRowAndSentinelRetriesNextScan() throws {
+        let environment = try makeEnvironment("scanner-quick-retry")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let candidate = try makeCandidate(
+            environment,
+            name: "quick-retry.jsonl",
+            format: .codex,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let registry = ScannerTestRegistry(candidates: [candidate])
+        let loader = ScannerTestLoader(
+            configuration: environment.configuration,
+            registry: registry,
+            providesQuickMetadata: true
+        )
+        loader.failForDependencyChanges(path: candidate.file.path, count: 2)
+        let database = try ConversationIndexDatabase(file: environment.database)
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: database,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+
+        let failed = try scanner.scanAll()
+
+        XCTAssertEqual(failed.metadataPublished, 1)
+        XCTAssertEqual(failed.parsed, 0)
+        XCTAssertEqual(failed.failed, 1)
+        XCTAssertTrue(failed.hasChanges)
+        let quickEntry = try XCTUnwrap(database.entry(for: candidate.file))
+        XCTAssertEqual(quickEntry.metadata.title, "Quick quick-retry.jsonl")
+        XCTAssertEqual(quickEntry.fingerprint.modificationTime, Date(timeIntervalSince1970: 0))
+        XCTAssertTrue(quickEntry.fingerprint.dependencyFingerprint?.hasPrefix("quick:") == true)
+        XCTAssertTrue(try database.documents(for: candidate.file).isEmpty)
+
+        loader.resetObservations()
+        let retried = try scanner.scanAll()
+
+        XCTAssertEqual(retried.metadataPublished, 1)
+        XCTAssertEqual(retried.parsed, 1)
+        XCTAssertEqual(retried.failed, 0)
+        XCTAssertEqual(loader.loadPaths, [candidate.file.path])
+        let completeEntry = try XCTUnwrap(database.entry(for: candidate.file))
+        XCTAssertNotEqual(completeEntry.fingerprint.modificationTime, Date(timeIntervalSince1970: 0))
+        XCTAssertFalse(completeEntry.fingerprint.dependencyFingerprint?.hasPrefix("quick:") == true)
+        XCTAssertEqual(completeEntry.metadata.title, "quick-retry.jsonl")
+        XCTAssertEqual(try database.documents(for: candidate.file).count, 1)
     }
 
     func testReconcileRetainsRowsForMissingBaseOrProducerRoot() throws {
@@ -431,6 +546,56 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertEqual(loader.loadPaths.count, 1)
     }
 
+    func testQuickMetadataPublishesInBatchesOf32AndCancelsBeforeNextBatch() throws {
+        let environment = try makeEnvironment("scanner-quick-batches")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let candidates = try (0..<33).map { index in
+            try makeCandidate(
+                environment,
+                name: String(format: "quick-batch-%02d.jsonl", index),
+                format: .claude,
+                modifiedAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(index))
+            )
+        }
+        let registry = ScannerTestRegistry(candidates: candidates)
+        let loader = ScannerTestLoader(
+            configuration: environment.configuration,
+            registry: registry,
+            providesQuickMetadata: true
+        )
+        let database = try ConversationIndexDatabase(file: environment.database)
+        let catalog = ScannerRecordingCatalog(database: database)
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: catalog,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+
+        XCTAssertThrowsError(try scanner.scanAll(
+            isCancelled: { @Sendable in catalog.metadataBatchCount == 1 }
+        )) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+
+        XCTAssertEqual(loader.quickMetadataBatches.map(\.count), [32])
+        XCTAssertEqual(catalog.metadataBatchSizes, [32])
+        XCTAssertTrue(loader.prefetchBatches.isEmpty)
+        XCTAssertTrue(loader.loadPaths.isEmpty)
+        XCTAssertEqual(try database.listEntries(deleted: nil, limit: .max).count, 32)
+
+        loader.resetObservations()
+        catalog.resetMutations()
+        let completed = try scanner.scanAll()
+
+        XCTAssertEqual(loader.quickMetadataBatches.map(\.count), [32, 1])
+        XCTAssertEqual(catalog.metadataBatchSizes, [32, 1])
+        XCTAssertEqual(completed.metadataPublished, 33)
+        XCTAssertEqual(completed.parsed, 33)
+        XCTAssertEqual(try database.listEntries(deleted: nil, limit: .max).count, 33)
+    }
+
     func testCoordinatorPublishesProgressAndTerminalEventsAcrossCancellationRestart() async throws {
         let environment = try makeEnvironment("coordinator-restart")
         defer { try? FileManager.default.removeItem(at: environment.root) }
@@ -495,12 +660,11 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertEqual(secondRun.events.last?.completed, 3)
     }
 
-    func testCoordinatorStopCancelsAndDrainsFullScanMaintenance() async throws {
-        let environment = try makeEnvironment("coordinator-maintenance-cancel")
+    func testStartupFullScanDoesNotRunHeavyDatabaseMaintenance() throws {
+        let environment = try makeEnvironment("scanner-no-startup-maintenance")
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let registry = ScannerTestRegistry(candidates: [])
-        let catalog = ScannerCancellableMaintenanceCatalog()
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let catalog = ScannerMaintenanceProbeCatalog()
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: catalog,
@@ -511,26 +675,10 @@ final class ConversationIndexScannerTests: XCTestCase {
             registry: registry,
             availability: ConversationIndexFileSystemAvailability()
         )
-        let coordinator = ConversationCatalogCoordinator(
-            configuration: environment.configuration,
-            database: database,
-            scanner: scanner
-        )
-        coordinator.start { (_: ConversationCatalogScanEvent) in }
 
-        let enteredMaintenance = await Task.detached(priority: .utility) {
-            catalog.waitUntilEntered(timeout: 3)
-        }.value
-        XCTAssertTrue(enteredMaintenance)
+        _ = try scanner.scanAll()
 
-        let stopStarted = DispatchTime.now().uptimeNanoseconds
-        await Task.detached(priority: .utility) { coordinator.stop() }.value
-        let stopLatency = Double(
-            DispatchTime.now().uptimeNanoseconds - stopStarted
-        ) / 1_000_000_000
-
-        XCTAssertTrue(catalog.observedCancellation)
-        XCTAssertLessThan(stopLatency, 0.5)
+        XCTAssertEqual(catalog.maintenanceInvocationCount, 0)
     }
 
     func testCoordinatorReattachmentCannotReplayProgressAfterTerminalEvent() async throws {
@@ -671,6 +819,57 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertTrue(events.events.contains(where: { $0.phase == .started }))
         XCTAssertEqual(events.events.last?.phase, .finished)
         XCTAssertEqual(events.events.last?.errorDescription, "fixture catalog failure")
+    }
+
+    func testCoordinatorSurfacesWatcherFailureAndRetriesItOnReconcile() async throws {
+        let environment = try makeEnvironment("coordinator-watcher-retry")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let database = try ConversationIndexDatabase(file: environment.database)
+        let registry = ScannerTestRegistry(candidates: [])
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: database,
+            loader: ScannerTestLoader(
+                configuration: environment.configuration,
+                registry: registry
+            ),
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+        let starter = WatcherStartProbe()
+        let coordinator = ConversationCatalogCoordinator(
+            configuration: environment.configuration,
+            database: database,
+            scanner: scanner,
+            watcherStarter: { watcher in starter.start(watcher) }
+        )
+        let events = CatalogEventProbe()
+        coordinator.start { event in events.append(event) }
+
+        let unavailable = await waitForEvent(
+            in: events,
+            timeoutNanoseconds: 3_000_000_000
+        ) {
+            guard $0.phase == .finished,
+                  case .unavailable = $0.watcherState else { return false }
+            return true
+        }
+        XCTAssertTrue(unavailable)
+        XCTAssertGreaterThanOrEqual(starter.attemptCount, 2)
+
+        starter.allowSuccess()
+        try await Task.detached(priority: .utility) {
+            try coordinator.reconcileNow()
+        }.value
+        let recovered = await waitForEvent(
+            in: events,
+            timeoutNanoseconds: 3_000_000_000
+        ) {
+            $0.phase == .finished && $0.watcherState == .active
+        }
+        XCTAssertTrue(recovered)
+        XCTAssertGreaterThanOrEqual(starter.attemptCount, 3)
+        await Task.detached(priority: .utility) { coordinator.stop() }.value
     }
 
     func testCoordinatorStopDrainsAnInFlightObserverAndSuppressesQueuedEvents() async throws {
@@ -979,17 +1178,24 @@ private final class ScannerTestRegistry: ConversationIndexSourceRegistering, @un
 private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendable {
     private let configuration: HistoryConfiguration
     private let registry: ScannerTestRegistry
+    private let providesQuickMetadata: Bool
     private let lock = NSLock()
     private var prefetchStorage: [[String]] = []
+    private var quickMetadataStorage: [[String]] = []
     private var loadStorage: [String] = []
     private var dependencyFailures: [String: Int] = [:]
     private var activeLoads = 0
     private var maximumActiveLoads = 0
     private var delay: TimeInterval = 0
 
-    init(configuration: HistoryConfiguration, registry: ScannerTestRegistry) {
+    init(
+        configuration: HistoryConfiguration,
+        registry: ScannerTestRegistry,
+        providesQuickMetadata: Bool = false
+    ) {
         self.configuration = configuration
         self.registry = registry
+        self.providesQuickMetadata = providesQuickMetadata
     }
 
     var prefetchBatches: [[String]] {
@@ -1002,6 +1208,12 @@ private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendabl
         lock.lock()
         defer { lock.unlock() }
         return loadStorage
+    }
+
+    var quickMetadataBatches: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return quickMetadataStorage
     }
 
     var maximumConcurrentLoads: Int {
@@ -1026,6 +1238,7 @@ private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendabl
     func resetObservations() {
         lock.lock()
         prefetchStorage.removeAll()
+        quickMetadataStorage.removeAll()
         loadStorage.removeAll()
         maximumActiveLoads = activeLoads
         lock.unlock()
@@ -1041,6 +1254,37 @@ private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendabl
         lock.lock()
         prefetchStorage.append(candidates.map { $0.file.standardizedFileURL.path })
         lock.unlock()
+    }
+
+    func loadQuickMetadata(
+        _ candidates: [HistoryFileCandidate]
+    ) -> [QuickLoadedHistorySession] {
+        lock.lock()
+        quickMetadataStorage.append(candidates.map { $0.file.standardizedFileURL.path })
+        lock.unlock()
+        guard providesQuickMetadata else { return [] }
+
+        return candidates.compactMap { candidate in
+            let format = candidate.formatHint ?? .claude
+            guard let manifest = try? registry.manifest(
+                for: candidate,
+                format: format,
+                configuration: configuration
+            ) else { return nil }
+            var value = metadata(
+                file: candidate.file,
+                scope: candidate.directory.id,
+                source: manifest.source
+            )
+            value.title = "Quick \(candidate.file.lastPathComponent)"
+            value.autoTitle = value.title
+            return QuickLoadedHistorySession(
+                candidate: candidate,
+                metadata: value,
+                manifest: manifest,
+                dependencySnapshot: manifest.snapshot()
+            )
+        }
     }
 
     func load(
@@ -1143,6 +1387,32 @@ private final class ScannerCancellationProbe: @unchecked Sendable {
     }
 }
 
+private final class WatcherStartProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var succeeds = false
+    private var attempts = 0
+
+    var attemptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return attempts
+    }
+
+    func allowSuccess() {
+        lock.lock()
+        succeeds = true
+        lock.unlock()
+    }
+
+    func start(_ watcher: ConversationHistoryWatcher) -> Bool {
+        lock.lock()
+        attempts += 1
+        let shouldStart = succeeds
+        lock.unlock()
+        return shouldStart && watcher.start()
+    }
+}
+
 private final class CatalogEventProbe: @unchecked Sendable {
     private let condition = NSCondition()
     private var storage: [ConversationCatalogScanEvent] = []
@@ -1176,24 +1446,96 @@ private struct ScannerCatalogFailure: LocalizedError {
     var errorDescription: String? { "fixture catalog failure" }
 }
 
-private final class ScannerCancellableMaintenanceCatalog:
+private final class ScannerRecordingCatalog:
     ConversationIndexScanStoring, @unchecked Sendable {
-    private let condition = NSCondition()
-    private var entered = false
-    private var cancelled = false
-
-    var observedCancellation: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return cancelled
+    enum Mutation: Equatable {
+        case metadata([String])
+        case full(String)
     }
 
-    func waitUntilEntered(timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        condition.lock()
-        defer { condition.unlock() }
-        while !entered, condition.wait(until: deadline) {}
-        return entered
+    private let database: ConversationIndexDatabase
+    private let lock = NSLock()
+    private var mutationStorage: [Mutation] = []
+
+    init(database: ConversationIndexDatabase) {
+        self.database = database
+    }
+
+    var mutations: [Mutation] {
+        lock.lock()
+        defer { lock.unlock() }
+        return mutationStorage
+    }
+
+    var metadataBatchCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return mutationStorage.reduce(into: 0) { count, mutation in
+            if case .metadata = mutation { count += 1 }
+        }
+    }
+
+    var metadataBatchSizes: [Int] {
+        mutations.compactMap { mutation in
+            guard case .metadata(let paths) = mutation else { return nil }
+            return paths.count
+        }
+    }
+
+    func resetMutations() {
+        lock.lock()
+        mutationStorage.removeAll()
+        lock.unlock()
+    }
+
+    func scannerEntries() throws -> [ConversationIndexEntry] {
+        try database.listEntries(deleted: nil, limit: .max)
+    }
+
+    func generation() throws -> Int64 {
+        try database.generation()
+    }
+
+    func replace(_ session: ConversationIndexedSession) throws -> Int64 {
+        let revision = try database.replace(session)
+        lock.lock()
+        mutationStorage.append(.full(session.metadata.file.standardizedFileURL.path))
+        lock.unlock()
+        return revision
+    }
+
+    func replaceMetadata(_ sessions: [ConversationIndexedSession]) throws -> Int64 {
+        let revision = try database.replaceMetadata(sessions)
+        lock.lock()
+        mutationStorage.append(.metadata(
+            sessions.map { $0.metadata.file.standardizedFileURL.path }
+        ))
+        lock.unlock()
+        return revision
+    }
+
+    func invalidateProjection() throws -> Int64 {
+        try database.invalidateProjection()
+    }
+
+    func reconcile(
+        scope: String,
+        seenPaths: Set<String>,
+        allowEmpty: Bool
+    ) throws -> ConversationIndexReconciliation {
+        try database.reconcile(scope: scope, seenPaths: seenPaths, allowEmpty: allowEmpty)
+    }
+}
+
+private final class ScannerMaintenanceProbeCatalog:
+    ConversationIndexScanStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var maintenanceInvocations = 0
+
+    var maintenanceInvocationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return maintenanceInvocations
     }
 
     func scannerEntries() throws -> [ConversationIndexEntry] { [] }
@@ -1204,17 +1546,9 @@ private final class ScannerCancellableMaintenanceCatalog:
     func finishFullScanMaintenance(
         isCancelled: ConversationIndexScanCancellation
     ) throws {
-        condition.lock()
-        entered = true
-        condition.broadcast()
-        condition.unlock()
-
-        while !isCancelled() { Thread.sleep(forTimeInterval: 0.002) }
-        condition.lock()
-        cancelled = true
-        condition.broadcast()
-        condition.unlock()
-        throw CancellationError()
+        lock.lock()
+        maintenanceInvocations += 1
+        lock.unlock()
     }
 
     func reconcile(

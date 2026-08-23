@@ -2,13 +2,14 @@ import Foundation
 
 struct ConversationIndexScanResult: Equatable, Sendable {
     var discovered: Int = 0
+    var metadataPublished: Int = 0
     var parsed: Int = 0
     var unchanged: Int = 0
     var removed: Int = 0
     var failed: Int = 0
     var generation: Int64 = 0
 
-    var hasChanges: Bool { parsed > 0 || removed > 0 }
+    var hasChanges: Bool { metadataPublished > 0 || parsed > 0 || removed > 0 }
 
     var completed: Int { parsed + unchanged + failed }
 }
@@ -146,15 +147,22 @@ protocol ConversationIndexScanStoring: Sendable {
     func scannerEntries() throws -> [ConversationIndexEntry]
     func generation() throws -> Int64
     @discardableResult func replace(_ session: ConversationIndexedSession) throws -> Int64
+    @discardableResult func replaceMetadata(_ sessions: [ConversationIndexedSession]) throws -> Int64
     @discardableResult func invalidateProjection() throws -> Int64
-    func finishFullScanMaintenance(
-        isCancelled: ConversationIndexScanCancellation
-    ) throws
     func reconcile(
         scope: String,
         seenPaths: Set<String>,
         allowEmpty: Bool
     ) throws -> ConversationIndexReconciliation
+}
+
+extension ConversationIndexScanStoring {
+    @discardableResult
+    func replaceMetadata(_ sessions: [ConversationIndexedSession]) throws -> Int64 {
+        var revision = try generation()
+        for session in sessions { revision = try replace(session) }
+        return revision
+    }
 }
 
 extension ConversationIndexDatabase: ConversationIndexScanStoring {
@@ -323,7 +331,18 @@ final class ConversationIndexScanner: @unchecked Sendable {
             generation: lastGeneration
         )
         var entriesByPath = try indexedEntriesByPath()
-        let ordered = Self.newestFirst(Self.unique(discovery.candidates))
+        let ordered = Self.scanOrder(
+            Self.unique(discovery.candidates),
+            activeScope: configuration.active
+        )
+        try Self.checkCancellation(isCancelled)
+        try publishQuickMetadata(
+            ordered,
+            entriesByPath: &entriesByPath,
+            result: &result,
+            onProgress: onProgress,
+            isCancelled: isCancelled
+        )
         try Self.checkCancellation(isCancelled)
         loader.prefetch(ordered)
         try Self.checkCancellation(isCancelled)
@@ -342,8 +361,6 @@ final class ConversationIndexScanner: @unchecked Sendable {
             isCancelled: isCancelled,
             purgeUnconfiguredScopes: true
         )
-        try Self.checkCancellation(isCancelled)
-        try catalog.finishFullScanMaintenance(isCancelled: isCancelled)
         try Self.checkCancellation(isCancelled)
         result.generation = try catalog.generation()
         lastGeneration = result.generation
@@ -392,6 +409,14 @@ final class ConversationIndexScanner: @unchecked Sendable {
             generation: lastGeneration
         )
         let ordered = Self.newestFirst(work)
+        try Self.checkCancellation(isCancelled)
+        try publishQuickMetadata(
+            ordered,
+            entriesByPath: &entriesByPath,
+            result: &result,
+            onProgress: onProgress,
+            isCancelled: isCancelled
+        )
         try Self.checkCancellation(isCancelled)
         loader.prefetch(ordered)
         try Self.checkCancellation(isCancelled)
@@ -500,6 +525,80 @@ final class ConversationIndexScanner: @unchecked Sendable {
             )
             manifestsByPath[path] = loaded.manifest
             result.parsed += 1
+            onProgress?(result)
+        }
+    }
+
+    /// Mirrors Wake's quickMeta contract: changed candidates become visible in bounded batches
+    /// before any transcript is fully parsed. The sentinel fingerprint can never equal the source
+    /// snapshot, so a failed or cancelled full parse remains visible but retryable on the next pass.
+    private func publishQuickMetadata(
+        _ candidates: [HistoryFileCandidate],
+        entriesByPath: inout [String: ConversationIndexEntry],
+        result: inout ConversationIndexScanResult,
+        onProgress: ConversationIndexScanProgress?,
+        isCancelled: ConversationIndexScanCancellation
+    ) throws {
+        let changed = candidates.filter { candidate in
+            let entry = entriesByPath[Self.path(of: candidate)]
+            guard let preflight = preflight(candidate, entry: entry) else { return true }
+            return entry?.fingerprint != preflight.fingerprint
+                || entry?.scope != candidate.directory.id
+        }
+        guard !changed.isEmpty else { return }
+
+        let batches = Self.quickMetadataBatches(
+            changed,
+            activeScope: configuration.active
+        )
+        for requested in batches {
+            try Self.checkCancellation(isCancelled)
+            let requestedPaths = Set(requested.map(Self.path))
+            let loaded = loader.loadQuickMetadata(requested)
+
+            var replacements: [ConversationIndexedSession] = []
+            var accepted: [(QuickLoadedHistorySession, ConversationIndexFingerprint)] = []
+            var seen = Set<String>()
+            for quick in loaded {
+                let path = Self.path(of: quick.candidate)
+                guard requestedPaths.contains(path), seen.insert(path).inserted,
+                      quick.metadata.file.standardizedFileURL.path == path,
+                      let sourceFingerprint = Self.fingerprint(
+                        manifest: quick.manifest,
+                        snapshot: quick.dependencySnapshot
+                      ) else { continue }
+                let sentinel = ConversationIndexFingerprint(
+                    modificationTime: Date(timeIntervalSince1970: 0),
+                    sizeBytes: sourceFingerprint.sizeBytes,
+                    dependencyFingerprint: "quick:\(sourceFingerprint.dependencyFingerprint ?? "")"
+                )
+                replacements.append(ConversationIndexedSession(
+                    metadata: quick.metadata,
+                    scope: quick.candidate.directory.id,
+                    fingerprint: sentinel,
+                    documents: []
+                ))
+                accepted.append((quick, sentinel))
+            }
+            guard !replacements.isEmpty else { continue }
+
+            try Self.checkCancellation(isCancelled)
+            let revision = try catalog.replaceMetadata(replacements)
+            lastGeneration = revision
+            result.generation = revision
+            result.metadataPublished += replacements.count
+            let indexedAt = Date()
+            for (quick, fingerprint) in accepted {
+                let path = Self.path(of: quick.candidate)
+                entriesByPath[path] = ConversationIndexEntry(
+                    sourcePath: path,
+                    metadata: quick.metadata,
+                    scope: quick.candidate.directory.id,
+                    fingerprint: fingerprint,
+                    indexedAt: indexedAt
+                )
+                manifestsByPath[path] = quick.manifest
+            }
             onProgress?(result)
         }
     }
@@ -692,6 +791,34 @@ final class ConversationIndexScanner: @unchecked Sendable {
         return result
     }
 
+    private static let quickMetadataBatchSize = 32
+
+    /// Do not hide the selected scope behind unrelated work in the same catalog transaction.
+    /// Each partition is still bounded so large active scopes remain cancellation-friendly.
+    private static func quickMetadataBatches(
+        _ candidates: [HistoryFileCandidate],
+        activeScope: String
+    ) -> [[HistoryFileCandidate]] {
+        let partitions: [[HistoryFileCandidate]]
+        if activeScope == "all" || activeScope == "__trash__" {
+            partitions = [candidates]
+        } else {
+            let active = candidates.filter { $0.directory.id == activeScope }
+            if active.isEmpty {
+                partitions = [candidates]
+            } else {
+                partitions = [active, candidates.filter { $0.directory.id != activeScope }]
+            }
+        }
+
+        return partitions.flatMap { partition in
+            stride(from: 0, to: partition.count, by: quickMetadataBatchSize).map { start in
+                let end = min(start + quickMetadataBatchSize, partition.count)
+                return Array(partition[start..<end])
+            }
+        }
+    }
+
     private static func newestFirst(
         _ candidates: [HistoryFileCandidate]
     ) -> [HistoryFileCandidate] {
@@ -701,6 +828,20 @@ final class ConversationIndexScanner: @unchecked Sendable {
             if leftStamp != rightStamp { return leftStamp > rightStamp }
             return path(of: left) < path(of: right)
         }
+    }
+
+    /// A cold catalog must make the currently selected scope visible before spending time on
+    /// newer sessions from unrelated roots. Within each partition we retain the established
+    /// newest-first order. `all` and trash keep the global order because they span every scope.
+    private static func scanOrder(
+        _ candidates: [HistoryFileCandidate],
+        activeScope: String
+    ) -> [HistoryFileCandidate] {
+        let ordered = newestFirst(candidates)
+        guard activeScope != "all", activeScope != "__trash__" else { return ordered }
+        let active = ordered.filter { $0.directory.id == activeScope }
+        guard !active.isEmpty else { return ordered }
+        return active + ordered.filter { $0.directory.id != activeScope }
     }
 
     private static func primaryStamp(_ candidate: HistoryFileCandidate) -> Int64 {

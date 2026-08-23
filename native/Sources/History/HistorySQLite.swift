@@ -1,6 +1,59 @@
 import Foundation
 import SQLite3
 
+enum HistorySQLiteValue: Equatable, Sendable {
+    case null
+    case integer(Int64)
+    case real(Double)
+    case text(String)
+    case blob(Data)
+
+    var stringValue: String? {
+        switch self {
+        case .text(let value): return value
+        case .integer(let value): return String(value)
+        case .real(let value): return String(value)
+        case .null, .blob: return nil
+        }
+    }
+
+    var int64Value: Int64? {
+        switch self {
+        case .integer(let value): return value
+        case .real(let value):
+            guard value.isFinite,
+                  value >= Double(Int64.min),
+                  value < Double(Int64.max) else { return nil }
+            return Int64(value)
+        case .text(let value):
+            return Int64(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .null, .blob: return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .integer(let value): return Double(value)
+        case .real(let value): return value
+        case .text(let value):
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .null, .blob: return nil
+        }
+    }
+}
+
+struct HistorySQLiteRow: Equatable, Sendable {
+    private var values: [String: HistorySQLiteValue]
+
+    init(values: [String: HistorySQLiteValue]) {
+        self.values = values
+    }
+
+    subscript(_ column: String) -> HistorySQLiteValue? {
+        return values[column]
+    }
+}
+
 /// Small read-only SQLite wrapper shared by history sources.
 ///
 /// SQLite may consult a WAL, shared-memory file, or rollback journal even for a read-only
@@ -54,6 +107,29 @@ final class HistorySQLiteDatabase {
         textRow(sql, bindings: bindings)?.first
     }
 
+    /// Reads heterogeneous SQLite rows without assuming a producer's schema is frozen. Any busy,
+    /// malformed, or mid-query failure is a cache miss; callers always retain their file fallback.
+    func rows(_ sql: String, bindings: [String] = []) -> [HistorySQLiteRow] {
+        guard let statement = prepare(sql, bindings: bindings) else { return [] }
+        defer { sqlite3_finalize(statement) }
+        var result: [HistorySQLiteRow] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_DONE:
+                return result
+            case SQLITE_ROW:
+                var values: [String: HistorySQLiteValue] = [:]
+                for column in 0..<sqlite3_column_count(statement) {
+                    guard let rawName = sqlite3_column_name(statement, column) else { continue }
+                    values[String(cString: rawName)] = Self.value(statement, column: column)
+                }
+                result.append(HistorySQLiteRow(values: values))
+            default:
+                return []
+            }
+        }
+    }
+
     private func prepare(_ sql: String, bindings: [String]) -> OpaquePointer? {
         guard let connection else { return nil }
         var statement: OpaquePointer?
@@ -70,6 +146,29 @@ final class HistorySQLiteDatabase {
             }
         }
         return statement
+    }
+
+    private static func value(
+        _ statement: OpaquePointer,
+        column: Int32
+    ) -> HistorySQLiteValue {
+        switch sqlite3_column_type(statement, column) {
+        case SQLITE_INTEGER:
+            return .integer(sqlite3_column_int64(statement, column))
+        case SQLITE_FLOAT:
+            return .real(sqlite3_column_double(statement, column))
+        case SQLITE_TEXT:
+            guard let pointer = sqlite3_column_text(statement, column) else { return .null }
+            return .text(String(cString: pointer))
+        case SQLITE_BLOB:
+            let count = Int(sqlite3_column_bytes(statement, column))
+            guard count > 0, let pointer = sqlite3_column_blob(statement, column) else {
+                return .blob(Data())
+            }
+            return .blob(Data(bytes: pointer, count: count))
+        default:
+            return .null
+        }
     }
 
     private static func databaseAndSidecarsAreSafe(_ file: URL) -> Bool {

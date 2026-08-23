@@ -350,6 +350,81 @@ final class CCBuddyUITests: XCTestCase {
         }
     }
 
+    func testWakeConversationWorkbenchVisualStates() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-wake-workbench-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_VISUAL_FIXTURE"] = "legacy-smoke"
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchEnvironment["CCBUD_UI_LANGUAGE"] = "zh"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+
+        let shell = app.otherElements["app.shell"]
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists)
+        app.buttons["sidebar.conversations"].click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            app.staticTexts["没有可读取的本地会话"].waitForExistence(timeout: 8),
+            "The empty library must settle before the first workbench screenshot"
+        )
+        assertOpaqueConversationTopSurfaces(in: window)
+        assertWakeConversationColumns(in: window)
+        keepMainContentScreenshot(named: "wake-conversation-empty", shell: shell)
+
+        let timestamp = "2026-01-01T00:00:00.000Z"
+        let lines = [
+            #"{"type":"user","uuid":"wake-user","timestamp":"\#(timestamp)","sessionId":"wake-session","cwd":"/workspace/wake","message":{"role":"user","content":"hello from the Wake workbench"},"__ccbud__":{"title":"Wake session","tagList":["visual"]}}"#,
+            #"{"type":"assistant","uuid":"wake-assistant","timestamp":"\#(timestamp)","requestId":"wake-request","sessionId":"wake-session","cwd":"/workspace/wake","message":{"id":"wake-message","role":"assistant","model":"glm-5.2","content":[{"type":"text","text":"conversation detail loaded"}],"usage":{"input_tokens":10,"output_tokens":4}}}"#,
+        ]
+        let sessionFile = project.appendingPathComponent("wake-session.jsonl")
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: sessionFile)
+
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 2))
+        let refreshReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+            object: refresh
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshReady], timeout: 5), .completed)
+        refresh.click()
+        let session = app.buttons["conversation.session.disk:wake-session"]
+        XCTAssertTrue(
+            session.waitForExistence(timeout: 10),
+            "A refreshed metadata row must become visible without opening the transcript"
+        )
+        let hittable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"),
+            object: session
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed)
+        assertOpaqueConversationTopSurfaces(in: window)
+        assertWakeConversationColumns(in: window)
+        keepMainContentScreenshot(named: "wake-conversation-list", shell: shell)
+
+        session.click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["conversation.message.0"].waitForExistence(timeout: 10),
+            "Selecting the fast metadata row must load the full conversation detail"
+        )
+        XCTAssertTrue(app.buttons["conversation.action.replay.claude"].exists)
+        XCTAssertTrue(app.buttons["conversation.action.replay.chatgpt"].exists)
+        assertOpaqueConversationTopSurfaces(in: window)
+        assertWakeConversationColumns(in: window)
+        keepMainContentScreenshot(named: "wake-conversation-detail", shell: shell)
+    }
+
     func testDeterministicVisualParityScreenshots() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ccbud-ui-visual-\(UUID().uuidString)", isDirectory: true)
@@ -480,6 +555,18 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [sessionHittable], timeout: 5), .completed)
         let conversationList = app.descendants(matching: .any)["conversation.list"]
         XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            conversationList.frame.minX - windowFrame.minX,
+            224,
+            accuracy: 1,
+            "Wake's conversation library sidebar must remain 224 points wide"
+        )
+        XCTAssertEqual(
+            conversationList.frame.width,
+            336,
+            accuracy: 1,
+            "Wake's session stream must remain 336 points wide"
+        )
         let visibleSessionFrame = currentSession.frame
             .intersection(conversationList.frame)
             .intersection(windowFrame)
@@ -658,6 +745,23 @@ final class CCBuddyUITests: XCTestCase {
                 "Unexpected \(sample.name) top-surface blue component"
             )
         }
+    }
+
+    private func assertWakeConversationColumns(in window: XCUIElement) {
+        let conversationList = app.descendants(matching: .any)["conversation.list"]
+        XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            conversationList.frame.minX - window.frame.minX,
+            224,
+            accuracy: 1,
+            "Wake's conversation library sidebar must remain 224 points wide"
+        )
+        XCTAssertEqual(
+            conversationList.frame.width,
+            336,
+            accuracy: 1,
+            "Wake's session stream must remain 336 points wide"
+        )
     }
 
     /// `app.shell` is deliberately a tiny, non-blocking accessibility marker. Its screen origin

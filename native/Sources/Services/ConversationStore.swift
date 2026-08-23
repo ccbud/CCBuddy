@@ -515,6 +515,7 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var projects: [HistoryProject] = []
     @Published private(set) var listState: ConversationLoadState = .idle
     @Published private(set) var indexingState: ConversationIndexingState = .idle
+    @Published private(set) var catalogWatcherState: ConversationCatalogWatcherState = .unknown
     @Published private(set) var listQuery = ""
     @Published private(set) var contentHits: [String: HistorySearchHit] = [:]
     @Published private(set) var isSearchingContent = false
@@ -566,6 +567,7 @@ final class ConversationStore: ObservableObject {
     private var searchWorker: Task<[HistorySearchHit], Error>?
     private var detailWorker: Task<HistorySession, Error>?
     private var pollingTask: Task<Void, Never>?
+    private var indexRetryTask: Task<Void, Never>?
 
     /// AppModel owns persisted history scope. Imports request `__imported__` through this hook,
     /// while ordinary mutations can stay entirely inside the store.
@@ -694,6 +696,7 @@ final class ConversationStore: ObservableObject {
         searchWorker?.cancel()
         detailWorker?.cancel()
         pollingTask?.cancel()
+        indexRetryTask?.cancel()
     }
 
     func configure(config: AppConfig, importsRoot: URL? = nil) {
@@ -752,6 +755,7 @@ final class ConversationStore: ObservableObject {
         mutationService = ConversationMutationService(configuration: mutationConfiguration)
         historyActive = config.historyActive
         indexingState = .idle
+        catalogWatcherState = .unknown
         projects = []
         scopeSnapshot = ConversationScopeSnapshot()
         listState = .idle
@@ -785,6 +789,8 @@ final class ConversationStore: ObservableObject {
         searchTask?.cancel()
         searchWorker?.cancel()
         detailWorker?.cancel()
+        indexRetryTask?.cancel()
+        indexRetryTask = nil
         isSearchingContent = false
         indexingState = .idle
         if listState == .loading { listState = projects.isEmpty ? .idle : .loaded }
@@ -796,6 +802,46 @@ final class ConversationStore: ObservableObject {
         let generation = beginListLoad()
         listTask = Task { @MainActor [weak self] in
             await self?.performListLoad(generation: generation)
+        }
+    }
+
+    /// A list retry must repair the derived catalog, not merely read the same empty/failed rows
+    /// again. The coordinator serializes this full reconciliation behind any in-flight scan and
+    /// also uses its completion to retry an unavailable watcher.
+    func retryIndexing() {
+        guard isActive else { return }
+        guard let indexed = repository as? any ConversationIndexedHistoryProviding else {
+            requestReload()
+            return
+        }
+
+        indexRetryTask?.cancel()
+        let observation = indexObservationGeneration
+        if projects.isEmpty { listState = .loading }
+        indexingState = .scanning(completed: 0, total: 0)
+        indexRetryTask = Task { @MainActor [weak self] in
+            defer {
+                if self?.indexObservationGeneration == observation {
+                    self?.indexRetryTask = nil
+                }
+            }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    try indexed.reconcileIndex()
+                    try Task.checkCancellation()
+                }.value
+                guard let self, self.isActive,
+                      self.indexObservationGeneration == observation else { return }
+                self.indexingState = .idle
+                self.requestReload()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.isActive,
+                      self.indexObservationGeneration == observation else { return }
+                self.publishIndexFailure("会话索引失败：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -1260,6 +1306,8 @@ final class ConversationStore: ObservableObject {
 
     private func stopIndexing() {
         indexObservationGeneration = UUID()
+        indexRetryTask?.cancel()
+        indexRetryTask = nil
         (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
     }
 
@@ -1277,6 +1325,7 @@ final class ConversationStore: ObservableObject {
         generation: UUID
     ) {
         guard isActive, indexObservationGeneration == generation else { return }
+        catalogWatcherState = event.watcherState
 
         switch event.phase {
         case .started:
@@ -1579,11 +1628,13 @@ final class ConversationStore: ObservableObject {
         searchTask?.cancel()
         searchWorker?.cancel()
         detailWorker?.cancel()
+        indexRetryTask?.cancel()
         listTask = nil
         listWorker = nil
         searchTask = nil
         searchWorker = nil
         detailWorker = nil
+        indexRetryTask = nil
         contentHits = [:]
         isSearchingContent = false
         contentSearchError = nil
