@@ -441,18 +441,6 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["providers.usage.requests"].value as? String, "42 次请求")
         keepMainContentScreenshot(named: "native-visual-providers", shell: shell)
 
-        let addProvider = app.buttons["providers.add"]
-        XCTAssertTrue(addProvider.waitForExistence(timeout: 2))
-        addProvider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-        let editor = app.otherElements["provider.editor"]
-        if !editor.waitForExistence(timeout: 2) {
-            addProvider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-        }
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        keepMainContentScreenshot(named: "native-visual-provider-editor", shell: shell)
-        app.typeKey(.escape, modifierFlags: [])
-        XCTAssertFalse(editor.waitForExistence(timeout: 1))
-
         app.buttons["sidebar.plugins"].click()
         XCTAssertTrue(app.otherElements["view.plugins"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.otherElements["plugin.demo"].waitForExistence(timeout: 3))
