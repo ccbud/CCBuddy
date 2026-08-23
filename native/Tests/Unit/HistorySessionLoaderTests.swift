@@ -112,6 +112,79 @@ final class HistorySessionLoaderTests: XCTestCase {
         })
     }
 
+    func testCodexSharedStateRefreshesProjectionWithoutChangingRolloutFingerprint() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("codex-shared-dependencies")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rollout = root.appendingPathComponent(
+            "sessions/2026/08/23/rollout-shared-state.jsonl"
+        )
+        let config = root.appendingPathComponent("config.toml")
+        let state = root.appendingPathComponent("state_5.sqlite")
+        let wal = URL(fileURLWithPath: state.path + "-wal")
+        let shm = URL(fileURLWithPath: state.path + "-shm")
+        try HistoryTestSupport.write([#"{"type":"fixture"}"#], to: rollout)
+        try HistoryTestSupport.write(["# default sqlite_home"], to: config)
+        try HistoryTestSupport.write(["state-one"], to: state)
+        try HistoryTestSupport.write(["wal-one"], to: wal)
+        try HistoryTestSupport.write(["locks-one"], to: shm)
+
+        let directory = HistoryDirectory(
+            id: root.path,
+            label: root.path,
+            baseURL: root,
+            projectsURL: root.appendingPathComponent("projects"),
+            sessionsURL: root.appendingPathComponent("sessions")
+        )
+        let candidate = HistoryFileCandidate(
+            file: rollout,
+            directory: directory,
+            formatHint: .codex
+        )
+        let configuration = HistoryConfiguration(
+            historyDirs: [root.path],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let registry = ConversationSourceAdapterRegistry()
+        let manifest = try registry.manifest(
+            for: candidate,
+            format: .codex,
+            configuration: configuration
+        )
+        let initialFingerprint = manifest.snapshot().fingerprint
+
+        try HistoryTestSupport.write(["# changed shared config"], to: config)
+        try HistoryTestSupport.write(["state-two-is-longer"], to: state)
+        try HistoryTestSupport.write(["wal-two-is-longer"], to: wal)
+        XCTAssertEqual(manifest.snapshot().fingerprint, initialFingerprint)
+
+        for sharedFile in [config, state, wal] {
+            let dependency = try XCTUnwrap(manifest.dependencies.first {
+                $0.file.standardizedFileURL == sharedFile.standardizedFileURL
+            })
+            XCTAssertFalse(dependency.contributesToFingerprint)
+            XCTAssertTrue(dependency.requiresProjectionRefresh)
+            let impact = registry.eventImpact(
+                [sharedFile],
+                knownManifests: [manifest],
+                configuration: configuration
+            )
+            XCTAssertEqual(impact.candidates.map(\.file), [rollout.standardizedFileURL])
+            XCTAssertTrue(impact.requiresProjectionRefresh)
+        }
+
+        let shmDependency = try XCTUnwrap(manifest.dependencies.first {
+            $0.file.standardizedFileURL == shm.standardizedFileURL
+        })
+        XCTAssertFalse(shmDependency.contributesToFingerprint)
+        XCTAssertFalse(shmDependency.requiresProjectionRefresh)
+        XCTAssertFalse(registry.eventImpact(
+            [shm],
+            knownManifests: [manifest],
+            configuration: configuration
+        ).requiresProjectionRefresh)
+    }
+
     private func makeMetadata(file: URL) -> HistorySessionMetadata {
         HistorySessionMetadata(
             id: "disk:projection",

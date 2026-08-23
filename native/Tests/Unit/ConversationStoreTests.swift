@@ -49,6 +49,71 @@ final class ConversationFilterTests: XCTestCase {
 }
 
 final class ConversationPresentationParityTests: XCTestCase {
+    func testListIdentityKeepsDuplicateProducerSessionIDsFromDifferentPathsDistinct() {
+        let first = ConversationFilterTests.metadata(
+            id: "shared-session",
+            title: "First root",
+            tags: [],
+            file: "/tmp/history-one/./shared-session.jsonl"
+        )
+        let second = ConversationFilterTests.metadata(
+            id: "shared-session",
+            title: "Second root",
+            tags: [],
+            file: "/tmp/history-two/shared-session.jsonl"
+        )
+
+        XCTAssertEqual(first.id, second.id, "The regression fixture must reuse the producer ID")
+        XCTAssertEqual(Set([first.conversationListIdentity, second.conversationListIdentity]).count, 2)
+        XCTAssertEqual(first.conversationListIdentity, "/tmp/history-one/shared-session.jsonl")
+        XCTAssertEqual(
+            first.conversationRowAccessibilityIdentifier,
+            "conversation.session.shared-session"
+        )
+        XCTAssertEqual(
+            second.conversationRowAccessibilityIdentifier,
+            first.conversationRowAccessibilityIdentifier,
+            "The existing automation identifier contract remains producer-ID based"
+        )
+    }
+
+    func testIndexAccessibilityAnnouncesPhaseChangesWithoutProgressNoise() {
+        let started = ConversationIndexAccessibility.announcement(
+            from: .idle,
+            to: .scanning(completed: 0, total: 12),
+            language: .english
+        )
+        XCTAssertEqual(started, .init(message: "Updating conversation index", isFailure: false))
+
+        XCTAssertNil(ConversationIndexAccessibility.announcement(
+            from: .scanning(completed: 0, total: 12),
+            to: .scanning(completed: 1, total: 12),
+            language: .english
+        ), "Per-file progress must not generate repeated VoiceOver announcements")
+
+        let failure = ConversationIndexAccessibility.announcement(
+            from: .scanning(completed: 4, total: 12),
+            to: .failed("会话索引失败：catalog unavailable"),
+            language: .english
+        )
+        XCTAssertEqual(
+            failure,
+            .init(message: "Conversation indexing failed: catalog unavailable", isFailure: true)
+        )
+        XCTAssertNil(ConversationIndexAccessibility.announcement(
+            from: .failed("会话索引失败：catalog unavailable"),
+            to: .failed("会话索引失败：catalog unavailable"),
+            language: .english
+        ))
+
+        let completed = ConversationIndexAccessibility.announcement(
+            from: .scanning(completed: 12, total: 12),
+            to: .idle,
+            language: .english
+        )
+        XCTAssertEqual(completed, .init(message: "Conversation index updated", isFailure: false))
+    }
+
     func testScopeBarStaysOutOfSingleDirectoryLayoutUntilAChoiceExists() {
         let empty = ConversationScopeSnapshot()
         XCTAssertFalse(ConversationScopePresentation.showsScopeBar(
@@ -261,6 +326,330 @@ final class ConversationPresentationParityTests: XCTestCase {
 
 @MainActor
 final class ConversationStoreTests: XCTestCase {
+    func testWarmCatalogReloadsImmediatelyAndIndexerSurvivesViewDeactivation() async throws {
+        let warm = Self.metadata(
+            id: "warm",
+            title: "Warm catalog row",
+            tags: [],
+            file: "/tmp/warm.jsonl"
+        )
+        let refreshed = Self.metadata(
+            id: "refreshed",
+            title: "Indexed while hidden",
+            tags: [],
+            file: "/tmp/refreshed.jsonl"
+        )
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: "fixture",
+            projectsByScope: [
+                "all": [Self.project(cwd: "/tmp", name: "tmp", sessions: [warm])],
+            ]
+        )
+        let store = ConversationStore(
+            repository: provider,
+            fileInspector: FakeConversationFileInspector(date: warm.lastActivity),
+            searchDelayNanoseconds: 0
+        )
+
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        XCTAssertEqual(store.projects.first?.sessions.map(\.id), ["warm"])
+        XCTAssertEqual(provider.startCount, 1)
+        XCTAssertEqual(provider.stopCount, 0)
+
+        store.deactivate()
+        provider.setProjects(
+            [Self.project(cwd: "/tmp", name: "tmp", sessions: [refreshed])],
+            for: "all"
+        )
+        provider.emit(.progress(ConversationIndexScanResult(
+            discovered: 1,
+            parsed: 1,
+            generation: 1
+        )))
+        await Task.yield()
+        XCTAssertEqual(store.projects.first?.sessions.map(\.id), ["warm"])
+        XCTAssertEqual(provider.stopCount, 0, "Leaving the page must not stop app-lifetime indexing")
+
+        store.activate()
+        await waitUntil {
+            store.projects.first?.sessions.first?.id == "refreshed"
+                && store.listState == .loaded
+        }
+        XCTAssertEqual(provider.startCount, 2, "Activation reattaches to the running coordinator")
+        XCTAssertEqual(provider.stopCount, 0)
+
+        provider.emit(.finished(ConversationIndexScanResult(
+            discovered: 1,
+            unchanged: 1,
+            generation: 1
+        )))
+        await waitUntil { store.indexingState == .idle }
+        store.deactivate()
+    }
+
+    func testScopeChangeReusesTheIndexedEngineWithoutRestartingIt() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-index-scope")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let importsRoot = root.appendingPathComponent("imports", isDirectory: true)
+        let scope = root.appendingPathComponent("history", isDirectory: true).path
+        let all = Self.metadata(id: "all", title: "All", tags: [], file: "/tmp/all.jsonl")
+        var scoped = Self.metadata(
+            id: "scoped",
+            title: "Scoped",
+            tags: [],
+            file: "/tmp/scoped.jsonl"
+        )
+        scoped.dirID = scope
+        let signature = IndexedHistoryRepository.topologySignature(
+            historyDirs: [scope],
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            importsRoot: importsRoot
+        )
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: signature,
+            projectsByScope: [
+                "all": [Self.project(cwd: "/tmp", name: "tmp", sessions: [all])],
+                scope: [Self.project(cwd: "/tmp", name: "tmp", sessions: [scoped])],
+            ]
+        )
+        let store = ConversationStore(repository: provider, historyActive: "all")
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+
+        var config = AppConfig.fixture
+        config.historyDirs = [scope]
+        config.historyActive = scope
+        store.configure(config: config, importsRoot: importsRoot)
+        await waitUntil {
+            store.projects.first?.sessions.first?.id == "scoped"
+                && store.listState == .loaded
+        }
+
+        XCTAssertEqual(store.historyActive, scope)
+        XCTAssertEqual(provider.scopedCount, 1)
+        XCTAssertEqual(provider.startCount, 1)
+        XCTAssertEqual(provider.stopCount, 0)
+        store.deactivate()
+    }
+
+    func testScopeChangeHidesStaleRowsAndClearsASelectionThatRacesReload() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-index-scope-race")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let importsRoot = root.appendingPathComponent("imports", isDirectory: true)
+        let scope = root.appendingPathComponent("history", isDirectory: true).path
+        let old = Self.metadata(
+            id: "old-scope",
+            title: "Old scope",
+            tags: [],
+            file: "/tmp/old-scope.jsonl"
+        )
+        var scoped = Self.metadata(
+            id: "new-scope",
+            title: "New scope",
+            tags: [],
+            file: "/tmp/new-scope.jsonl"
+        )
+        scoped.dirID = scope
+        let signature = IndexedHistoryRepository.topologySignature(
+            historyDirs: [scope],
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            importsRoot: importsRoot
+        )
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: signature,
+            projectsByScope: [
+                "all": [Self.project(cwd: "/tmp", name: "tmp", sessions: [old])],
+                scope: [Self.project(cwd: "/tmp", name: "tmp", sessions: [scoped])],
+            ]
+        )
+        let store = ConversationStore(repository: provider, historyActive: "all")
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+
+        let releaseScopedRead = DispatchSemaphore(value: 0)
+        provider.blockNextList(until: releaseScopedRead)
+        var config = AppConfig.fixture
+        config.historyDirs = [scope]
+        config.historyActive = scope
+        store.configure(config: config, importsRoot: importsRoot)
+
+        XCTAssertTrue(store.projects.isEmpty, "Rows from the previous scope must disappear at once")
+        XCTAssertEqual(store.listState, .loading)
+
+        // Simulate an already-dispatched row action from the old scope. The completed scoped read
+        // is the final authority and must clear this stale detail/action target.
+        await store.select(old)
+        XCTAssertEqual(store.selectedFile?.standardizedFileURL, old.file.standardizedFileURL)
+        releaseScopedRead.signal()
+        await waitUntil {
+            store.listState == .loaded
+                && store.projects.first?.sessions.first?.id == "new-scope"
+        }
+
+        XCTAssertNil(store.selectedFile)
+        XCTAssertNil(store.selectedSession)
+        XCTAssertEqual(store.detailState, .idle)
+        store.deactivate()
+    }
+
+    func testScopeChangeRestartsContentSearchAgainstTheScopedRepository() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-index-scope-search")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let importsRoot = root.appendingPathComponent("imports", isDirectory: true)
+        let scope = root.appendingPathComponent("history", isDirectory: true).path
+        let old = Self.metadata(
+            id: "old-content-hit",
+            title: "Old title",
+            tags: [],
+            file: "/tmp/old-content-hit.jsonl"
+        )
+        var scoped = Self.metadata(
+            id: "new-content-hit",
+            title: "New title",
+            tags: [],
+            file: "/tmp/new-content-hit.jsonl"
+        )
+        scoped.dirID = scope
+        let oldHit = HistorySearchHit(
+            sessionID: old.sessionID,
+            file: old.file,
+            source: old.source,
+            snippet: "needle in old body",
+            count: 1
+        )
+        let scopedHit = HistorySearchHit(
+            sessionID: scoped.sessionID,
+            file: scoped.file,
+            source: scoped.source,
+            snippet: "needle in scoped body",
+            count: 1
+        )
+        let signature = IndexedHistoryRepository.topologySignature(
+            historyDirs: [scope],
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            importsRoot: importsRoot
+        )
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: signature,
+            projectsByScope: [
+                "all": [Self.project(cwd: "/tmp", name: "tmp", sessions: [old])],
+                scope: [Self.project(cwd: "/tmp", name: "tmp", sessions: [scoped])],
+            ],
+            searchHitsByScope: ["all": [oldHit], scope: [scopedHit]]
+        )
+        let store = ConversationStore(
+            repository: provider,
+            historyActive: "all",
+            searchDelayNanoseconds: 0
+        )
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        store.updateListQuery("needle")
+        await waitUntil {
+            !store.isSearchingContent
+                && store.filteredProjects.flatMap(\.sessions).map(\.id) == ["old-content-hit"]
+        }
+
+        var config = AppConfig.fixture
+        config.historyDirs = [scope]
+        config.historyActive = scope
+        store.configure(config: config, importsRoot: importsRoot)
+        await waitUntil {
+            store.listState == .loaded
+                && !store.isSearchingContent
+                && store.filteredProjects.flatMap(\.sessions).map(\.id) == ["new-content-hit"]
+        }
+
+        XCTAssertNil(store.contentHit(for: old))
+        XCTAssertEqual(store.contentHit(for: scoped), scopedHit)
+        store.deactivate()
+    }
+
+    func testScopeChangeStartsIndexerAfterRawFallbackRecovers() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-index-recovery")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appDataRoot = root.appendingPathComponent("app", isDirectory: true)
+        let importsRoot = appDataRoot.appendingPathComponent("imports", isDirectory: true)
+        let historyRoot = root.appendingPathComponent("history", isDirectory: true)
+        let project = historyRoot.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let transcript = project.appendingPathComponent("recovered.jsonl")
+        let line = #"{"type":"user","uuid":"recovered-user","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"recovered","cwd":"/tmp/recovered","message":{"role":"user","content":"hello"}}"#
+        try Data((line + "\n").utf8).write(to: transcript)
+
+        // An unsafe directory at the catalog path deterministically forces the initial raw-file
+        // fallback without touching any producer data or the user's real application index.
+        let blockedCatalog = appDataRoot.appendingPathComponent("conversation-index-v1.sqlite3")
+        try FileManager.default.createDirectory(
+            at: blockedCatalog,
+            withIntermediateDirectories: true
+        )
+        var config = AppConfig.fixture
+        config.historyDirs = [historyRoot.path]
+        config.historyActive = "all"
+        try await { () async throws in
+            let store = ConversationStore(
+                config: config,
+                importsRoot: importsRoot,
+                pollIntervalNanoseconds: 60_000_000_000,
+                searchDelayNanoseconds: 0
+            )
+            store.activate()
+            await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+                store.listState == .loaded
+                    && store.projects.flatMap(\.sessions).contains {
+                        $0.sessionID == "recovered"
+                    }
+            }
+
+            try FileManager.default.removeItem(at: blockedCatalog)
+            config.historyActive = historyRoot.path
+            store.configure(config: config, importsRoot: importsRoot)
+            await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+                store.listState == .loaded
+                    && store.projects.flatMap(\.sessions).contains {
+                        $0.sessionID == "recovered"
+                    }
+                    && store.indexingState == .idle
+            }
+
+            XCTAssertEqual(store.historyActive, historyRoot.path)
+            store.deactivate()
+        }()
+    }
+
+    func testTerminalIndexFailureIsVisibleWithoutDiscardingWarmRows() async throws {
+        let metadata = Self.metadata(
+            id: "warm-error",
+            title: "Warm error",
+            tags: [],
+            file: "/tmp/warm-error.jsonl"
+        )
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: "fixture",
+            projectsByScope: [
+                "all": [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            ]
+        )
+        let store = ConversationStore(repository: provider)
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+
+        provider.emit(.finished(
+            ConversationIndexScanResult(generation: 0),
+            errorDescription: "catalog unavailable"
+        ))
+        await waitUntil {
+            store.indexingState == .failed("会话索引失败：catalog unavailable")
+        }
+
+        XCTAssertEqual(store.projects.first?.sessions.first?.id, metadata.id)
+        XCTAssertEqual(store.actionMessage, "会话索引失败：catalog unavailable")
+        XCTAssertTrue(store.actionIsError)
+        store.deactivate()
+    }
+
     func testLoadAndLatestSelectionWinWhenEarlierReadIsCancelled() async throws {
         let a = Self.metadata(id: "a", title: "Slow", tags: [], file: "/tmp/a.jsonl")
         let b = Self.metadata(id: "b", title: "Fast", tags: [], file: "/tmp/b.jsonl")
@@ -553,6 +942,17 @@ final class ConversationStoreTests: XCTestCase {
             messages: texts.map { HistoryMessage(role: "user", content: [.init(type: "text", text: $0)]) }
         )
     }
+
+    private func waitUntil(
+        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        _ condition: @MainActor () -> Bool
+    ) async {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while !condition(), DispatchTime.now().uptimeNanoseconds < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(condition())
+    }
 }
 
 private extension ConversationFilterTests {
@@ -635,6 +1035,122 @@ private final class FakeConversationRepository: ConversationHistoryProviding, @u
 
     func readCount(for file: URL) -> Int {
         lock.withLock { reads[ConversationFilter.fileKey(file), default: 0] }
+    }
+}
+
+private final class FakeIndexedConversationRepository: ConversationIndexedHistoryProviding,
+    @unchecked Sendable {
+    private final class Engine: @unchecked Sendable {
+        let lock = NSLock()
+        let topologySignature: String
+        var projectsByScope: [String: [HistoryProject]]
+        var searchHitsByScope: [String: [HistorySearchHit]]
+        var observer: (@Sendable (ConversationCatalogScanEvent) -> Void)?
+        var currentEvent = ConversationCatalogScanEvent.started(revision: 0)
+        var starts = 0
+        var stops = 0
+        var scopes = 0
+        var nextListGate: DispatchSemaphore?
+
+        init(
+            topologySignature: String,
+            projectsByScope: [String: [HistoryProject]],
+            searchHitsByScope: [String: [HistorySearchHit]]
+        ) {
+            self.topologySignature = topologySignature
+            self.projectsByScope = projectsByScope
+            self.searchHitsByScope = searchHitsByScope
+        }
+    }
+
+    private let engine: Engine
+    private let active: String
+
+    init(
+        topologySignature: String,
+        projectsByScope: [String: [HistoryProject]],
+        searchHitsByScope: [String: [HistorySearchHit]] = [:],
+        active: String = "all"
+    ) {
+        engine = Engine(
+            topologySignature: topologySignature,
+            projectsByScope: projectsByScope,
+            searchHitsByScope: searchHitsByScope
+        )
+        self.active = active
+    }
+
+    private init(engine: Engine, active: String) {
+        self.engine = engine
+        self.active = active
+    }
+
+    var indexTopologySignature: String { engine.topologySignature }
+    var startCount: Int { engine.lock.withLock { engine.starts } }
+    var stopCount: Int { engine.lock.withLock { engine.stops } }
+    var scopedCount: Int { engine.lock.withLock { engine.scopes } }
+
+    func listProjects(limit: Int) throws -> [HistoryProject] {
+        let gate = engine.lock.withLock { () -> DispatchSemaphore? in
+            defer { engine.nextListGate = nil }
+            return engine.nextListGate
+        }
+        gate?.wait()
+        return engine.lock.withLock {
+            Array(engine.projectsByScope[active, default: []].prefix(limit))
+        }
+    }
+
+    func search(query: String, limit: Int) throws -> [HistorySearchHit] {
+        engine.lock.withLock {
+            Array(engine.searchHitsByScope[active, default: []].prefix(limit))
+        }
+    }
+
+    func getSession(file: URL) throws -> HistorySession {
+        throw HistoryError.unreadableFile(file, "fixture has metadata only")
+    }
+
+    func scoped(to active: String) -> any ConversationIndexedHistoryProviding {
+        engine.lock.withLock { engine.scopes += 1 }
+        return FakeIndexedConversationRepository(engine: engine, active: active)
+    }
+
+    func startIndexing(
+        onEvent: @escaping @Sendable (ConversationCatalogScanEvent) -> Void
+    ) {
+        let event = engine.lock.withLock { () -> ConversationCatalogScanEvent in
+            engine.starts += 1
+            engine.observer = onEvent
+            return engine.currentEvent
+        }
+        onEvent(event)
+    }
+
+    func stopIndexing() {
+        engine.lock.withLock {
+            engine.stops += 1
+            engine.observer = nil
+        }
+    }
+
+    func reconcileIndex() throws {}
+    func refreshIndex(for files: [URL]) throws {}
+
+    func setProjects(_ projects: [HistoryProject], for scope: String) {
+        engine.lock.withLock { engine.projectsByScope[scope] = projects }
+    }
+
+    func blockNextList(until gate: DispatchSemaphore) {
+        engine.lock.withLock { engine.nextListGate = gate }
+    }
+
+    func emit(_ event: ConversationCatalogScanEvent) {
+        let observer = engine.lock.withLock {
+            engine.currentEvent = event
+            return engine.observer
+        }
+        observer?(event)
     }
 }
 

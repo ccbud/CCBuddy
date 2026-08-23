@@ -41,6 +41,6 @@ private struct LiveApplicationRoot: View {
                 appDelegate.registerMainWindow(window)
             })
             .onAppear { appDelegate.attach(model: model) }
-            .frame(minWidth: 900, minHeight: 600)
+            .frame(minWidth: 940, minHeight: 620)
     }
 }

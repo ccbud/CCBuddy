@@ -6,10 +6,22 @@ import Foundation
 /// store uses these hooks to keep the rebuildable catalog current after FSEvents and explicit
 /// mutations without making the producer files anything other than authoritative.
 protocol ConversationIndexedHistoryProviding: ConversationHistoryProviding {
-    func startIndexing(onRevision: @escaping @Sendable (Int64) -> Void)
+    var indexTopologySignature: String { get }
+
+    func scoped(to active: String) -> any ConversationIndexedHistoryProviding
+    func startIndexing(onEvent: @escaping @Sendable (ConversationCatalogScanEvent) -> Void)
     func stopIndexing()
     func reconcileIndex() throws
     func refreshIndex(for files: [URL]) throws
+}
+
+extension ConversationIndexedHistoryProviding {
+    func startIndexing(onRevision: @escaping @Sendable (Int64) -> Void) {
+        startIndexing { event in
+            guard event.phase != .started else { return }
+            onRevision(event.revision)
+        }
+    }
 }
 
 /// Metadata and content-search facade backed by the app-owned SQLite catalog.
@@ -21,6 +33,14 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
     let database: ConversationIndexDatabase
     let loader: HistorySessionLoader
     let coordinator: ConversationCatalogCoordinator
+
+    var indexTopologySignature: String {
+        Self.topologySignature(
+            historyDirs: configuration.historyDirs,
+            homeDirectory: configuration.homeDirectory,
+            importsRoot: configuration.importsRoot
+        )
+    }
 
     init(
         configuration: HistoryConfiguration,
@@ -154,8 +174,19 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
         }
     }
 
-    func startIndexing(onRevision: @escaping @Sendable (Int64) -> Void) {
-        coordinator.start(onRevision: onRevision)
+    func scoped(to active: String) -> any ConversationIndexedHistoryProviding {
+        var scopedConfiguration = configuration
+        scopedConfiguration.active = active
+        return IndexedHistoryRepository(
+            configuration: scopedConfiguration,
+            database: database,
+            loader: loader,
+            coordinator: coordinator
+        )
+    }
+
+    func startIndexing(onEvent: @escaping @Sendable (ConversationCatalogScanEvent) -> Void) {
+        coordinator.start(onEvent: onEvent)
     }
 
     func stopIndexing() {
@@ -168,6 +199,17 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
 
     func refreshIndex(for files: [URL]) throws {
         try coordinator.refreshNow(files: files)
+    }
+
+    static func topologySignature(
+        historyDirs: [String],
+        homeDirectory: URL,
+        importsRoot: URL
+    ) -> String {
+        ([
+            homeDirectory.standardizedFileURL.path,
+            importsRoot.standardizedFileURL.path,
+        ] + historyDirs).joined(separator: "\u{0}")
     }
 
     private var activeFilter: (scope: String?, deleted: Bool) {

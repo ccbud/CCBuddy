@@ -31,17 +31,40 @@ struct ConversationSourceDependency: Codable, Hashable, Sendable {
     var role: ConversationDependencyRole
     var eventScope: ConversationDependencyEventScope
     var contributesToFingerprint: Bool
+    var requiresProjectionRefresh: Bool
 
     init(
         file: URL,
         role: ConversationDependencyRole,
         eventScope: ConversationDependencyEventScope = .exact,
-        contributesToFingerprint: Bool = true
+        contributesToFingerprint: Bool = true,
+        requiresProjectionRefresh: Bool = false
     ) {
         self.file = file.standardizedFileURL
         self.role = role
         self.eventScope = eventScope
         self.contributesToFingerprint = contributesToFingerprint
+        self.requiresProjectionRefresh = requiresProjectionRefresh
+    }
+
+    func ownsEvent(at eventFile: URL) -> Bool {
+        let event = eventFile.standardizedFileURL
+        let owned = file.standardizedFileURL
+        switch eventScope {
+        case .exact:
+            return event.path == owned.path || Self.isDescendant(owned, of: event)
+        case .descendants:
+            return event.path == owned.path
+                || Self.isDescendant(event, of: owned)
+                || Self.isDescendant(owned, of: event)
+        }
+    }
+
+    private static func isDescendant(_ child: URL, of parent: URL) -> Bool {
+        let childComponents = child.standardizedFileURL.pathComponents
+        let parentComponents = parent.standardizedFileURL.pathComponents
+        return childComponents.count > parentComponents.count
+            && childComponents.prefix(parentComponents.count).elementsEqual(parentComponents)
     }
 }
 
@@ -171,7 +194,8 @@ struct ConversationDependencyManifest: Sendable {
                     file: $0.file,
                     role: $0.role,
                     eventScope: $0.eventScope,
-                    contributesToFingerprint: $0.contributesToFingerprint
+                    contributesToFingerprint: $0.contributesToFingerprint,
+                    requiresProjectionRefresh: $0.requiresProjectionRefresh
                 )
             }
             .filter {
@@ -198,25 +222,7 @@ struct ConversationDependencyManifest: Sendable {
     }
 
     func ownsEvent(at eventFile: URL) -> Bool {
-        let event = eventFile.standardizedFileURL
-        return dependencies.contains { dependency in
-            let owned = dependency.file.standardizedFileURL
-            switch dependency.eventScope {
-            case .exact:
-                return event.path == owned.path || Self.isDescendant(owned, of: event)
-            case .descendants:
-                return event.path == owned.path
-                    || Self.isDescendant(event, of: owned)
-                    || Self.isDescendant(owned, of: event)
-            }
-        }
-    }
-
-    private static func isDescendant(_ child: URL, of parent: URL) -> Bool {
-        let childComponents = child.standardizedFileURL.pathComponents
-        let parentComponents = parent.standardizedFileURL.pathComponents
-        return childComponents.count > parentComponents.count
-            && childComponents.prefix(parentComponents.count).elementsEqual(parentComponents)
+        dependencies.contains { $0.ownsEvent(at: eventFile) }
     }
 }
 
@@ -403,12 +409,24 @@ private enum ConversationAdapterDependencies {
         [.init(file: candidate.file, role: .primaryTranscript)]
     }
 
-    static func sqlite(_ file: URL, primary: Bool) -> [ConversationSourceDependency] {
+    static func sqlite(
+        _ file: URL,
+        primary: Bool,
+        contributesToFingerprint: Bool = true,
+        requiresProjectionRefresh: Bool = false
+    ) -> [ConversationSourceDependency] {
         [
-            .init(file: file, role: primary ? .primaryDatabase : .providerMetadata),
+            .init(
+                file: file,
+                role: primary ? .primaryDatabase : .providerMetadata,
+                contributesToFingerprint: contributesToFingerprint,
+                requiresProjectionRefresh: requiresProjectionRefresh
+            ),
             .init(
                 file: URL(fileURLWithPath: file.path + "-wal"),
-                role: .sqliteWriteAheadLog
+                role: .sqliteWriteAheadLog,
+                contributesToFingerprint: contributesToFingerprint,
+                requiresProjectionRefresh: requiresProjectionRefresh
             ),
             // The SHM contains locks/index state, not durable conversation content. It owns events
             // but is excluded from the content fingerprint to avoid read-lock update loops.
@@ -462,7 +480,12 @@ private enum ConversationCodexDependencies {
         guard let codexHome = CodexStateDatabase.codexHome(for: rollout) else { return [] }
         let config = codexHome.appendingPathComponent("config.toml")
         var result: [ConversationSourceDependency] = [
-            .init(file: config, role: .providerMetadata),
+            .init(
+                file: config,
+                role: .providerMetadata,
+                contributesToFingerprint: false,
+                requiresProjectionRefresh: true
+            ),
         ]
         let sqliteHome = ForeignHistorySupport.textFile(at: config)
             .flatMap(topLevelSQLiteHome)
@@ -473,7 +496,9 @@ private enum ConversationCodexDependencies {
             ?? codexHome
         result.append(contentsOf: ConversationAdapterDependencies.sqlite(
             sqliteHome.appendingPathComponent("state_5.sqlite"),
-            primary: false
+            primary: false,
+            contributesToFingerprint: false,
+            requiresProjectionRefresh: true
         ))
         return result
     }
@@ -550,6 +575,7 @@ private enum ConversationCodexDependencies {
 struct ConversationSourceEventImpact: Sendable {
     var candidates: [HistoryFileCandidate]
     var requiresDiscovery: Bool
+    var requiresProjectionRefresh: Bool = false
 }
 
 /// Registry and watcher-facing ownership helper. Adapters themselves remain value types and have
@@ -661,9 +687,16 @@ struct ConversationSourceAdapterRegistry: Sendable {
                     || Self.isDescendant(root, of: event)
             }
         }
+        let requiresProjectionRefresh = knownManifests.contains { manifest in
+            manifest.dependencies.contains { dependency in
+                dependency.requiresProjectionRefresh
+                    && events.contains(where: dependency.ownsEvent)
+            }
+        }
         return ConversationSourceEventImpact(
             candidates: candidates,
-            requiresDiscovery: requiresDiscovery
+            requiresDiscovery: requiresDiscovery,
+            requiresProjectionRefresh: requiresProjectionRefresh
         )
     }
 

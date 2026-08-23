@@ -6,8 +6,8 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: 48)
-            brand.padding(.horizontal, model.sidebarCollapsed ? 5 : 6).padding(.bottom, 20)
+            Color.clear.frame(height: 38)
+            brand.padding(.horizontal, model.sidebarCollapsed ? 5 : 8).padding(.bottom, 18)
             VStack(spacing: 2) {
                 ForEach(AppModel.Destination.allCases) { destination in
                     navButton(destination)
@@ -18,16 +18,15 @@ struct SidebarView: View {
         }
         .padding(.horizontal, model.sidebarCollapsed ? 5 : 10)
         .padding(.bottom, 14)
-        .background(Color.ccSidebar.opacity(0.96))
+        .background(Color.ccSidebar)
     }
 
     private var brand: some View {
         HStack(spacing: 9) {
-            AppLogo().frame(width: 30, height: 30)
+            AppLogo().frame(width: 26, height: 26)
             if !model.sidebarCollapsed {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("CC Buddy").font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                    Text("Coding CLI Buddy").font(.system(size: 11.5)).foregroundStyle(Color.ccCaption).lineLimit(1)
+                    Text("CC Buddy").font(.system(size: 16, weight: .semibold)).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
@@ -47,10 +46,10 @@ struct SidebarView: View {
                 }
             }
             .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? Color.ccBrandStrong : Color.ccMuted)
+            .foregroundStyle(selected ? Color.ccForeground : Color.ccMuted)
             .padding(.horizontal, model.sidebarCollapsed ? 0 : 10)
             .frame(maxWidth: .infinity, minHeight: 32)
-            .background(selected ? Color.ccBrandSoft : .clear)
+            .background(selected ? Color.ccSidebarSelection : .clear)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(Rectangle())
         }

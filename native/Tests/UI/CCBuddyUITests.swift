@@ -419,7 +419,21 @@ final class CCBuddyUITests: XCTestCase {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)
         let windowFrame = window.frame
+        let closeButton = window.buttons[XCUIIdentifierCloseWindow]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            closeButton.frame.minX - windowFrame.minX,
+            20,
+            accuracy: 1,
+            "The traffic-light cluster should retain Wake's 20-point leading inset"
+        )
         let titleBarInset = shell.frame.minY - windowFrame.minY
+        XCTAssertEqual(
+            titleBarInset,
+            0,
+            accuracy: 1,
+            "The opaque app shell should extend beneath the integrated native title bar"
+        )
         XCTAssertEqual(windowFrame.width, 1_180, accuracy: 0.5)
         let hostingScreen = NSScreen.screens.first { $0.visibleFrame.intersects(windowFrame) }
             ?? NSScreen.main
@@ -450,6 +464,7 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
         let session = app.buttons["conversation.session.disk:visual-session"]
         XCTAssertTrue(session.waitForExistence(timeout: 5))
+        assertOpaqueConversationTopSurfaces(in: window)
         keepMainContentScreenshot(named: "native-visual-conversations-list", shell: shell)
         let conversationsView = app.otherElements["conversations.view"]
         if !conversationsView.exists {
@@ -463,6 +478,14 @@ final class CCBuddyUITests: XCTestCase {
             object: currentSession
         )
         XCTAssertEqual(XCTWaiter.wait(for: [sessionHittable], timeout: 5), .completed)
+        let conversationList = app.descendants(matching: .any)["conversation.list"]
+        XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
+        let visibleSessionFrame = currentSession.frame
+            .intersection(conversationList.frame)
+            .intersection(windowFrame)
+        XCTAssertFalse(visibleSessionFrame.isNull)
+        XCTAssertGreaterThan(visibleSessionFrame.width, 0)
+        XCTAssertGreaterThan(visibleSessionFrame.height, 0)
         currentSession.click()
         XCTAssertTrue(app.otherElements["conversation.timeline"].waitForExistence(timeout: 5))
         keepMainContentScreenshot(named: "native-visual-conversation-detail", shell: shell)
@@ -568,10 +591,78 @@ final class CCBuddyUITests: XCTestCase {
         add(attachment)
     }
 
+    private func assertOpaqueConversationTopSurfaces(in window: XCUIElement) {
+        let screenshot = window.screenshot()
+        guard let bitmap = NSBitmapImageRep(data: screenshot.pngRepresentation) else {
+            XCTFail("Could not decode the window screenshot for top-surface assertions")
+            return
+        }
+
+        let frame = window.frame
+        guard frame.width > 0, frame.height > 0,
+              bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else {
+            XCTFail("Window screenshot has invalid dimensions")
+            return
+        }
+
+        let samples: [(name: String, point: CGPoint, expectedRGB: UInt32)] = [
+            ("sidebar", CGPoint(x: 112, y: 12), 0xEDEDEA),
+            ("conversation list", CGPoint(x: 392, y: 12), 0xF7F7F5),
+            ("conversation detail", CGPoint(x: 870, y: 12), 0xF1F1EF),
+        ]
+        let xScale = CGFloat(bitmap.pixelsWide) / frame.width
+        let yScale = CGFloat(bitmap.pixelsHigh) / frame.height
+        let componentTolerance = CGFloat(8) / 255
+
+        for sample in samples {
+            let pixelX = min(
+                bitmap.pixelsWide - 1,
+                max(0, Int((sample.point.x * xScale).rounded(.down)))
+            )
+            let topPixelY = min(
+                bitmap.pixelsHigh - 1,
+                max(0, Int((sample.point.y * yScale).rounded(.down)))
+            )
+            let pixelY = bitmap.pixelsHigh - 1 - topPixelY
+            guard let color = bitmap.colorAt(x: pixelX, y: pixelY),
+                  let sRGB = color.usingColorSpace(.sRGB) else {
+                XCTFail("Could not read the \(sample.name) top-surface pixel")
+                continue
+            }
+
+            let expectedRed = CGFloat((sample.expectedRGB >> 16) & 0xFF) / 255
+            let expectedGreen = CGFloat((sample.expectedRGB >> 8) & 0xFF) / 255
+            let expectedBlue = CGFloat(sample.expectedRGB & 0xFF) / 255
+            XCTAssertEqual(
+                sRGB.alphaComponent,
+                1,
+                accuracy: 0.02,
+                "The \(sample.name) top surface must be opaque"
+            )
+            XCTAssertEqual(
+                sRGB.redComponent,
+                expectedRed,
+                accuracy: componentTolerance,
+                "Unexpected \(sample.name) top-surface red component"
+            )
+            XCTAssertEqual(
+                sRGB.greenComponent,
+                expectedGreen,
+                accuracy: componentTolerance,
+                "Unexpected \(sample.name) top-surface green component"
+            )
+            XCTAssertEqual(
+                sRGB.blueComponent,
+                expectedBlue,
+                accuracy: componentTolerance,
+                "Unexpected \(sample.name) top-surface blue component"
+            )
+        }
+    }
+
     /// `app.shell` is deliberately a tiny, non-blocking accessibility marker. Its screen origin
-    /// identifies the first content pixel below the hidden native title bar. Crop the window at
-    /// that boundary so visual attachments contain only the app surface, with no desktop or
-    /// traffic-light chrome, while retaining normal XCUI hit-testing for all controls.
+    /// identifies the first opaque app pixel, including the integrated title-bar surface, while
+    /// retaining normal XCUI hit-testing for all controls.
     private func keepMainContentScreenshot(named name: String, shell: XCUIElement) {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)

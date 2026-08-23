@@ -83,6 +83,55 @@ enum ConversationPresentation {
     }
 }
 
+extension HistorySessionMetadata {
+    /// Session IDs are producer-owned and can repeat across configured history roots. The
+    /// normalized file path is the same identity the store uses for selection and search hits, so
+    /// it remains stable across catalog refreshes without collapsing rows from different roots.
+    var conversationListIdentity: String {
+        ConversationFilter.fileKey(file)
+    }
+
+    /// Keep the public automation hook based on the producer's session ID for compatibility.
+    var conversationRowAccessibilityIdentifier: String {
+        "conversation.session.\(id)"
+    }
+}
+
+struct ConversationIndexAccessibilityAnnouncement: Equatable {
+    let message: String
+    let isFailure: Bool
+}
+
+enum ConversationIndexAccessibility {
+    /// Announces phase changes only. Individual progress events remain available as the status
+    /// element's value, but do not repeatedly interrupt VoiceOver speech.
+    static func announcement(
+        from previous: ConversationIndexingState,
+        to current: ConversationIndexingState,
+        language: AppLanguage
+    ) -> ConversationIndexAccessibilityAnnouncement? {
+        switch current {
+        case .scanning:
+            guard !previous.isScanning else { return nil }
+            return .init(
+                message: language.localized("正在更新会话索引"),
+                isFailure: false
+            )
+
+        case .failed(let message):
+            guard previous != current else { return nil }
+            return .init(message: language.localized(message), isFailure: true)
+
+        case .idle:
+            guard previous.isScanning else { return nil }
+            return .init(
+                message: language.localized("会话索引已更新"),
+                isFailure: false
+            )
+        }
+    }
+}
+
 extension HistoryValue {
     var conversationPrettyJSON: String {
         let encoder = JSONEncoder()
@@ -694,17 +743,8 @@ private struct ConversationMarkdownTable: View {
 }
 
 struct ConversationRailMaterial: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     func body(content: Content) -> some View {
-        content.background {
-            if reduceTransparency {
-                Color.ccSidebar
-            } else {
-                Rectangle().fill(.thinMaterial)
-                    .overlay(Color.ccSidebar.opacity(0.74))
-            }
-        }
+        content.background(Color.ccConversationList)
     }
 }
 

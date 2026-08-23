@@ -44,8 +44,7 @@ struct ConversationOverviewPane: View {
                 }
             }
         }
-        .conversationRailMaterial()
-        .overlay(alignment: .leading) { Rectangle().fill(Color.ccBorder).frame(width: 1) }
+        .background(Color.ccConversationSurface)
         .accessibilityIdentifier("conversation.overview")
     }
 

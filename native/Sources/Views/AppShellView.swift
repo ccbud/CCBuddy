@@ -6,16 +6,18 @@ struct AppShellView: View {
     var body: some View {
         HStack(spacing: 0) {
             SidebarView()
-                .frame(width: model.sidebarCollapsed ? 52 : 196)
-            Divider().overlay(Color.ccBorder)
+                .frame(width: model.sidebarCollapsed ? 52 : 224)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Conversation columns own their title-bar drag insets. Other destinations keep
+                // their controls below native chrome while their semantic background fills it.
+                .padding(.top, model.selected == .conversations ? 0 : 30)
         }
-        .background(Color.ccAppBackground)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: .top)
+        .background(Color.ccAppBackground.ignoresSafeArea())
         .foregroundStyle(Color.ccForeground)
         .tint(Color.ccBrandStrong)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.ccBorder, lineWidth: 1))
         .overlay(alignment: .topLeading) {
             Rectangle()
                 .fill(Color.clear)

@@ -117,6 +117,17 @@ enum ConversationLoadState: Equatable {
     case failed(String)
 }
 
+enum ConversationIndexingState: Equatable, Sendable {
+    case idle
+    case scanning(completed: Int, total: Int)
+    case failed(String)
+
+    var isScanning: Bool {
+        if case .scanning = self { return true }
+        return false
+    }
+}
+
 struct ConversationDetailSearchMatch: Equatable, Identifiable, Sendable {
     let messageIndex: Int
     let occurrences: Int
@@ -503,6 +514,7 @@ final class ConversationStore: ObservableObject {
 
     @Published private(set) var projects: [HistoryProject] = []
     @Published private(set) var listState: ConversationLoadState = .idle
+    @Published private(set) var indexingState: ConversationIndexingState = .idle
     @Published private(set) var listQuery = ""
     @Published private(set) var contentHits: [String: HistorySearchHit] = [:]
     @Published private(set) var isSearchingContent = false
@@ -543,6 +555,7 @@ final class ConversationStore: ObservableObject {
     private var isActive = false
     private var observedModificationDate: Date?
     private var observedIndexRevision: Int64?
+    private var indexObservationGeneration = UUID()
 
     private var listGeneration = UUID()
     private var searchGeneration = UUID()
@@ -693,10 +706,44 @@ final class ConversationStore: ObservableObject {
             for: config,
             importsRoot: mutationConfiguration.importsRoot
         )
-        guard signature != configurationSignature else { return }
+        let indexed = repository as? any ConversationIndexedHistoryProviding
+        let topologyUnchanged = signature == configurationSignature
+            || indexed?.indexTopologySignature == signature
+        let activeChanged = historyActive != config.historyActive
+        guard !topologyUnchanged || activeChanged else { return }
+
         configurationSignature = signature
         cancelTransientWork()
-        (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
+
+        if topologyUnchanged, activeChanged {
+            if let indexed {
+                repository = indexed.scoped(to: config.historyActive)
+            } else {
+                repository = Self.productionHistoryProvider(
+                    config: config,
+                    importsRoot: mutationConfiguration.importsRoot
+                )
+            }
+            let recoveredIndexedRepository = indexed == nil
+                && (repository as? any ConversationIndexedHistoryProviding) != nil
+            historyActive = config.historyActive
+            // Never leave rows from the previous scope interactive while the scoped warm-catalog
+            // read is in flight. The shared index remains alive and makes this reload inexpensive.
+            projects = []
+            listState = .idle
+            clearSelection()
+            if isActive {
+                requestReload()
+                restartContentSearchIfNeeded()
+                // A previous catalog-open failure may have left this store on the raw fallback.
+                // If the retry above recovered an indexed repository, start its empty/warm
+                // catalog now instead of waiting for the user to leave and reopen this view.
+                if recoveredIndexedRepository { startIndexing() }
+            }
+            return
+        }
+
+        stopIndexing()
         repository = Self.productionHistoryProvider(
             config: config,
             importsRoot: mutationConfiguration.importsRoot
@@ -704,12 +751,14 @@ final class ConversationStore: ObservableObject {
         observedIndexRevision = nil
         mutationService = ConversationMutationService(configuration: mutationConfiguration)
         historyActive = config.historyActive
+        indexingState = .idle
         projects = []
         scopeSnapshot = ConversationScopeSnapshot()
         listState = .idle
         clearSelection()
         if isActive {
             requestReload()
+            restartContentSearchIfNeeded()
             startIndexing()
         }
     }
@@ -717,7 +766,10 @@ final class ConversationStore: ObservableObject {
     func activate() {
         guard !isActive else { return }
         isActive = true
-        if listState == .idle { requestReload() }
+        // Always re-read the warm catalog. Indexing remains app-lifetime work while this view is
+        // inactive, so a revision may have advanced while its UI observer was detached.
+        requestReload()
+        restartContentSearchIfNeeded()
         startIndexing()
         startPolling()
     }
@@ -725,7 +777,7 @@ final class ConversationStore: ObservableObject {
     func deactivate() {
         guard isActive else { return }
         isActive = false
-        (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
+        indexObservationGeneration = UUID()
         pollingTask?.cancel()
         pollingTask = nil
         listTask?.cancel()
@@ -734,6 +786,7 @@ final class ConversationStore: ObservableObject {
         searchWorker?.cancel()
         detailWorker?.cancel()
         isSearchingContent = false
+        indexingState = .idle
         if listState == .loading { listState = projects.isEmpty ? .idle : .loaded }
         if detailState == .loading { detailState = selectedSession == nil ? .idle : .loaded }
     }
@@ -1196,9 +1249,53 @@ final class ConversationStore: ObservableObject {
 
     private func startIndexing() {
         guard let indexed = repository as? any ConversationIndexedHistoryProviding else { return }
-        indexed.startIndexing { [weak self] revision in
+        indexObservationGeneration = UUID()
+        let generation = indexObservationGeneration
+        indexed.startIndexing { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.receiveIndexRevision(revision)
+                self?.receiveIndexEvent(event, generation: generation)
+            }
+        }
+    }
+
+    private func stopIndexing() {
+        indexObservationGeneration = UUID()
+        (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
+    }
+
+    /// Scope/configuration transitions cancel the previous repository's search worker but retain
+    /// the user's query. Restart content search against the newly selected repository so matches
+    /// that exist only inside transcript bodies do not silently disappear.
+    private func restartContentSearchIfNeeded() {
+        let query = listQuery
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        updateListQuery(query)
+    }
+
+    private func receiveIndexEvent(
+        _ event: ConversationCatalogScanEvent,
+        generation: UUID
+    ) {
+        guard isActive, indexObservationGeneration == generation else { return }
+
+        switch event.phase {
+        case .started:
+            indexingState = .scanning(completed: event.completed, total: event.total)
+            if observedIndexRevision == nil { observedIndexRevision = event.revision }
+            if projects.isEmpty, case .failed = listState { listState = .loading }
+
+        case .progress:
+            indexingState = .scanning(completed: event.completed, total: event.total)
+            receiveIndexRevision(event.revision)
+
+        case .finished:
+            receiveIndexRevision(event.revision)
+            if let error = event.errorDescription {
+                publishIndexFailure("会话索引失败：\(error)")
+            } else if event.failed > 0 {
+                publishIndexFailure("\(event.failed) 个会话无法建立索引，已显示其余会话")
+            } else {
+                indexingState = .idle
             }
         }
     }
@@ -1209,6 +1306,16 @@ final class ConversationStore: ObservableObject {
         requestReload()
         let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty { updateListQuery(listQuery) }
+    }
+
+    private func publishIndexFailure(_ message: String) {
+        indexingState = .failed(message)
+        if projects.isEmpty {
+            listState = .failed(message)
+        } else if actionMessage == nil {
+            actionMessage = message
+            actionIsError = true
+        }
     }
 
     /// Brings the derived catalog up to date before an explicit mutation reloads the UI. A cache
@@ -1231,8 +1338,11 @@ final class ConversationStore: ObservableObject {
     }
 
     private static func signature(for config: AppConfig, importsRoot: URL) -> String {
-        ([config.historyActive, importsRoot.standardizedFileURL.path] + config.historyDirs)
-            .joined(separator: "\u{0}")
+        IndexedHistoryRepository.topologySignature(
+            historyDirs: config.historyDirs,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            importsRoot: importsRoot
+        )
     }
 
     private func beginListLoad() -> UUID {
@@ -1276,11 +1386,17 @@ final class ConversationStore: ObservableObject {
             projects = value
             scopeSnapshot = snapshot.scopes
             listState = .loaded
-            if let selectedFile,
-               let refreshed = value.lazy.flatMap(\.sessions).first(where: {
-                   ConversationFilter.fileKey($0.file) == ConversationFilter.fileKey(selectedFile)
-               }) {
-                selectedMetadata = refreshed
+            if let selectedFile {
+                if let refreshed = value.lazy.flatMap(\.sessions).first(where: {
+                    ConversationFilter.fileKey($0.file)
+                        == ConversationFilter.fileKey(selectedFile)
+                }) {
+                    selectedMetadata = refreshed
+                } else {
+                    // A selection can race a scope switch or disappear during reconciliation.
+                    // Do not retain actions for a file which is no longer part of this view.
+                    clearSelection()
+                }
             }
         } catch is CancellationError {
             return

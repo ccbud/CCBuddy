@@ -19,12 +19,14 @@
 "{error}；恢复先前状态失败：{recoveryError}" = "{error}; restoring the previous state also failed: {recoveryError}";
 "{n} 次请求" = "{n} requests";
 "{n} 分钟前" = "{n} min ago";
+"{n} 个会话无法建立索引，已显示其余会话" = "{n} conversations could not be indexed; the rest are shown";
 "{n} 个失败" = "{n} failed";
 "{n} 个文件" = "{n} files";
 "{n} 个已存在" = "{n} already imported";
 "{n} 会话" = "{n} sessions";
 "{n} 天前" = "{n} d ago";
 "{n} 条" = "{n} msgs";
+"{n} 条消息" = "{n} messages";
 "{n} 小时前" = "{n} h ago";
 "{name}，{tokens} Tokens" = "{name}, {tokens} tokens";
 "{project}，{count} 个会话" = "{project}, {count} sessions";
@@ -221,6 +223,7 @@
 "更新上游 TLS 设置失败 · {error}" = "Could not update upstream TLS settings · {error}";
 "更新上游 TLS 设置失败 · {error}；恢复先前状态失败：{recoveryError}" = "Could not update upstream TLS settings · {error}; restoring the previous state also failed: {recoveryError}";
 "更新上游 TLS 设置失败，已恢复先前状态 · {error}" = "Could not update upstream TLS settings; the previous state was restored · {error}";
+"更新失败" = "Update failed";
 "更新失败：{error}" = "Update failed: {error}";
 "更新网关访问令牌失败 · {error}" = "Could not update the gateway access token · {error}";
 "更新网关访问令牌失败 · {error}；恢复先前状态失败：{recoveryError}" = "Could not update the gateway access token · {error}; restoring the previous state also failed: {recoveryError}";
@@ -264,6 +267,9 @@
 "会话路径不在已配置目录内：{path}" = "Session path is outside the configured directories: {path}";
 "会话没有可显示的消息" = "This session has no messages to display";
 "会话时间线" = "Conversation timeline";
+"会话索引失败：{error}" = "Conversation indexing failed: {error}";
+"会话索引已更新" = "Conversation index updated";
+"会话索引状态" = "Conversation index status";
 "会话文件已不存在" = "The conversation file no longer exists";
 "会话已恢复" = "Conversation restored";
 "会话已移入回收站" = "Conversation moved to Trash";
@@ -689,6 +695,8 @@
 "正在读取概览…" = "Loading overview…";
 "正在读取会话…" = "Loading session…";
 "正在读取历史用量…" = "Loading usage history…";
+"正在更新…" = "Updating…";
+"正在更新会话索引" = "Updating conversation index";
 "正在唤起 ChatGPT 桌面端…" = "Opening the ChatGPT app…";
 "正在唤起 Claude 桌面端…" = "Opening Claude Desktop…";
 "正在检查…" = "Checking…";

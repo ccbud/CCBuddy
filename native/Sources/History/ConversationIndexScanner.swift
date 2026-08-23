@@ -9,7 +9,12 @@ struct ConversationIndexScanResult: Equatable, Sendable {
     var generation: Int64 = 0
 
     var hasChanges: Bool { parsed > 0 || removed > 0 }
+
+    var completed: Int { parsed + unchanged + failed }
 }
+
+typealias ConversationIndexScanProgress = @Sendable (ConversationIndexScanResult) -> Void
+typealias ConversationIndexScanCancellation = @Sendable () -> Bool
 
 struct ConversationIndexScopeAvailabilityToken: Equatable, Sendable {
     var directoryIdentities: [String]
@@ -141,6 +146,10 @@ protocol ConversationIndexScanStoring: Sendable {
     func scannerEntries() throws -> [ConversationIndexEntry]
     func generation() throws -> Int64
     @discardableResult func replace(_ session: ConversationIndexedSession) throws -> Int64
+    @discardableResult func invalidateProjection() throws -> Int64
+    func finishFullScanMaintenance(
+        isCancelled: ConversationIndexScanCancellation
+    ) throws
     func reconcile(
         scope: String,
         seenPaths: Set<String>,
@@ -271,9 +280,15 @@ final class ConversationIndexScanner: @unchecked Sendable {
         withScanLock { lastGeneration }
     }
 
-    func scanAll() throws -> ConversationIndexScanResult {
+    func scanAll(
+        onProgress: ConversationIndexScanProgress? = nil,
+        isCancelled: ConversationIndexScanCancellation = { false }
+    ) throws -> ConversationIndexScanResult {
         try withScanLock {
-            try scanAllWithoutLock()
+            try scanAllWithoutLock(
+                onProgress: onProgress,
+                isCancelled: isCancelled
+            )
         }
     }
 
@@ -282,32 +297,54 @@ final class ConversationIndexScanner: @unchecked Sendable {
     /// unchanged transcript to parse—use `scanAll()` for a dropped-event full verification.
     func scan(
         changedPaths: [URL],
-        forceDiscovery: Bool = false
+        forceDiscovery: Bool = false,
+        onProgress: ConversationIndexScanProgress? = nil,
+        isCancelled: ConversationIndexScanCancellation = { false }
     ) throws -> ConversationIndexScanResult {
         try withScanLock {
             try scanChangedPathsWithoutLock(
                 changedPaths.map(\.standardizedFileURL),
-                forceDiscovery: forceDiscovery
+                forceDiscovery: forceDiscovery,
+                onProgress: onProgress,
+                isCancelled: isCancelled
             )
         }
     }
 
-    private func scanAllWithoutLock() throws -> ConversationIndexScanResult {
+    private func scanAllWithoutLock(
+        onProgress: ConversationIndexScanProgress?,
+        isCancelled: ConversationIndexScanCancellation
+    ) throws -> ConversationIndexScanResult {
+        try Self.checkCancellation(isCancelled)
         let discovery = beginDiscovery()
-        var result = ConversationIndexScanResult(discovered: discovery.candidates.count)
+        try Self.checkCancellation(isCancelled)
+        var result = ConversationIndexScanResult(
+            discovered: discovery.candidates.count,
+            generation: lastGeneration
+        )
         var entriesByPath = try indexedEntriesByPath()
         let ordered = Self.newestFirst(Self.unique(discovery.candidates))
+        try Self.checkCancellation(isCancelled)
         loader.prefetch(ordered)
+        try Self.checkCancellation(isCancelled)
         try process(
             ordered,
             entriesByPath: &entriesByPath,
-            result: &result
+            result: &result,
+            onProgress: onProgress,
+            isCancelled: isCancelled
         )
         try reconcile(
             discovery,
             entriesByPath: &entriesByPath,
-            result: &result
+            result: &result,
+            onProgress: onProgress,
+            isCancelled: isCancelled,
+            purgeUnconfiguredScopes: true
         )
+        try Self.checkCancellation(isCancelled)
+        try catalog.finishFullScanMaintenance(isCancelled: isCancelled)
+        try Self.checkCancellation(isCancelled)
         result.generation = try catalog.generation()
         lastGeneration = result.generation
         return result
@@ -315,8 +352,11 @@ final class ConversationIndexScanner: @unchecked Sendable {
 
     private func scanChangedPathsWithoutLock(
         _ changedPaths: [URL],
-        forceDiscovery: Bool
+        forceDiscovery: Bool,
+        onProgress: ConversationIndexScanProgress?,
+        isCancelled: ConversationIndexScanCancellation
     ) throws -> ConversationIndexScanResult {
+        try Self.checkCancellation(isCancelled)
         let knownManifests = manifestsByPath.values.sorted {
             Self.path(of: $0.candidate) < Self.path(of: $1.candidate)
         }
@@ -327,6 +367,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
         )
         let shouldDiscover = forceDiscovery || impact.requiresDiscovery
         let discovery = shouldDiscover ? beginDiscovery() : nil
+        try Self.checkCancellation(isCancelled)
         var entriesByPath = try indexedEntriesByPath()
 
         let work: [HistoryFileCandidate]
@@ -345,22 +386,40 @@ final class ConversationIndexScanner: @unchecked Sendable {
         }
 
         var result = ConversationIndexScanResult(
-            discovered: discovery?.candidates.count ?? work.count
+            // Incremental progress describes the candidates actually processed, not every
+            // transcript observed while discovering additions and deletions.
+            discovered: work.count,
+            generation: lastGeneration
         )
         let ordered = Self.newestFirst(work)
+        try Self.checkCancellation(isCancelled)
         loader.prefetch(ordered)
+        try Self.checkCancellation(isCancelled)
         try process(
             ordered,
             entriesByPath: &entriesByPath,
-            result: &result
+            result: &result,
+            onProgress: onProgress,
+            isCancelled: isCancelled
         )
         if let discovery {
             try reconcile(
                 discovery,
                 entriesByPath: &entriesByPath,
-                result: &result
+                result: &result,
+                onProgress: onProgress,
+                isCancelled: isCancelled,
+                purgeUnconfiguredScopes: false
             )
         }
+        try Self.checkCancellation(isCancelled)
+        if impact.requiresProjectionRefresh {
+            let projectionGeneration = try catalog.invalidateProjection()
+            lastGeneration = projectionGeneration
+            result.generation = projectionGeneration
+            onProgress?(result)
+        }
+        try Self.checkCancellation(isCancelled)
         result.generation = try catalog.generation()
         lastGeneration = result.generation
         return result
@@ -386,30 +445,40 @@ final class ConversationIndexScanner: @unchecked Sendable {
     private func process(
         _ candidates: [HistoryFileCandidate],
         entriesByPath: inout [String: ConversationIndexEntry],
-        result: inout ConversationIndexScanResult
+        result: inout ConversationIndexScanResult,
+        onProgress: ConversationIndexScanProgress?,
+        isCancelled: ConversationIndexScanCancellation
     ) throws {
         for candidate in candidates {
+            try Self.checkCancellation(isCancelled)
             let path = Self.path(of: candidate)
             let entry = entriesByPath[path]
             if let preflight = preflight(candidate, entry: entry),
-               entry?.fingerprint == preflight.fingerprint {
+               entry?.fingerprint == preflight.fingerprint,
+               entry?.scope == candidate.directory.id {
                 manifestsByPath[path] = preflight.manifest
                 result.unchanged += 1
+                onProgress?(result)
                 continue
             }
 
             let loaded: LoadedHistorySession
             do {
                 loaded = try loadRetryingDependencyChange(candidate)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 result.failed += 1
+                onProgress?(result)
                 continue
             }
+            try Self.checkCancellation(isCancelled)
             guard let fingerprint = Self.fingerprint(
                 manifest: loaded.manifest,
                 snapshot: loaded.dependencySnapshot
             ) else {
                 result.failed += 1
+                onProgress?(result)
                 continue
             }
 
@@ -418,8 +487,10 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 scope: candidate.directory.id,
                 fingerprint: fingerprint
             )
+            try Self.checkCancellation(isCancelled)
             let replacementGeneration = try catalog.replace(indexed)
             lastGeneration = replacementGeneration
+            result.generation = replacementGeneration
             entriesByPath[path] = ConversationIndexEntry(
                 sourcePath: path,
                 metadata: loaded.projection.metadata,
@@ -429,6 +500,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
             )
             manifestsByPath[path] = loaded.manifest
             result.parsed += 1
+            onProgress?(result)
         }
     }
 
@@ -469,11 +541,15 @@ final class ConversationIndexScanner: @unchecked Sendable {
     private func reconcile(
         _ discovery: Discovery,
         entriesByPath: inout [String: ConversationIndexEntry],
-        result: inout ConversationIndexScanResult
+        result: inout ConversationIndexScanResult,
+        onProgress: ConversationIndexScanProgress?,
+        isCancelled: ConversationIndexScanCancellation,
+        purgeUnconfiguredScopes: Bool
     ) throws {
         let seenByScope = Dictionary(grouping: discovery.candidates, by: { $0.directory.id })
             .mapValues { Set($0.map(Self.path)) }
         for directory in discovery.directories {
+            try Self.checkCancellation(isCancelled)
             guard let before = discovery.availabilityBefore[directory.id],
                   let after = availability.token(for: directory),
                   before == after else { continue }
@@ -489,17 +565,48 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 let file = URL(fileURLWithPath: entry.sourcePath)
                 return availableRoots.contains { Self.contains(file, in: $0) }
             }) else { continue }
+            try Self.checkCancellation(isCancelled)
             let reconciliation = try catalog.reconcile(
                 scope: directory.id,
                 seenPaths: seenByScope[directory.id, default: []],
                 allowEmpty: true
             )
             lastGeneration = reconciliation.generation
+            result.generation = reconciliation.generation
             result.removed += reconciliation.removedPaths.count
             for path in reconciliation.removedPaths {
                 entriesByPath.removeValue(forKey: path)
                 manifestsByPath.removeValue(forKey: path)
             }
+            if !reconciliation.removedPaths.isEmpty { onProgress?(result) }
+        }
+
+        // The database intentionally survives repository recreation so the next scope/config
+        // change can render a warm catalog immediately. A completed full scan is also the point at
+        // which the current topology becomes authoritative: scopes removed from configuration must
+        // not leave transcript text or metadata behind in that shared derived index.
+        guard purgeUnconfiguredScopes else { return }
+        // Imported sessions always remain a logical scope, even when a configured producer root
+        // resolves to the same physical path and HistoryPathResolver deduplicates that directory.
+        let configuredScopes = Set(discovery.directories.map(\.id)).union(["__imported__"])
+        let unconfiguredScopes = Set(entriesByPath.values.map(\.scope))
+            .subtracting(configuredScopes)
+            .sorted()
+        for scope in unconfiguredScopes {
+            try Self.checkCancellation(isCancelled)
+            let reconciliation = try catalog.reconcile(
+                scope: scope,
+                seenPaths: [],
+                allowEmpty: true
+            )
+            lastGeneration = reconciliation.generation
+            result.generation = reconciliation.generation
+            result.removed += reconciliation.removedPaths.count
+            for path in reconciliation.removedPaths {
+                entriesByPath.removeValue(forKey: path)
+                manifestsByPath.removeValue(forKey: path)
+            }
+            if !reconciliation.removedPaths.isEmpty { onProgress?(result) }
         }
     }
 
@@ -529,6 +636,12 @@ final class ConversationIndexScanner: @unchecked Sendable {
         scanLock.lock()
         defer { scanLock.unlock() }
         return try operation()
+    }
+
+    private static func checkCancellation(
+        _ isCancelled: ConversationIndexScanCancellation
+    ) throws {
+        if isCancelled() { throw CancellationError() }
     }
 
     private static func fingerprint(

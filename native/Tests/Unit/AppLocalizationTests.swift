@@ -74,6 +74,50 @@ final class AppLocalizationTests: XCTestCase {
         )
     }
 
+    func testConversationMessageAndIndexTemplatesCoverEveryAppLanguage() {
+        let expectations: [(AppLanguage, String, String, String)] = [
+            (
+                .english,
+                "17 messages",
+                "Conversation indexing failed: catalog unavailable",
+                "3 conversations could not be indexed; the rest are shown"
+            ),
+            (
+                .simplifiedChinese,
+                "17 条消息",
+                "会话索引失败：catalog unavailable",
+                "3 个会话无法建立索引，已显示其余会话"
+            ),
+            (
+                .traditionalChinese,
+                "17 則訊息",
+                "會話索引失敗：catalog unavailable",
+                "3 個會話無法建立索引，已顯示其餘會話"
+            ),
+            (
+                .japanese,
+                "メッセージ 17件",
+                "会話のインデックス作成に失敗しました：catalog unavailable",
+                "3 件の会話をインデックス化できませんでした。残りの会話を表示しています"
+            ),
+            (
+                .korean,
+                "메시지 17개",
+                "대화 색인 생성 실패: catalog unavailable",
+                "대화 3개의 색인을 생성하지 못했습니다. 나머지 대화는 표시됩니다"
+            ),
+        ]
+
+        for (language, messageCount, indexFailure, partialFailure) in expectations {
+            XCTAssertEqual(language.localized("17 条消息"), messageCount)
+            XCTAssertEqual(language.localized("会话索引失败：catalog unavailable"), indexFailure)
+            XCTAssertEqual(
+                language.localized("3 个会话无法建立索引，已显示其余会话"),
+                partialFailure
+            )
+        }
+    }
+
     func testAccessibilityTemplatesUseDistinctCommaAndExplanationPunctuation() {
         XCTAssertEqual(
             AppLanguage.english.localized("Tokens，15K"),

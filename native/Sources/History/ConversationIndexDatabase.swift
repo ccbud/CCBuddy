@@ -192,7 +192,9 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 /// from detached tasks. A private lock serializes the single SQLite connection, while WAL keeps
 /// independent diagnostic/read connections from blocking normal writes.
 final class ConversationIndexDatabase: @unchecked Sendable {
-    static let schemaVersion: Int32 = 1
+    /// Version 2 preserves the warm derived index while adding deferred maintenance markers.
+    /// Version 1 could retain gigabytes of obsolete FTS segments after repeated replacement.
+    static let schemaVersion: Int32 = 2
 
     let file: URL
 
@@ -345,6 +347,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     }
                 }
                 try markFTSState(dirty: !trigramFTSAvailable)
+                try markMaintenancePending()
                 return try advanceGeneration()
             }
             try hardenPermissions()
@@ -370,6 +373,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 }
                 if removed > 0 {
                     try markFTSState(dirty: !trigramFTSAvailable)
+                    try markMaintenancePending()
                     _ = try advanceGeneration()
                 }
                 return removed
@@ -419,6 +423,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     )
                 }
                 try markFTSState(dirty: !trigramFTSAvailable)
+                try markMaintenancePending()
                 return try advanceGeneration()
             }
             try hardenPermissions()
@@ -621,6 +626,126 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
+    /// Invalidates canonical list projection without touching transcript documents or FTS rows.
+    /// Codex's shared state database uses this when its preferred rollout mapping changes.
+    @discardableResult
+    func invalidateProjection() throws -> Int64 {
+        try withLock {
+            let generation = try transaction { try advanceGeneration() }
+            try hardenPermissions()
+            return generation
+        }
+    }
+
+    /// Runs derived-index maintenance after a successful full scan. Ordinary passes are bounded;
+    /// a v1 catalog gets one background full compaction while its warm rows remain queryable.
+    /// Pending bits make repeated unchanged scans no-ops, and maintenance never advances generation.
+    func finishFullScanMaintenance(
+        isCancelled: ConversationIndexScanCancellation = { false }
+    ) throws {
+        try withoutActuallyEscaping(isCancelled) { escapableIsCancelled in
+            try withLock {
+                let cancellation = SQLiteCancellationContext(
+                    isCancelled: escapableIsCancelled
+                )
+                try cancellation.check()
+                let maintenancePending = try int64Value(
+                    "SELECT maintenance_pending FROM conversation_catalog_state WHERE singleton = 1"
+                ) != 0
+                let oneTimeCompactionPending = try int64Value(
+                    "SELECT one_time_compaction_pending FROM conversation_catalog_state "
+                        + "WHERE singleton = 1"
+                ) != 0
+                guard maintenancePending || oneTimeCompactionPending else { return }
+
+                if trigramFTSAvailable {
+                    let dirty = try int64Value(
+                        "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
+                    ) != 0
+                    if dirty {
+                        try executeCancellableMaintenance(
+                            "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
+                                + "VALUES ('rebuild')",
+                            cancellation: cancellation
+                        )
+                        try markFTSState(dirty: false)
+                        try cancellation.check()
+                    }
+                }
+
+                if oneTimeCompactionPending {
+                    // Version 1 remains warm during startup. The first successful reconciliation
+                    // activates incremental auto-vacuum and compacts the old file. SQLite progress
+                    // and busy callbacks make active copying and lock acquisition cancellable;
+                    // an interrupted VACUUM leaves the original DB and retry bit intact.
+                    try execute("PRAGMA auto_vacuum = INCREMENTAL")
+                    try executeCancellableMaintenance("VACUUM", cancellation: cancellation)
+                    // VACUUM itself completed; never repeat that heavy operation merely because a
+                    // cancellation or later WAL truncation meets a transient reader.
+                    try execute(
+                        "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
+                            + "WHERE singleton = 1"
+                    )
+                    try cancellation.check()
+                }
+
+                if trigramFTSAvailable {
+                    try executeCancellableMaintenance(
+                        "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
+                            + "VALUES ('optimize')",
+                        cancellation: cancellation
+                    )
+                    try cancellation.check()
+                }
+                try executeCancellableMaintenance(
+                    "PRAGMA optimize",
+                    cancellation: cancellation
+                )
+                try cancellation.check()
+                // This also reclaims pages freed by the FTS optimize which follows a successful
+                // one-time VACUUM. It is bounded on every subsequent maintenance pass.
+                try executeCancellableMaintenance(
+                    "PRAGMA incremental_vacuum(8192)",
+                    cancellation: cancellation
+                )
+                try cancellation.check()
+                guard try checkpointWALTruncating(cancellation: cancellation) else {
+                    try cancellation.check()
+                    return
+                }
+
+                try execute(
+                    "UPDATE conversation_catalog_state SET maintenance_pending = 0, "
+                        + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                )
+                do {
+                    guard try checkpointWALTruncating(cancellation: cancellation) else {
+                        // An independent reader raced the final state write. Restore the retry
+                        // marker; the next successful full scan can finish truncation.
+                        try execute(
+                            "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
+                                + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                        )
+                        try cancellation.check()
+                        return
+                    }
+                } catch {
+                    // The completion marker itself may be in the WAL when truncation is cancelled
+                    // or fails. Restore the ordinary retry bit for every checkpoint error so a
+                    // transient I/O/locking failure cannot silently suppress future maintenance.
+                    let checkpointError = error
+                    try execute(
+                        "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
+                            + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                    )
+                    if checkpointError is CancellationError { throw CancellationError() }
+                    throw checkpointError
+                }
+                try hardenPermissions()
+            }
+        }
+    }
+
     /// Clears only derived catalog/search data. Producer files are never opened or modified.
     @discardableResult
     func rebuild() throws -> Int64 {
@@ -632,6 +757,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 try execute("DELETE FROM conversation_documents")
                 try execute("DELETE FROM conversation_sessions")
                 try markFTSState(dirty: !trigramFTSAvailable)
+                try markMaintenancePending()
                 return try advanceGeneration()
             }
             try hardenPermissions()
@@ -653,9 +779,15 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     private func initializeSchema() throws {
-        let version = try int64Value("PRAGMA user_version")
-        if version != Int64(Self.schemaVersion) {
-            try transaction {
+        try execute("PRAGMA auto_vacuum = INCREMENTAL")
+        // BEGIN IMMEDIATE is the cross-process migration lock. Version and column inspection must
+        // happen after it is acquired: another process may have completed v1 -> v2 while this
+        // connection was waiting, in which case this connection simply observes version 2.
+        try transaction {
+            let version = try int64Value("PRAGMA user_version")
+            if version == 1 {
+                try migrateVersionOneSchema()
+            } else if version != Int64(Self.schemaVersion) {
                 if trigramFTSAvailable {
                     try execute("DROP TABLE IF EXISTS conversation_documents_fts")
                 }
@@ -663,10 +795,16 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 try execute("DROP TABLE IF EXISTS conversation_sessions")
                 try execute("DROP TABLE IF EXISTS conversation_catalog_state")
                 try createBaseSchema()
+                if version != 0 {
+                    try execute(
+                        "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
+                            + "one_time_compaction_pending = 1 WHERE singleton = 1"
+                    )
+                }
                 try execute("PRAGMA user_version = \(Self.schemaVersion)")
+            } else {
+                try createBaseSchema()
             }
-        } else {
-            try createBaseSchema()
         }
 
         guard trigramFTSAvailable else {
@@ -697,8 +835,41 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         + "VALUES ('rebuild')"
                 )
                 try markFTSState(dirty: false)
+                try markMaintenancePending()
             }
         }
+    }
+
+    private func migrateVersionOneSchema() throws {
+        // Called only while initializeSchema() owns BEGIN IMMEDIATE. Keeping these reads beside
+        // their ALTER statements prevents two processes from acting on the same stale schema.
+        let hasMaintenancePending = try tableHasColumn(
+            "maintenance_pending",
+            in: "conversation_catalog_state"
+        )
+        let hasOneTimeCompactionPending = try tableHasColumn(
+            "one_time_compaction_pending",
+            in: "conversation_catalog_state"
+        )
+        if !hasMaintenancePending {
+            try execute(
+                "ALTER TABLE conversation_catalog_state ADD COLUMN maintenance_pending "
+                    + "INTEGER NOT NULL DEFAULT 1 CHECK (maintenance_pending IN (0, 1))"
+            )
+        }
+        if !hasOneTimeCompactionPending {
+            try execute(
+                "ALTER TABLE conversation_catalog_state ADD COLUMN "
+                    + "one_time_compaction_pending INTEGER NOT NULL DEFAULT 1 "
+                    + "CHECK (one_time_compaction_pending IN (0, 1))"
+            )
+        }
+        try execute(
+            "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
+                + "one_time_compaction_pending = 1 WHERE singleton = 1"
+        )
+        try execute("PRAGMA user_version = \(Self.schemaVersion)")
+        try createBaseSchema()
     }
 
     private func createBaseSchema() throws {
@@ -707,13 +878,17 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS conversation_catalog_state (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 generation INTEGER NOT NULL,
-                fts_dirty INTEGER NOT NULL CHECK (fts_dirty IN (0, 1))
+                fts_dirty INTEGER NOT NULL CHECK (fts_dirty IN (0, 1)),
+                maintenance_pending INTEGER NOT NULL CHECK (maintenance_pending IN (0, 1)),
+                one_time_compaction_pending INTEGER NOT NULL
+                    CHECK (one_time_compaction_pending IN (0, 1))
             )
             """
         )
         try execute(
-            "INSERT OR IGNORE INTO conversation_catalog_state(singleton, generation, fts_dirty) "
-                + "VALUES (1, 0, 0)"
+            "INSERT OR IGNORE INTO conversation_catalog_state("
+                + "singleton, generation, fts_dirty, maintenance_pending, "
+                + "one_time_compaction_pending) VALUES (1, 0, 0, 0, 0)"
         )
         try execute(
             """
@@ -1029,7 +1204,108 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         )
     }
 
+    private func markMaintenancePending() throws {
+        try execute(
+            "UPDATE conversation_catalog_state SET maintenance_pending = 1 WHERE singleton = 1"
+        )
+    }
+
+    /// Returns false when an independent reader temporarily prevents truncation. That is benign:
+    /// WAL auto-checkpointing remains enabled and the next mutating full scan will try again.
+    private func checkpointWALTruncating(
+        cancellation: SQLiteCancellationContext
+    ) throws -> Bool {
+        // A checkpoint is an optional space-recovery step, so never spend the connection's normal
+        // busy timeout waiting for an unrelated reader. Leaving the pending marker set is safer
+        // and keeps lifecycle cancellation latency bounded.
+        let timeoutStatus = sqlite3_busy_timeout(connection, 0)
+        guard timeoutStatus == SQLITE_OK else {
+            throw sqliteError("disable checkpoint busy timeout", timeoutStatus)
+        }
+        defer { _ = sqlite3_busy_timeout(connection, 3_000) }
+        var logFrames: Int32 = 0
+        var checkpointedFrames: Int32 = 0
+        let status = try withSQLiteInterruptionMonitor(cancellation: cancellation) {
+            sqlite3_wal_checkpoint_v2(
+                connection,
+                nil,
+                SQLITE_CHECKPOINT_TRUNCATE,
+                &logFrames,
+                &checkpointedFrames
+            )
+        }
+        if status != SQLITE_OK, cancellation.wasCancelled {
+            throw CancellationError()
+        }
+        if status == SQLITE_BUSY { return false }
+        guard status == SQLITE_OK else { throw sqliteError("truncate WAL checkpoint", status) }
+        return true
+    }
+
     // MARK: - SQLite primitives
+
+    private final class SQLiteCancellationContext {
+        let isCancelled: ConversationIndexScanCancellation
+        private let stateLock = NSLock()
+        private var cancelled = false
+
+        init(isCancelled: @escaping ConversationIndexScanCancellation) {
+            self.isCancelled = isCancelled
+        }
+
+        func check() throws {
+            guard !poll() else { throw CancellationError() }
+        }
+
+        func poll() -> Bool {
+            guard isCancelled() else { return false }
+            stateLock.lock()
+            cancelled = true
+            stateLock.unlock()
+            return true
+        }
+
+        var wasCancelled: Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return cancelled
+        }
+
+        func retryBusy(priorCalls: Int32) -> Int32 {
+            if poll() { return 0 }
+            guard priorCalls < 300 else { return 0 }
+            sqlite3_sleep(10)
+            return 1
+        }
+    }
+
+    private static let maintenanceProgressHandler:
+        @convention(c) (UnsafeMutableRawPointer?) -> Int32 = { pointer in
+            guard let pointer else { return 0 }
+            let cancellation = Unmanaged<SQLiteCancellationContext>
+                .fromOpaque(pointer)
+                .takeUnretainedValue()
+            return cancellation.poll() ? 1 : 0
+        }
+
+    private static let maintenanceBusyHandler:
+        @convention(c) (UnsafeMutableRawPointer?, Int32) -> Int32 = { pointer, priorCalls in
+            guard let pointer else { return 0 }
+            let cancellation = Unmanaged<SQLiteCancellationContext>
+                .fromOpaque(pointer)
+                .takeUnretainedValue()
+            return cancellation.retryBusy(priorCalls: priorCalls)
+        }
+
+    /// VACUUM's internal page copy does not consistently invoke SQLite's progress callback on
+    /// every supported macOS SQLite build. A separate monitor supplies the documented cross-thread
+    /// sqlite3_interrupt path; executeCancellableMaintenance always joins it before returning.
+    private static let maintenanceCancellationQueue = DispatchQueue(
+        label: "dev.ccbud.conversation-index-maintenance-cancellation",
+        qos: .userInitiated,
+        attributes: .concurrent,
+        autoreleaseFrequency: .workItem
+    )
 
     private enum SQLiteValue {
         case null
@@ -1055,6 +1331,69 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             try? execute("ROLLBACK")
             throw error
         }
+    }
+
+    /// Runs a potentially long maintenance statement with cooperative cancellation both while
+    /// SQLite executes virtual-machine instructions and while it waits for another connection.
+    private func executeCancellableMaintenance(
+        _ sql: String,
+        cancellation: SQLiteCancellationContext
+    ) throws {
+        let pointer = Unmanaged.passUnretained(cancellation).toOpaque()
+        sqlite3_progress_handler(
+            connection,
+            1_000,
+            Self.maintenanceProgressHandler,
+            pointer
+        )
+        let busyStatus = sqlite3_busy_handler(
+            connection,
+            Self.maintenanceBusyHandler,
+            pointer
+        )
+        guard busyStatus == SQLITE_OK else {
+            sqlite3_progress_handler(connection, 0, nil, nil)
+            throw sqliteError("install cancellable maintenance busy handler", busyStatus)
+        }
+        defer {
+            sqlite3_progress_handler(connection, 0, nil, nil)
+            _ = sqlite3_busy_timeout(connection, 3_000)
+        }
+        do {
+            try withSQLiteInterruptionMonitor(cancellation: cancellation) {
+                try execute(sql)
+            }
+        } catch {
+            if cancellation.wasCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+
+    private func withSQLiteInterruptionMonitor<T>(
+        cancellation: SQLiteCancellationContext,
+        _ body: () throws -> T
+    ) throws -> T {
+        let operationFinished = DispatchSemaphore(value: 0)
+        let monitorFinished = DispatchSemaphore(value: 0)
+        let connection = self.connection
+        Self.maintenanceCancellationQueue.async {
+            defer { monitorFinished.signal() }
+            while operationFinished.wait(timeout: .now() + 0.005) == .timedOut {
+                guard cancellation.poll() else { continue }
+                sqlite3_interrupt(connection)
+                return
+            }
+        }
+
+        let result: Result<T, Error>
+        do {
+            result = .success(try body())
+        } catch {
+            result = .failure(error)
+        }
+        operationFinished.signal()
+        monitorFinished.wait()
+        return try result.get()
     }
 
     private func execute(_ sql: String, bindings: [SQLiteValue] = []) throws {
@@ -1140,6 +1479,14 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         let status = sqlite3_step(statement)
         guard status == SQLITE_ROW else { throw sqliteError("read integer", status) }
         return sqlite3_column_int64(statement, 0)
+    }
+
+    private func tableHasColumn(_ column: String, in table: String) throws -> Bool {
+        let escapedTable = table.replacingOccurrences(of: "'", with: "''")
+        return try int64Value(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('\(escapedTable)') WHERE name = ?)",
+            bindings: [.text(column)]
+        ) != 0
     }
 
     private func stringValues(

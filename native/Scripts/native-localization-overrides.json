@@ -2169,6 +2169,62 @@
     "zh-Hans": "标题与标签已更新",
     "zh-Hant": "標題與標籤已更新"
   },
+  "{n} 条消息": {
+    "en": "{n} messages",
+    "ja": "メッセージ {n}件",
+    "ko": "메시지 {n}개",
+    "zh-Hans": "{n} 条消息",
+    "zh-Hant": "{n} 則訊息"
+  },
+  "会话索引失败：{error}": {
+    "en": "Conversation indexing failed: {error}",
+    "ja": "会話のインデックス作成に失敗しました：{error}",
+    "ko": "대화 색인 생성 실패: {error}",
+    "zh-Hans": "会话索引失败：{error}",
+    "zh-Hant": "會話索引失敗：{error}"
+  },
+  "{n} 个会话无法建立索引，已显示其余会话": {
+    "en": "{n} conversations could not be indexed; the rest are shown",
+    "ja": "{n} 件の会話をインデックス化できませんでした。残りの会話を表示しています",
+    "ko": "대화 {n}개의 색인을 생성하지 못했습니다. 나머지 대화는 표시됩니다",
+    "zh-Hans": "{n} 个会话无法建立索引，已显示其余会话",
+    "zh-Hant": "{n} 個會話無法建立索引，已顯示其餘會話"
+  },
+  "会话索引状态": {
+    "en": "Conversation index status",
+    "ja": "会話インデックスの状態",
+    "ko": "대화 색인 상태",
+    "zh-Hans": "会话索引状态",
+    "zh-Hant": "會話索引狀態"
+  },
+  "正在更新会话索引": {
+    "en": "Updating conversation index",
+    "ja": "会話インデックスを更新中",
+    "ko": "대화 색인 업데이트 중",
+    "zh-Hans": "正在更新会话索引",
+    "zh-Hant": "正在更新會話索引"
+  },
+  "会话索引已更新": {
+    "en": "Conversation index updated",
+    "ja": "会話インデックスを更新しました",
+    "ko": "대화 색인이 업데이트되었습니다",
+    "zh-Hans": "会话索引已更新",
+    "zh-Hant": "會話索引已更新"
+  },
+  "更新失败": {
+    "en": "Update failed",
+    "ja": "更新に失敗しました",
+    "ko": "업데이트 실패",
+    "zh-Hans": "更新失败",
+    "zh-Hant": "更新失敗"
+  },
+  "正在更新…": {
+    "en": "Updating…",
+    "ja": "更新中…",
+    "ko": "업데이트 중…",
+    "zh-Hans": "正在更新…",
+    "zh-Hant": "正在更新…"
+  },
   "更新失败：{error}": {
     "en": "Update failed: {error}",
     "ja": "更新に失敗しました：{error}",

@@ -144,6 +144,371 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(try rebuilt.generation(), 0)
     }
 
+    func testProjectionInvalidationAdvancesOnlyGeneration() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        _ = try database.replace(indexed(file: fixture.source, id: "projection", scope: "scope"))
+        try database.finishFullScanMaintenance()
+        let entry = try XCTUnwrap(database.entry(for: fixture.source))
+        let documents = try database.documents(for: fixture.source)
+
+        XCTAssertEqual(try database.invalidateProjection(), 2)
+        XCTAssertEqual(try database.generation(), 2)
+        XCTAssertEqual(try database.entry(for: fixture.source), entry)
+        XCTAssertEqual(try database.documents(for: fixture.source), documents)
+        XCTAssertEqual(
+            try database.candidateDocuments(for: "projection").documents.map(\.entry),
+            [entry]
+        )
+    }
+
+    func testFullScanMaintenanceIsGenerationNeutralAndNoOpsWhenUnchanged() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        _ = try database.replace(indexed(file: fixture.source, id: "maintenance", scope: "scope"))
+        let generation = try database.generation()
+        let wal = URL(fileURLWithPath: fixture.database.path + "-wal")
+
+        try database.finishFullScanMaintenance()
+        XCTAssertEqual(try database.generation(), generation)
+        XCTAssertEqual(try database.candidateDocuments(for: "maintenance").documents.count, 1)
+        let firstWALSize = try fileSize(wal)
+        XCTAssertEqual(firstWALSize, 0)
+
+        try database.finishFullScanMaintenance()
+        XCTAssertEqual(try database.generation(), generation)
+        XCTAssertEqual(try fileSize(wal), firstWALSize)
+    }
+
+    func testVersionOneMigrationKeepsWarmRowsAndDefersPhysicalCompaction() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        let legacyText = String(repeating: "legacy transcript payload ", count: 80_000)
+        _ = try database?.replace(ConversationIndexedSession(
+            metadata: makeMetadata(file: fixture.source, id: "legacy"),
+            scope: "scope",
+            fingerprint: .init(modificationTime: .now, sizeBytes: UInt64(legacyText.utf8.count)),
+            documents: [makeDocument(text: legacyText)]
+        ))
+        try database?.finishFullScanMaintenance()
+        let legacyEntry = try XCTUnwrap(database?.entry(for: fixture.source))
+        let legacyDocuments = try XCTUnwrap(database?.documents(for: fixture.source))
+        let legacyGeneration = try XCTUnwrap(database?.generation())
+        database = nil
+
+        try prepareVersionOneCatalog(fixture.database, discardedBytes: 8 * 1_024 * 1_024)
+        let legacySize = try fileSize(fixture.database)
+        XCTAssertGreaterThan(legacySize, 8 * 1_024 * 1_024)
+
+        let migrated = try ConversationIndexDatabase(file: fixture.database)
+        let warmSize = try fileSize(fixture.database)
+        XCTAssertTrue(try migrated.hasRows())
+        XCTAssertEqual(try migrated.generation(), legacyGeneration)
+        XCTAssertEqual(try migrated.entry(for: fixture.source), legacyEntry)
+        XCTAssertEqual(try migrated.documents(for: fixture.source), legacyDocuments)
+        XCTAssertEqual(try migrated.candidateDocuments(for: "legacy").documents.count, 1)
+        XCTAssertEqual(try userVersion(fixture.database), ConversationIndexDatabase.schemaVersion)
+        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 1)
+        XCTAssertGreaterThanOrEqual(warmSize + 4_096, legacySize)
+
+        try migrated.finishFullScanMaintenance()
+        XCTAssertEqual(try migrated.generation(), legacyGeneration)
+        XCTAssertEqual(try migrated.entry(for: fixture.source), legacyEntry)
+        XCTAssertEqual(try migrated.documents(for: fixture.source), legacyDocuments)
+        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
+        XCTAssertEqual(try catalogStateValue("maintenance_pending", fixture.database), 0)
+        XCTAssertLessThan(try fileSize(fixture.database), warmSize)
+    }
+
+    func testVersionOneVacuumCanBeCancelledWhileWaitingForAnotherWriter() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        _ = try database?.replace(indexed(file: fixture.source, id: "warm", scope: "scope"))
+        try database?.finishFullScanMaintenance()
+        database = nil
+        try prepareVersionOneCatalog(fixture.database)
+
+        let migrated = try ConversationIndexDatabase(file: fixture.database)
+        var blockerHandle: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                fixture.database.path,
+                &blockerHandle,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        let blocker = try XCTUnwrap(blockerHandle)
+        defer { sqlite3_close(blocker) }
+        try executeRaw("BEGIN IMMEDIATE", database: blocker)
+        var blockerCommitted = false
+        defer {
+            if !blockerCommitted { try? executeRaw("ROLLBACK", database: blocker) }
+        }
+
+        let cancellation = DatabaseCancellationProbe()
+        let result = DatabaseMaintenanceResultProbe()
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup()
+        finished.enter()
+        DispatchQueue.global(qos: .utility).async {
+            started.signal()
+            result.run {
+                try migrated.finishFullScanMaintenance(
+                    isCancelled: { @Sendable in cancellation.isCancelled() }
+                )
+            }
+            finished.leave()
+        }
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            finished.wait(timeout: .now() + 0.15),
+            .timedOut,
+            "The one-time VACUUM should be waiting on the competing writer"
+        )
+
+        let cancellationStarted = DispatchTime.now().uptimeNanoseconds
+        cancellation.cancel()
+        XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+        let cancellationLatency = Double(
+            DispatchTime.now().uptimeNanoseconds - cancellationStarted
+        ) / 1_000_000_000
+        XCTAssertLessThan(cancellationLatency, 0.5)
+        XCTAssertTrue(result.error is CancellationError, String(describing: result.error))
+        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 1)
+        XCTAssertEqual(try catalogStateValue("maintenance_pending", fixture.database), 1)
+        XCTAssertTrue(try migrated.hasRows())
+
+        try executeRaw("ROLLBACK", database: blocker)
+        blockerCommitted = true
+        try migrated.finishFullScanMaintenance()
+        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
+    }
+
+    func testVersionOneVacuumProgressCancellationRetainsWarmCatalogAndRetryMarker() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        _ = try database?.replace(indexed(file: fixture.source, id: "warm", scope: "scope"))
+        try database?.finishFullScanMaintenance()
+        database = nil
+        try prepareVersionOneCatalog(
+            fixture.database,
+            discardedBytes: 16 * 1_024 * 1_024,
+            liveBytes: 64 * 1_024 * 1_024
+        )
+        let legacySize = try fileSize(fixture.database)
+        let migrated = try ConversationIndexDatabase(file: fixture.database)
+        let cancellation = DatabasePollingCancellationProbe(cancelOnPoll: 2)
+
+        XCTAssertThrowsError(try migrated.finishFullScanMaintenance(
+            isCancelled: { @Sendable in cancellation.poll() }
+        )) { error in
+            XCTAssertTrue(error is CancellationError, String(describing: error))
+        }
+
+        XCTAssertGreaterThanOrEqual(cancellation.pollCount, 2)
+        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 1)
+        XCTAssertEqual(try catalogStateValue("maintenance_pending", fixture.database), 1)
+        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 0)
+        XCTAssertTrue(try migrated.hasRows())
+        XCTAssertGreaterThanOrEqual(try fileSize(fixture.database) + 4_096, legacySize)
+
+        try migrated.finishFullScanMaintenance()
+        XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
+        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 2)
+        XCTAssertLessThan(try fileSize(fixture.database), legacySize)
+    }
+
+    func testConcurrentOpensSerializeVersionOneMigrationWithoutDroppingRows() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        _ = try database?.replace(indexed(file: fixture.source, id: "old", scope: "scope"))
+        database = nil
+
+        try prepareVersionOneCatalog(fixture.database)
+
+        let probe = ConcurrentDatabaseOpenProbe()
+        let databaseFile = fixture.database
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            probe.open(databaseFile)
+        }
+
+        XCTAssertTrue(probe.errors.isEmpty, probe.errors.joined(separator: "\n"))
+        XCTAssertEqual(probe.generations, Array(repeating: 1, count: 8))
+        XCTAssertEqual(try userVersion(fixture.database), ConversationIndexDatabase.schemaVersion)
+        XCTAssertTrue(try ConversationIndexDatabase(file: fixture.database).hasRows())
+    }
+
+    func testVersionAndColumnChecksWaitForCrossConnectionMigrationTransaction() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        _ = try database?.replace(indexed(file: fixture.source, id: "old", scope: "scope"))
+        database = nil
+        try prepareVersionOneCatalog(fixture.database)
+
+        // This raw connection stands in for a second process. Process-local locks cannot
+        // coordinate with it; only BEGIN IMMEDIATE on the database file can serialize migration.
+        var migratorHandle: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                fixture.database.path,
+                &migratorHandle,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        let migrator = try XCTUnwrap(migratorHandle)
+        defer { sqlite3_close(migrator) }
+        try executeRaw("BEGIN IMMEDIATE", database: migrator)
+        var migratorCommitted = false
+        defer {
+            if !migratorCommitted { try? executeRaw("ROLLBACK", database: migrator) }
+        }
+
+        let probe = ConcurrentDatabaseOpenProbe()
+        let finished = DispatchGroup()
+        let databaseFile = fixture.database
+        finished.enter()
+        DispatchQueue.global(qos: .utility).async {
+            probe.open(databaseFile)
+            finished.leave()
+        }
+        XCTAssertEqual(
+            finished.wait(timeout: .now() + 0.15),
+            .timedOut,
+            "The opener should wait for the database migration lock"
+        )
+
+        try executeRaw(
+            """
+            ALTER TABLE conversation_catalog_state ADD COLUMN maintenance_pending
+                INTEGER NOT NULL DEFAULT 1 CHECK (maintenance_pending IN (0, 1));
+            ALTER TABLE conversation_catalog_state ADD COLUMN one_time_compaction_pending
+                INTEGER NOT NULL DEFAULT 1 CHECK (one_time_compaction_pending IN (0, 1));
+            UPDATE conversation_catalog_state SET maintenance_pending = 1,
+                one_time_compaction_pending = 1 WHERE singleton = 1;
+            PRAGMA user_version = \(ConversationIndexDatabase.schemaVersion);
+            COMMIT;
+            """,
+            database: migrator
+        )
+        migratorCommitted = true
+
+        XCTAssertEqual(finished.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(probe.errors.isEmpty, probe.errors.joined(separator: "\n"))
+        XCTAssertEqual(probe.generations, [1])
+        XCTAssertEqual(try userVersion(fixture.database), ConversationIndexDatabase.schemaVersion)
+        XCTAssertTrue(try ConversationIndexDatabase(file: fixture.database).hasRows())
+    }
+
+    private func fileSize(_ file: URL) throws -> UInt64 {
+        guard FileManager.default.fileExists(atPath: file.path) else { return 0 }
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    private func userVersion(_ file: URL) throws -> Int32 {
+        try readInteger("PRAGMA user_version", from: file)
+    }
+
+    private func catalogStateValue(_ column: String, _ file: URL) throws -> Int32 {
+        let allowed = ["maintenance_pending", "one_time_compaction_pending"]
+        guard allowed.contains(column) else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 4)
+        }
+        return try readInteger(
+            "SELECT \(column) FROM conversation_catalog_state WHERE singleton = 1",
+            from: file
+        )
+    }
+
+    private func readInteger(_ sql: String, from file: URL) throws -> Int32 {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(file.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let database else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 1)
+        }
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 2)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 3)
+        }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private func prepareVersionOneCatalog(
+        _ file: URL,
+        discardedBytes: Int = 0,
+        liveBytes: Int = 0
+    ) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(file.path, &database) == SQLITE_OK, let database else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 5)
+        }
+        defer { sqlite3_close(database) }
+        try executeRaw(
+            """
+            BEGIN IMMEDIATE;
+            ALTER TABLE conversation_catalog_state RENAME TO conversation_catalog_state_v2;
+            CREATE TABLE conversation_catalog_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                generation INTEGER NOT NULL,
+                fts_dirty INTEGER NOT NULL CHECK (fts_dirty IN (0, 1))
+            );
+            INSERT INTO conversation_catalog_state(singleton, generation, fts_dirty)
+                SELECT singleton, generation, fts_dirty FROM conversation_catalog_state_v2;
+            DROP TABLE conversation_catalog_state_v2;
+            PRAGMA user_version = 1;
+            COMMIT;
+            PRAGMA auto_vacuum = NONE;
+            VACUUM;
+            """,
+            database: database
+        )
+        if liveBytes > 0 {
+            try executeRaw(
+                """
+                CREATE TABLE ccbud_migration_live_bloat(payload BLOB);
+                INSERT INTO ccbud_migration_live_bloat(payload) VALUES (zeroblob(\(liveBytes)));
+                PRAGMA wal_checkpoint(TRUNCATE);
+                """,
+                database: database
+            )
+        }
+        if discardedBytes > 0 {
+            try executeRaw(
+                """
+                CREATE TABLE ccbud_migration_bloat(payload BLOB);
+                INSERT INTO ccbud_migration_bloat(payload) VALUES (zeroblob(\(discardedBytes)));
+                DROP TABLE ccbud_migration_bloat;
+                PRAGMA wal_checkpoint(TRUNCATE);
+                """,
+                database: database
+            )
+        }
+    }
+
+    private func executeRaw(_ sql: String, database: OpaquePointer) throws {
+        var detail: UnsafeMutablePointer<CChar>?
+        let status = sqlite3_exec(database, sql, nil, nil, &detail)
+        defer { if let detail { sqlite3_free(detail) } }
+        guard status == SQLITE_OK else {
+            let message = detail.map { String(cString: $0) } ?? "SQLite \(status)"
+            throw NSError(
+                domain: "ConversationIndexDatabaseTests",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+    }
+
     private func indexed(file: URL, id: String, scope: String) -> ConversationIndexedSession {
         ConversationIndexedSession(
             metadata: makeMetadata(file: file, id: id),
@@ -225,6 +590,100 @@ final class ConversationIndexDatabaseTests: XCTestCase {
             messageCount: 4,
             diagnostics: .init(decodedLines: 11, malformedLines: 2)
         )
+    }
+}
+
+private final class DatabaseCancellationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func isCancelled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+private final class DatabasePollingCancellationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancellationPoll: Int
+    private var pollCountStorage = 0
+
+    init(cancelOnPoll: Int) {
+        cancellationPoll = max(1, cancelOnPoll)
+    }
+
+    var pollCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pollCountStorage
+    }
+
+    func poll() -> Bool {
+        lock.lock()
+        pollCountStorage += 1
+        let shouldCancel = pollCountStorage >= cancellationPoll
+        lock.unlock()
+        return shouldCancel
+    }
+}
+
+private final class DatabaseMaintenanceResultProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var errorStorage: Error?
+
+    var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return errorStorage
+    }
+
+    func run(_ operation: () throws -> Void) {
+        do {
+            try operation()
+        } catch {
+            lock.lock()
+            errorStorage = error
+            lock.unlock()
+        }
+    }
+}
+
+private final class ConcurrentDatabaseOpenProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generationStorage: [Int64] = []
+    private var errorStorage: [String] = []
+
+    var generations: [Int64] {
+        lock.lock()
+        defer { lock.unlock() }
+        return generationStorage.sorted()
+    }
+
+    var errors: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return errorStorage
+    }
+
+    func open(_ file: URL) {
+        do {
+            let database = try ConversationIndexDatabase(file: file)
+            let generation = try database.generation()
+            lock.lock()
+            generationStorage.append(generation)
+            lock.unlock()
+        } catch {
+            lock.lock()
+            errorStorage.append(String(describing: error))
+            lock.unlock()
+        }
     }
 }
 
