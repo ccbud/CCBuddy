@@ -20,11 +20,15 @@ enum ClaudeCLIE2ETestSupport {
     }
 
     static func claudeExecutable(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
-        executable(
+        let repositoryPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Vendor/test-tools/claude").path
+        return executable(
             override: environment["CCBUD_CLAUDE_BINARY"],
             name: "claude",
             environment: environment,
             fallbacks: [
+                repositoryPath,
                 FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent(".local/bin/claude").path,
                 "/opt/homebrew/bin/claude",
@@ -133,10 +137,10 @@ enum ClaudeCLIE2ETestSupport {
     ) -> String? {
         var candidates: [String] = []
         if let override, !override.isEmpty { candidates.append(override) }
+        candidates.append(contentsOf: fallbacks)
         candidates.append(contentsOf: (environment["PATH"] ?? "")
             .split(separator: ":")
             .map { URL(fileURLWithPath: String($0)).appendingPathComponent(name).path })
-        candidates.append(contentsOf: fallbacks)
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 

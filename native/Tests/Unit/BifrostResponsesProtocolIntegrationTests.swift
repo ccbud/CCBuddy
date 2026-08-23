@@ -687,7 +687,7 @@ final class BifrostResponsesProtocolIntegrationTests: XCTestCase {
         let repositoryPath = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Vendor/bifrost-http").path
-        let candidates = [environmentPath, bundledPath, repositoryPath].compactMap { $0 }
+        let candidates = [environmentPath, repositoryPath, bundledPath].compactMap { $0 }
         guard let sourcePath = candidates.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }) else { return nil }

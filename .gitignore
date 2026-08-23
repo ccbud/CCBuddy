@@ -18,6 +18,7 @@ native/TestResults*-attachments/
 native/ReleaseValidation-*/
 native/VisualComparison/
 native/Vendor/bifrost-http
+native/Vendor/test-tools/
 native/*.xcworkspace/xcuserdata/
 native/*.xcodeproj/xcuserdata/
 /main

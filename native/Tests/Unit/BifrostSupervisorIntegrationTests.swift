@@ -657,7 +657,7 @@ final class BifrostSupervisorIntegrationTests: XCTestCase {
         let repositoryPath = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Vendor/bifrost-http").path
-        let candidates = [environmentPath, bundledPath, repositoryPath].compactMap { $0 }
+        let candidates = [environmentPath, repositoryPath, bundledPath].compactMap { $0 }
         guard let sourcePath = candidates.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }) else { return nil }
@@ -757,8 +757,12 @@ final class BifrostSupervisorIntegrationTests: XCTestCase {
     private func codexBinaryPath() -> String? {
         let environment = ProcessInfo.processInfo.environment
         let home = FileManager.default.homeDirectoryForCurrentUser
+        let repositoryPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Vendor/test-tools/codex").path
         var candidates: [String] = [
             environment["CCBUD_CODEX_BINARY"],
+            repositoryPath,
             home.appendingPathComponent(".local/bin/codex").path,
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
