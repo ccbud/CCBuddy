@@ -6,7 +6,7 @@
 
 **Manage and review completed Coding Agent CLI sessions.**
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-5b6cff?style=flat-square)](#installation) [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20silicon-5b6cff?style=flat-square&logo=apple&logoColor=white)](#installation) [![Built with SwiftUI](https://img.shields.io/badge/built%20with-SwiftUI-F05138?style=flat-square&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
 
 [Download](https://github.com/ccbud/ccbud/releases) · **English** · [简体中文](./README.zh-CN.md)
 
@@ -14,7 +14,7 @@
 
 ---
 
-**CC Buddy** is a cross-platform desktop app for managing and reviewing local Coding Agent CLI sessions. It does not run the agent for you; it turns histories already written by your CLIs into readable, searchable timelines. After a task finishes, you can trace its goal, decisions, tool calls, subagents, changes, failures, and final outcome. An optional local gateway is included for model API conversion.
+**CC Buddy** is a native macOS app for managing and reviewing local Coding Agent CLI sessions. It does not run the agent for you; it turns histories already written by your CLIs into readable, searchable timelines. After a task finishes, you can trace its goal, decisions, tool calls, subagents, changes, failures, and final outcome. An optional local gateway is included for model API conversion.
 
 ```text
 CLI session histories ──▶ CC Buddy ──▶ browse · search · trace · export · review
@@ -37,9 +37,11 @@ The gateway binds to `127.0.0.1`; inference requests still go to the provider yo
 
 ## Installation
 
-Download the latest build for macOS, Windows, or Linux from [Releases](https://github.com/ccbud/ccbud/releases).
+CC Buddy 2.x supports **Apple-silicon Macs running macOS 13 or newer**. Download the signed arm64 DMG from [Releases](https://github.com/ccbud/ccbud/releases).
 
-Homebrew (macOS):
+Version 2 is the native Swift/SwiftUI replacement and does not publish Intel Mac, Windows, or Linux builds. Legacy 1.x artifacts remain available on the Releases page, but those platforms do not receive the 2.x application or updater channel.
+
+Homebrew (Apple silicon):
 
 ```bash
 brew install --cask ccbud/tap/ccbud
@@ -47,12 +49,20 @@ brew install --cask ccbud/tap/ccbud
 
 ## Development
 
-With Node.js and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) installed:
+Native development requires Xcode 26 and XcodeGen. Node.js is used by localization and release tooling.
 
 ```bash
 git clone https://github.com/ccbud/ccbud.git && cd ccbud
-npm install && npm start
+brew install xcodegen
+native/Scripts/fetch-bifrost.sh
+xcodegen generate --spec native/project.yml --project native
+xcodebuild -project native/CCBuddy.xcodeproj -scheme CCBuddy \
+  -destination 'platform=macOS,arch=arm64' build
 ```
+
+See [`native/README.md`](native/README.md) for the isolated unit/integration command and the
+unique-bundle-ID UI test command. The latter keeps an installed CC Buddy process out of XCTest's
+launch and termination scope.
 
 ## License
 

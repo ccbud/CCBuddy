@@ -10,3 +10,14 @@ src-tauri/target/
 src-tauri/gen/schemas/
 src-tauri/.tauri-updater.key
 src-tauri/.tauri-updater.key.pub
+native/build/
+native/DerivedData*/
+native/TestArtifacts*/
+native/*.xcresult/
+native/TestResults*-attachments/
+native/ReleaseValidation-*/
+native/VisualComparison/
+native/Vendor/bifrost-http
+native/*.xcworkspace/xcuserdata/
+native/*.xcodeproj/xcuserdata/
+/main

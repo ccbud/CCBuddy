@@ -9,13 +9,10 @@
 // plain `npm test` on a fresh clone never fails for a missing browser. Install with
 // `npm i --no-save playwright-core` and set PLAYWRIGHT_CHROMIUM to the executable if needed.
 
-const http = require('http');
 const fs = require('fs');
-const path = require('path');
 const { stubScript } = require('./smoke-fixtures');
+const { createRendererFixtureServer } = require('./renderer-fixture-server');
 
-const ROOT = path.join(__dirname, '..', 'src', 'renderer');
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const PORT = 4599;
 // Not ours: the browser's implicit favicon probe and the external analytics host (in Tauri
 // neither request exists). Matched against request URLs.
@@ -40,14 +37,7 @@ const check = (n, c, d) => {
 };
 
 function serve() {
-  const server = http.createServer((req, res) => {
-    const file = path.join(ROOT, decodeURIComponent(req.url.split('?')[0]));
-    fs.readFile(file, (err, buf) => {
-      if (err) { res.writeHead(404); res.end('404'); return; }
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
-      res.end(buf);
-    });
-  });
+  const server = createRendererFixtureServer();
   return new Promise((r) => server.listen(PORT, () => r(server)));
 }
 

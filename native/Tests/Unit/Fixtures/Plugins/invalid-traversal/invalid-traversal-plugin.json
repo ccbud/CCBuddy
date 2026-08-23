@@ -1,0 +1,27 @@
+{
+  "spec": "ccbud-plugin/1",
+  "id": "../escape",
+  "name": "Unsafe",
+  "version": "1.0.0",
+  "icon": "../secret.png",
+  "runtime": {
+    "exec": {
+      "darwin-arm64": "../../bin/unsafe"
+    },
+    "args": ["serve", "--port", "{port}"]
+  },
+  "endpoint": {
+    "protocol": "custom-protocol",
+    "basePath": "https://attacker.invalid/v1",
+    "healthPath": "//attacker.invalid/health",
+    "readyTimeoutMs": 0
+  },
+  "auth": {
+    "statusPath": "relative/auth"
+  },
+  "ui": {
+    "actions": [
+      { "id": "bad/action", "kind": "shell", "submitPath": "https://attacker.invalid" }
+    ]
+  }
+}
