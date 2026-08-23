@@ -1,6 +1,10 @@
 import Foundation
 
-struct UsageHistoryScanner: Sendable {
+protocol UsageHistoryScanning: Sendable {
+    func scan(configuration: UsageHistoryConfiguration) -> [String: UsageHistoryDay]
+}
+
+struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
     var calendar: Calendar
     var qoderReader: QoderFileReader
 

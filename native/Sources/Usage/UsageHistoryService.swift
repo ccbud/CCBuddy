@@ -228,7 +228,7 @@ actor UsageHistoryService {
         let task: Task<[String: UsageHistoryDay], Error>
     }
 
-    private let scanner: UsageHistoryScanner
+    private let scanner: any UsageHistoryScanning
     private let calendar: Calendar
     private var cachedSignature: String?
     private var cachedDays: [String: UsageHistoryDay] = [:]
@@ -236,9 +236,12 @@ actor UsageHistoryService {
     private var inFlight: InFlight?
     private var draining: InFlight?
 
-    init(calendar: Calendar = .current) {
+    init(
+        calendar: Calendar = .current,
+        scanner: (any UsageHistoryScanning)? = nil
+    ) {
         self.calendar = calendar
-        scanner = UsageHistoryScanner(calendar: calendar)
+        self.scanner = scanner ?? UsageHistoryScanner(calendar: calendar)
     }
 
     func summary(

@@ -98,7 +98,13 @@ final class UsageHistoryResilienceTests: XCTestCase {
         let container = try temporaryDirectory("usage-invalidate-drain")
         let slowRoot = container.appendingPathComponent("slow", isDirectory: true)
         let replacementRoot = container.appendingPathComponent("replacement", isDirectory: true)
-        let slowFile = try writeSlowHistory(under: slowRoot)
+        _ = try writeHistory(
+            under: slowRoot,
+            name: "slow.jsonl",
+            id: "slow",
+            input: 1,
+            output: 1
+        )
         let replacementFile = try writeHistory(
             under: replacementRoot,
             name: "replacement.jsonl",
@@ -106,7 +112,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
             input: 8,
             output: 2
         )
-        try ageAccessAndModificationTimes(of: slowFile)
         try ageAccessAndModificationTimes(of: replacementFile)
 
         let slowConfiguration = UsageHistoryConfiguration(
@@ -117,23 +122,22 @@ final class UsageHistoryResilienceTests: XCTestCase {
             historyDirs: [replacementRoot.path],
             homeDirectory: container
         )
-        let service = UsageHistoryService(calendar: Self.utcCalendar)
-        let slowStamp = try accessStamp(of: slowFile)
+        let scanner = BlockingUsageHistoryScanner(calendar: Self.utcCalendar)
+        defer { scanner.release() }
+        let service = UsageHistoryService(calendar: Self.utcCalendar, scanner: scanner)
         let replacementStamp = try accessStamp(of: replacementFile)
 
         let slowScan = Task {
             try await service.summary(configuration: slowConfiguration, range: .all)
         }
-        try await waitUntilRead(slowFile, after: slowStamp)
+        try await scanner.waitUntilStarted()
 
         let invalidationFinished = LockedFlag()
         let invalidation = Task.detached(priority: .high) {
             await service.invalidate()
             invalidationFinished.set()
         }
-        // Give the high-priority invalidation call a deterministic chance to enter the actor and
-        // cancel the scan while its one very large record is still being decoded.
-        for _ in 0..<8 { await Task.yield() }
+        try await scanner.waitUntilCancellationObserved()
 
         let replacementScan = Task {
             try await service.summary(configuration: replacementConfiguration, range: .all)
@@ -150,6 +154,7 @@ final class UsageHistoryResilienceTests: XCTestCase {
             "A replacement scan must not overlap the cancelled scan that invalidate is draining"
         )
 
+        scanner.release()
         await invalidation.value
         let replacement = try await replacementScan.value
         _ = try? await slowScan.value
@@ -162,7 +167,13 @@ final class UsageHistoryResilienceTests: XCTestCase {
         let container = try temporaryDirectory("usage-shutdown-drain")
         let slowRoot = container.appendingPathComponent("slow", isDirectory: true)
         let replacementRoot = container.appendingPathComponent("replacement", isDirectory: true)
-        let slowFile = try writeSlowHistory(under: slowRoot)
+        _ = try writeHistory(
+            under: slowRoot,
+            name: "slow.jsonl",
+            id: "slow",
+            input: 1,
+            output: 1
+        )
         let replacementFile = try writeHistory(
             under: replacementRoot,
             name: "replacement.jsonl",
@@ -170,7 +181,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
             input: 11,
             output: 2
         )
-        try ageAccessAndModificationTimes(of: slowFile)
         try ageAccessAndModificationTimes(of: replacementFile)
 
         let slowConfiguration = UsageHistoryConfiguration(
@@ -181,7 +191,9 @@ final class UsageHistoryResilienceTests: XCTestCase {
             historyDirs: [replacementRoot.path],
             homeDirectory: container
         )
-        let service = UsageHistoryService(calendar: Self.utcCalendar)
+        let scanner = BlockingUsageHistoryScanner(calendar: Self.utcCalendar)
+        defer { scanner.release() }
+        let service = UsageHistoryService(calendar: Self.utcCalendar, scanner: scanner)
         let repository = ConfigRepository(configURL: container.appendingPathComponent("config.json"))
         var config = AppConfig(gatewayEnabled: false)
         config.historyDirs = [slowRoot.path]
@@ -192,20 +204,19 @@ final class UsageHistoryResilienceTests: XCTestCase {
             environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"],
             usageHistoryService: service
         )
-        let slowStamp = try accessStamp(of: slowFile)
         let replacementStamp = try accessStamp(of: replacementFile)
 
         let slowScan = Task {
             try await service.summary(configuration: slowConfiguration, range: .all)
         }
-        try await waitUntilRead(slowFile, after: slowStamp)
+        try await scanner.waitUntilStarted()
 
         let shutdownFinished = LockedFlag()
         let shutdown = Task { @MainActor in
             await model.shutdown()
             shutdownFinished.set()
         }
-        for _ in 0..<8 { await Task.yield() }
+        try await scanner.waitUntilCancellationObserved()
 
         let postShutdownScan = Task {
             try await service.summary(configuration: replacementConfiguration, range: .all)
@@ -222,6 +233,7 @@ final class UsageHistoryResilienceTests: XCTestCase {
             "shutdown must not leave the old usage scan running beside a replacement scan"
         )
 
+        scanner.release()
         await shutdown.value
         let replacement = try await postShutdownScan.value
         _ = try? await slowScan.value
@@ -256,22 +268,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
         root.appendingPathComponent("projects/fixture/session.jsonl")
     }
 
-    /// A single large line is intentional. UsageHistoryScanner checks cancellation between lines;
-    /// once decoding of this line begins, invalidate/shutdown must await that in-progress work.
-    private func writeSlowHistory(under root: URL) throws -> URL {
-        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        let file = project.appendingPathComponent("slow.jsonl")
-        var data = Data(
-            #"{"timestamp":"2026-07-01T10:00:00Z","message":{"id":"slow","model":"slow-model","usage":{"input_tokens":1,"output_tokens":1}},"padding":""#.utf8
-        )
-        data.append(Data(repeating: 0x61, count: 48 * 1_024 * 1_024))
-        data.append(Data(#""}"#.utf8))
-        data.append(0x0A)
-        try data.write(to: file)
-        return file
-    }
-
     private func ageAccessAndModificationTimes(of file: URL) throws {
         let times = [
             timespec(tv_sec: 1_600_000_000, tv_nsec: 0),
@@ -297,14 +293,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
             seconds: Int64(information.st_atimespec.tv_sec),
             nanoseconds: Int64(information.st_atimespec.tv_nsec)
         )
-    }
-
-    private func waitUntilRead(_ file: URL, after original: FileAccessStamp) async throws {
-        for _ in 0..<5_000 {
-            if try accessStamp(of: file) != original { return }
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
-        throw ResilienceTestError.timedOutWaitingForRead(file.path)
     }
 
     private static var utcCalendar: Calendar {
@@ -333,15 +321,79 @@ private struct FileAccessStamp: Equatable {
     let nanoseconds: Int64
 }
 
-private enum ResilienceTestError: LocalizedError {
-    case timedOutWaitingForRead(String)
+/// Holds the first synchronous scan after it has entered non-async work. Cancellation is observed
+/// but deliberately does not release the call, making drain ordering deterministic on every CI
+/// machine without relying on a large JSON allocation being slow enough.
+private final class BlockingUsageHistoryScanner: UsageHistoryScanning, @unchecked Sendable {
+    private let condition = NSCondition()
+    private let backing: UsageHistoryScanner
+    private var calls = 0
+    private var firstCallStarted = false
+    private var observedCancellation = false
+    private var released = false
 
-    var errorDescription: String? {
-        switch self {
-        case .timedOutWaitingForRead(let path):
-            return "Timed out waiting for usage scanner to read \(path)"
-        }
+    init(calendar: Calendar) {
+        backing = UsageHistoryScanner(calendar: calendar)
     }
+
+    func scan(configuration: UsageHistoryConfiguration) -> [String: UsageHistoryDay] {
+        condition.lock()
+        calls += 1
+        let shouldBlock = calls == 1
+        if shouldBlock {
+            firstCallStarted = true
+            condition.broadcast()
+            while !released {
+                if Task.isCancelled {
+                    observedCancellation = true
+                    condition.broadcast()
+                }
+                _ = condition.wait(until: Date().addingTimeInterval(0.002))
+            }
+        }
+        condition.unlock()
+        return backing.scan(configuration: configuration)
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitUntilStarted() async throws {
+        for _ in 0..<5_000 {
+            if hasStarted { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        throw BlockingUsageScannerError.timedOutWaitingForStart
+    }
+
+    func waitUntilCancellationObserved() async throws {
+        for _ in 0..<5_000 {
+            if hasObservedCancellation { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        throw BlockingUsageScannerError.timedOutWaitingForCancellation
+    }
+
+    private var hasStarted: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return firstCallStarted
+    }
+
+    private var hasObservedCancellation: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedCancellation
+    }
+}
+
+private enum BlockingUsageScannerError: Error {
+    case timedOutWaitingForStart
+    case timedOutWaitingForCancellation
 }
 
 private final class LockedFlag: @unchecked Sendable {
