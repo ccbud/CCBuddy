@@ -451,6 +451,54 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(exportResultOpener.openedFiles, [htmlDestination.standardizedFileURL])
     }
 
+    func testIndexedSearchHitSelectsSubagentAndJumpsToExactSequence() async {
+        var metadata = Self.metadata(
+            id: "indexed-hit",
+            title: "Indexed hit",
+            tags: [],
+            file: "/tmp/indexed-hit.jsonl"
+        )
+        metadata.subagentCount = 1
+        let child = HistorySubagent(
+            agentID: "child",
+            file: URL(fileURLWithPath: "/tmp/indexed-hit/subagents/child.jsonl"),
+            type: "explore",
+            count: 3,
+            messages: ["before", "exact indexed target", "after"].map {
+                HistoryMessage(role: "assistant", content: [.init(type: "text", text: $0)])
+            }
+        )
+        let session = HistorySession(
+            metadata: metadata,
+            messages: [HistoryMessage(role: "user", content: [.init(type: "text", text: "root")])],
+            subagents: ["spawn-child": child]
+        )
+        let provider = FakeConversationRepository(
+            projects: [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            sessions: [ConversationFilter.fileKey(metadata.file): session]
+        )
+        let store = ConversationStore(
+            repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity)
+        )
+        let hit = HistorySearchHit(
+            sessionID: metadata.sessionID,
+            file: metadata.file,
+            source: metadata.source,
+            agent: "spawn-child",
+            agentType: "explore",
+            sequence: 1,
+            snippet: "exact indexed target",
+            count: 1
+        )
+
+        await store.select(metadata, searchHit: hit)
+
+        XCTAssertEqual(store.activeTranscriptID, .subagent("spawn-child"))
+        XCTAssertEqual(store.activeTranscript?.messages, child.messages)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+    }
+
     func testFailedHTMLExportDoesNotOpenResultAndKeepsLocalizedErrorSource() async {
         let metadata = Self.metadata(
             id: "failed-html",

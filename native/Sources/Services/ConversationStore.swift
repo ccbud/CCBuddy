@@ -542,6 +542,7 @@ final class ConversationStore: ObservableObject {
     private var configurationSignature: String?
     private var isActive = false
     private var observedModificationDate: Date?
+    private var observedIndexRevision: Int64?
 
     private var listGeneration = UUID()
     private var searchGeneration = UUID()
@@ -654,9 +655,8 @@ final class ConversationStore: ObservableObject {
             importsRoot: importsRoot
         )
         self.init(
-            repository: HistoryRepository(
-                historyDirs: config.historyDirs,
-                active: config.historyActive,
+            repository: Self.productionHistoryProvider(
+                config: config,
                 importsRoot: mutationConfiguration.importsRoot
             ),
             mutationService: ConversationMutationService(configuration: mutationConfiguration),
@@ -674,6 +674,7 @@ final class ConversationStore: ObservableObject {
     }
 
     deinit {
+        (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
         listTask?.cancel()
         listWorker?.cancel()
         searchTask?.cancel()
@@ -695,30 +696,36 @@ final class ConversationStore: ObservableObject {
         guard signature != configurationSignature else { return }
         configurationSignature = signature
         cancelTransientWork()
-        repository = HistoryRepository(
-            historyDirs: config.historyDirs,
-            active: config.historyActive,
+        (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
+        repository = Self.productionHistoryProvider(
+            config: config,
             importsRoot: mutationConfiguration.importsRoot
         )
+        observedIndexRevision = nil
         mutationService = ConversationMutationService(configuration: mutationConfiguration)
         historyActive = config.historyActive
         projects = []
         scopeSnapshot = ConversationScopeSnapshot()
         listState = .idle
         clearSelection()
-        if isActive { requestReload() }
+        if isActive {
+            requestReload()
+            startIndexing()
+        }
     }
 
     func activate() {
         guard !isActive else { return }
         isActive = true
         if listState == .idle { requestReload() }
+        startIndexing()
         startPolling()
     }
 
     func deactivate() {
         guard isActive else { return }
         isActive = false
+        (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
         pollingTask?.cancel()
         pollingTask = nil
         listTask?.cancel()
@@ -769,7 +776,10 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    func select(_ metadata: HistorySessionMetadata) async {
+    func select(
+        _ metadata: HistorySessionMetadata,
+        searchHit: HistorySearchHit? = nil
+    ) async {
         let file = metadata.file.standardizedFileURL
         detailWorker?.cancel()
         detailGeneration = UUID()
@@ -790,6 +800,19 @@ final class ConversationStore: ObservableObject {
             initialSelection: true,
             followLatest: isSelectedSessionLive
         )
+        guard detailGeneration == generation, detailState == .loaded,
+              let searchHit else { return }
+        let transcriptID: ConversationTranscriptID = searchHit.agent == "main"
+            ? .main
+            : .subagent(searchHit.agent)
+        if transcriptTabs.contains(where: { $0.id == transcriptID }) {
+            activeTranscriptID = transcriptID
+            detailRevision += 1
+        }
+        if let sequence = searchHit.sequence,
+           activeTranscript?.messages.indices.contains(sequence) == true {
+            jump(to: sequence)
+        }
     }
 
     func retrySelectedSession() async {
@@ -954,6 +977,7 @@ final class ConversationStore: ObservableObject {
                 )
                 try Task.checkCancellation()
             }.value
+            await synchronizeIndex(files: [file])
             await reloadAndReselect(file)
             actionMessage = "标题与标签已更新"
             actionIsError = false
@@ -974,6 +998,7 @@ final class ConversationStore: ObservableObject {
                 try Task.checkCancellation()
                 try mutationService.softDelete(metadata)
             }.value
+            await synchronizeIndex(files: [metadata.file])
             usageHistoryDidChange?()
             clearSelection()
             await reload()
@@ -996,6 +1021,7 @@ final class ConversationStore: ObservableObject {
                 try Task.checkCancellation()
                 try mutationService.restore(metadata)
             }.value
+            await synchronizeIndex(files: [metadata.file])
             usageHistoryDidChange?()
             clearSelection()
             await reload()
@@ -1018,6 +1044,7 @@ final class ConversationStore: ObservableObject {
                 try Task.checkCancellation()
                 try mutationService.permanentlyDelete(metadata)
             }.value
+            await synchronizeIndex()
             usageHistoryDidChange?()
             clearSelection()
             await reload()
@@ -1058,6 +1085,11 @@ final class ConversationStore: ObservableObject {
         actionMessage = parts.isEmpty ? "没有可导入的会话" : parts.joined(separator: " · ")
         actionIsError = summary.failed > 0 && summary.imported == 0
         if summary.imported > 0 {
+            let importedFiles = summary.results.compactMap { disposition -> URL? in
+                guard case .imported(let file) = disposition else { return nil }
+                return file
+            }
+            await synchronizeIndex(files: importedFiles)
             usageHistoryDidChange?()
             if let requestHistoryScope { requestHistoryScope("__imported__") }
         } else {
@@ -1139,6 +1171,63 @@ final class ConversationStore: ObservableObject {
     static func isLive(lastActivity: Date, now: Date = Date()) -> Bool {
         let age = now.timeIntervalSince(lastActivity)
         return age >= 0 && age < liveWindow
+    }
+
+    private static func productionHistoryProvider(
+        config: AppConfig,
+        importsRoot: URL
+    ) -> any ConversationHistoryProviding {
+        do {
+            return try IndexedHistoryRepository(
+                historyDirs: config.historyDirs,
+                active: config.historyActive,
+                importsRoot: importsRoot
+            )
+        } catch {
+            // The catalog is disposable. If it cannot be opened, retain the raw-file repository
+            // so conversation browsing and every export path remain available.
+            return HistoryRepository(
+                historyDirs: config.historyDirs,
+                active: config.historyActive,
+                importsRoot: importsRoot
+            )
+        }
+    }
+
+    private func startIndexing() {
+        guard let indexed = repository as? any ConversationIndexedHistoryProviding else { return }
+        indexed.startIndexing { [weak self] revision in
+            Task { @MainActor [weak self] in
+                self?.receiveIndexRevision(revision)
+            }
+        }
+    }
+
+    private func receiveIndexRevision(_ revision: Int64) {
+        guard isActive, observedIndexRevision != revision else { return }
+        observedIndexRevision = revision
+        requestReload()
+        let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty { updateListQuery(listQuery) }
+    }
+
+    /// Brings the derived catalog up to date before an explicit mutation reloads the UI. A cache
+    /// failure never turns a successful producer-file mutation into a user-visible failure.
+    private func synchronizeIndex(files: [URL]? = nil) async {
+        guard let indexed = repository as? any ConversationIndexedHistoryProviding else { return }
+        do {
+            try await Task.detached(priority: .utility) {
+                try Task.checkCancellation()
+                if let files {
+                    try indexed.refreshIndex(for: files)
+                } else {
+                    try indexed.reconcileIndex()
+                }
+                try Task.checkCancellation()
+            }.value
+        } catch {
+            // FSEvents and the next full reconciliation get another chance; raw reads still work.
+        }
     }
 
     private static func signature(for config: AppConfig, importsRoot: URL) -> String {
