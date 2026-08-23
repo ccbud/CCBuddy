@@ -446,7 +446,7 @@ final class CCBuddyUITests: XCTestCase {
         addProvider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         let editor = app.otherElements["provider.editor"]
         if !editor.waitForExistence(timeout: 2) {
-            addProvider.click()
+            addProvider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         }
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         keepMainContentScreenshot(named: "native-visual-provider-editor", shell: shell)
