@@ -34,6 +34,7 @@ final class CCBuddyUITests: XCTestCase {
         let application = XCUIApplication()
         application.launchEnvironment["CCBUD_UI_TESTING"] = "1"
         application.launchEnvironment["CCBUD_HOME"] = isolatedHome.path
+        application.launchEnvironment["CCBUD_UI_LANGUAGE"] = "zh"
         return application
     }
 
@@ -415,7 +416,16 @@ final class CCBuddyUITests: XCTestCase {
         let windowFrame = window.frame
         let titleBarInset = shell.frame.minY - windowFrame.minY
         XCTAssertEqual(windowFrame.width, 1_180, accuracy: 0.5)
-        XCTAssertEqual(windowFrame.height - titleBarInset, 760, accuracy: 0.5)
+        let hostingScreen = NSScreen.screens.first { $0.visibleFrame.intersects(windowFrame) }
+            ?? NSScreen.main
+        let availableContentHeight = hostingScreen.map {
+            max(0, $0.visibleFrame.height - titleBarInset)
+        } ?? 760
+        XCTAssertEqual(
+            windowFrame.height - titleBarInset,
+            min(760, availableContentHeight),
+            accuracy: 0.5
+        )
         let visualTokens = app.staticTexts["providers.usage.tokens"]
         XCTAssertTrue(visualTokens.waitForExistence(timeout: 5))
         let usageLoaded = XCTNSPredicateExpectation(
