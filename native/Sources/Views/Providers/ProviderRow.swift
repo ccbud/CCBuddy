@@ -11,6 +11,7 @@ struct ProviderRow: View {
     let active: Bool
     let pluginRunning: Bool?
     let probeState: ProviderRowProbeState
+    let dragProvider: () -> NSItemProvider
     let select: () -> Void
     let test: () -> Void
     let edit: () -> Void
@@ -104,6 +105,7 @@ struct ProviderRow: View {
             }
         }
         .frame(width: 8, height: 18)
+        .onDrag(dragProvider)
         .accessibilityHidden(true)
         .help("拖动排序")
     }

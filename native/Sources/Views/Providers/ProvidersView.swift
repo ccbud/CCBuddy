@@ -114,6 +114,10 @@ struct ProvidersView: View {
                         active: provider.id == model.config.activeProviderId,
                         pluginRunning: pluginRunning(for: provider),
                         probeState: probeStates[provider.id] ?? .idle,
+                        dragProvider: {
+                            draggedProviderID = provider.id
+                            return NSItemProvider(object: provider.id as NSString)
+                        },
                         select: { select(provider) },
                         test: { test(provider) },
                         edit: {
@@ -122,10 +126,6 @@ struct ProvidersView: View {
                         },
                         delete: { pendingAction = .init(kind: .delete, provider: provider) }
                     )
-                    .onDrag {
-                        draggedProviderID = provider.id
-                        return NSItemProvider(object: provider.id as NSString)
-                    }
                     .onDrop(of: [UTType.text], isTargeted: nil) { _ in
                         guard let draggedProviderID, draggedProviderID != provider.id else {
                             self.draggedProviderID = nil

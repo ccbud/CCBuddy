@@ -208,8 +208,8 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(delete.waitForExistence(timeout: 3))
         delete.click()
 
-        XCTAssertTrue(app.staticTexts["删除服务？"].waitForExistence(timeout: 2))
-        XCTAssertFalse(app.staticTexts["切换到“Backup”？"].exists)
+        XCTAssertTrue(app.buttons["删除"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.buttons["切换"].exists)
         XCTAssertTrue(app.buttons["取消"].exists)
     }
 
@@ -436,7 +436,9 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["providers.usage.requests"].value as? String, "42 次请求")
         keepMainContentScreenshot(named: "native-visual-providers", shell: shell)
 
-        app.buttons["providers.add"].click()
+        let addProvider = app.buttons["providers.add"]
+        XCTAssertTrue(addProvider.waitForExistence(timeout: 2))
+        addProvider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         let editor = app.otherElements["provider.editor"]
         XCTAssertTrue(editor.waitForExistence(timeout: 2))
         keepMainContentScreenshot(named: "native-visual-provider-editor", shell: shell)
