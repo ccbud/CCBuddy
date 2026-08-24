@@ -98,13 +98,7 @@ fn aliases_long_utf8_names_deterministically_within_64_bytes() {
         second_context.chat_name_for_response_tool(&second_name, None)
     );
 
-    let restored = first_context.response_tool_item(
-        "fc_long",
-        "completed",
-        "call_long",
-        &first_alias,
-        "{}",
-    );
+    let restored =
+        first_context.response_tool_item("fc_long", "completed", "call_long", &first_alias, "{}");
     assert_eq!(restored["name"], first_name);
 }
-

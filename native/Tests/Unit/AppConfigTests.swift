@@ -100,7 +100,7 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.language, "en")
         XCTAssertEqual(config.convFontPx, 15)
         XCTAssertEqual(config.historyDirs, ["~/.claude", "~/.codex"])
-        XCTAssertEqual(config.historyActive, "__codex__")
+        XCTAssertEqual(config.historyActive, "all")
         XCTAssertEqual(config.connectTargets, ["claude", "codex"])
         XCTAssertEqual(config.retry429, .init(enabled: true, max: 8, baseMs: 500))
         XCTAssertTrue(config.insecureSkipVerify)
@@ -141,6 +141,54 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.autoUpdate, .init(check: true, autoDownload: false))
         XCTAssertEqual(config.providers.first?.name, "Mixed provider")
         XCTAssertEqual(config.additionalProperties["futureScalar"], .string("keep-me"))
+    }
+
+    func testGatewayFailoverDefaultsDisabledAndRoundTripsOrderedQueue() throws {
+        let legacy = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"providers":[{"id":"primary","name":"Primary","baseUrl":"https://primary.example/v1"}]}"#.utf8)
+        )
+        XCTAssertEqual(legacy.gatewayFailover, .init())
+
+        var config = legacy
+        config.gatewayFailover = .init(
+            enabled: true,
+            providerIds: ["missing", "secondary", "secondary", "primary"]
+        )
+        config.providers.append(Provider(
+            id: "secondary", name: "Secondary", baseUrl: "https://secondary.example/v1"
+        ))
+        config.normalize()
+
+        XCTAssertEqual(config.gatewayFailover.providerIds, ["secondary", "primary"])
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
+        XCTAssertEqual(decoded.gatewayFailover, config.gatewayFailover)
+    }
+
+    func testEnabledEmptyGatewayFailoverQueueIsNotImplicitlyFilledFromActiveProvider() throws {
+        let data = Data(#"{"activeProviderId":"b","gatewayFailover":{"enabled":true,"providerIds":[]},"providers":[{"id":"a","name":"A","baseUrl":"https://a.example/v1"},{"id":"b","name":"B","baseUrl":"https://b.example/v1"},{"id":"c","name":"C","baseUrl":"https://c.example/v1"}]}"#.utf8)
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        XCTAssertEqual(config.gatewayFailover.providerIds, [])
+    }
+
+    func testEnabledGatewayFailoverPreservesDecodedQueueOrderIndependentOfActiveProvider() throws {
+        for queue in [["a", "b", "c"], ["a", "c"]] {
+            let object: [String: Any] = [
+                "activeProviderId": "b",
+                "gatewayFailover": ["enabled": true, "providerIds": queue],
+                "providers": [
+                    ["id": "a", "name": "A", "baseUrl": "https://a.example/v1"],
+                    ["id": "b", "name": "B", "baseUrl": "https://b.example/v1"],
+                    ["id": "c", "name": "C", "baseUrl": "https://c.example/v1"],
+                ],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: object)
+            let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+            XCTAssertEqual(config.gatewayFailover.providerIds, queue)
+        }
     }
 }
 
@@ -294,7 +342,7 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
     ) -> AppModel {
         AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             environment: environment,
             isPrimaryInstance: isPrimaryInstance,
             userDefaults: defaults
@@ -399,6 +447,111 @@ private enum AppConfigMigrationFixtures {
 
 @MainActor
 final class AppModelTests: XCTestCase {
+    func testSelectingProviderDoesNotChangeEnabledFailoverQueueOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ccbud-failover-active-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let repository = ConfigRepository(configURL: root.appendingPathComponent("config.json"))
+        var initial = AppConfig.fixture
+        initial.gatewayEnabled = false
+        initial.providers.append(Provider(
+            id: "secondary", name: "Secondary", baseUrl: "https://secondary.example/v1"
+        ))
+        initial.gatewayFailover = .init(
+            enabled: true,
+            providerIds: [initial.providers[0].id, "secondary"]
+        )
+        try repository.save(initial)
+        let model = AppModel(
+            repository: repository,
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
+            environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"]
+        )
+        addTeardownBlock {
+            await model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        await model.setActiveProvider("secondary")
+
+        XCTAssertEqual(model.config.activeProviderId, "secondary")
+        XCTAssertEqual(
+            model.config.gatewayFailover.providerIds,
+            [initial.providers[0].id, "secondary"]
+        )
+        XCTAssertEqual(try repository.load(), model.config)
+    }
+
+    func testEnablingGatewayFailoverSeedsAnEmptyQueueWithOnlyTheCurrentProvider() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ccbud-failover-seed-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let repository = ConfigRepository(configURL: root.appendingPathComponent("config.json"))
+        var initial = AppConfig.fixture
+        initial.gatewayEnabled = false
+        initial.providers.append(contentsOf: [
+            Provider(id: "secondary", name: "Secondary", baseUrl: "https://secondary.example/v1"),
+            Provider(id: "tertiary", name: "Tertiary", baseUrl: "https://tertiary.example/v1"),
+        ])
+        initial.gatewayFailover = .init(enabled: false, providerIds: [])
+        try repository.save(initial)
+        let model = AppModel(
+            repository: repository,
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
+            environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"]
+        )
+        addTeardownBlock {
+            await model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        await model.setGatewayFailoverEnabled(true)
+
+        XCTAssertTrue(model.config.gatewayFailover.enabled)
+        XCTAssertEqual(model.config.gatewayFailover.providerIds, [initial.providers[0].id])
+        XCTAssertEqual(model.config.activeProviderId, initial.providers[0].id)
+        XCTAssertEqual(try repository.load(), model.config)
+    }
+
+    func testEnablingGatewayFailoverDoesNotChangeTheActiveProvider() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ccbud-failover-enable-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let repository = ConfigRepository(configURL: root.appendingPathComponent("config.json"))
+        var initial = AppConfig.fixture
+        initial.gatewayEnabled = false
+        initial.providers.append(Provider(
+            id: "secondary", name: "Secondary", baseUrl: "https://secondary.example/v1"
+        ))
+        initial.gatewayFailover = .init(
+            enabled: false,
+            providerIds: ["secondary", initial.providers[0].id]
+        )
+        try repository.save(initial)
+        let model = AppModel(
+            repository: repository,
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
+            environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"]
+        )
+        addTeardownBlock {
+            await model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        await model.setGatewayFailoverEnabled(true)
+
+        XCTAssertTrue(model.config.gatewayFailover.enabled)
+        XCTAssertEqual(
+            model.config.gatewayFailover.providerIds,
+            ["secondary", initial.providers[0].id]
+        )
+        XCTAssertEqual(model.config.activeProviderId, initial.providers[0].id)
+        XCTAssertEqual(try repository.load(), model.config)
+    }
+
     func testXcodeHostedRunUsesUnitTestRuntimeMode() {
         XCTAssertEqual(
             AppModel.runtimeMode(environment: ProcessInfo.processInfo.environment),
@@ -461,6 +614,82 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    func testConversationHistoryHomeKeepsAutomatedCanonicalAdaptersIsolated() {
+        let userHome = URL(fileURLWithPath: "/Users/ccbud-real-home", isDirectory: true)
+        let temporary = URL(fileURLWithPath: "/private/tmp/ccbud-home-tests", isDirectory: true)
+        let isolated = temporary.appendingPathComponent("isolated", isDirectory: true)
+
+        XCTAssertEqual(
+            AppModel.conversationHistoryHomeDirectory(
+                runtimeMode: .application,
+                environment: ["CCBUD_HOME": isolated.path],
+                userHomeDirectory: userHome,
+                temporaryDirectory: temporary,
+                processIdentifier: 42
+            ),
+            userHome.standardizedFileURL
+        )
+        XCTAssertEqual(
+            AppModel.conversationHistoryHomeDirectory(
+                runtimeMode: .uiTesting,
+                environment: ["CCBUD_HOME": "  \(isolated.path)  "],
+                userHomeDirectory: userHome,
+                temporaryDirectory: temporary,
+                processIdentifier: 42
+            ),
+            isolated.standardizedFileURL
+        )
+        XCTAssertEqual(
+            AppModel.conversationHistoryHomeDirectory(
+                runtimeMode: .uiTesting,
+                environment: [:],
+                userHomeDirectory: userHome,
+                temporaryDirectory: temporary,
+                processIdentifier: 42
+            ),
+            temporary.appendingPathComponent(
+                "ccbud-ui-history-home-42",
+                isDirectory: true
+            ).standardizedFileURL
+        )
+        let selfCheckEnvironment = [
+            SelfCheckEnvironmentGate.enabledKey: "1",
+            SelfCheckEnvironmentGate.homeKey: isolated.path,
+        ]
+        let selfCheckHome: URL
+        if case .enabled(let request) = SelfCheckEnvironmentGate.evaluate(
+            environment: selfCheckEnvironment,
+            userHomeDirectory: userHome
+        ) {
+            selfCheckHome = request.homeDirectory
+        } else {
+            return XCTFail("Expected the dedicated self-check home to pass isolation validation")
+        }
+        XCTAssertEqual(
+            AppModel.conversationHistoryHomeDirectory(
+                runtimeMode: .selfCheck,
+                environment: selfCheckEnvironment,
+                userHomeDirectory: userHome,
+                temporaryDirectory: temporary,
+                processIdentifier: 42
+            ),
+            selfCheckHome
+        )
+        XCTAssertEqual(
+            AppModel.conversationHistoryHomeDirectory(
+                runtimeMode: .selfCheck,
+                environment: [SelfCheckEnvironmentGate.enabledKey: "1"],
+                userHomeDirectory: userHome,
+                temporaryDirectory: temporary,
+                processIdentifier: 42
+            ),
+            temporary.appendingPathComponent(
+                "ccbud-rejected-selfcheck-42",
+                isDirectory: true
+            ).standardizedFileURL
+        )
+    }
+
     func testLegacySmokeVisualFixtureRequiresExactValueAndUITestingMode() {
         let fixtureOnly = ["CCBUD_UI_VISUAL_FIXTURE": "legacy-smoke"]
         XCTAssertNil(AppModel.uiVisualFixture(environment: fixtureOnly))
@@ -486,7 +715,7 @@ final class AppModelTests: XCTestCase {
         let repository = ConfigRepository(configURL: root.appendingPathComponent("config.json"))
         let model = AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             environment: [
                 "CCBUD_UI_TESTING": "1",
                 "CCBUD_UI_VISUAL_FIXTURE": "legacy-smoke",
@@ -661,7 +890,7 @@ final class AppModelTests: XCTestCase {
 
             let model = AppModel(
                 repository: repository,
-                supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+                supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
                 launchAtLoginController: controller,
                 environment: scenario.environment,
                 isPrimaryInstance: scenario.primary
@@ -715,17 +944,17 @@ final class AppModelTests: XCTestCase {
 
         let model = AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": container.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": container.path]),
             environment: environment,
             historyDirectoryDiscovery: discovery
         )
 
         XCTAssertEqual(model.config.historyDirs, ["~/.claude", codex.path])
-        XCTAssertEqual(model.config.historyActive, codex.path)
+        XCTAssertEqual(model.config.historyActive, "all")
         XCTAssertEqual(model.config.additionalProperties["codexDirAutoAdded"], .bool(true))
         let persisted = try repository.load()
         XCTAssertEqual(persisted.historyDirs, ["~/.claude", codex.path])
-        XCTAssertEqual(persisted.historyActive, codex.path)
+        XCTAssertEqual(persisted.historyActive, "all")
         XCTAssertTrue(model.usageHistoryConfiguration.activeRoots.contains {
             $0.standardizedFileURL.path == codex.standardizedFileURL.path
         })
@@ -734,7 +963,60 @@ final class AppModelTests: XCTestCase {
             model.conversationStore.configuredHistoryDirectories,
             ["~/.claude", codex.path]
         )
-        XCTAssertEqual(model.conversationStore.historyActive, codex.path)
+        XCTAssertEqual(model.conversationStore.historyActive, "all")
+    }
+
+    func testLegacyConcreteHistoryScopeStartsUnifiedLibraryAndShowsOtherRoots() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-app-legacy-history-scope-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let first = container.appendingPathComponent("first", isDirectory: true)
+        let second = container.appendingPathComponent("second", isDirectory: true)
+        let session = second.appendingPathComponent("projects/fixture/from-second.jsonl")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try HistoryTestSupport.write([
+            #"{"type":"user","uuid":"legacy-scope-user","timestamp":"2026-08-22T00:00:00.000Z","sessionId":"legacy-scope-session","cwd":"/workspace/second","message":{"role":"user","content":"visible from the unified library"}}"#,
+        ], to: session)
+
+        let repository = ConfigRepository(configURL: container.appendingPathComponent("config.json"))
+        var legacy = AppConfig.fixture
+        legacy.gatewayEnabled = false
+        legacy.autoUpdate.check = false
+        legacy.autoUpdate.autoDownload = false
+        legacy.historyDirs = [first.path, second.path]
+        legacy.historyActive = first.path
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        // Bypass ConfigRepository.save so the fixture really represents an older on-disk config.
+        try JSONEncoder().encode(legacy).write(to: repository.configURL)
+
+        let loaded = try repository.load()
+        XCTAssertEqual(loaded.historyActive, "all")
+
+        let provider = HistoryRepository(
+            historyDirs: loaded.historyDirs,
+            active: loaded.historyActive,
+            homeDirectory: container,
+            importsRoot: container.appendingPathComponent("imports", isDirectory: true)
+        )
+        let store = ConversationStore(
+            repository: provider,
+            historyActive: loaded.historyActive,
+            homeDirectory: container,
+            pollIntervalNanoseconds: 60_000_000_000,
+            searchDelayNanoseconds: 0
+        )
+        store.activate()
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline,
+              !store.projects.lazy.flatMap(\.sessions).contains(where: {
+                  $0.sessionID == "legacy-scope-session"
+              }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(store.projects.lazy.flatMap(\.sessions).contains {
+            $0.sessionID == "legacy-scope-session"
+        })
+        store.deactivate()
     }
 
     func testUsageHistorySurfacesIgnoreConversationScopeAndAggregateAllConfiguredRoots() throws {
@@ -753,11 +1035,11 @@ final class AppModelTests: XCTestCase {
 
         let model = AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"]
         )
 
-        XCTAssertEqual(model.config.historyActive, first.path)
+        XCTAssertEqual(model.config.historyActive, "all")
         XCTAssertEqual(model.usageHistoryConfiguration.active, "all")
         let roots = Set(model.usageHistoryConfiguration.activeRoots.map(\.path))
         XCTAssertTrue(roots.contains(first.resolvingSymlinksInPath().standardizedFileURL.path))
@@ -769,7 +1051,7 @@ final class AppModelTests: XCTestCase {
             .appendingPathComponent("ccbud-app-model-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let supervisor = BifrostSupervisor(environment: ["CCBUD_HOME": root.path])
+        let supervisor = GatewaySupervisor(environment: ["CCBUD_HOME": root.path])
         let model = AppModel(
             repository: ConfigRepository(configURL: root.appendingPathComponent("config.json")),
             supervisor: supervisor,
@@ -785,7 +1067,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(supervisorState, .stopped)
     }
 
-    func testLegacyGatewayTokenIsMigratedToBifrostVirtualKeyPrefixBeforeStartup() throws {
+    func testExistingGatewayTokenIsPreservedBeforeStartup() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ccbud-token-migration-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -797,12 +1079,12 @@ final class AppModelTests: XCTestCase {
 
         let model = AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"]
         )
 
-        XCTAssertEqual(model.config.gatewayToken, "sk-bf-ccbud_legacy-token")
-        XCTAssertEqual(try repository.load().gatewayToken, "sk-bf-ccbud_legacy-token")
+        XCTAssertEqual(model.config.gatewayToken, "ccbud_legacy-token")
+        XCTAssertEqual(try repository.load().gatewayToken, "ccbud_legacy-token")
         XCTAssertEqual(model.gatewayState, .stopped)
     }
 
@@ -814,7 +1096,7 @@ final class AppModelTests: XCTestCase {
         let blockedParent = root.appendingPathComponent("not-a-directory")
         try Data("blocked".utf8).write(to: blockedParent)
         let repository = ConfigRepository(configURL: blockedParent.appendingPathComponent("config.json"))
-        let supervisor = BifrostSupervisor(environment: ["CCBUD_HOME": root.path])
+        let supervisor = GatewaySupervisor(environment: ["CCBUD_HOME": root.path])
         let model = AppModel(
             repository: repository,
             supervisor: supervisor,
@@ -882,7 +1164,7 @@ final class AppModelTests: XCTestCase {
         )
         let model = AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             connectionManager: faultingManager,
             environment: environment
         )
@@ -931,7 +1213,7 @@ final class AppModelTests: XCTestCase {
                 try SecureAtomicFile.write(data, to: url, fileManager: fileManager)
             }
         )
-        let supervisor = BifrostSupervisor(environment: environment)
+        let supervisor = GatewaySupervisor(environment: environment)
         let model = AppModel(
             repository: repository,
             supervisor: supervisor,
@@ -1001,8 +1283,14 @@ final class AppModelTests: XCTestCase {
         let home = root.appendingPathComponent("home", isDirectory: true)
         let repository = ConfigRepository(configURL: home.appendingPathComponent("config.json"))
         let executable = root.appendingPathComponent("must-not-start")
-        let marker = home.appendingPathComponent("bifrost/start-marker")
-        try Data("#!/bin/sh\n: > \"$2/start-marker\"\nexit 91\n".utf8).write(to: executable)
+        let marker = home.appendingPathComponent("gateway/start-marker")
+        let script = """
+        #!/bin/sh
+        app_dir=$(/usr/bin/dirname "$2")
+        : > "$app_dir/start-marker"
+        exit 91
+        """
+        try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
             ofItemAtPath: executable.path
@@ -1010,7 +1298,7 @@ final class AppModelTests: XCTestCase {
         let environment = [
             "HOME": root.path,
             "CCBUD_HOME": home.path,
-            "CCBUD_BIFROST_BINARY": executable.path,
+            "CCBUD_GATEWAY_BINARY": executable.path,
             "CCBUD_CLAUDE_SETTINGS": root.appendingPathComponent("claude/settings.json").path,
             "CCBUD_CODEX_CONFIG": root.appendingPathComponent("codex/config.toml").path,
         ]
@@ -1052,7 +1340,7 @@ final class AppModelTests: XCTestCase {
             }
         )
         let pluginManager = AppModelTestPluginManager(items: [])
-        let supervisor = BifrostSupervisor(environment: environment)
+        let supervisor = GatewaySupervisor(environment: environment)
 
         let model = AppModel(
             repository: repository,
@@ -1126,10 +1414,10 @@ final class AppModelTests: XCTestCase {
         await tokenUpdate.value
         await disable.value
 
-        XCTAssertEqual(fixture.model.config.gatewayToken, "sk-bf-disable-race-token")
+        XCTAssertEqual(fixture.model.config.gatewayToken, "disable-race-token")
         XCTAssertFalse(fixture.model.config.gatewayEnabled)
         let persisted = try fixture.repository.load()
-        XCTAssertEqual(persisted.gatewayToken, "sk-bf-disable-race-token")
+        XCTAssertEqual(persisted.gatewayToken, "disable-race-token")
         XCTAssertFalse(persisted.gatewayEnabled)
         XCTAssertEqual(fixture.model.gatewayState, .stopped)
         let disabledSupervisorState = await fixture.supervisor.state
@@ -1156,7 +1444,7 @@ final class AppModelTests: XCTestCase {
         await tokenUpdate.value
         await invalidEdit.value
 
-        XCTAssertEqual(fixture.model.config.gatewayToken, "sk-bf-preserved-token")
+        XCTAssertEqual(fixture.model.config.gatewayToken, "preserved-token")
         XCTAssertEqual(fixture.model.config.activeProvider?.baseUrl, fixture.initial.activeProvider?.baseUrl)
         XCTAssertEqual(try fixture.repository.load(), fixture.model.config)
         XCTAssertEqual(fixture.model.gatewayState, .running(port: fixture.initial.port))
@@ -1507,7 +1795,7 @@ final class AppModelTests: XCTestCase {
         await disconnect.value
 
         let persisted = try fixture.repository.load()
-        XCTAssertEqual(persisted.gatewayToken, "sk-bf-serialized-token")
+        XCTAssertEqual(persisted.gatewayToken, "serialized-token")
         XCTAssertFalse(persisted.connectTargets.contains(CLIConnectionManager.claudeTarget))
         XCTAssertTrue(persisted.connectTargets.contains(CLIConnectionManager.codexTarget))
         XCTAssertTrue(persisted.claudeBackup.isNull)
@@ -1659,7 +1947,7 @@ final class AppModelTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
 
         let persisted = try fixture.repository.load()
-        XCTAssertEqual(persisted.gatewayToken, "sk-bf-indeterminate-token")
+        XCTAssertEqual(persisted.gatewayToken, "indeterminate-token")
         XCTAssertEqual(fixture.model.config, persisted)
         guard case .failed(let message) = fixture.model.gatewayState else {
             return XCTFail("Expected an indeterminate gateway failure")
@@ -1728,7 +2016,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(fixture.model.lastError, message)
         XCTAssertFalse(fixture.model.monitorStore.gatewayRunning)
         XCTAssertFalse(fixture.model.monitorStore.lifecycleEvents.contains {
-            $0.message.contains("Bifrost 已启动")
+            $0.message.contains("网关已启动")
         })
         await fixture.model.shutdown()
     }
@@ -1741,9 +2029,15 @@ final class AppModelTests: XCTestCase {
         let executable = root.appendingPathComponent("exit-after-running")
         let script = """
         #!/bin/sh
+        config_path="$2"
+        app_dir=$(/usr/bin/dirname "$config_path")
+        public_port=$(/usr/bin/grep '"publicPort"' "$config_path" | /usr/bin/tr -cd '0-9')
+        management_port=65535
+        if [ "$public_port" = "$management_port" ]; then management_port=65534; fi
         trap 'exit 0' TERM
-        : > "$2/output-ready"
-        while [ ! -f "$2/exit-now" ]; do sleep 0.01; done
+        : > "$app_dir/output-ready"
+        printf '{"event":"ready","publicPort":%s,"managementPort":%s}\n' "$public_port" "$management_port"
+        while [ ! -f "$app_dir/exit-now" ]; do sleep 0.01; done
         printf 'private-sidecar-output-must-not-reach-ui\n' >&2
         exit 37
         """
@@ -1753,7 +2047,7 @@ final class AppModelTests: XCTestCase {
             ofItemAtPath: executable.path
         )
         let home = root.appendingPathComponent("home", isDirectory: true)
-        let appDirectory = home.appendingPathComponent("bifrost", isDirectory: true)
+        let appDirectory = home.appendingPathComponent("gateway", isDirectory: true)
         let readinessFile = appDirectory.appendingPathComponent("output-ready")
         AppModelGatewayURLProtocol.requireReadinessFile(readinessFile)
         defer { AppModelGatewayURLProtocol.clearReadinessFile() }
@@ -1763,7 +2057,7 @@ final class AppModelTests: XCTestCase {
         defer { session.invalidateAndCancel() }
         let environment = [
             "CCBUD_HOME": home.path,
-            "CCBUD_BIFROST_BINARY": executable.path,
+            "CCBUD_GATEWAY_BINARY": executable.path,
             "XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration",
         ]
         let repository = ConfigRepository(configURL: home.appendingPathComponent("config.json"))
@@ -1771,7 +2065,7 @@ final class AppModelTests: XCTestCase {
         initial.gatewayEnabled = false
         initial.port = try ClaudeCLIE2ETestSupport.availableLoopbackPort()
         try repository.save(initial)
-        let supervisor = BifrostSupervisor(
+        let supervisor = GatewaySupervisor(
             session: session,
             environment: environment,
             healthCheckAttempts: 300,
@@ -1802,7 +2096,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.lastError, message)
         XCTAssertFalse(model.monitorStore.gatewayRunning)
         XCTAssertTrue(model.monitorStore.lifecycleEvents.contains {
-            $0.message.contains("Bifrost 运行异常") && $0.message.contains("37")
+            $0.message.contains("网关运行异常") && $0.message.contains("37")
         })
         XCTAssertFalse(model.monitorStore.lifecycleEvents.contains {
             $0.message.contains("private-sidecar-output")
@@ -1814,7 +2108,7 @@ final class AppModelTests: XCTestCase {
         let root: URL
         let initial: AppConfig
         let repository: ConfigRepository
-        let supervisor: BifrostSupervisor
+        let supervisor: GatewaySupervisor
         let model: AppModel
         let session: URLSession
         let stopObservedFile: URL
@@ -1833,13 +2127,19 @@ final class AppModelTests: XCTestCase {
             isDirectory: true
         )
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let executable = root.appendingPathComponent("controllable-bifrost")
+        let executable = root.appendingPathComponent("controllable-gateway")
         let script = """
         #!/bin/sh
-        trap 'touch "$2/stop-observed"; while [ ! -f "$2/release-stop" ]; do sleep 0.01; done; exit 0' TERM
-        : > "$2/output-ready"
+        config_path="$2"
+        app_dir=$(/usr/bin/dirname "$config_path")
+        public_port=$(/usr/bin/grep '"publicPort"' "$config_path" | /usr/bin/tr -cd '0-9')
+        management_port=65535
+        if [ "$public_port" = "$management_port" ]; then management_port=65534; fi
+        trap 'touch "$app_dir/stop-observed"; while [ ! -f "$app_dir/release-stop" ]; do sleep 0.01; done; exit 0' TERM
+        : > "$app_dir/output-ready"
+        printf '{"event":"ready","publicPort":%s,"managementPort":%s}\n' "$public_port" "$management_port"
         while true; do
-          if [ -f "$2/exit-after-health" ]; then exit 47; fi
+          if [ -f "$app_dir/exit-after-health" ]; then exit 47; fi
           sleep 0.01
         done
         """
@@ -1850,7 +2150,7 @@ final class AppModelTests: XCTestCase {
         )
 
         let home = root.appendingPathComponent("home", isDirectory: true)
-        let appDirectory = home.appendingPathComponent("bifrost", isDirectory: true)
+        let appDirectory = home.appendingPathComponent("gateway", isDirectory: true)
         let readinessFile = appDirectory.appendingPathComponent("output-ready")
         let stopObservedFile = appDirectory.appendingPathComponent("stop-observed")
         let releaseStopFile = appDirectory.appendingPathComponent("release-stop")
@@ -1862,7 +2162,7 @@ final class AppModelTests: XCTestCase {
         let environment = [
             "HOME": root.path,
             "CCBUD_HOME": home.path,
-            "CCBUD_BIFROST_BINARY": executable.path,
+            "CCBUD_GATEWAY_BINARY": executable.path,
             "CCBUD_CLAUDE_SETTINGS": root.appendingPathComponent("claude/settings.json").path,
             "CCBUD_CODEX_CONFIG": root.appendingPathComponent("codex/config.toml").path,
             "XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration",
@@ -1891,7 +2191,7 @@ final class AppModelTests: XCTestCase {
                 fileWriter: $0
             )
         } ?? setupConnectionManager
-        let supervisor = BifrostSupervisor(
+        let supervisor = GatewaySupervisor(
             session: session,
             environment: environment,
             healthCheckAttempts: 300,

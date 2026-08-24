@@ -45,6 +45,125 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(permissions.intValue & 0o777, 0o600)
     }
 
+    func testUserMetadataOverridesProducerProjectionAndSurvivesIndexReplacement() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        var producer = makeMetadata(file: fixture.source, id: "owned-overlay")
+        producer.title = "Producer title"
+        producer.tags = ["producer"]
+        _ = try database.replace(ConversationIndexedSession(
+            metadata: producer,
+            fingerprint: .init(modificationTime: .now, sizeBytes: 10),
+            documents: [makeDocument(text: "searchable overlay")]
+        ))
+
+        _ = try database.updateUserMetadata(
+            for: fixture.source,
+            patch: .init(
+                title: "  User title  ",
+                tags: [" local ", "local", "two"],
+                deleted: true,
+                starred: true,
+                pinned: true
+            )
+        )
+        var projected = try XCTUnwrap(database.entry(for: fixture.source))
+        XCTAssertEqual(projected.metadata.title, "User title")
+        XCTAssertEqual(projected.metadata.tags, ["local", "two"])
+        XCTAssertTrue(projected.metadata.deleted)
+        XCTAssertTrue(projected.metadata.starred)
+        XCTAssertTrue(projected.metadata.pinned)
+        XCTAssertEqual(projected.userMetadata.title, "User title")
+        XCTAssertEqual(try database.listEntries(deleted: false, limit: .max), [])
+        XCTAssertEqual(
+            try database.listEntries(deleted: true, starred: true, limit: .max)
+                .map(\.sourcePath),
+            [ConversationIndexDatabase.normalizedPath(fixture.source)]
+        )
+        XCTAssertTrue(try database.candidateDocuments(for: "searchable").documents.isEmpty)
+        XCTAssertEqual(
+            try database.candidateDocuments(for: "searchable", deleted: true)
+                .documents.count,
+            1
+        )
+
+        producer.title = "Producer changed"
+        producer.tags = ["new producer tag"]
+        _ = try database.replace(ConversationIndexedSession(
+            metadata: producer,
+            fingerprint: .init(modificationTime: .now, sizeBytes: 11),
+            documents: [makeDocument(text: "replacement")]
+        ))
+        projected = try XCTUnwrap(database.entry(for: fixture.source))
+        XCTAssertEqual(projected.metadata.title, "User title")
+        XCTAssertEqual(projected.metadata.tags, ["local", "two"])
+        XCTAssertTrue(projected.metadata.deleted)
+        XCTAssertTrue(projected.metadata.starred)
+        XCTAssertTrue(projected.metadata.pinned)
+
+        _ = try database.remove(paths: [fixture.source.path])
+        _ = try database.replace(ConversationIndexedSession(
+            metadata: producer,
+            fingerprint: .init(modificationTime: .now, sizeBytes: 12),
+            documents: []
+        ))
+        projected = try XCTUnwrap(database.entry(for: fixture.source))
+        XCTAssertEqual(projected.metadata.title, "User title")
+        XCTAssertTrue(projected.metadata.pinned, "rebuildable rows must not own user metadata")
+    }
+
+    func testPinnedRowsSortFirstAndStarFilterUsesAppOwnedState() throws {
+        let fixture = try Fixture()
+        let newerFile = fixture.directory.appendingPathComponent("newer.jsonl")
+        let pinnedFile = fixture.directory.appendingPathComponent("older-pinned.jsonl")
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        var newer = makeMetadata(file: newerFile, id: "newer")
+        newer.lastActivity = Date(timeIntervalSince1970: 300)
+        var pinned = makeMetadata(file: pinnedFile, id: "pinned")
+        pinned.lastActivity = Date(timeIntervalSince1970: 100)
+        _ = try database.replace(ConversationIndexedSession(
+            metadata: newer,
+            fingerprint: .init(modificationTime: .now, sizeBytes: 1),
+            documents: []
+        ))
+        _ = try database.replace(ConversationIndexedSession(
+            metadata: pinned,
+            fingerprint: .init(modificationTime: .now, sizeBytes: 1),
+            documents: []
+        ))
+        _ = try database.updateUserMetadata(
+            for: pinnedFile,
+            patch: .init(starred: true, pinned: true)
+        )
+
+        XCTAssertEqual(
+            try database.listEntries(deleted: false, limit: .max).map(\.metadata.sessionID),
+            ["pinned", "newer"]
+        )
+        XCTAssertEqual(
+            try database.listEntries(deleted: false, starred: true, limit: .max)
+                .map(\.metadata.sessionID),
+            ["pinned"]
+        )
+    }
+
+    func testHistoryMetadataDecodesPreStarAndPinCatalogJSON() throws {
+        let fixture = try Fixture()
+        let metadata = makeMetadata(file: fixture.source, id: "legacy-json")
+        let encoded = try JSONEncoder().encode(metadata)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "starred")
+        object.removeValue(forKey: "pinned")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(HistorySessionMetadata.self, from: legacy)
+        XCTAssertFalse(decoded.starred)
+        XCTAssertFalse(decoded.pinned)
+        XCTAssertEqual(decoded.id, metadata.id)
+    }
+
     func testRepeatedOpenReadReleaseAndReopenClosesBothConnectionsCleanly() throws {
         let fixture = try Fixture()
         var database: ConversationIndexDatabase? = try .init(file: fixture.database)
@@ -250,7 +369,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
             scope: "scope"
         )
         writerFinished.enter()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInteractive).async {
             writerStarted.signal()
             writerResult.run {
                 _ = try database.replace(replacement)
@@ -403,6 +522,28 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         )
     }
 
+    func testVersionTwoMigrationKeepsWarmRowsAndInstallsDurableUserTable() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        _ = try database?.replace(indexed(file: fixture.source, id: "v2-warm", scope: "scope"))
+        let generation = try XCTUnwrap(database?.generation())
+        database = nil
+        try prepareVersionTwoCatalog(fixture.database)
+
+        let migrated = try ConversationIndexDatabase(file: fixture.database)
+        XCTAssertEqual(try userVersion(fixture.database), ConversationIndexDatabase.schemaVersion)
+        XCTAssertEqual(try migrated.generation(), generation)
+        XCTAssertEqual(try migrated.entry(for: fixture.source)?.metadata.sessionID, "v2-warm")
+        _ = try migrated.updateUserMetadata(
+            for: fixture.source,
+            patch: .init(title: "Migrated", starred: true, pinned: true)
+        )
+        let projected = try XCTUnwrap(migrated.entry(for: fixture.source)?.metadata)
+        XCTAssertEqual(projected.title, "Migrated")
+        XCTAssertTrue(projected.starred)
+        XCTAssertTrue(projected.pinned)
+    }
+
     func testDeferredFTSMaintenanceCanBeCancelledWhileWaitingForAnotherWriter() throws {
         let fixture = try Fixture()
         var database: ConversationIndexDatabase? = try .init(file: fixture.database)
@@ -439,7 +580,9 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         let started = DispatchSemaphore(value: 0)
         let finished = DispatchGroup()
         finished.enter()
-        DispatchQueue.global(qos: .utility).async {
+        // XCTest runs this synchronous test at user-interactive QoS. Match that QoS so the
+        // intentional bounded wait below does not become a Thread Performance Checker issue.
+        DispatchQueue.global(qos: .userInteractive).async {
             started.signal()
             result.run {
                 try migrated.finishFullScanMaintenance(
@@ -488,6 +631,47 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         blockerCommitted = true
         try migrated.finishFullScanMaintenance()
         XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
+    }
+
+    func testDirtyFTSFallbackSearchInterruptsPromptlyBeforeMaterializingStaleResults() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        _ = try database.replace(ConversationIndexedSession(
+            metadata: makeMetadata(file: fixture.source, id: "cancel-search"),
+            fingerprint: .init(modificationTime: .now, sizeBytes: 1),
+            documents: [makeDocument(text: "seed")]
+        ))
+        try inflateSearchDocument(
+            fixture.database,
+            bytes: 32 * 1_024 * 1_024
+        )
+
+        let cancellation = SearchCancellationProbe(signalAfterPollCount: 6)
+        let result = DatabaseMaintenanceResultProbe()
+        let finished = DispatchGroup()
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            result.run {
+                _ = try database.candidateDocuments(
+                    for: "absent-search-value",
+                    isCancelled: { @Sendable in cancellation.isCancelled() }
+                )
+            }
+            finished.leave()
+        }
+        XCTAssertTrue(
+            cancellation.waitUntilObserved(timeout: 1),
+            "The query must install its progress/interrupt cancellation path before stepping"
+        )
+
+        let cancellationStarted = DispatchTime.now().uptimeNanoseconds
+        cancellation.cancel()
+        XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+        let cancellationLatency = Double(
+            DispatchTime.now().uptimeNanoseconds - cancellationStarted
+        ) / 1_000_000_000
+        XCTAssertLessThan(cancellationLatency, 0.5)
+        XCTAssertTrue(result.error is CancellationError, String(describing: result.error))
     }
 
     func testConcurrentOpensSerializeVersionOneMigrationWithoutDroppingRows() throws {
@@ -541,7 +725,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         let finished = DispatchGroup()
         let databaseFile = fixture.database
         finished.enter()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInteractive).async {
             probe.open(databaseFile)
             finished.leave()
         }
@@ -665,6 +849,41 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         }
     }
 
+    private func prepareVersionTwoCatalog(_ file: URL) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(file.path, &database) == SQLITE_OK, let database else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 6)
+        }
+        defer { sqlite3_close(database) }
+        try executeRaw(
+            """
+            BEGIN IMMEDIATE;
+            DROP TABLE conversation_user_metadata;
+            PRAGMA user_version = 2;
+            COMMIT;
+            """,
+            database: database
+        )
+    }
+
+    private func inflateSearchDocument(_ file: URL, bytes: Int) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(file.path, &database) == SQLITE_OK, let database else {
+            throw NSError(domain: "ConversationIndexDatabaseTests", code: 7)
+        }
+        defer { sqlite3_close(database) }
+        try executeRaw(
+            """
+            BEGIN IMMEDIATE;
+            UPDATE conversation_documents
+            SET search_text = replace(hex(zeroblob(\(bytes))), '00', 'x');
+            UPDATE conversation_catalog_state SET fts_dirty = 1 WHERE singleton = 1;
+            COMMIT;
+            """,
+            database: database
+        )
+    }
+
     private func executeRaw(_ sql: String, database: OpaquePointer) throws {
         var detail: UnsafeMutablePointer<CChar>?
         let status = sqlite3_exec(database, sql, nil, nil, &detail)
@@ -777,6 +996,40 @@ private final class DatabaseCancellationProbe: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return cancelled
+    }
+}
+
+private final class SearchCancellationProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let signalAfterPollCount: Int
+    private var pollCount = 0
+    private var cancelled = false
+
+    init(signalAfterPollCount: Int) {
+        self.signalAfterPollCount = signalAfterPollCount
+    }
+
+    func cancel() {
+        condition.lock()
+        cancelled = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func isCancelled() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        pollCount += 1
+        if pollCount >= signalAfterPollCount { condition.broadcast() }
+        return cancelled
+    }
+
+    func waitUntilObserved(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while pollCount < signalAfterPollCount, condition.wait(until: deadline) {}
+        return pollCount >= signalAfterPollCount
     }
 }
 

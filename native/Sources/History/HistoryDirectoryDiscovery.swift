@@ -66,9 +66,14 @@ struct HistoryDirectoryDiscovery {
         // Legacy persistence normalizes after every successful migration. A single final pass is
         // equivalent for these append-only candidates and also folds XDG's absolute HOME label.
         config.historyDirs = normalizedHistoryDirectories(config.historyDirs)
-        if config.historyActive == "__codex__" {
-            let codexLabel = collapseHome(codexRoot())
-            config.historyActive = config.historyDirs.contains(codexLabel) ? codexLabel : "all"
+        // Wake treats producer roots as discovery inputs, not as persisted navigation state.
+        // Older CC Buddy releases stored a concrete history directory (or `__codex__`) here,
+        // which could make an otherwise healthy shared catalog look empty after a producer moved
+        // its files. Migrate those legacy scopes once and let Agents/Projects filter the warm
+        // all-session catalog in memory.
+        let libraryScopes = Set(["all", "__imported__", "__trash__"])
+        if !libraryScopes.contains(config.historyActive) {
+            config.historyActive = "all"
             didChange = true
         }
         let addedDirectories = config.historyDirs.filter { !originalDirectories.contains($0) }

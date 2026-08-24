@@ -1,12 +1,11 @@
 // The (provider → client) transcoder dispatcher gateway.rs holds, regardless of the wired pair.
 
+use super::super::openai_responses::CodexToolContext;
+use super::super::Wire;
 use super::anthropic_responses::AnthropicToResponses;
 use super::chat_anthropic::ChatToAnthropic;
 use super::chat_responses::ChatToResponses;
 use super::common::CapturedToolCall;
-use super::super::openai_responses::CodexToolContext;
-use super::super::Wire;
-
 
 /// Dispatcher over the wired (provider → client) incremental transcoders, so gateway.rs holds one
 /// value regardless of the pair. `supports` is the single source of truth behind

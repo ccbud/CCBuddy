@@ -90,7 +90,7 @@ struct ProviderEditorView: View {
             Text(appLanguage.localized(draft.name.isEmpty ? "添加服务" : "编辑服务"))
                 .font(.system(size: 14, weight: .semibold))
             Spacer()
-            Text("Bifrost")
+            Text("CC Buddy Gateway")
                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(Color.ccCaption)
         }

@@ -24,7 +24,9 @@ final class ClaudeHistoryParserTests: XCTestCase {
         ]
         try HistoryTestSupport.write(lines, to: file)
 
-        let session = try HistoryRepository(historyDirs: [root.path]).getSession(file: file)
+        let session = try HistoryRepository(
+            historyDirs: [root.path], homeDirectory: root
+        ).getSession(file: file)
         XCTAssertEqual(session.metadata.source, .claude)
         XCTAssertEqual(session.metadata.sessionID, "session-a")
         XCTAssertEqual(session.metadata.cwd, "/work/demo")
@@ -55,7 +57,9 @@ final class ClaudeHistoryParserTests: XCTestCase {
         try HistoryTestSupport.write([original], to: file)
         let before = try Data(contentsOf: file)
 
-        let repository = HistoryRepository(historyDirs: [root.path], active: "__trash__")
+        let repository = HistoryRepository(
+            historyDirs: [root.path], active: "__trash__", homeDirectory: root
+        )
         let listed = repository.listSessions()
         XCTAssertEqual(listed.first?.title, "Custom")
         XCTAssertEqual(listed.first?.tags, ["one", "two"])

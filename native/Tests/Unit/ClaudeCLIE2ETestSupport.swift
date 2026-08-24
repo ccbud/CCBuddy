@@ -37,13 +37,40 @@ enum ClaudeCLIE2ETestSupport {
         )
     }
 
-    static func bifrostExecutable(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+    static func codexExecutable(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         let repositoryPath = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Vendor/bifrost-http").path
+            .appendingPathComponent("Vendor/test-tools/codex").path
         return executable(
-            override: environment["CCBUD_BIFROST_BINARY"],
-            name: "bifrost-http",
+            override: environment["CCBUD_CODEX_BINARY"],
+            name: "codex",
+            environment: environment,
+            fallbacks: [
+                repositoryPath,
+                FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".local/bin/codex").path,
+                "/opt/homebrew/bin/codex",
+                "/usr/local/bin/codex",
+            ]
+        )
+    }
+
+    static func gatewayExecutable(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        if let override = environment["CCBUD_GATEWAY_BINARY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return FileManager.default.isExecutableFile(atPath: override) ? override : nil
+        }
+        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "ccbud-gateway"),
+           FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled.path
+        }
+        let repositoryPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Vendor/ccbud-gateway").path
+        return executable(
+            override: nil,
+            name: "ccbud-gateway",
             environment: environment,
             fallbacks: [repositoryPath]
         )
@@ -180,11 +207,15 @@ final class ClaudeCLIAnthropicMock: @unchecked Sendable {
     private let descriptor: Int32
     private let queue = DispatchQueue(label: "dev.ccbud.tests.claude-cli-anthropic")
     private let lock = NSLock()
+    private let responseMarkers: [String]
     private var stopped = false
     private var recordedRequests: [ClaudeCLIAnthropicRequest] = []
     private var messageCount = 0
 
-    init() throws {
+    init(
+        firstMarker: String = ClaudeCLIAnthropicMock.firstMarker,
+        secondMarker: String = ClaudeCLIAnthropicMock.secondMarker
+    ) throws {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw Self.posixError() }
         var closeOnFailure = true
@@ -221,6 +252,7 @@ final class ClaudeCLIAnthropicMock: @unchecked Sendable {
 
         self.descriptor = descriptor
         port = Int(UInt16(bigEndian: address.sin_port))
+        responseMarkers = [firstMarker, secondMarker]
         closeOnFailure = false
     }
 
@@ -295,7 +327,7 @@ final class ClaudeCLIAnthropicMock: @unchecked Sendable {
 
         switch path {
         case "/v1/messages":
-            let marker = ordinal == 1 ? Self.firstMarker : Self.secondMarker
+            let marker = responseMarkers[min(max((ordinal ?? 1) - 1, 0), responseMarkers.count - 1)]
             if request.body["stream"] as? Bool == true {
                 sendStream(marker: marker, ordinal: ordinal ?? 1, to: client)
             } else {

@@ -1,10 +1,10 @@
 // The Anthropic-event loop of AnthropicToResponses. The `content_block_start` arm lives in
 // anthropic_responses_block.rs.
 
+use super::super::openai_responses::CodexToolKind;
 use super::ablock::close_ablock_events;
 use super::anthropic_responses::{AKind, AnthropicToResponses};
 use super::common::ev;
-use super::super::openai_responses::CodexToolKind;
 use serde_json::{json, Value};
 
 impl AnthropicToResponses {

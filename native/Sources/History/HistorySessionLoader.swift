@@ -144,26 +144,67 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         _ candidate: HistoryFileCandidate,
         consistency: HistorySessionLoadConsistency = .dependencyStable
     ) throws -> LoadedHistorySession {
-        let primaryRole: ConversationDependencyRole = candidate.formatHint == .antigravity
-            ? .primaryDatabase
-            : .primaryTranscript
-        let primaryDependency = ConversationSourceDependency(
-            file: candidate.file,
-            role: primaryRole
-        )
+        let hintedAdapter = candidate.formatHint.flatMap {
+            adapters.adapter(for: $0, candidate: candidate, configuration: configuration)
+        }
+        let provisionalDependencies = hintedAdapter?.dependencies(
+            for: candidate,
+            configuration: configuration
+        ) ?? [ConversationSourceDependency(
+            file: candidate.primaryStorageFile,
+            role: .primaryTranscript
+        )]
+        guard let provisionalPrimary = provisionalDependencies.first(where: {
+            $0.role == .primaryTranscript || $0.role == .primaryDatabase
+        }) else {
+            throw HistoryError.unsupportedTranscript(candidate.file)
+        }
+        let primaryRole = provisionalPrimary.role
+        let primaryDependency = provisionalPrimary
         let primaryBeforeRead = ConversationDependencyStamp.read(primaryDependency)
 
         let document: HistoryJSONLDocument?
-        if candidate.formatHint == .antigravity {
-            document = nil
+        let adapter: any ConversationSourceAdapter
+        if let hintedAdapter {
+            adapter = hintedAdapter
+            document = Self.usesStreamingParser(hintedAdapter, candidate: candidate)
+                ? nil
+                : try hintedAdapter.document(for: candidate, qoderReader: qoderReader)
         } else {
-            document = try HistoryJSONLDocument.read(
-                from: candidate.file,
-                qoderReader: qoderReader
-            )
+            // Imported Codex transcripts live in the generic projects tree and have no path hint.
+            // Detect them from a handful of incrementally-read records so they receive the same
+            // streaming path instead of first mapping the complete file into a document.
+            let prefix = try HistoryJSONLStreamReader.prefix(from: candidate.file)
+            let prefixAdapter: any ConversationSourceAdapter
+            if Self.looksLikeWakeGrok(candidate: candidate, document: prefix),
+               let grok = adapters.adapter(
+                for: .grok,
+                candidate: candidate,
+                configuration: configuration
+               ) {
+                prefixAdapter = grok
+            } else {
+                prefixAdapter = try adapters.adapter(
+                    for: candidate,
+                    document: prefix,
+                    configuration: configuration
+                )
+            }
+            if Self.usesStreamingParser(prefixAdapter, candidate: candidate) {
+                adapter = prefixAdapter
+                document = nil
+            } else {
+                document = try HistoryJSONLDocument.read(
+                    from: candidate.file,
+                    qoderReader: qoderReader
+                )
+                adapter = try adapters.adapter(
+                    for: candidate,
+                    document: document,
+                    configuration: configuration
+                )
+            }
         }
-
-        let adapter = try adapters.adapter(for: candidate, document: document)
         let manifest = ConversationDependencyManifest(
             candidate: candidate,
             source: adapter.source,
@@ -172,22 +213,37 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         let dependenciesBeforeParse = manifest.snapshot()
         if consistency == .dependencyStable,
            let primaryAfterRead = dependenciesBeforeParse.stamp(
-               for: candidate.file,
+               for: provisionalPrimary.file,
                role: primaryRole
            ), primaryAfterRead != primaryBeforeRead {
             throw HistorySessionLoadError.dependenciesChanged(candidate.file)
         }
 
         let facts = try HistoryFileFacts.read(
-            candidate.file,
+            manifest.primary?.file ?? candidate.primaryStorageFile,
             records: document?.records ?? []
         )
-        var session = try adapter.parse(ConversationSourceParseInput(
-            candidate: candidate,
-            document: document,
-            facts: facts,
-            configuration: configuration
-        ))
+        var session: HistorySession
+        if adapter.format == .codex {
+            session = try CodexHistoryParser.parseStreaming(
+                candidate: candidate,
+                facts: facts,
+                appDataRoot: configuration.appDataRoot
+            )
+        } else if Self.usesStreamingWakeGrok(adapter, candidate: candidate) {
+            session = try WakeGrokHistoryParser.parseStreaming(
+                candidate: candidate,
+                facts: facts,
+                appDataRoot: configuration.appDataRoot
+            )
+        } else {
+            session = try adapter.parse(ConversationSourceParseInput(
+                candidate: candidate,
+                document: document,
+                facts: facts,
+                configuration: configuration
+            ))
+        }
         if adapter.attachesSubagents {
             session = HistorySubagentReader.attach(
                 to: session,
@@ -219,9 +275,43 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         )
     }
 
+    private static func usesStreamingParser(
+        _ adapter: any ConversationSourceAdapter,
+        candidate: HistoryFileCandidate
+    ) -> Bool {
+        adapter.format == .codex || usesStreamingWakeGrok(adapter, candidate: candidate)
+    }
+
+    private static func usesStreamingWakeGrok(
+        _ adapter: any ConversationSourceAdapter,
+        candidate: HistoryFileCandidate
+    ) -> Bool {
+        adapter.format == .grok && candidate.file.lastPathComponent == "updates.jsonl"
+    }
+
+    /// Generic import/configured roots have no producer hint. The canonical filename alone is not
+    /// enough: require an ACP `session/update` envelope so a renamed legacy Grok snapshot never
+    /// enters the Wake chunk replay path.
+    private static func looksLikeWakeGrok(
+        candidate: HistoryFileCandidate,
+        document: HistoryJSONLDocument
+    ) -> Bool {
+        guard candidate.file.lastPathComponent == "updates.jsonl" else { return false }
+        return document.records.contains { record in
+            guard record["params"]?["update"]?["sessionUpdate"]?.stringValue != nil else {
+                return false
+            }
+            let method = record["method"]?.stringValue ?? ""
+            return method == "session/update" || method.hasSuffix("/session/update")
+        }
+    }
+
     func load(file: URL, consistency: HistorySessionLoadConsistency = .bestEffort) throws
         -> LoadedHistorySession {
-        try load(pathResolver.validatedCandidate(for: file), consistency: consistency)
+        try load(
+            adapters.candidate(for: file, configuration: configuration),
+            consistency: consistency
+        )
     }
 
     func load(filePath: String, consistency: HistorySessionLoadConsistency = .bestEffort) throws
@@ -240,37 +330,43 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     private func loadQuickMetadata(
         _ candidate: HistoryFileCandidate
     ) throws -> QuickLoadedHistorySession {
-        let facts = try HistoryFileFacts.read(candidate.file, records: [])
-        let adapter: any ConversationSourceAdapter
-        let metadata: HistorySessionMetadata
-
-        if candidate.formatHint == .antigravity {
-            guard let resolved = adapters.adapter(for: .antigravity) else {
-                throw HistoryError.unsupportedTranscript(candidate.file)
-            }
-            adapter = resolved
-            metadata = Self.antigravityMetadata(
-                candidate: candidate,
-                facts: facts,
-                appDataRoot: configuration.appDataRoot
-            )
-        } else {
-            let document = try quickDocument(candidate)
-            adapter = try adapters.adapter(for: candidate, document: document)
-            let session = try adapter.parse(ConversationSourceParseInput(
-                candidate: candidate,
-                document: document,
-                facts: try HistoryFileFacts.read(candidate.file, records: document.records),
-                configuration: configuration
-            ))
-            metadata = session.metadata
+        let hintedAdapter = candidate.formatHint.flatMap {
+            adapters.adapter(for: $0, candidate: candidate, configuration: configuration)
         }
-
+        let document: HistoryJSONLDocument?
+        switch candidate.formatHint {
+        case .opencode, .copilot, .antigravity, .dsh:
+            guard let hintedAdapter else { throw HistoryError.unsupportedTranscript(candidate.file) }
+            document = try hintedAdapter.document(for: candidate, qoderReader: qoderReader)
+        default:
+            document = try quickDocument(candidate)
+        }
+        let adapter: any ConversationSourceAdapter
+        if let hintedAdapter {
+            adapter = hintedAdapter
+        } else {
+            adapter = try adapters.adapter(
+                for: candidate,
+                document: document,
+                configuration: configuration
+            )
+        }
         let manifest = ConversationDependencyManifest(
             candidate: candidate,
             source: adapter.source,
             dependencies: adapter.dependencies(for: candidate, configuration: configuration)
         )
+        let facts = try HistoryFileFacts.read(
+            manifest.primary?.file ?? candidate.primaryStorageFile,
+            records: document?.records ?? []
+        )
+        let metadata = try adapter.parse(ConversationSourceParseInput(
+            candidate: candidate,
+            document: document,
+            facts: facts,
+            configuration: configuration
+        )).metadata
+
         let snapshot = manifest.snapshot()
         guard let primary = manifest.primary,
               snapshot.stamp(for: primary.file, role: primary.role)?.kind == .regularFile else {
@@ -328,7 +424,11 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         _ candidate: HistoryFileCandidate,
         state: CodexThreadQuickMetadata
     ) throws -> QuickLoadedHistorySession {
-        guard let adapter = adapters.adapter(for: .codex) else {
+        guard let adapter = adapters.adapter(
+            for: .codex,
+            candidate: candidate,
+            configuration: configuration
+        ) else {
             throw HistoryError.unsupportedTranscript(candidate.file)
         }
         let facts = try HistoryFileFacts.read(candidate.file, records: [])

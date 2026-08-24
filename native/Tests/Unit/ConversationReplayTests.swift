@@ -101,7 +101,7 @@ final class ConversationReplayTests: XCTestCase {
         )
 
         await successfulStore.select(session.metadata)
-        successfulStore.replaySelected(in: .claude)
+        await successfulStore.replaySelected(in: .claude)
 
         XCTAssertEqual(opened.count, 1)
         XCTAssertEqual(opened.first?.scheme, "claude")
@@ -114,7 +114,7 @@ final class ConversationReplayTests: XCTestCase {
             replayURLLauncher: { _ in false }
         )
         await failingStore.select(session.metadata)
-        failingStore.replaySelected(in: .chatGPT)
+        await failingStore.replaySelected(in: .chatGPT)
 
         XCTAssertEqual(
             failingStore.actionMessage,

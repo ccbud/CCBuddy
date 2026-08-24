@@ -110,6 +110,13 @@ struct WindowConfigurator: NSViewRepresentable {
         // A clear, non-opaque window makes the desktop bleed through behind the traffic lights.
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
+        // Identify the real full-size hosting surface instead of a tiny SwiftUI overlay. AppKit
+        // keeps a 32-point title-bar safe area even when the content view fills the whole window;
+        // AX clamps overlay elements to that safe area, which makes their reported frame disagree
+        // with the opaque pixels rendered beneath the traffic lights. The hosting view's frame is
+        // the actual integrated shell and remains a container for its accessible descendants.
+        window.contentView?.setAccessibilityIdentifier("app.shell")
+        window.contentView?.setAccessibilityLabel("CC Buddy")
         window.minSize = NSSize(width: 940, height: 620)
         window.collectionBehavior.insert(.fullScreenPrimary)
         configureLegacySmokeContentSize(window)

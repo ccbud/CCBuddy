@@ -1,16 +1,36 @@
-import CryptoKit
 import Darwin
 import Foundation
+import SQLite3
 
 struct ConversationMetadataPatch: Equatable, Sendable {
     var title: String?
     var tags: [String]?
     var deleted: Bool?
+    var starred: Bool?
+    var pinned: Bool?
 
-    init(title: String? = nil, tags: [String]? = nil, deleted: Bool? = nil) {
+    init(
+        title: String? = nil,
+        tags: [String]? = nil,
+        deleted: Bool? = nil,
+        starred: Bool? = nil,
+        pinned: Bool? = nil
+    ) {
         self.title = title
         self.tags = tags
         self.deleted = deleted
+        self.starred = starred
+        self.pinned = pinned
+    }
+
+    var userMetadataPatch: ConversationUserMetadataPatch {
+        .init(
+            title: title,
+            tags: tags,
+            deleted: deleted,
+            starred: starred,
+            pinned: pinned
+        )
     }
 }
 
@@ -71,7 +91,7 @@ enum ConversationMutationError: LocalizedError, Equatable, Sendable {
         case .unsupportedTranscript: "无法识别该 JSONL 会话格式"
         case .foreignTranscript: "Grok、Copilot 等外部会话不能作为裸 JSONL 导入"
         case .conflict(let file): "会话在编辑期间已被其他进程修改，请刷新后重试：\(file.lastPathComponent)"
-        case .foreignPermanentDelete: "外部工具的原始会话只能移入回收站，不能由 CC Buddy 永久删除"
+        case .foreignPermanentDelete: "生产工具的原始会话为只读；只有导入的副本可以永久删除"
         case .unsafeCompanion(let file): "会话的关联文件不安全，已停止删除：\(file.path)"
         case .writeFailed(let file, let detail): "无法写入 \(file.lastPathComponent)：\(detail)"
         }
@@ -82,38 +102,40 @@ struct ConversationMutationConfiguration: Equatable, Sendable {
     var historyDirs: [String]
     var homeDirectory: URL
     var importsRoot: URL
+    var sessionLocationOverrides: ConversationSessionLocationOverrides
 
     init(
         historyDirs: [String],
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        importsRoot: URL? = nil
+        importsRoot: URL? = nil,
+        sessionLocationOverrides: ConversationSessionLocationOverrides = .init()
     ) {
         self.historyDirs = historyDirs
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.importsRoot = (importsRoot ?? homeDirectory
             .appendingPathComponent(".ccbud", isDirectory: true)
             .appendingPathComponent("imports", isDirectory: true)).standardizedFileURL
+        self.sessionLocationOverrides = sessionLocationOverrides
     }
 
     var appDataRoot: URL { importsRoot.deletingLastPathComponent() }
+    var conversationDatabase: URL {
+        appDataRoot.appendingPathComponent("conversation-index-v1.sqlite3")
+    }
 }
 
 /// The only write-capable history component. Every target is scoped to a configured producer tree
 /// or the app-owned import store, and every existing path component is checked with `lstat` before
 /// mutation so a symlink cannot redirect an edit/delete outside that scope.
 struct ConversationMutationService: @unchecked Sendable {
-    private struct Fingerprint: Equatable {
-        var device: UInt64
-        var inode: UInt64
-        var size: Int64
-        var seconds: Int64
-        var nanoseconds: Int64
-        var digest: SHA256.Digest
-    }
-
     private struct StableRead {
         var data: Data
-        var fingerprint: Fingerprint
+    }
+
+    private struct ValidatedStorage {
+        var file: URL
+        var isContainerBacked: Bool
+        var subagentFiles: [URL]
     }
 
     private struct PreparedImport {
@@ -127,34 +149,58 @@ struct ConversationMutationService: @unchecked Sendable {
 
     let configuration: ConversationMutationConfiguration
     private let fileManager: FileManager
-    private let beforeCommit: (@Sendable (URL) -> Void)?
     private let archiveLimits: ConversationArchiveLimits
+    private let metadataDatabase: ConversationIndexDatabase?
+    private let metadataDatabaseOpenError: String?
+    private let sourceAdapters: ConversationSourceAdapterRegistry
+    private let qoderReader: QoderFileReader
 
     init(
         configuration: ConversationMutationConfiguration,
         fileManager: FileManager = .default,
         archiveLimits: ConversationArchiveLimits = .init(),
-        beforeCommit: (@Sendable (URL) -> Void)? = nil
+        metadataDatabase: ConversationIndexDatabase? = nil,
+        sourceAdapters: ConversationSourceAdapterRegistry = .init(),
+        qoderReader: QoderFileReader = .shared
     ) {
         self.configuration = configuration
         self.fileManager = fileManager
         self.archiveLimits = archiveLimits
-        self.beforeCommit = beforeCommit
+        self.sourceAdapters = sourceAdapters
+        self.qoderReader = qoderReader
+        if let metadataDatabase {
+            self.metadataDatabase = metadataDatabase
+            metadataDatabaseOpenError = nil
+        } else {
+            do {
+                self.metadataDatabase = try ConversationIndexDatabase(
+                    file: configuration.conversationDatabase
+                )
+                metadataDatabaseOpenError = nil
+            } catch {
+                self.metadataDatabase = nil
+                metadataDatabaseOpenError = error.localizedDescription
+            }
+        }
     }
 
     func updateMetadata(
         for metadata: HistorySessionMetadata,
         patch: ConversationMetadataPatch
     ) throws {
-        let file = try validateScopedRegularFile(metadata.file)
-        if isLiveForeign(metadata) {
-            try updateSidecar(for: metadata, transcript: file, patch: patch)
-        } else {
-            guard file.pathExtension.lowercased() == "jsonl" else {
-                throw ConversationMutationError.unsupportedFile(file)
-            }
-            try rewriteInlineMetadata(file: file, patch: patch)
+        // Container-backed sources expose a stable virtual URL per conversation. Validate the
+        // physical database, but deliberately keep the logical URL as the app-owned metadata key.
+        _ = try validatedStorage(for: metadata)
+        guard let metadataDatabase else {
+            throw ConversationMutationError.writeFailed(
+                configuration.conversationDatabase,
+                metadataDatabaseOpenError ?? "无法打开会话元数据数据库"
+            )
         }
+        _ = try metadataDatabase.updateUserMetadata(
+            for: metadata.file.standardizedFileURL,
+            patch: patch.userMetadataPatch
+        )
     }
 
     func softDelete(_ metadata: HistorySessionMetadata) throws {
@@ -166,13 +212,18 @@ struct ConversationMutationService: @unchecked Sendable {
     }
 
     func canPermanentlyDelete(_ metadata: HistorySessionMetadata) -> Bool {
-        metadata.imported || metadata.source == .claude
+        let imports = configuration.importsRoot
+            .appendingPathComponent("projects", isDirectory: true)
+            .standardizedFileURL
+        return metadata.imported
+            && isWithin(metadata.file.standardizedFileURL, root: imports)
     }
 
     func permanentlyDelete(_ metadata: HistorySessionMetadata) throws {
         guard canPermanentlyDelete(metadata) else {
             throw ConversationMutationError.foreignPermanentDelete
         }
+        try validateImportStoreRootChain()
         let file = try validateScopedRegularFile(metadata.file)
         let directory = file.deletingLastPathComponent()
         let stem = file.deletingPathExtension().lastPathComponent
@@ -197,6 +248,9 @@ struct ConversationMutationService: @unchecked Sendable {
                 try fileManager.removeItem(at: importSidecar)
             }
             try fileManager.removeItem(at: file)
+            if let metadataDatabase {
+                _ = try metadataDatabase.removeUserMetadata(for: file)
+            }
         } catch {
             throw ConversationMutationError.writeFailed(file, String(describing: error))
         }
@@ -224,7 +278,11 @@ struct ConversationMutationService: @unchecked Sendable {
             switch lowerExtension {
             case "jsonl":
                 raw = try Data(contentsOf: source, options: [.mappedIfSafe])
-                subagents = try readSubagentFiles(for: source)
+                subagents = try readSubagentFiles(
+                    for: source,
+                    manifestFiles: [],
+                    validationRoot: source.deletingLastPathComponent()
+                )
             case "zip":
                 let archive = try Data(contentsOf: source, options: [.mappedIfSafe])
                 let bundle = try ConversationArchive.splitBundle(
@@ -256,27 +314,45 @@ struct ConversationMutationService: @unchecked Sendable {
     }
 
     func suggestedRawFileExtension(for metadata: HistorySessionMetadata) throws -> String {
-        if metadata.source == .antigravity { return "db" }
-        return try readSubagentFiles(for: metadata.file).isEmpty ? "jsonl" : "zip"
+        let storage = try validatedStorage(for: metadata)
+        if storage.isContainerBacked || metadata.source == .antigravity {
+            return storage.file.pathExtension.isEmpty ? "db" : storage.file.pathExtension
+        }
+        if storage.file.lastPathComponent.hasSuffix(".jsonl.zstd") {
+            return "jsonl.zstd"
+        }
+        return try readSubagentFiles(
+            for: storage.file,
+            manifestFiles: storage.subagentFiles
+        ).isEmpty ? "jsonl" : "zip"
     }
 
     func exportRaw(
         _ metadata: HistorySessionMetadata,
         to destination: URL
     ) throws -> ConversationRawExportResult {
-        let source = try validateScopedRegularFile(metadata.file)
-        let sourceData = try stableRead(source).data
-        let subagents = metadata.source == .antigravity ? [] : try readSubagentFiles(for: source)
+        let storage = try validatedStorage(for: metadata)
+        let source = storage.file
+        let databaseBacked = storage.isContainerBacked || metadata.source == .antigravity
+        let sourceData = databaseBacked
+            ? try consistentSQLiteSnapshot(source)
+            : try stableRead(source).data
+        let subagents = databaseBacked ? [] : try readSubagentFiles(
+            for: source,
+            manifestFiles: storage.subagentFiles
+        )
         let data: Data
         let fileExtension: String
         let bundled: Bool
-        if metadata.source == .antigravity {
+        if databaseBacked {
             data = sourceData
-            fileExtension = "db"
+            fileExtension = source.pathExtension.isEmpty ? "db" : source.pathExtension
             bundled = false
         } else if subagents.isEmpty {
             data = sourceData
-            fileExtension = "jsonl"
+            fileExtension = source.lastPathComponent.hasSuffix(".jsonl.zstd")
+                ? "jsonl.zstd"
+                : "jsonl"
             bundled = false
         } else {
             let mainName = source.lastPathComponent.isEmpty ? "conversation.jsonl" : source.lastPathComponent
@@ -299,128 +375,6 @@ struct ConversationMutationService: @unchecked Sendable {
             bundled: bundled,
             fileExtension: fileExtension
         )
-    }
-
-    // MARK: - Metadata writes
-
-    private func rewriteInlineMetadata(file: URL, patch: ConversationMetadataPatch) throws {
-        let read = try stableRead(file)
-        guard let raw = String(data: read.data, encoding: .utf8) else {
-            throw ConversationMutationError.unreadable(file, "文件不是有效 UTF-8")
-        }
-        var lines = raw.components(separatedBy: "\n")
-        var found: (Int, [String: Any])?
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data),
-                  let dictionary = object as? [String: Any] else { continue }
-            found = (index, dictionary)
-            break
-        }
-        guard let (index, initialObject) = found else {
-            throw ConversationMutationError.noConversationRecords
-        }
-        var object = initialObject
-        var custom = object["__ccbud__"] as? [String: Any] ?? [:]
-        apply(patch, to: &custom)
-        if custom.isEmpty { object.removeValue(forKey: "__ccbud__") }
-        else { object["__ccbud__"] = custom }
-        guard JSONSerialization.isValidJSONObject(object) else {
-            throw ConversationMutationError.invalidMetadata("JSON 对象无法编码")
-        }
-        let encoded = try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .withoutEscapingSlashes]
-        )
-        guard let line = String(data: encoded, encoding: .utf8) else {
-            throw ConversationMutationError.invalidMetadata("JSON 不是 UTF-8")
-        }
-        lines[index] = line
-        let output = Data(lines.joined(separator: "\n").utf8)
-        try commit(output, to: file, replacing: read.fingerprint)
-    }
-
-    private func updateSidecar(
-        for metadata: HistorySessionMetadata,
-        transcript: URL,
-        patch: ConversationMetadataPatch
-    ) throws {
-        let key: String
-        let sidecar: URL
-        if metadata.source == .codex {
-            key = transcript.deletingPathExtension().lastPathComponent
-            sidecar = configuration.appDataRoot.appendingPathComponent("codex-meta.json")
-        } else {
-            let prefix = metadata.source.rawValue + ":"
-            key = metadata.id.hasPrefix(prefix)
-                ? String(metadata.id.dropFirst(prefix.count))
-                : metadata.sessionID
-            sidecar = configuration.appDataRoot.appendingPathComponent("agent-meta.json")
-        }
-        guard !key.isEmpty, key.count <= 512, !key.contains("\0") else {
-            throw ConversationMutationError.invalidMetadata("会话标识为空或过长")
-        }
-        try ensureAppDataDirectory()
-        try rejectSymlink(sidecar, allowMissing: true, rootedAt: configuration.appDataRoot)
-
-        let existing = fileManager.fileExists(atPath: sidecar.path)
-        let read: StableRead?
-        var root: [String: Any]
-        if existing {
-            let value = try stableRead(sidecar)
-            guard value.data.count <= 8 * 1_024 * 1_024,
-                  let decoded = try? JSONSerialization.jsonObject(with: value.data),
-                  let dictionary = decoded as? [String: Any] else {
-                throw ConversationMutationError.invalidMetadata("sidecar 不是有效 JSON 对象")
-            }
-            read = value
-            root = dictionary
-        } else {
-            read = nil
-            root = [:]
-        }
-        var custom = root[key] as? [String: Any] ?? [:]
-        apply(patch, to: &custom)
-        if custom.isEmpty { root.removeValue(forKey: key) }
-        else { root[key] = custom }
-        let output = try JSONSerialization.data(
-            withJSONObject: root,
-            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        )
-        if let read {
-            try commit(output, to: sidecar, replacing: read.fingerprint, appOwned: true)
-        } else {
-            beforeCommit?(sidecar)
-            do {
-                try atomicCreate(output, at: sidecar)
-            } catch let error as POSIXError where error.code == .EEXIST {
-                throw ConversationMutationError.conflict(sidecar)
-            } catch {
-                throw ConversationMutationError.writeFailed(sidecar, String(describing: error))
-            }
-        }
-    }
-
-    private func apply(_ patch: ConversationMetadataPatch, to custom: inout [String: Any]) {
-        if let title = patch.title {
-            let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.isEmpty { custom.removeValue(forKey: "title") }
-            else { custom["title"] = value }
-        }
-        if let tags = patch.tags {
-            var normalized: [String] = []
-            for tag in tags {
-                let value = tag.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !value.isEmpty, !normalized.contains(value) { normalized.append(value) }
-            }
-            if normalized.isEmpty { custom.removeValue(forKey: "tagList") }
-            else { custom["tagList"] = normalized }
-        }
-        if let deleted = patch.deleted {
-            if deleted { custom["delete"] = true }
-            else { custom.removeValue(forKey: "delete") }
-        }
     }
 
     // MARK: - Import
@@ -560,23 +514,45 @@ struct ConversationMutationService: @unchecked Sendable {
         }
     }
 
-    private func readSubagentFiles(for transcript: URL) throws -> [ConversationArchiveEntry] {
+    private func readSubagentFiles(
+        for transcript: URL,
+        manifestFiles: [URL],
+        validationRoot: URL? = nil
+    ) throws -> [ConversationArchiveEntry] {
         guard transcript.isFileURL else { throw ConversationMutationError.invalidPath(transcript) }
-        let stem = transcript.deletingPathExtension().lastPathComponent
-        guard !stem.isEmpty else { return [] }
-        let root = transcript.deletingLastPathComponent()
-            .appendingPathComponent(stem, isDirectory: true)
-            .appendingPathComponent("subagents", isDirectory: true)
-        guard fileManager.fileExists(atPath: root.path) else { return [] }
-        try rejectSymlink(root, allowMissing: false, rootedAt: transcript.deletingLastPathComponent())
+        let files: [URL]
+        if manifestFiles.isEmpty {
+            let stem = transcript.deletingPathExtension().lastPathComponent
+            guard !stem.isEmpty else { return [] }
+            let root = transcript.deletingLastPathComponent()
+                .appendingPathComponent(stem, isDirectory: true)
+                .appendingPathComponent("subagents", isDirectory: true)
+            guard fileManager.fileExists(atPath: root.path) else { return [] }
+            try rejectSymlink(
+                root,
+                allowMissing: false,
+                rootedAt: transcript.deletingLastPathComponent()
+            )
+            files = try fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            )
+        } else {
+            files = manifestFiles
+        }
+
         var result: [ConversationArchiveEntry] = []
+        var seenNames = Set<String>()
         var total = 0
-        let files = try fileManager.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for file in files where ConversationArchive.isSubagentBasename(file.lastPathComponent) {
+        for file in files.sorted(by: { $0.path < $1.path })
+            where ConversationArchive.isSubagentBasename(file.lastPathComponent)
+                && seenNames.insert(file.lastPathComponent.lowercased()).inserted {
+            if let validationRoot {
+                _ = try validateRegularFile(file, rootedAt: validationRoot)
+            } else {
+                _ = try validateScopedRegularFile(file)
+            }
             let values = try file.resourceValues(forKeys: [
                 .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
             ])
@@ -591,7 +567,7 @@ struct ConversationMutationService: @unchecked Sendable {
             guard total <= archiveLimits.maximumExpandedBytes - count else {
                 throw ConversationArchiveError.expandedDataTooLarge
             }
-            let data = try Data(contentsOf: file, options: [.mappedIfSafe])
+            let data = try stableRead(file).data
             total += data.count
             result.append(.init(name: file.lastPathComponent, data: data))
         }
@@ -651,28 +627,97 @@ struct ConversationMutationService: @unchecked Sendable {
 
     // MARK: - Scope, conflicts, and atomic creation
 
-    private func isLiveForeign(_ metadata: HistorySessionMetadata) -> Bool {
-        !metadata.imported && metadata.source != .claude
-    }
-
     private var allowedRoots: [URL] {
-        let producerRoots = configuration.historyDirs.flatMap { raw -> [URL] in
-            let base = HistoryPathResolver.expandTilde(raw, homeDirectory: configuration.homeDirectory)
-                .resolvingSymlinksInPath().standardizedFileURL
-            return ["projects", "sessions", "archived_sessions", "session-state", "conversations"].map {
-                base.appendingPathComponent($0, isDirectory: true).standardizedFileURL
-            }
-        }
+        let producerRoots = sourceAdapters.ownedRoots(configuration: historyConfiguration)
         return producerRoots + [
             configuration.importsRoot.appendingPathComponent("projects", isDirectory: true)
                 .standardizedFileURL,
         ]
     }
 
+    private var historyConfiguration: HistoryConfiguration {
+        HistoryConfiguration(
+            historyDirs: configuration.historyDirs,
+            active: "all",
+            homeDirectory: configuration.homeDirectory,
+            importsRoot: configuration.importsRoot,
+            sessionLocationOverrides: configuration.sessionLocationOverrides
+        )
+    }
+
+    /// Permanent deletion is intentionally limited to the app-owned import store. Lexical path
+    /// containment alone is not sufficient here: replacing `imports` or `projects` with a symlink
+    /// would make a descendant `lstat` follow that intermediate link into an unrelated tree.
+    private func validateImportStoreRootChain() throws {
+        let appDataRoot = configuration.appDataRoot.standardizedFileURL
+        let importsRoot = configuration.importsRoot.standardizedFileURL
+        let projectsRoot = importsRoot
+            .appendingPathComponent("projects", isDirectory: true)
+            .standardizedFileURL
+
+        guard importsRoot.deletingLastPathComponent().standardizedFileURL == appDataRoot,
+              projectsRoot.deletingLastPathComponent().standardizedFileURL == importsRoot else {
+            throw ConversationMutationError.outsideAllowedRoots(projectsRoot)
+        }
+        for directory in [appDataRoot, importsRoot, projectsRoot] {
+            var facts = stat()
+            guard lstat(directory.path, &facts) == 0 else {
+                throw ConversationMutationError.unsafeCompanion(directory)
+            }
+            if facts.st_mode & S_IFMT == S_IFLNK {
+                throw ConversationMutationError.symbolicLink(directory)
+            }
+            guard facts.st_mode & S_IFMT == S_IFDIR else {
+                throw ConversationMutationError.unsafeCompanion(directory)
+            }
+        }
+    }
+
+    private func validatedStorage(
+        for metadata: HistorySessionMetadata
+    ) throws -> ValidatedStorage {
+        let logical = metadata.file.standardizedFileURL
+        let candidate = try? sourceAdapters.candidate(
+            for: logical,
+            configuration: historyConfiguration
+        )
+        let physical = candidate?.primaryStorageFile ?? logical
+        var subagentFiles: [URL] = []
+        if let candidate,
+           let format = candidate.formatHint,
+           let manifest = try? sourceAdapters.manifest(
+               for: candidate,
+               format: format,
+               configuration: historyConfiguration
+           ) {
+            var seen = Set<String>()
+            subagentFiles = manifest.dependencies.compactMap { dependency in
+                guard dependency.role == .subagentTranscript
+                        || dependency.role == .subagentMetadata else { return nil }
+                let file = dependency.file.standardizedFileURL
+                return seen.insert(file.path).inserted ? file : nil
+            }
+        }
+        return ValidatedStorage(
+            file: try validateScopedRegularFile(physical),
+            isContainerBacked: candidate?.backingFile != nil || physical.path != logical.path,
+            subagentFiles: subagentFiles
+        )
+    }
+
     private func validateScopedRegularFile(_ requested: URL) throws -> URL {
         guard requested.isFileURL else { throw ConversationMutationError.invalidPath(requested) }
         let file = requested.standardizedFileURL
         guard let root = allowedRoots.first(where: { isWithin(file, root: $0) }) else {
+            throw ConversationMutationError.outsideAllowedRoots(file)
+        }
+        return try validateRegularFile(file, rootedAt: root)
+    }
+
+    private func validateRegularFile(_ requested: URL, rootedAt root: URL) throws -> URL {
+        guard requested.isFileURL else { throw ConversationMutationError.invalidPath(requested) }
+        let file = requested.standardizedFileURL
+        guard isWithin(file, root: root.standardizedFileURL) else {
             throw ConversationMutationError.outsideAllowedRoots(file)
         }
         try rejectSymlink(file, allowMissing: false, rootedAt: root)
@@ -742,36 +787,137 @@ struct ConversationMutationService: @unchecked Sendable {
     private func stableRead(_ file: URL) throws -> StableRead {
         let before = try structuralFingerprint(file)
         let data: Data
-        do { data = try Data(contentsOf: file, options: [.mappedIfSafe]) }
+        do {
+            data = QoderFileReader.isQoderDataPath(file)
+                ? try qoderReader.read(file)
+                : try Data(contentsOf: file, options: [.mappedIfSafe])
+        }
         catch { throw ConversationMutationError.unreadable(file, String(describing: error)) }
         let after = try structuralFingerprint(file)
         guard before == after else { throw ConversationMutationError.conflict(file) }
-        return StableRead(data: data, fingerprint: Fingerprint(
-            device: after.0,
-            inode: after.1,
-            size: after.2,
-            seconds: after.3,
-            nanoseconds: after.4,
-            digest: SHA256.hash(data: data)
-        ))
+        return StableRead(data: data)
     }
 
-    private func commit(
-        _ data: Data,
-        to file: URL,
-        replacing expected: Fingerprint,
-        appOwned: Bool = false
-    ) throws {
-        beforeCommit?(file)
-        if !appOwned {
-            _ = try validateScopedRegularFile(file)
-        } else {
-            try rejectSymlink(file, allowMissing: false, rootedAt: configuration.appDataRoot)
+    /// A plain copy can omit committed rows which still live in `-wal`. SQLite's online backup
+    /// API reads the same consistent view as the producer without checkpointing or mutating it.
+    private func consistentSQLiteSnapshot(_ source: URL) throws -> Data {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: source.path + suffix)
+            if fileManager.fileExists(atPath: sidecar.path) {
+                _ = try validateScopedRegularFile(sidecar)
+            }
         }
-        let current = try stableRead(file).fingerprint
-        guard current == expected else { throw ConversationMutationError.conflict(file) }
-        do { try SecureAtomicFile.write(data, to: file, fileManager: fileManager) }
-        catch { throw ConversationMutationError.writeFailed(file, String(describing: error)) }
+
+        let temporaryDirectory = fileManager.temporaryDirectory.appendingPathComponent(
+            "ccbud-sqlite-export-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try fileManager.createDirectory(
+                at: temporaryDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            throw ConversationMutationError.writeFailed(
+                temporaryDirectory,
+                String(describing: error)
+            )
+        }
+        defer { try? fileManager.removeItem(at: temporaryDirectory) }
+        let temporary = temporaryDirectory.appendingPathComponent("snapshot.db")
+
+        var input: OpaquePointer?
+        var outputConnection: OpaquePointer?
+        guard sqlite3_open_v2(
+            source.path,
+            &input,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let input else {
+            if let input { sqlite3_close(input) }
+            throw ConversationMutationError.unreadable(source, "无法打开 SQLite 会话")
+        }
+        defer { sqlite3_close(input) }
+        sqlite3_busy_timeout(input, 1_000)
+        let sourcePageCount = sqliteInteger("PRAGMA page_count", database: input) ?? -1
+
+        guard sqlite3_open_v2(
+            temporary.path,
+            &outputConnection,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let output = outputConnection else {
+            if let outputConnection { sqlite3_close(outputConnection) }
+            throw ConversationMutationError.writeFailed(temporary, "无法创建 SQLite 快照")
+        }
+        defer {
+            if let outputConnection { sqlite3_close(outputConnection) }
+        }
+        sqlite3_busy_timeout(output, 1_000)
+
+        guard let backup = sqlite3_backup_init(output, "main", input, "main") else {
+            throw ConversationMutationError.unreadable(
+                source,
+                String(cString: sqlite3_errmsg(output))
+            )
+        }
+        var status: Int32 = SQLITE_OK
+        var retries = 0
+        repeat {
+            status = sqlite3_backup_step(backup, 256)
+            if status == SQLITE_BUSY || status == SQLITE_LOCKED {
+                retries += 1
+                guard retries <= 100 else { break }
+                sqlite3_sleep(10)
+            }
+        } while status == SQLITE_OK || status == SQLITE_BUSY || status == SQLITE_LOCKED
+        let finishStatus = sqlite3_backup_finish(backup)
+        guard status == SQLITE_DONE, finishStatus == SQLITE_OK else {
+            throw ConversationMutationError.unreadable(
+                source,
+                String(cString: sqlite3_errmsg(output))
+            )
+        }
+        guard sqlite3_exec(output, "PRAGMA journal_mode=DELETE", nil, nil, nil) == SQLITE_OK else {
+            throw ConversationMutationError.unreadable(
+                source,
+                "无法将 SQLite 快照转换为独立数据库"
+            )
+        }
+        let snapshotPageCount = sqliteInteger("PRAGMA page_count", database: output) ?? -1
+        guard sourcePageCount > 0, snapshotPageCount == sourcePageCount else {
+            throw ConversationMutationError.unreadable(
+                source,
+                "SQLite 快照页数异常（源 \(sourcePageCount)，快照 \(snapshotPageCount)）"
+            )
+        }
+
+        // The source's WAL mode is copied into the destination header. Convert the temporary
+        // snapshot to rollback-journal mode so the exported main file is independently readable
+        // without a generated `-wal`/`-shm` pair.
+        let closeStatus = sqlite3_close(output)
+        outputConnection = nil
+        guard closeStatus == SQLITE_OK else {
+            throw ConversationMutationError.unreadable(
+                source,
+                "无法完成 SQLite 快照（错误码 \(closeStatus)）"
+            )
+        }
+        do {
+            return try Data(contentsOf: temporary, options: [.mappedIfSafe])
+        } catch {
+            throw ConversationMutationError.unreadable(temporary, String(describing: error))
+        }
+    }
+
+    private func sqliteInteger(_ sql: String, database: OpaquePointer) -> Int64? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return sqlite3_column_int64(statement, 0)
     }
 
     private func structuralFingerprint(_ file: URL) throws -> (UInt64, UInt64, Int64, Int64, Int64) {

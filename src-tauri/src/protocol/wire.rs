@@ -23,10 +23,14 @@ impl Wire {
     }
 
     /// The client's protocol, inferred from the inbound request path. Claude Code hits
-    /// `/v1/messages`; an OpenAI/Codex client hits `/v1/chat/completions` or `/v1/responses`.
+    /// `/v1/messages`; an OpenAI/Codex client hits `/v1/chat/completions`, `/v1/responses`,
+    /// or the Responses-native `/v1/alpha/search` endpoint.
     pub fn from_request_path(uri: &Uri) -> Wire {
         let p = uri.path().trim_end_matches('/');
-        if p.ends_with("/responses") || p.ends_with("/responses/compact") {
+        if p.ends_with("/responses")
+            || p.ends_with("/responses/compact")
+            || p.ends_with("/alpha/search")
+        {
             Wire::OpenAiResponses
         } else if p.contains("/chat/completions") {
             Wire::OpenAiChat
@@ -72,23 +76,36 @@ impl Wire {
         Some(format!("{}/v1{}", base, self.endpoint_path()))
     }
 
-    /// Match only the three request endpoints that may be safely rebased onto a provider URL.
+    /// Match only inference endpoints that may be safely rebased onto a provider URL.
     /// Models, count_tokens, HEAD, and unknown routes keep the generic passthrough path.
     pub fn from_request_endpoint(path: &str) -> Option<Wire> {
         match path.trim_end_matches('/') {
             "/messages" | "/v1/messages" => Some(Wire::Anthropic),
-            "/chat/completions" | "/v1/chat/completions" => Some(Wire::OpenAiChat),
-            "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact" => {
-                Some(Wire::OpenAiResponses)
-            }
+            "/chat/completions"
+            | "/v1/chat/completions"
+            | "/v1/v1/chat/completions"
+            | "/codex/v1/chat/completions" => Some(Wire::OpenAiChat),
+            "/responses"
+            | "/v1/responses"
+            | "/v1/v1/responses"
+            | "/codex/v1/responses"
+            | "/responses/compact"
+            | "/v1/responses/compact"
+            | "/v1/v1/responses/compact"
+            | "/codex/v1/responses/compact"
+            | "/alpha/search"
+            | "/v1/alpha/search"
+            | "/v1/v1/alpha/search"
+            | "/codex/v1/alpha/search" => Some(Wire::OpenAiResponses),
             _ => None,
         }
     }
 
     pub fn request_endpoint_path(self, inbound_path: &str) -> &'static str {
-        if self == Wire::OpenAiResponses
-            && inbound_path.trim_end_matches('/').ends_with("/responses/compact")
-        {
+        let inbound_path = inbound_path.trim_end_matches('/');
+        if self == Wire::OpenAiResponses && inbound_path.ends_with("/alpha/search") {
+            "/alpha/search"
+        } else if self == Wire::OpenAiResponses && inbound_path.ends_with("/responses/compact") {
             "/responses/compact"
         } else {
             self.endpoint_path()
@@ -100,18 +117,18 @@ impl Wire {
         format!("{}{}", base, self.request_endpoint_path(inbound_path))
     }
 
-    pub fn v1_fallback_url_for_request(
-        self,
-        base_url: &str,
-        inbound_path: &str,
-    ) -> Option<String> {
+    pub fn v1_fallback_url_for_request(self, base_url: &str, inbound_path: &str) -> Option<String> {
         let base = base_url.trim_end_matches('/');
         if base_url_has_version_suffix(base_url)
             || (self == Wire::OpenAiChat && base.ends_with("/openai"))
         {
             return None;
         }
-        Some(format!("{}/v1{}", base, self.request_endpoint_path(inbound_path)))
+        Some(format!(
+            "{}/v1{}",
+            base,
+            self.request_endpoint_path(inbound_path)
+        ))
     }
 }
 
@@ -132,8 +149,7 @@ fn base_url_has_version_suffix(base_url: &str) -> bool {
         return false;
     };
     let mut chars = segment.chars();
-    matches!(chars.next(), Some('v' | 'V'))
-        && matches!(chars.next(), Some(c) if c.is_ascii_digit())
+    matches!(chars.next(), Some('v' | 'V')) && matches!(chars.next(), Some(c) if c.is_ascii_digit())
 }
 
 /// Statuses commonly used by upstreams for an unrecognized or unsupported endpoint path.

@@ -1,7 +1,7 @@
-use super::*;
 use super::types::{HistoryInner, MAX_CACHED_RESPONSES};
-use std::sync::Arc;
+use super::*;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn concurrent_recording_is_safe_and_searchable() {
@@ -169,4 +169,3 @@ fn same_id_replacement_keeps_exact_accounting_and_no_stale_call_index() {
     assert_eq!(inner.cached_bytes, replacement_bytes);
     assert_eq!(inner.call_index[&call_key].len(), 1);
 }
-

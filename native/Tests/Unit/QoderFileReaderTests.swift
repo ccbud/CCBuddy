@@ -145,6 +145,68 @@ final class QoderFileReaderTests: XCTestCase {
         XCTAssertEqual(runner.batchSizes, [1], "The repository warm should make usage reuse the same cache")
     }
 
+    func testProtectedQoderRawAndBundledExportsUseHelperAndKeepSubagentMetadata() throws {
+        let fixture = try makeQoderFixture("protected-export")
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+
+        let project = fixture.projects.appendingPathComponent("-tmp-export", isDirectory: true)
+        let plain = project.appendingPathComponent("plain.jsonl")
+        let bundled = project.appendingPathComponent("bundled.jsonl")
+        let subagents = project.appendingPathComponent("bundled/subagents", isDirectory: true)
+        let child = subagents.appendingPathComponent("agent-child.jsonl")
+        let childMetadata = subagents.appendingPathComponent("agent-child.meta.json")
+        let plainData = Data(#"{"type":"user","sessionId":"plain","message":{"role":"user","content":"plain protected qoder"}}"#.utf8)
+        let bundledData = Data(#"{"type":"user","sessionId":"bundled","message":{"role":"user","content":"bundled protected qoder"}}"#.utf8)
+        let childData = Data(#"{"type":"assistant","message":{"role":"assistant","content":"protected child"}}"#.utf8)
+        let childMetadataData = Data(#"{"toolUseId":"tool-child","agentType":"explore"}"#.utf8)
+        try write(plainData, to: plain)
+        try write(bundledData, to: bundled)
+        try write(childData, to: child)
+        try write(childMetadataData, to: childMetadata)
+
+        let access = DeniedQoderFileAccess()
+        let resolver = FakeQoderHelperResolver()
+        let runner = FakeQoderHelperRunner()
+        let reader = makeReader(access: access, resolver: resolver, runner: runner)
+        let service = ConversationMutationService(
+            configuration: .init(
+                historyDirs: [fixture.root.path],
+                homeDirectory: fixture.home,
+                importsRoot: fixture.home.appendingPathComponent("app/imports", isDirectory: true)
+            ),
+            qoderReader: reader
+        )
+
+        let plainMetadata = qoderMetadata(file: plain)
+        XCTAssertEqual(try service.suggestedRawFileExtension(for: plainMetadata), "jsonl")
+        let plainExport = fixture.home.appendingPathComponent("plain-export.jsonl")
+        let plainResult = try service.exportRaw(plainMetadata, to: plainExport)
+        XCTAssertFalse(plainResult.bundled)
+        XCTAssertEqual(plainResult.fileExtension, "jsonl")
+        XCTAssertEqual(try Data(contentsOf: plainExport), plainData)
+
+        let bundledMetadata = qoderMetadata(file: bundled, subagentCount: 1)
+        XCTAssertEqual(try service.suggestedRawFileExtension(for: bundledMetadata), "zip")
+        let bundledExport = fixture.home.appendingPathComponent("bundled-export.zip")
+        let bundledResult = try service.exportRaw(bundledMetadata, to: bundledExport)
+        XCTAssertTrue(bundledResult.bundled)
+        XCTAssertEqual(bundledResult.fileExtension, "zip")
+
+        let archive = try ConversationArchive.splitBundle(
+            ConversationArchive.read(Data(contentsOf: bundledExport))
+        )
+        XCTAssertEqual(archive.main.name, "bundled.jsonl")
+        XCTAssertEqual(archive.main.data, bundledData)
+        XCTAssertEqual(
+            archive.subagents.map(\.name),
+            ["agent-child.jsonl", "agent-child.meta.json"]
+        )
+        XCTAssertEqual(archive.subagents[0].data, childData)
+        XCTAssertEqual(archive.subagents[1].data, childMetadataData)
+        XCTAssertEqual(runner.singleReadCount, 4)
+        XCTAssertEqual(resolver.resolveCount, 4)
+    }
+
     private func makeReader(
         access: DeniedQoderFileAccess,
         resolver: FakeQoderHelperResolver,
@@ -155,6 +217,30 @@ final class QoderFileReaderTests: XCTestCase {
             helperResolver: resolver,
             helperRunner: runner,
             cache: QoderHelperCache()
+        )
+    }
+
+    private func qoderMetadata(
+        file: URL,
+        subagentCount: Int = 0
+    ) -> HistorySessionMetadata {
+        let sessionID = file.deletingPathExtension().lastPathComponent
+        return HistorySessionMetadata(
+            id: "qoder:\(sessionID)",
+            file: file,
+            source: .qoder,
+            dirID: file.path,
+            dirLabel: "Qoder",
+            sessionID: sessionID,
+            cwd: "/tmp/export",
+            project: "export",
+            title: "Protected Qoder export",
+            autoTitle: "Protected Qoder export",
+            subagentCount: subagentCount,
+            createdAt: Date(timeIntervalSince1970: 1),
+            lastActivity: Date(timeIntervalSince1970: 2),
+            sizeBytes: 1,
+            messageCount: 1
         )
     }
 

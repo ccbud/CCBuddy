@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 /// A gateway event rendered in the compact operational log. Process lifecycle entries are appended
-/// by AppModel, while request warnings/errors are synthesized only from structured Bifrost fields.
+/// by AppModel, while request warnings/errors are synthesized only from structured gateway fields.
 /// Raw process output and provider-owned error text must never be stored here.
 struct MonitorLifecycleEvent: Identifiable, Equatable, Sendable {
     enum Level: String, CaseIterable, Sendable {
@@ -43,14 +43,14 @@ struct MonitorLifecycleEvent: Identifiable, Equatable, Sendable {
 }
 
 /// Builds the small subset of request-scoped gateway events that can be shown without parsing
-/// Bifrost's process output or copying provider-owned error text into the UI. The retained snapshot
+/// helper process output or copying provider-owned error text into the UI. The retained snapshot
 /// makes polling idempotent: an error/retry is reported only when that structured log state first
 /// appears or advances.
 struct MonitorOperationalEventSynthesizer {
     private static let observationLimit = 200
 
     private struct Snapshot: Equatable {
-        var status: BifrostLogStatus
+        var status: GatewayLogStatus
         var retryCount: Int
     }
 
@@ -67,11 +67,11 @@ struct MonitorOperationalEventSynthesizer {
         activeSince = nil
     }
 
-    mutating func events(for logs: [BifrostLog]) -> [MonitorLifecycleEvent] {
+    mutating func events(for logs: [GatewayLog]) -> [MonitorLifecycleEvent] {
         guard let activeSince else { return [] }
         var events: [MonitorLifecycleEvent] = []
 
-        // Bifrost lists newest first. Process oldest first so two transitions received in one
+        // The gateway lists newest first. Process oldest first so transitions received in one
         // refresh retain their causal order in the gateway log.
         for log in logs.sorted(by: { $0.monitorTimestamp < $1.monitorTimestamp }) {
             guard !log.id.isEmpty else { continue }
@@ -84,8 +84,8 @@ struct MonitorOperationalEventSynthesizer {
             )
             observations[log.id] = current
 
-            // A new sidecar can reopen the same persistent Bifrost database. Establish snapshots
-            // for older rows, but do not replay operational events from a previous app lifetime.
+            // Establish snapshots for rows that predate this helper instance, but do not replay
+            // operational events from a previous app lifetime.
             let timestamp = log.monitorTimestamp
             guard timestamp != .distantPast,
                   timestamp >= activeSince.addingTimeInterval(-1)
@@ -96,14 +96,14 @@ struct MonitorOperationalEventSynthesizer {
                 events.append(.init(
                     timestamp: timestamp,
                     level: .warning,
-                    message: "Bifrost 请求已重试 \(current.retryCount) 次"
+                    message: "网关请求已重试 \(current.retryCount) 次"
                 ))
             }
 
             if current.status == .error, previous?.status != .error {
                 let message = log.errorStatusCode.map {
-                    "Bifrost 请求失败 · 上游 HTTP \($0)"
-                } ?? "Bifrost 请求失败"
+                    "网关请求失败 · 上游 HTTP \($0)"
+                } ?? "网关请求失败"
                 events.append(.init(timestamp: timestamp, level: .error, message: message))
             }
         }
@@ -126,8 +126,8 @@ final class MonitorStore: ObservableObject {
     static let lifecycleLimit = 100
     nonisolated static let activityCoalescingNanoseconds: UInt64 = 120_000_000
 
-    @Published private(set) var requests: [BifrostLog] = []
-    @Published private(set) var stats: BifrostLogStats?
+    @Published private(set) var requests: [GatewayLog] = []
+    @Published private(set) var stats: GatewayLogStats?
     @Published private(set) var lifecycleEvents: [MonitorLifecycleEvent] = []
     @Published private(set) var currentPort: Int?
     @Published private(set) var gatewayRunning = false
@@ -136,19 +136,19 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var lastUpdatedAt: Date?
     @Published private(set) var refreshError: String?
 
-    @Published private(set) var selectedDetail: BifrostLog?
+    @Published private(set) var selectedDetail: GatewayLog?
     @Published private(set) var detailRequestID: String?
     @Published private(set) var isLoadingDetail = false
     @Published private(set) var detailError: String?
 
-    private let client: BifrostManagementClient
+    private let client: GatewayManagementClient
     private let pollIntervalNanoseconds: UInt64
     private let activityCoalescingNanoseconds: UInt64
     private var pollingTask: Task<Void, Never>?
     private var pollingGeneration = UUID()
     /// Changes only when the management endpoint changes, so a stale destructive operation cannot
-    /// clear rows or errors belonging to a newly configured Bifrost instance.
-    private var endpointGeneration = UUID()
+    /// clear rows or errors belonging to a newly configured helper instance.
+    private var instanceGeneration = UUID()
     private var activeRefreshGeneration: UUID?
     private var requestActivityTask: Task<Void, Never>?
     private var activityRefreshTask: Task<Void, Never>?
@@ -162,9 +162,9 @@ final class MonitorStore: ObservableObject {
     private let legacySmokeVisualFixture: Bool
 
     init(
-        client: BifrostManagementClient,
+        client: GatewayManagementClient,
         pollIntervalNanoseconds: UInt64 = 10_000_000_000,
-        requestActivity: AsyncStream<BifrostRequestActivity>? = nil,
+        requestActivity: AsyncStream<GatewayRequestActivity>? = nil,
         activityCoalescingNanoseconds: UInt64 = MonitorStore.activityCoalescingNanoseconds,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
@@ -190,8 +190,8 @@ final class MonitorStore: ObservableObject {
         activityRefreshTask?.cancel()
     }
 
-    /// Rebinds the client and restarts polling when the gateway port changes. Calling this with the
-    /// same values is idempotent, which makes it safe to drive from SwiftUI's `task(id:)`.
+    /// Restarts polling when the public gateway port or process state changes. The public port is
+    /// presentation state only; the private management endpoint is published by the supervisor.
     func configure(port: Int, gatewayRunning: Bool) {
         let safePort = (1...65_535).contains(port) ? port : 8_788
         let portChanged = currentPort != safePort
@@ -210,11 +210,10 @@ final class MonitorStore: ObservableObject {
         currentPort = safePort
         self.gatewayRunning = gatewayRunning
 
-        if portChanged {
-            endpointGeneration = UUID()
-            client.updatePort(safePort)
-            // A different port may be a different Bifrost process. Never merge its UUID space or
-            // metrics with the previous endpoint, and invalidate any in-flight detail response.
+        if portChanged || runningChanged {
+            instanceGeneration = UUID()
+            // A process transition can replace the in-memory ring even when the public port stays
+            // the same. Never merge its numeric ID space or metrics with the previous instance.
             requests.removeAll(keepingCapacity: true)
             stats = nil
             lastUpdatedAt = nil
@@ -268,19 +267,16 @@ final class MonitorStore: ObservableObject {
         guard !isClearing, !isRefreshing else { return false }
         isClearing = true
 
-        // Freeze the server-side snapshot. Requests created while deletion is running are newer
-        // than this boundary and therefore survive the clear operation.
-        let cutoff = Date()
-        let clearEndpointGeneration = endpointGeneration
+        let clearInstanceGeneration = instanceGeneration
         let clearEndpoint = client.snapshotEndpoint()
         let lifecycleIDsAtStart = Set(lifecycleEvents.map(\.id))
         do {
-            _ = try await client.clearLogs(through: cutoff, pinnedTo: clearEndpoint)
-            guard endpointGeneration == clearEndpointGeneration else {
+            _ = try await client.clearLogs(pinnedTo: clearEndpoint)
+            guard instanceGeneration == clearInstanceGeneration else {
                 isClearing = false
                 return false
             }
-            requests.removeAll { $0.monitorTimestamp <= cutoff }
+            requests.removeAll(keepingCapacity: true)
             stats = nil
             // Main-actor reentrancy permits delayed/backdated lifecycle events to arrive while the
             // network clear is suspended. Clear the exact frozen history, not events appended
@@ -288,20 +284,16 @@ final class MonitorStore: ObservableObject {
             lifecycleEvents.removeAll { lifecycleIDsAtStart.contains($0.id) }
             seenLifecycleSequences = Set(lifecycleEvents.compactMap(\.sequence))
             seenLifecycleIDs = Set(lifecycleEvents.map(\.id))
-            operationalEvents.begin(at: cutoff)
+            operationalEvents.begin()
             dismissDetail()
             refreshError = nil
             isClearing = false
             if gatewayRunning { _ = await refreshNow() }
             return true
         } catch {
-            guard endpointGeneration == clearEndpointGeneration else {
+            guard instanceGeneration == clearInstanceGeneration else {
                 isClearing = false
                 return false
-            }
-            if let partial = error as? BifrostPartialLogDeleteError {
-                removeDeletedRequests(ids: partial.deletedIDs)
-                stats = nil
             }
             if !Task.isCancelled { refreshError = error.localizedDescription }
             isClearing = false
@@ -333,7 +325,6 @@ final class MonitorStore: ObservableObject {
 
         do {
             let detail = try await client.fetchLogDetail(id: id)
-                .restoringLegacyRequestedModel()
             guard !Task.isCancelled, detailGeneration == generation else { return }
             selectedDetail = detail
         } catch {
@@ -348,13 +339,6 @@ final class MonitorStore: ObservableObject {
         selectedDetail = nil
         isLoadingDetail = false
         detailError = nil
-    }
-
-    private func removeDeletedRequests(ids: [String]) {
-        let deleted = Set(ids)
-        guard !deleted.isEmpty else { return }
-        requests.removeAll { deleted.contains($0.id) }
-        if let detailRequestID, deleted.contains(detailRequestID) { dismissDetail() }
     }
 
     func appendLifecycle(
@@ -429,7 +413,7 @@ final class MonitorStore: ObservableObject {
         }
     }
 
-    private func observeRequestActivity(_ activity: AsyncStream<BifrostRequestActivity>) {
+    private func observeRequestActivity(_ activity: AsyncStream<GatewayRequestActivity>) {
         requestActivityTask?.cancel()
         requestActivityTask = Task { @MainActor [weak self] in
             for await event in activity {
@@ -502,7 +486,7 @@ final class MonitorStore: ObservableObject {
         var errors: [String] = []
 
         do {
-            let page = try await client.fetchLogs(limit: Self.requestLimit, offset: 0)
+            let page = try await client.fetchLogs(limit: Self.requestLimit)
             guard !Task.isCancelled, generation == pollingGeneration else { return true }
             upsert(page.logs)
             refreshedAnything = true
@@ -512,9 +496,8 @@ final class MonitorStore: ObservableObject {
 
         guard !Task.isCancelled, generation == pollingGeneration else { return true }
         do {
-            // `/api/logs` currently returns unreliable embedded stats. Always use the dedicated
-            // endpoint so the four headline cards reflect Bifrost's source of truth.
-            stats = try await client.fetchLogStats()
+            let status = try await client.fetchStatus()
+            stats = GatewayLogStats(status: status, logs: requests)
             refreshedAnything = true
         } catch {
             if !Task.isCancelled { errors.append(error.localizedDescription) }
@@ -526,13 +509,11 @@ final class MonitorStore: ObservableObject {
         return true
     }
 
-    /// UUID upsert is essential for Bifrost streaming records: the same request first appears as
-    /// `processing`, then becomes a terminal success/error/cancelled record.
-    private func upsert(_ incoming: [BifrostLog]) {
+    /// The same numeric request first appears as processing, then becomes terminal after forwarding.
+    private func upsert(_ incoming: [GatewayLog]) {
         var byID = Dictionary(uniqueKeysWithValues: requests.map { ($0.id, $0) })
-        var accepted: [BifrostLog] = []
-        for incomingLog in incoming {
-            let log = incomingLog.restoringLegacyRequestedModel()
+        var accepted: [GatewayLog] = []
+        for log in incoming {
             if let current = byID[log.id], current.isTerminal, log.isProcessing {
                 // Do not let a delayed/stale poll regress a terminal row back to processing.
                 continue
@@ -581,52 +562,49 @@ final class MonitorStore: ObservableObject {
     private static func makeUITestFixture() -> MonitorUITestFixture {
         let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
         let id = "ui-monitor-translated"
-        let summary = BifrostLog(
+        let summary = GatewayLog(
             id: id,
-            provider: "fixture-upstream",
-            selectedKeyName: "Fixture Provider",
-            model: "upstream-model",
-            alias: "client-model",
-            object: "chat_completion",
-            timestamp: timestamp,
-            status: .success,
-            latency: 42,
-            cost: 0.001
+            startedAt: timestamp,
+            elapsedMs: 42,
+            path: "/v1/messages",
+            httpStatusCode: 200,
+            clientModel: "client-model",
+            providerID: "fixture-upstream",
+            providerName: "Fixture Provider",
+            attempts: 1,
+            translation: "anthropic → openai-chat"
         )
-        let detail = BifrostLog(
+        let detail = GatewayLog(
             id: id,
-            provider: "fixture-upstream",
-            selectedKeyName: "Fixture Provider",
-            model: "upstream-model",
-            alias: "client-model",
-            object: "chat_completion",
-            timestamp: timestamp,
-            status: .success,
-            latency: 42,
-            cost: 0.001,
-            stream: true,
-            rawRequest: #"{"authorization":"Bearer ui-secret-token","prompt":"Needle secret"}"#,
-            rawResponse: #"{"id":"fixture-response","output":"Needle result"}"#,
-            inputHistory: .array([
-                .object(["role": .string("user"), "content": .string("Needle client request")]),
-            ]),
-            outputMessage: .object([
-                "role": .string("assistant"), "content": .string("Needle client response"),
-            ]),
-            additionalFields: [
-                "session_id": .string("session-fixture-12345678"),
-                "agent_id": .string("subagent-fixture"),
-            ]
+            startedAt: timestamp,
+            elapsedMs: 42,
+            path: "/v1/messages",
+            httpStatusCode: 200,
+            clientModel: "client-model",
+            providerID: "fixture-upstream",
+            providerName: "Fixture Provider",
+            attempts: 1,
+            translation: "anthropic → openai-chat",
+            clientRequest: GatewayCapturedMessage(
+                headers: .object(["authorization": .string("Bearer ui-secret-token")]),
+                body: #"{"model":"client-model","stream":true,"prompt":"Needle client request"}"#
+            ),
+            upstreamRequest: GatewayCapturedMessage(
+                headers: .object(["authorization": .string("Bearer ui-secret-token")]),
+                body: #"{"model":"upstream-model","prompt":"Needle secret"}"#
+            ),
+            upstreamResponse: GatewayCapturedMessage(
+                body: #"{"id":"fixture-response","output":"Needle result"}"#
+            ),
+            clientResponse: GatewayCapturedMessage(
+                body: #"{"role":"assistant","content":"Needle client response"}"#
+            )
         )
         return MonitorUITestFixture(
             requests: [summary],
             details: [id: detail],
-            stats: BifrostLogStats(
+            stats: GatewayLogStats(
                 totalRequests: 1,
-                totalTokens: 12,
-                promptTokens: 7,
-                completionTokens: 5,
-                totalCost: 0.001,
                 averageLatency: 42,
                 successRate: 100
             ),
@@ -643,14 +621,8 @@ final class MonitorStore: ObservableObject {
 }
 
 private struct MonitorUITestFixture {
-    let requests: [BifrostLog]
-    let details: [String: BifrostLog]
-    let stats: BifrostLogStats
+    let requests: [GatewayLog]
+    let details: [String: GatewayLog]
+    let stats: GatewayLogStats
     let lifecycleEvents: [MonitorLifecycleEvent]
-}
-
-extension BifrostLog {
-    var monitorTimestamp: Date {
-        timestamp ?? createdAt ?? .distantPast
-    }
 }

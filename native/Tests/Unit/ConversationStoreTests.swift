@@ -324,8 +324,116 @@ final class ConversationPresentationParityTests: XCTestCase {
     }
 }
 
+final class ConversationFileInspectorTests: XCTestCase {
+    func testVirtualSQLiteSessionObservesPhysicalDatabase() {
+        let database = URL(fileURLWithPath: "/tmp/session-store.db")
+        let logical = WakeHistoryAdapterSupport.virtualSessionURL(
+            database: database,
+            nativeID: "conversation-1"
+        )
+
+        XCTAssertEqual(
+            ConversationFileInspector.storageFile(for: logical),
+            database.standardizedFileURL
+        )
+        XCTAssertEqual(
+            ConversationFileInspector.storageFile(
+                for: URL(fileURLWithPath: "/tmp/session.jsonl")
+            ),
+            URL(fileURLWithPath: "/tmp/session.jsonl").standardizedFileURL
+        )
+    }
+}
+
 @MainActor
 final class ConversationStoreTests: XCTestCase {
+    func testRevealVirtualSQLiteSessionSelectsPhysicalBackingDatabase() async {
+        let database = URL(fileURLWithPath: "/tmp/copilot/session-store.db")
+        let logical = WakeHistoryAdapterSupport.virtualSessionURL(
+            database: database,
+            nativeID: "conversation-1"
+        )
+        var metadata = Self.metadata(
+            id: "copilot:conversation-1",
+            title: "SQLite session",
+            tags: [],
+            file: logical.path
+        )
+        metadata.source = .copilot
+        let session = Self.session(metadata, text: "hello")
+        let provider = FakeConversationRepository(
+            projects: [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            sessions: [ConversationFilter.fileKey(logical): session]
+        )
+        var revealed: [URL] = []
+        let store = ConversationStore(
+            repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity),
+            fileRevealer: { revealed.append($0) }
+        )
+        await store.select(metadata)
+
+        store.revealSelectedInFinder()
+
+        XCTAssertEqual(revealed, [database.standardizedFileURL])
+        XCTAssertEqual(store.actionMessage, "已在 Finder 中显示")
+        XCTAssertFalse(store.actionIsError)
+    }
+
+    func testIndexProgressDoesNotRestartUnchangedContentSearchUntilTerminalSnapshot() async {
+        let metadata = Self.metadata(
+            id: "search-progress",
+            title: "Metadata does not match",
+            tags: [],
+            file: "/tmp/search-progress.jsonl"
+        )
+        let hit = HistorySearchHit(
+            sessionID: metadata.sessionID,
+            file: metadata.file,
+            source: metadata.source,
+            snippet: "needle in body",
+            count: 1
+        )
+        let provider = FakeIndexedConversationRepository(
+            topologySignature: "fixture",
+            projectsByScope: [
+                "all": [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            ],
+            searchHitsByScope: ["all": [hit]]
+        )
+        let store = ConversationStore(
+            repository: provider,
+            searchDelayNanoseconds: 0
+        )
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        store.updateListQuery("needle")
+        await waitUntil { !store.isSearchingContent && provider.searchCount == 1 }
+
+        for generation in 1...4 {
+            provider.emit(.progress(ConversationIndexScanResult(
+                discovered: 100,
+                parsed: generation * 24,
+                generation: Int64(generation)
+            )))
+        }
+        await waitUntil { store.indexingState == .scanning(completed: 96, total: 100) }
+        XCTAssertEqual(
+            provider.searchCount,
+            1,
+            "Batch progress must not launch an unbounded series of stale fallback searches"
+        )
+
+        provider.emit(.finished(ConversationIndexScanResult(
+            discovered: 100,
+            parsed: 100,
+            generation: 4
+        )))
+        await waitUntil { store.indexingState == .idle && provider.searchCount == 2 }
+        XCTAssertEqual(provider.searchCount, 2, "The complete catalog must be searched exactly once")
+        store.deactivate()
+    }
+
     func testWarmCatalogReloadsImmediatelyAndIndexerSurvivesViewDeactivation() async throws {
         let warm = Self.metadata(
             id: "warm",
@@ -592,6 +700,7 @@ final class ConversationStoreTests: XCTestCase {
             let store = ConversationStore(
                 config: config,
                 importsRoot: importsRoot,
+                homeDirectory: root,
                 pollIntervalNanoseconds: 60_000_000_000,
                 searchDelayNanoseconds: 0
             )
@@ -674,6 +783,75 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(provider.reconcileCount, 1)
         XCTAssertEqual(store.indexingState, .idle)
         store.deactivate()
+    }
+
+    func testSessionLocationReconcileFailureInstallsPersistedRuntimeBeforeRetry() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-location-reconcile-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SessionLocationRuntimeRepository(
+            root: root,
+            reconcileFailure: .failed
+        )
+        let store = ConversationStore(repository: repository, homeDirectory: root)
+        store.activate()
+        defer { store.deactivate() }
+        await Task.yield()
+        let location = root.appendingPathComponent("custom-copilot", isDirectory: true)
+        let expected = ConversationSessionLocation(source: .copilot, path: location.path)
+
+        let message = await store.addSessionLocation(source: .copilot, path: location.path)
+
+        XCTAssertTrue(message?.contains("索引更新失败") == true)
+        XCTAssertEqual(repository.persistedOverrides.custom, [expected])
+        XCTAssertEqual(store.sessionLocationOverrides.custom, [expected])
+        XCTAssertEqual(repository.reconciledRuntimeOverrides.last?.custom, [expected])
+        XCTAssertEqual(repository.startedRuntimeOverrides.last?.custom, [expected])
+    }
+
+    func testSessionLocationReconcileCancellationInstallsPersistedRuntimeBeforeRetry() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-location-reconcile-cancel")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SessionLocationRuntimeRepository(
+            root: root,
+            reconcileFailure: .cancelled
+        )
+        let store = ConversationStore(repository: repository, homeDirectory: root)
+        store.activate()
+        defer { store.deactivate() }
+        await Task.yield()
+        let location = root.appendingPathComponent("custom-opencode", isDirectory: true)
+        let expected = ConversationSessionLocation(source: .opencode, path: location.path)
+
+        let message = await store.addSessionLocation(source: .opencode, path: location.path)
+
+        XCTAssertNil(message)
+        XCTAssertEqual(repository.persistedOverrides.custom, [expected])
+        XCTAssertEqual(store.sessionLocationOverrides.custom, [expected])
+        XCTAssertEqual(repository.reconciledRuntimeOverrides.last?.custom, [expected])
+        XCTAssertEqual(repository.startedRuntimeOverrides.last?.custom, [expected])
+    }
+
+    func testSessionLocationReloadFailureRollsBackBeforeOldRuntimeRestarts() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("store-location-reload-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SessionLocationRuntimeRepository(
+            root: root,
+            reconcileFailure: nil,
+            reloadFails: true
+        )
+        let store = ConversationStore(repository: repository, homeDirectory: root)
+        store.activate()
+        defer { store.deactivate() }
+        await Task.yield()
+        let location = root.appendingPathComponent("custom-antigravity", isDirectory: true)
+
+        let message = await store.addSessionLocation(source: .antigravity, path: location.path)
+
+        XCTAssertTrue(message?.contains("无法更新会话位置") == true)
+        XCTAssertTrue(repository.persistedOverrides.isEmpty)
+        XCTAssertTrue(store.sessionLocationOverrides.isEmpty)
+        XCTAssertTrue(repository.reconciledRuntimeOverrides.isEmpty)
+        XCTAssertTrue(repository.startedRuntimeOverrides.last?.isEmpty == true)
     }
 
     func testLoadAndLatestSelectionWinWhenEarlierReadIsCancelled() async throws {
@@ -849,7 +1027,7 @@ final class ConversationStoreTests: XCTestCase {
 
         store.copySelectedPath()
         XCTAssertEqual(copiedPaths, [childFile.path])
-        store.replaySelected(in: .claude, language: .english)
+        await store.replaySelected(in: .claude, language: .english)
         let replay = try XCTUnwrap(replayURLs.first)
         let replayFiles = URLComponents(url: replay, resolvingAgainstBaseURL: false)?
             .queryItems?.filter { $0.name == "file" }.compactMap(\.value)
@@ -864,6 +1042,34 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(htmlExporter.exportedSession?.metadata.file, metadata.file)
         XCTAssertEqual(htmlExporter.exportedSession?.subagents.keys.sorted(), ["spawn-child"])
         XCTAssertEqual(exportResultOpener.openedFiles, [htmlDestination.standardizedFileURL])
+    }
+
+    func testStarAndPinActionsMutateThenReloadAndReselect() async {
+        let metadata = Self.metadata(
+            id: "user-flags",
+            title: "Flags",
+            tags: [],
+            file: "/tmp/user-flags.jsonl"
+        )
+        let session = Self.session(metadata, text: "hello")
+        let provider = FakeConversationRepository(
+            projects: [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            sessions: [ConversationFilter.fileKey(metadata.file): session]
+        )
+        let mutation = RecordingConversationMutation()
+        let store = ConversationStore(repository: provider, mutationService: mutation)
+        await store.select(metadata)
+
+        await store.toggleSelectedStarred()
+        await store.toggleSelectedPinned()
+
+        XCTAssertEqual(mutation.metadataPatches, [
+            .init(starred: true),
+            .init(pinned: true),
+        ])
+        XCTAssertEqual(store.selectedMetadata?.file, metadata.file)
+        XCTAssertEqual(store.actionMessage, "已置顶会话")
+        XCTAssertFalse(store.actionIsError)
     }
 
     func testIndexedSearchHitSelectsSubagentAndJumpsToExactSequence() async {
@@ -1077,6 +1283,7 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
         var stops = 0
         var scopes = 0
         var reconciles = 0
+        var searches = 0
         var nextListGate: DispatchSemaphore?
 
         init(
@@ -1117,6 +1324,7 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
     var stopCount: Int { engine.lock.withLock { engine.stops } }
     var scopedCount: Int { engine.lock.withLock { engine.scopes } }
     var reconcileCount: Int { engine.lock.withLock { engine.reconciles } }
+    var searchCount: Int { engine.lock.withLock { engine.searches } }
 
     func listProjects(limit: Int) throws -> [HistoryProject] {
         let gate = engine.lock.withLock { () -> DispatchSemaphore? in
@@ -1131,7 +1339,8 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
 
     func search(query: String, limit: Int) throws -> [HistorySearchHit] {
         engine.lock.withLock {
-            Array(engine.searchHitsByScope[active, default: []].prefix(limit))
+            engine.searches += 1
+            return Array(engine.searchHitsByScope[active, default: []].prefix(limit))
         }
     }
 
@@ -1184,6 +1393,207 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
     }
 }
 
+private final class SessionLocationRuntimeRepository: ConversationIndexedHistoryProviding,
+    @unchecked Sendable {
+    enum ReconcileFailure: Sendable {
+        case failed
+        case cancelled
+    }
+
+    private final class Engine: @unchecked Sendable {
+        let lock = NSLock()
+        let baseConfiguration: HistoryConfiguration
+        let reconcileFailure: ReconcileFailure?
+        let reloadFails: Bool
+        var persistedOverrides = ConversationSessionLocationOverrides()
+        var startedRuntimeOverrides: [ConversationSessionLocationOverrides] = []
+        var reconciledRuntimeOverrides: [ConversationSessionLocationOverrides] = []
+
+        init(
+            root: URL,
+            reconcileFailure: ReconcileFailure?,
+            reloadFails: Bool
+        ) {
+            baseConfiguration = HistoryConfiguration(
+                historyDirs: [],
+                homeDirectory: root,
+                importsRoot: root.appendingPathComponent("app/imports")
+            )
+            self.reconcileFailure = reconcileFailure
+            self.reloadFails = reloadFails
+        }
+    }
+
+    private let engine: Engine
+    private let runtimeOverrides: ConversationSessionLocationOverrides
+
+    init(
+        root: URL,
+        reconcileFailure: ReconcileFailure?,
+        reloadFails: Bool = false
+    ) {
+        engine = Engine(
+            root: root,
+            reconcileFailure: reconcileFailure,
+            reloadFails: reloadFails
+        )
+        runtimeOverrides = .init()
+    }
+
+    private init(
+        engine: Engine,
+        runtimeOverrides: ConversationSessionLocationOverrides
+    ) {
+        self.engine = engine
+        self.runtimeOverrides = runtimeOverrides
+    }
+
+    var persistedOverrides: ConversationSessionLocationOverrides {
+        engine.lock.withLock { engine.persistedOverrides }
+    }
+
+    var startedRuntimeOverrides: [ConversationSessionLocationOverrides] {
+        engine.lock.withLock { engine.startedRuntimeOverrides }
+    }
+
+    var reconciledRuntimeOverrides: [ConversationSessionLocationOverrides] {
+        engine.lock.withLock { engine.reconciledRuntimeOverrides }
+    }
+
+    var indexTopologySignature: String {
+        let configuration = locationHistoryConfiguration
+        return IndexedHistoryRepository.topologySignature(
+            historyDirs: configuration.historyDirs,
+            homeDirectory: configuration.homeDirectory,
+            importsRoot: configuration.importsRoot,
+            overrides: configuration.sessionLocationOverrides
+        )
+    }
+
+    var locationHistoryConfiguration: HistoryConfiguration {
+        var configuration = engine.baseConfiguration
+        configuration.sessionLocationOverrides = runtimeOverrides
+        return configuration
+    }
+
+    func listProjects(limit: Int) throws -> [HistoryProject] { [] }
+    func search(query: String, limit: Int) throws -> [HistorySearchHit] { [] }
+    func getSession(file: URL) throws -> HistorySession {
+        throw HistoryError.unreadableFile(file, "fixture has no sessions")
+    }
+
+    func scoped(to active: String) -> any ConversationIndexedHistoryProviding { self }
+
+    func startIndexing(
+        onEvent: @escaping @Sendable (ConversationCatalogScanEvent) -> Void
+    ) {
+        engine.lock.withLock { engine.startedRuntimeOverrides.append(runtimeOverrides) }
+    }
+
+    func stopIndexing() {}
+
+    func reconcileIndex() throws {
+        engine.lock.withLock { engine.reconciledRuntimeOverrides.append(runtimeOverrides) }
+        switch engine.reconcileFailure {
+        case nil:
+            return
+        case .failed:
+            throw NSError(
+                domain: "ConversationStoreTests.SessionLocations",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "fixture reconcile failed"]
+            )
+        case .cancelled:
+            throw CancellationError()
+        }
+    }
+
+    func refreshIndex(for files: [URL]) throws {}
+
+    func sessionLocationOverrides() throws -> ConversationSessionLocationOverrides {
+        persistedOverrides
+    }
+
+    func sessionLocationRows() throws -> [ConversationSessionLocationRow] {
+        persistedOverrides.custom.flatMap { location in
+            let stored = URL(fileURLWithPath: location.path).standardizedFileURL
+            return ConversationSessionLocationLayout.custom(
+                source: location.source,
+                selected: stored
+            ).dataRoots.map { root in
+                ConversationSessionLocationRow(
+                    source: location.source,
+                    dataRoot: root,
+                    storedCustomRoot: stored,
+                    sessionCount: 0,
+                    exists: FileManager.default.fileExists(atPath: root.path)
+                )
+            }
+        }
+    }
+
+    func addSessionLocation(_ location: ConversationSessionLocation) throws {
+        engine.lock.withLock {
+            if !engine.persistedOverrides.custom.contains(location) {
+                engine.persistedOverrides.custom.append(location)
+            }
+        }
+    }
+
+    func replaceSessionLocation(
+        oldSource: HistorySource,
+        oldCustomPath: String?,
+        with replacement: ConversationSessionLocation
+    ) throws {
+        engine.lock.withLock {
+            if let oldCustomPath {
+                engine.persistedOverrides.custom.removeAll {
+                    $0.source == oldSource && $0.path == oldCustomPath
+                }
+            } else {
+                engine.persistedOverrides.removedDefaults.insert(oldSource)
+            }
+            engine.persistedOverrides.custom.append(replacement)
+        }
+    }
+
+    func removeSessionLocation(source: HistorySource, customPath: String?) throws {
+        engine.lock.withLock {
+            if let customPath {
+                engine.persistedOverrides.custom.removeAll {
+                    $0.source == source && $0.path == customPath
+                }
+            } else {
+                engine.persistedOverrides.removedDefaults.insert(source)
+            }
+        }
+    }
+
+    func restoreDefaultSessionLocations() throws {
+        engine.lock.withLock { engine.persistedOverrides = .init() }
+    }
+
+    func replaceSessionLocationOverrides(
+        _ overrides: ConversationSessionLocationOverrides
+    ) throws {
+        engine.lock.withLock { engine.persistedOverrides = overrides }
+    }
+
+    func reloadedForSessionLocations() throws -> any ConversationIndexedHistoryProviding {
+        if engine.reloadFails {
+            throw NSError(
+                domain: "ConversationStoreTests.SessionLocations",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "fixture reload failed"]
+            )
+        }
+        return SessionLocationRuntimeRepository(
+            engine: engine,
+            runtimeOverrides: persistedOverrides
+        )
+    }
+}
+
 private final class FakeConversationFileInspector: ConversationFileInspecting, @unchecked Sendable {
     private let lock = NSLock()
     private var date: Date?
@@ -1202,13 +1612,17 @@ private final class FakeConversationFileInspector: ConversationFileInspecting, @
 private final class RecordingConversationMutation: ConversationMutating, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedMetadata: HistorySessionMetadata?
+    private var recordedPatches: [ConversationMetadataPatch] = []
 
     var exportedMetadata: HistorySessionMetadata? { lock.withLock { recordedMetadata } }
+    var metadataPatches: [ConversationMetadataPatch] { lock.withLock { recordedPatches } }
 
     func updateMetadata(
         for metadata: HistorySessionMetadata,
         patch: ConversationMetadataPatch
-    ) throws {}
+    ) throws {
+        lock.withLock { recordedPatches.append(patch) }
+    }
     func softDelete(_ metadata: HistorySessionMetadata) throws {}
     func restore(_ metadata: HistorySessionMetadata) throws {}
     func canPermanentlyDelete(_ metadata: HistorySessionMetadata) -> Bool { false }

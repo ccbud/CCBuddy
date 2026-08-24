@@ -1,5 +1,5 @@
-use super::*;
 use super::super::Wire;
+use super::*;
 
 #[test]
 fn transcodes_text_and_split_tool_call() {
@@ -23,16 +23,12 @@ fn transcodes_text_and_split_tool_call() {
     // ordered events present (serde_json sorts object keys, so assert on substrings, not key order)
     assert!(out.contains("event: message_start"));
     assert!(
-        out.find("event: message_start").unwrap()
-            < out.find("event: content_block_start").unwrap()
+        out.find("event: message_start").unwrap() < out.find("event: content_block_start").unwrap()
     );
     assert!(
-        out.find("event: content_block_start").unwrap()
-            < out.find("event: message_delta").unwrap()
+        out.find("event: content_block_start").unwrap() < out.find("event: message_delta").unwrap()
     );
-    assert!(
-        out.find("event: message_delta").unwrap() < out.find("event: message_stop").unwrap()
-    );
+    assert!(out.find("event: message_delta").unwrap() < out.find("event: message_stop").unwrap());
     // text block: a text content_block_start + its two text deltas
     assert!(out.contains(r#""type":"text""#));
     assert!(out.contains("text_delta") && out.contains(r#""text":"Let me ""#));
@@ -86,9 +82,7 @@ fn keeps_no_index_parallel_calls_with_the_same_id_distinct() {
 fn plain_text_only() {
     let mut tc = ChatToAnthropic::new("claude-x");
     let mut out = String::new();
-    out.push_str(
-        &tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}"),
-    );
+    out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}"));
     out.push_str(
         &tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"),
     );

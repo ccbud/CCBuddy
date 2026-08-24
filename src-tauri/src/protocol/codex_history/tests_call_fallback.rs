@@ -172,4 +172,3 @@ async fn preserves_scalar_and_single_object_input_when_no_change_is_needed() {
     assert!(request["input"].is_object());
     assert_eq!(request["input"]["content"], "hello");
 }
-

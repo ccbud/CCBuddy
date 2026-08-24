@@ -1,8 +1,8 @@
 // Anthropic Messages stream → OpenAI Responses stream: transcoder state and construction (Codex
 // client, Anthropic upstream). The event loop lives in anthropic_responses_push.rs.
 
-use super::common::ev;
 use super::super::openai_responses::CodexToolContext;
+use super::common::ev;
 use serde_json::json;
 
 /// Stateful Anthropic-Messages-stream → OpenAI-Responses-stream transcoder (Codex client,

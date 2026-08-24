@@ -1,10 +1,32 @@
 import CoreServices
-import Darwin
 import Foundation
 import XCTest
 @testable import CCBuddy
 
 final class UsageHistoryResilienceTests: XCTestCase {
+    func testStreamingLineReaderStopsAfterCooperativeMidFileCancellation() async throws {
+        let container = try temporaryDirectory("usage-stream-cancellation")
+        let file = container.appendingPathComponent("large.jsonl")
+        let payload = (0..<1_000).map { "line-\($0)" }.joined(separator: "\n") + "\n"
+        try Data(payload.utf8).write(to: file)
+        let reader = UsageHistoryLineReader(chunkBytes: 13, maximumLineBytes: 128)
+
+        let result = await Task.detached { () -> (completed: Bool, lines: [String]) in
+            var lines: [String] = []
+            let completed = reader.forEachLine(in: file) { line in
+                lines.append(line)
+                if lines.count == 3 {
+                    withUnsafeCurrentTask { task in task?.cancel() }
+                }
+                return true
+            }
+            return (completed, lines)
+        }.value
+
+        XCTAssertFalse(result.completed)
+        XCTAssertEqual(result.lines, ["line-0", "line-1", "line-2"])
+    }
+
     func testWatcherRearmsAfterAtomicRootReplacementAndContinuesInvalidating() async throws {
         let container = try temporaryDirectory("usage-watcher-rearm")
         let root = container.appendingPathComponent("history", isDirectory: true)
@@ -105,14 +127,13 @@ final class UsageHistoryResilienceTests: XCTestCase {
             input: 1,
             output: 1
         )
-        let replacementFile = try writeHistory(
+        _ = try writeHistory(
             under: replacementRoot,
             name: "replacement.jsonl",
             id: "replacement",
             input: 8,
             output: 2
         )
-        try ageAccessAndModificationTimes(of: replacementFile)
 
         let slowConfiguration = UsageHistoryConfiguration(
             historyDirs: [slowRoot.path],
@@ -125,7 +146,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
         let scanner = BlockingUsageHistoryScanner(calendar: Self.utcCalendar)
         defer { scanner.release() }
         let service = UsageHistoryService(calendar: Self.utcCalendar, scanner: scanner)
-        let replacementStamp = try accessStamp(of: replacementFile)
 
         let slowScan = Task {
             try await service.summary(configuration: slowConfiguration, range: .all)
@@ -149,8 +169,8 @@ final class UsageHistoryResilienceTests: XCTestCase {
             "The fixture must keep the old scan alive long enough to exercise drain waiting"
         )
         XCTAssertEqual(
-            try accessStamp(of: replacementFile),
-            replacementStamp,
+            scanner.startedCallCount,
+            1,
             "A replacement scan must not overlap the cancelled scan that invalidate is draining"
         )
 
@@ -159,7 +179,7 @@ final class UsageHistoryResilienceTests: XCTestCase {
         let replacement = try await replacementScan.value
         _ = try? await slowScan.value
         XCTAssertEqual(replacement.tokens, 10)
-        XCTAssertNotEqual(try accessStamp(of: replacementFile), replacementStamp)
+        XCTAssertEqual(scanner.startedCallCount, 2)
     }
 
     @MainActor
@@ -174,14 +194,13 @@ final class UsageHistoryResilienceTests: XCTestCase {
             input: 1,
             output: 1
         )
-        let replacementFile = try writeHistory(
+        _ = try writeHistory(
             under: replacementRoot,
             name: "replacement.jsonl",
             id: "post-shutdown",
             input: 11,
             output: 2
         )
-        try ageAccessAndModificationTimes(of: replacementFile)
 
         let slowConfiguration = UsageHistoryConfiguration(
             historyDirs: [slowRoot.path],
@@ -200,11 +219,10 @@ final class UsageHistoryResilienceTests: XCTestCase {
         try repository.save(config)
         let model = AppModel(
             repository: repository,
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": container.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": container.path]),
             environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"],
             usageHistoryService: service
         )
-        let replacementStamp = try accessStamp(of: replacementFile)
 
         let slowScan = Task {
             try await service.summary(configuration: slowConfiguration, range: .all)
@@ -228,8 +246,8 @@ final class UsageHistoryResilienceTests: XCTestCase {
             "shutdown must await the non-cancellable tail of the active usage scan"
         )
         XCTAssertEqual(
-            try accessStamp(of: replacementFile),
-            replacementStamp,
+            scanner.startedCallCount,
+            1,
             "shutdown must not leave the old usage scan running beside a replacement scan"
         )
 
@@ -238,7 +256,7 @@ final class UsageHistoryResilienceTests: XCTestCase {
         let replacement = try await postShutdownScan.value
         _ = try? await slowScan.value
         XCTAssertEqual(replacement.tokens, 13)
-        XCTAssertNotEqual(try accessStamp(of: replacementFile), replacementStamp)
+        XCTAssertEqual(scanner.startedCallCount, 2)
     }
 
     private func temporaryDirectory(_ name: String) throws -> URL {
@@ -268,33 +286,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
         root.appendingPathComponent("projects/fixture/session.jsonl")
     }
 
-    private func ageAccessAndModificationTimes(of file: URL) throws {
-        let times = [
-            timespec(tv_sec: 1_600_000_000, tv_nsec: 0),
-            timespec(tv_sec: 1_600_000_000, tv_nsec: 0),
-        ]
-        let result: Int32 = file.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return -1 }
-            return times.withUnsafeBufferPointer { buffer in
-                Darwin.utimensat(AT_FDCWD, path, buffer.baseAddress, 0)
-            }
-        }
-        guard result == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-    }
-
-    private func accessStamp(of file: URL) throws -> FileAccessStamp {
-        var information = Darwin.stat()
-        guard lstat(file.path, &information) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        return FileAccessStamp(
-            seconds: Int64(information.st_atimespec.tv_sec),
-            nanoseconds: Int64(information.st_atimespec.tv_nsec)
-        )
-    }
-
     private static var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "en_US_POSIX")
@@ -314,11 +305,6 @@ final class UsageHistoryResilienceTests: XCTestCase {
         let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return data + Data([0x0A])
     }
-}
-
-private struct FileAccessStamp: Equatable {
-    let seconds: Int64
-    let nanoseconds: Int64
 }
 
 /// Holds the first synchronous scan after it has entered non-async work. Cancellation is observed
@@ -376,6 +362,12 @@ private final class BlockingUsageHistoryScanner: UsageHistoryScanning, @unchecke
             try await Task.sleep(nanoseconds: 1_000_000)
         }
         throw BlockingUsageScannerError.timedOutWaitingForCancellation
+    }
+
+    var startedCallCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return calls
     }
 
     private var hasStarted: Bool {

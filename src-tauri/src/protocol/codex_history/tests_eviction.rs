@@ -1,5 +1,5 @@
-use super::*;
 use super::types::{HistoryInner, MAX_CACHED_RESPONSES};
+use super::*;
 use serde_json::json;
 
 #[test]
@@ -160,4 +160,3 @@ async fn owner_only_native_history_is_reported_but_never_materialized() {
     );
     assert_eq!(next, before);
 }
-

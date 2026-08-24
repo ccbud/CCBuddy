@@ -1,8 +1,8 @@
 // OpenAI Chat stream → OpenAI Responses stream: transcoder state and construction (Codex client,
 // chat upstream). The event loop lives in chat_responses_push.rs.
 
-use super::common::CapturedToolCall;
 use super::super::openai_responses::CodexToolContext;
+use super::common::CapturedToolCall;
 
 /// Stateful OpenAI-Chat-stream → OpenAI-Responses-stream transcoder (Codex client, chat upstream).
 /// Text deltas stream through as `response.output_text.delta`; provider reasoning deltas

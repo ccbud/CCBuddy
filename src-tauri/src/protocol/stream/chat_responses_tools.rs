@@ -1,8 +1,8 @@
 // Tool-call fragment handling for ChatToResponses::push — lifted verbatim out of that function so
 // no single file exceeds the module's size budget; called exactly once, from `push`.
 
-use super::chat_responses::{ChatToResponses, RespToolAcc};
 use super::super::openai_responses::response_scoped_call_id;
+use super::chat_responses::{ChatToResponses, RespToolAcc};
 use serde_json::Value;
 
 impl ChatToResponses {

@@ -34,7 +34,11 @@ pub fn encode_response(resp: &ChatResponse, client_model: &str) -> Value {
     // back to that (else assistant prose is dropped whenever a tool is called in the same turn).
     let text = {
         let t = msg.map(|m| m.content_as_text()).unwrap_or_default();
-        if t.is_empty() { resp.content.clone() } else { t }
+        if t.is_empty() {
+            resp.content.clone()
+        } else {
+            t
+        }
     };
     if !text.is_empty() {
         content.push(json!({ "type": "text", "text": text }));
@@ -83,15 +87,29 @@ pub fn encode_response(resp: &ChatResponse, client_model: &str) -> Value {
 /// message_stop` stream, just delivered at once. True token-by-token transcoding is P2.
 pub fn encode_response_sse(resp: &ChatResponse, client_model: &str) -> String {
     let full = encode_response(resp, client_model);
-    let content = full.get("content").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let stop_reason = full.get("stop_reason").cloned().unwrap_or(json!("end_turn"));
-    let usage = full.get("usage").cloned().unwrap_or(json!({ "input_tokens": 0, "output_tokens": 0 }));
+    let content = full
+        .get("content")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let stop_reason = full
+        .get("stop_reason")
+        .cloned()
+        .unwrap_or(json!("end_turn"));
+    let usage = full
+        .get("usage")
+        .cloned()
+        .unwrap_or(json!({ "input_tokens": 0, "output_tokens": 0 }));
     let id = full.get("id").cloned().unwrap_or(json!("msg_ccbud"));
     let input_tokens = usage.get("input_tokens").cloned().unwrap_or(json!(0));
     let output_tokens = usage.get("output_tokens").cloned().unwrap_or(json!(0));
 
     let ev = |event: &str, data: Value| {
-        format!("event: {}\ndata: {}\n\n", event, serde_json::to_string(&data).unwrap_or_default())
+        format!(
+            "event: {}\ndata: {}\n\n",
+            event,
+            serde_json::to_string(&data).unwrap_or_default()
+        )
     };
     let mut out = String::new();
 
@@ -114,7 +132,10 @@ pub fn encode_response_sse(resp: &ChatResponse, client_model: &str) -> String {
                 if !text.is_empty() {
                     out.push_str(&ev("content_block_delta", json!({ "type": "content_block_delta", "index": i, "delta": { "type": "text_delta", "text": text } })));
                 }
-                out.push_str(&ev("content_block_stop", json!({ "type": "content_block_stop", "index": i })));
+                out.push_str(&ev(
+                    "content_block_stop",
+                    json!({ "type": "content_block_stop", "index": i }),
+                ));
             }
             "thinking" => {
                 let think = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
@@ -122,14 +143,20 @@ pub fn encode_response_sse(resp: &ChatResponse, client_model: &str) -> String {
                 if !think.is_empty() {
                     out.push_str(&ev("content_block_delta", json!({ "type": "content_block_delta", "index": i, "delta": { "type": "thinking_delta", "thinking": think } })));
                 }
-                out.push_str(&ev("content_block_stop", json!({ "type": "content_block_stop", "index": i })));
+                out.push_str(&ev(
+                    "content_block_stop",
+                    json!({ "type": "content_block_stop", "index": i }),
+                ));
             }
             "tool_use" => {
                 let empty = json!({});
                 let input = block.get("input").unwrap_or(&empty);
                 out.push_str(&ev("content_block_start", json!({ "type": "content_block_start", "index": i, "content_block": { "type": "tool_use", "id": block.get("id").cloned().unwrap_or(json!("")), "name": block.get("name").cloned().unwrap_or(json!("")), "input": {} } })));
                 out.push_str(&ev("content_block_delta", json!({ "type": "content_block_delta", "index": i, "delta": { "type": "input_json_delta", "partial_json": serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string()) } })));
-                out.push_str(&ev("content_block_stop", json!({ "type": "content_block_stop", "index": i })));
+                out.push_str(&ev(
+                    "content_block_stop",
+                    json!({ "type": "content_block_stop", "index": i }),
+                ));
             }
             _ => {}
         }

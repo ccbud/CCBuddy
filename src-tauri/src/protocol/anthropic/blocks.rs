@@ -43,7 +43,10 @@ pub(super) fn image_blocks(content: &Value) -> Vec<MessageBlock> {
         let src = b.get("source").cloned().unwrap_or(Value::Null);
         match src.get("type").and_then(|t| t.as_str()) {
             Some("base64") => {
-                let mt = src.get("media_type").and_then(|v| v.as_str()).unwrap_or("image/png");
+                let mt = src
+                    .get("media_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("image/png");
                 let data = src.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 if !data.is_empty() {
                     out.push(MessageBlock::image_base64(mt, data));
@@ -72,7 +75,11 @@ pub(super) fn tool_result_messages(content: &Value) -> Vec<Message> {
         if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
             continue;
         }
-        let id = b.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = b
+            .get("tool_use_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         // tool_result content is a string or an array of text blocks.
         let text = match b.get("content") {
             Some(Value::String(s)) => s.clone(),
@@ -95,8 +102,16 @@ pub(super) fn tool_use_calls(content: &Value) -> Vec<ToolCall> {
         if b.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
             continue;
         }
-        let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = b
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let name = b
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let args = b.get("input").cloned().unwrap_or_else(|| json!({}));
         out.push(ToolCall {
             id,
@@ -116,7 +131,11 @@ pub(super) fn tool_use_calls(content: &Value) -> Vec<ToolCall> {
 /// Anthropic `system` (string or array of text blocks) → a leading system Message.
 pub(super) fn system_message(req: &Value) -> Option<Message> {
     let sys = req.get("system")?;
-    let text = if sys.is_string() { sys.as_str().unwrap_or("").to_string() } else { blocks_text(sys) };
+    let text = if sys.is_string() {
+        sys.as_str().unwrap_or("").to_string()
+    } else {
+        blocks_text(sys)
+    };
     let text = text.trim();
     if text.is_empty() {
         None
@@ -131,8 +150,14 @@ pub(super) fn tools(req: &Value) -> Option<Vec<Tool>> {
     let mut out = vec![];
     for t in arr {
         let name = t.get("name").and_then(|v| v.as_str())?;
-        let desc = t.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let params = t.get("input_schema").cloned().unwrap_or_else(|| json!({ "type": "object" }));
+        let desc = t
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let params = t
+            .get("input_schema")
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object" }));
         out.push(Tool::function(name, desc, params));
     }
     if out.is_empty() {

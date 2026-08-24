@@ -79,8 +79,7 @@ fn codex_responses_lite_request() -> Value {
 
 #[test]
 fn decodes_responses_lite_additional_tools_and_restores_custom_calls() {
-    let (ir, context) =
-        decode_request_with_context(&codex_responses_lite_request()).unwrap();
+    let (ir, context) = decode_request_with_context(&codex_responses_lite_request()).unwrap();
 
     let roles = ir
         .messages
@@ -131,8 +130,7 @@ fn decodes_responses_lite_additional_tools_and_restores_custom_calls() {
     let response_ir = OpenAIProtocol::new("")
         .parse_response(chat_response)
         .unwrap();
-    let response =
-        encode_response_with_context(&response_ir, "gpt-5.6-sol-pro", &context);
+    let response = encode_response_with_context(&response_ir, "gpt-5.6-sol-pro", &context);
     let exec = response["output"]
         .as_array()
         .unwrap()
@@ -145,4 +143,3 @@ fn decodes_responses_lite_additional_tools_and_restores_custom_calls() {
         "const result = await tools.exec_command({cmd: \"pwd\"});"
     );
 }
-

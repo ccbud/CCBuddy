@@ -1,0 +1,59 @@
+[package]
+name = "ccbud-gateway"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+name = "ccbud_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ccbud-gateway"
+path = "src/main.rs"
+
+[dependencies]
+async-stream = "0.3"
+axum = "0.8"
+base64 = "0.22"
+brotli = "7"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
+futures = "0.3"
+http = "1"
+http-body-util = "0.1"
+httparse = "1"
+hyper = { version = "1", features = ["full"] }
+hyper-rustls = { version = "0.27", features = ["http1", "tls12", "ring", "webpki-tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "server", "tokio"] }
+libc = "0.2"
+llm-connector = { version = "1.4", default-features = false, features = ["streaming"] }
+rustls = "0.23"
+rustls-native-certs = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+subtle = "2"
+thiserror = "2"
+tiktoken-rs = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+tower = "0.5"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+webpki-roots = "0.26"
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -2,8 +2,7 @@
 // enriching or materializing the request input.
 
 use super::cache_items::{
-    enrich_call_item_from_cache, is_call_item_type, is_call_output_item_type,
-    response_item_call_id,
+    enrich_call_item_from_cache, is_call_item_type, is_call_output_item_type, response_item_call_id,
 };
 use super::merge::merge_previous_context;
 use super::types::{CachedLookup, CachedResponse, CodexHistoryStore, HistoryResolution};

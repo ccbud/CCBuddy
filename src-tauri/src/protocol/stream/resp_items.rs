@@ -1,7 +1,7 @@
 // ---- shared Responses-side item builders (final `output_item.done` / `completed` payloads) ----
 
-use super::common::ev;
 use super::super::openai_responses::CodexToolContext;
+use super::common::ev;
 use serde_json::{json, Value};
 
 pub(super) fn resp_message_item(id: &str, text: &str) -> Value {

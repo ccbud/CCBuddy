@@ -367,8 +367,9 @@ enum ConversationArchive {
 
     static func isSubagentBasename(_ name: String) -> Bool {
         let lower = name.lowercased()
-        return !name.contains("/") && !name.contains("\\")
-            && lower.hasPrefix("agent-")
+        return !name.isEmpty && name != "." && name != ".."
+            && name.utf8.count <= 255
+            && !name.contains("/") && !name.contains("\\") && !name.contains("\0")
             && (lower.hasSuffix(".jsonl") || lower.hasSuffix(".meta.json"))
     }
 

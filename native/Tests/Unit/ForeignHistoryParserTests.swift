@@ -171,7 +171,7 @@ final class ForeignHistoryParserTests: XCTestCase {
             withDestinationURL: outsideDatabase
         )
 
-        let repository = HistoryRepository(historyDirs: [root.path])
+        let repository = HistoryRepository(historyDirs: [root.path], homeDirectory: root)
         XCTAssertTrue(repository.listSessions().isEmpty)
         XCTAssertThrowsError(try repository.getSession(
             file: encoded.appendingPathComponent("escaped-session/chat_history.jsonl")

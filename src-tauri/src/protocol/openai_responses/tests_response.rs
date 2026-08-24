@@ -153,4 +153,3 @@ fn buffered_truncation_stays_incomplete_across_responses_encoding() {
         "provider failed"
     );
 }
-

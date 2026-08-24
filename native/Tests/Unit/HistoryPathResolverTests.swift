@@ -49,7 +49,7 @@ final class HistoryPathResolverTests: XCTestCase {
         let link = projects.appendingPathComponent("escape.jsonl")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: external)
 
-        let repository = HistoryRepository(historyDirs: [root.path])
+        let repository = HistoryRepository(historyDirs: [root.path], homeDirectory: root)
         XCTAssertEqual(repository.listSessions().map(\.file.lastPathComponent), ["safe.jsonl"])
         XCTAssertThrowsError(try repository.getSession(file: external)) { error in
             guard case HistoryError.pathOutsideConfiguredRoots = error else {
@@ -59,6 +59,48 @@ final class HistoryPathResolverTests: XCTestCase {
         XCTAssertThrowsError(try repository.getSession(file: link)) { error in
             guard case HistoryError.notARegularJSONLFile = error else {
                 return XCTFail("Expected symlink rejection, got \(error)")
+            }
+        }
+    }
+
+    func testCanonicalAdapterAncestorSymlinkCannotEscapeHome() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("adapter-path-home")
+        let outside = try HistoryTestSupport.temporaryDirectory("adapter-path-outside")
+        defer {
+            try? FileManager.default.removeItem(at: home)
+            try? FileManager.default.removeItem(at: outside)
+        }
+
+        let sessionID = "33333333-aaaa-bbbb-cccc-000000000003"
+        let externalCursorRoot = outside.appendingPathComponent(".cursor", isDirectory: true)
+        let transcript = externalCursorRoot
+            .appendingPathComponent("projects/outside", isDirectory: true)
+            .appendingPathComponent("agent-transcripts/\(sessionID)", isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl")
+        try HistoryTestSupport.write([
+            #"{"role":"user","message":{"content":[{"type":"text","text":"outside secret"}]}}"#,
+        ], to: transcript)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".cursor"),
+            withDestinationURL: externalCursorRoot
+        )
+
+        let escaped = home
+            .appendingPathComponent(".cursor/projects/outside", isDirectory: true)
+            .appendingPathComponent("agent-transcripts/\(sessionID)", isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl")
+        let loader = HistorySessionLoader(historyDirs: [], homeDirectory: home)
+        XCTAssertFalse(
+            loader.discoverCandidates(activeOnly: false).contains {
+                $0.formatHint == .cursor
+            },
+            "Canonical producer discovery must not follow an ancestor symlink outside home"
+        )
+
+        let repository = HistoryRepository(historyDirs: [], homeDirectory: home)
+        XCTAssertThrowsError(try repository.getSession(file: escaped)) { error in
+            guard case HistoryError.pathOutsideConfiguredRoots = error else {
+                return XCTFail("Expected adapter-root containment rejection, got \(error)")
             }
         }
     }

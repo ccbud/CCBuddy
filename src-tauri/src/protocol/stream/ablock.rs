@@ -1,12 +1,12 @@
 // Closing an Anthropic content block into its finished Responses item: argument reconciliation,
 // the per-kind `*.done` event sequence, and the item payload itself.
 
-use super::anthropic_responses::{ABlock, AKind};
-use super::common::ev;
-use super::resp_items::{resp_message_item, resp_reasoning_item};
 use super::super::openai_responses::{
     custom_tool_input_from_chat_arguments, CodexToolContext, CodexToolKind,
 };
+use super::anthropic_responses::{ABlock, AKind};
+use super::common::ev;
+use super::resp_items::{resp_message_item, resp_reasoning_item};
 use serde_json::{json, Value};
 
 pub(super) fn ablock_tool_arguments(args: &str, start_args: &str) -> String {
@@ -98,7 +98,11 @@ pub(super) fn close_ablock_events(
     out
 }
 
-pub(super) fn ablock_item(b: &ABlock, tool_context: &CodexToolContext, reasoning: Option<&str>) -> Value {
+pub(super) fn ablock_item(
+    b: &ABlock,
+    tool_context: &CodexToolContext,
+    reasoning: Option<&str>,
+) -> Value {
     match &b.kind {
         AKind::Text { acc } => resp_message_item(&b.id, acc),
         AKind::Tool {

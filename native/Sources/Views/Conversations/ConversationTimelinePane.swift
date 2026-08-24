@@ -11,6 +11,8 @@ struct ConversationTimelinePane: View {
     @State private var showingMetadataEditor = false
     @State private var showingOverview = false
     @State private var confirmingPermanentDelete = false
+    @AppStorage("conversationPreferredTerminal") private var preferredTerminalRaw =
+        ConversationTerminal.terminal.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,7 +29,7 @@ struct ConversationTimelinePane: View {
             }
             detail
         }
-        .background(Color.ccConversationBackground)
+        .background(Color.ccConversationBackground.ignoresSafeArea())
         .sheet(isPresented: $showingMetadataEditor) {
             if let metadata = store.selectedMetadata {
                 ConversationMetadataEditor(metadata: metadata) { title, tags in
@@ -52,8 +54,7 @@ struct ConversationTimelinePane: View {
     private func sessionHeader(_ metadata: HistorySessionMetadata) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
-                Image(systemName: sourceSymbol(metadata.source))
-                    .font(.system(size: 11, weight: .semibold))
+                ConversationSourceBrandIcon(source: metadata.source, size: 14)
                 Text(ConversationPresentation.sourceName(rawValue: metadata.source.rawValue))
                 if !metadata.project.isEmpty {
                     metadataBadge(metadata.project)
@@ -113,7 +114,10 @@ struct ConversationTimelinePane: View {
         // Match Wake's compact full-size-content header while retaining a drag surface.
         .padding(.top, 20)
         .padding(.bottom, 12)
-        .background(WindowDragRegion())
+        // The AppKit drag host must sit over an explicit material. Once the transcript surface is
+        // mounted, relying on the ancestor background lets that lighter surface bleed into the
+        // full-size title-bar region during layout.
+        .background(Color.ccConversationBackground.overlay(WindowDragRegion()))
     }
 
     private func sessionTitle(_ metadata: HistorySessionMetadata) -> some View {
@@ -143,17 +147,6 @@ struct ConversationTimelinePane: View {
             values.append("\(ConversationPresentation.credits(credits)) credits")
         }
         return values
-    }
-
-    private func sourceSymbol(_ source: HistorySource) -> String {
-        switch source {
-        case .claude: "sparkles"
-        case .codex: "terminal"
-        case .qoder: "q.square"
-        case .grok: "bolt"
-        case .copilot: "chevron.left.forwardslash.chevron.right"
-        case .antigravity: "atom"
-        }
     }
 
     private var transcriptTabs: some View {
@@ -289,12 +282,38 @@ struct ConversationTimelinePane: View {
     }
 
     private var actionButtons: some View {
+        ViewThatFits(in: .horizontal) {
+            actionButtonRow(showsAnalysisButtons: true)
+            actionButtonRow(showsAnalysisButtons: false)
+        }
+    }
+
+    private func actionButtonRow(showsAnalysisButtons: Bool) -> some View {
         HStack(spacing: 5) {
-            labeledToolbarButton("sparkles", title: "Claude 分析", identifier: "conversation.action.replay.claude") {
-                store.replaySelected(in: .claude, language: appLanguage)
+            if store.canResumeSelected {
+                resumeControl
             }
-            labeledToolbarButton("bubble.left.and.text.bubble.right", title: "ChatGPT 分析", identifier: "conversation.action.replay.chatgpt") {
-                store.replaySelected(in: .chatGPT, language: appLanguage)
+            toolbarButton(
+                store.selectedMetadata?.starred == true ? "star.fill" : "star",
+                label: store.selectedMetadata?.starred == true ? "取消收藏" : "收藏",
+                identifier: "conversation.action.starred"
+            ) {
+                Task { await store.toggleSelectedStarred() }
+            }
+            toolbarButton(
+                store.selectedMetadata?.pinned == true ? "pin.fill" : "pin",
+                label: store.selectedMetadata?.pinned == true ? "取消置顶" : "置顶",
+                identifier: "conversation.action.pinned"
+            ) {
+                Task { await store.toggleSelectedPinned() }
+            }
+            if showsAnalysisButtons {
+                labeledToolbarButton("sparkles", title: "Claude 分析", identifier: "conversation.action.replay.claude") {
+                    Task { await store.replaySelected(in: .claude, language: appLanguage) }
+                }
+                labeledToolbarButton("bubble.left.and.text.bubble.right", title: "ChatGPT 分析", identifier: "conversation.action.replay.chatgpt") {
+                    Task { await store.replaySelected(in: .chatGPT, language: appLanguage) }
+                }
             }
             if store.isTrash {
                 toolbarButton("arrow.uturn.backward", label: "恢复", identifier: "conversation.action.restore") {
@@ -315,16 +334,33 @@ struct ConversationTimelinePane: View {
 
             Menu {
                 Button("用 Claude 分析会话") {
-                    store.replaySelected(in: .claude, language: appLanguage)
+                    Task { await store.replaySelected(in: .claude, language: appLanguage) }
                 }
                 Button("用 ChatGPT 分析会话") {
-                    store.replaySelected(in: .chatGPT, language: appLanguage)
+                    Task { await store.replaySelected(in: .chatGPT, language: appLanguage) }
+                }
+                Divider()
+                if store.canResumeSelected {
+                    ForEach(store.availableResumeTerminals) { terminal in
+                        Button(terminal.displayName) {
+                            preferredTerminalRaw = terminal.rawValue
+                            Task { await store.resumeSelected(in: terminal) }
+                        }
+                    }
+                    Divider()
+                }
+                Button(store.selectedMetadata?.starred == true ? "取消收藏" : "收藏") {
+                    Task { await store.toggleSelectedStarred() }
+                }
+                Button(store.selectedMetadata?.pinned == true ? "取消置顶" : "置顶") {
+                    Task { await store.toggleSelectedPinned() }
                 }
                 Divider()
                 Button("编辑标题与标签…") { showingMetadataEditor = true }
                 Button("复制会话路径") { store.copySelectedPath() }
                 Button("在 Finder 中显示") { store.revealSelectedInFinder() }
                 Divider()
+                Button("导出 Markdown…") { presentMarkdownExportPanel() }
                 Button("导出原始会话…") { presentRawExportPanel() }
                 Button("导出独立 HTML…") { presentHTMLExportPanel() }
                 Divider()
@@ -351,6 +387,63 @@ struct ConversationTimelinePane: View {
             .accessibilityIdentifier("conversation.action.more")
         }
         .disabled(store.isMutating)
+    }
+
+    private var resumeControl: some View {
+        let terminals = store.availableResumeTerminals
+        let preferred = ConversationTerminal(rawValue: preferredTerminalRaw)
+        let current = preferred.flatMap { terminals.contains($0) ? $0 : nil }
+            ?? terminals.first
+
+        return HStack(spacing: 0) {
+            Button {
+                guard let current else { return }
+                Task { await store.resumeSelected(in: current) }
+            } label: {
+                Label(appLanguage.localized("继续"), systemImage: current?.systemImage ?? "terminal")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.leading, 8)
+                    .padding(.trailing, 7)
+                    .frame(height: 27)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(current?.displayName ?? appLanguage.localized("继续"))
+            .accessibilityIdentifier("conversation.action.resume")
+
+            Rectangle()
+                .fill(Color.ccBorder)
+                .frame(width: 1, height: 27)
+
+            Menu {
+                ForEach(terminals) { terminal in
+                    Button {
+                        preferredTerminalRaw = terminal.rawValue
+                        Task { await store.resumeSelected(in: terminal) }
+                    } label: {
+                        Label(terminal.displayName, systemImage: terminal.systemImage)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 22, height: 27)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel(appLanguage.localized("选择终端"))
+            .accessibilityIdentifier("conversation.action.resume.menu")
+        }
+        .foregroundStyle(Color.ccForeground)
+        .background(Color.ccConversationSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.ccBorder, lineWidth: 1)
+        }
+        .disabled(current == nil || store.isMutating)
     }
 
     @ViewBuilder private var detail: some View {
@@ -391,11 +484,17 @@ struct ConversationTimelinePane: View {
                     ForEach(Array(session.messages.enumerated()), id: \.offset) { index, message in
                         if ConversationMessageView.isVisible(message, pairedToolResultIDs: pairedIDs) {
                             ConversationMessageView(
-                                message: message,
+                                message: ConversationVisibleText.timelineMessage(message),
                                 messageIndex: index,
                                 sourceRawValue: session.metadata.source.rawValue,
-                                toolResults: results,
-                                pairedToolResultIDs: pairedIDs,
+                                toolResults: ConversationVisibleText.resultMap(
+                                    for: message,
+                                    from: results
+                                ),
+                                pairedToolResultIDs: ConversationVisibleText.pairedToolResultIDs(
+                                    for: message,
+                                    from: pairedIDs
+                                ),
                                 searchQuery: store.detailQuery,
                                 isCurrentSearchMatch: currentMatch == index,
                                 fontSize: CGFloat(fontSize ?? 13)
@@ -495,6 +594,21 @@ struct ConversationTimelinePane: View {
         panel.begin { response in
             guard response == .OK, let destination = panel.url else { return }
             Task { @MainActor in await store.exportSelectedHTML(to: destination) }
+        }
+    }
+
+    private func presentMarkdownExportPanel() {
+        guard store.selectedSession != nil else { return }
+        let panel = NSSavePanel()
+        panel.title = appLanguage.localized("导出 Markdown")
+        panel.prompt = appLanguage.localized("导出")
+        panel.nameFieldStringValue = "\(store.selectedExportBaseName).md"
+        if let markdown = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [markdown]
+        }
+        panel.begin { response in
+            guard response == .OK, let destination = panel.url else { return }
+            Task { @MainActor in await store.exportSelectedMarkdown(to: destination) }
         }
     }
 }

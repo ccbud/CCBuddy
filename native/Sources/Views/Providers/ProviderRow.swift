@@ -172,7 +172,7 @@ struct ProviderRow: View {
             .background(translated ? Color.ccBrandSoft : Color.ccForeground.opacity(0.05))
             .clipShape(Capsule())
             .help(appLanguage.localized(
-                translated ? "由 Bifrost 自动转换协议" : "Anthropic 协议直通"
+                translated ? "由网关自动转换协议" : "Anthropic 协议直通"
             ))
     }
 

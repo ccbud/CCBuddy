@@ -105,7 +105,10 @@ pub(super) fn collect_response_tool_call_identities(value: &Value, context: &mut
     }
 }
 
-pub(super) fn collect_tool_choice_identity(tool_choice: Option<&Value>, context: &mut CodexToolContext) {
+pub(super) fn collect_tool_choice_identity(
+    tool_choice: Option<&Value>,
+    context: &mut CodexToolContext,
+) {
     let Some(tool_choice) = tool_choice.filter(|value| value.is_object()) else {
         return;
     };

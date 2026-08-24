@@ -15,6 +15,19 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
+    OTHER_SWIFT_FLAGS: >-
+      $(inherited)
+      -Xcc -DZSTDLIB_VISIBLE=
+      -Xcc -DZSTDLIB_HIDDEN=
+      -Xcc -DZSTD_CLEVEL_DEFAULT=3
+      -Xcc -DZDICTLIB_VISIBLE=
+      -Xcc -DZDICTLIB_HIDDEN=
+      -Xcc -DZSTDERRORLIB_VISIBLE=
+      -Xcc -DZSTDERRORLIB_HIDDEN=
+packages:
+  zstd:
+    url: https://github.com/facebook/zstd
+    exactVersion: 1.5.7
 targets:
   CCBuddy:
     type: application
@@ -39,18 +52,27 @@ targets:
         group: Resources
         createIntermediateGroups: false
         buildPhase: resources
-      - path: Vendor/bifrost-http
+      - path: Vendor/ccbud-gateway
         buildPhase:
           copyFiles:
             destination: executables
         attributes:
           - CodeSignOnCopy
     preBuildScripts:
-      - name: Verify pinned Bifrost helper
-        script: '"$SRCROOT/Scripts/verify-bifrost.sh" "$SRCROOT/Vendor/bifrost-http" "$ARCHS"'
+      - name: Verify source-built gateway helper
+        script: '"$SRCROOT/Scripts/verify-gateway-helper.sh" "$SRCROOT/Vendor/ccbud-gateway" "$ARCHS"'
         basedOnDependencyAnalysis: false
         inputFiles:
-          - $(SRCROOT)/Vendor/bifrost-http
+          - $(SRCROOT)/GatewayHelper/Cargo.toml
+          - $(SRCROOT)/GatewayHelper/Cargo.lock
+          - $(SRCROOT)/GatewayHelper/NOTICE
+          - $(SRCROOT)/GatewayHelper/THIRD-PARTY-NOTICES.txt
+          - $(SRCROOT)/Resources/CCBuddyGateway-NOTICE.txt
+          - $(SRCROOT)/Resources/CCBuddyGateway-THIRD-PARTY-NOTICES.txt
+          - $(SRCROOT)/Vendor/ccbud-gateway
+    dependencies:
+      - package: zstd
+        product: libzstd
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(CCBUD_PRODUCT_BUNDLE_IDENTIFIER)"

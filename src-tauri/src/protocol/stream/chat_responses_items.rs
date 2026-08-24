@@ -1,12 +1,12 @@
 // Responses item bookkeeping for ChatToResponses: opening the response, closing the reasoning
 // item, and announcing / streaming / closing each tool call item.
 
+use super::super::openai_responses::{custom_tool_input_from_chat_arguments, CodexToolKind};
 use super::chat_responses::{ChatToResponses, RespToolAcc};
 use super::common::ev;
 use super::resp_items::{
     normalized_tool_arguments, resp_in_progress_tool_item, resp_reasoning_item,
 };
-use super::super::openai_responses::{custom_tool_input_from_chat_arguments, CodexToolKind};
 use serde_json::json;
 
 impl ChatToResponses {

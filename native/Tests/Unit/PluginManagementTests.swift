@@ -135,6 +135,35 @@ final class PluginAppModelIntegrationTests: XCTestCase {
         await model.shutdown()
     }
 
+    func testApplicationStartupAutoStartsPluginBackupsBeforeGatewayDecision() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let http = Provider(id: "http", name: "HTTP", baseUrl: "https://example.com")
+        let plugin = derivedProvider(id: "alpha", port: 31_121)
+        let manager = FakePluginManager(items: [pluginItem(id: "alpha", port: 31_121)])
+        let (model, _) = try makeModel(
+            root: root,
+            config: AppConfig(
+                activeProviderId: http.id,
+                gatewayEnabled: false,
+                gatewayFailover: .init(
+                    enabled: true,
+                    providerIds: [http.id, plugin.id]
+                ),
+                providers: [http, plugin]
+            ),
+            manager: manager
+        )
+
+        await model.startApplicationServices()
+
+        let enabledValue = await manager.enabledValue(for: "alpha")
+        XCTAssertEqual(enabledValue, true)
+        XCTAssertEqual(model.plugins.first?.lifecycle, .running)
+        XCTAssertEqual(model.gatewayState, .stopped)
+        await model.shutdown()
+    }
+
     func testUnexpectedActivePluginExitChoosesSafeFallback() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -265,7 +294,7 @@ final class PluginAppModelIntegrationTests: XCTestCase {
         return (
             AppModel(
                 repository: repository,
-                supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+                supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
                 environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"],
                 pluginManager: manager
             ),

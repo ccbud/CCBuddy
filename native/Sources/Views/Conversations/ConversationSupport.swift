@@ -19,15 +19,67 @@ extension View {
 }
 
 enum ConversationPresentation {
+    static let sourceOrder: [HistorySource] = [
+        .claude, .codex, .qoder, .grok, .dsh, .cursor, .opencode, .pi, .omp,
+        .kiro, .kimi, .gemini, .copilot, .antigravity,
+    ]
+
     static func sourceName(rawValue: String) -> String {
         switch rawValue {
-        case "disk": return "Claude Code"
+        case "disk", "claude": return "Claude Code"
         case "codex": return "Codex"
         case "qoder": return "Qoder"
-        case "grok": return "Grok"
-        case "copilot": return "Copilot"
-        case "antigravity": return "Antigravity"
+        case "grok": return "Grok Build"
+        case "copilot": return "Copilot CLI"
+        case "cursor": return "Cursor"
+        case "opencode": return "OpenCode"
+        case "kiro": return "Kiro"
+        case "gemini": return "Gemini CLI"
+        case "pi": return "Pi"
+        case "omp": return "Oh My Pi"
+        case "kimi": return "Kimi Code"
+        case "antigravity": return "Antigravity CLI"
+        case "dsh": return "DeepSeek Harness"
         default: return rawValue.isEmpty ? "未知来源" : rawValue
+        }
+    }
+
+    static func sourceSymbol(_ source: HistorySource) -> String {
+        switch source {
+        case .claude: "sparkles"
+        case .codex: "terminal"
+        case .qoder: "q.square"
+        case .grok: "bolt"
+        case .copilot: "chevron.left.forwardslash.chevron.right"
+        case .cursor: "cursorarrow.rays"
+        case .opencode: "chevron.left.forwardslash.chevron.right"
+        case .kiro: "k.square"
+        case .gemini: "sparkles"
+        case .pi: "p.circle"
+        case .omp: "shippingbox"
+        case .kimi: "moon.stars"
+        case .antigravity: "atom"
+        case .dsh: "d.square"
+        }
+    }
+
+    static func sourceBrandResource(_ source: HistorySource, dark: Bool) -> String? {
+        let lightSuffix = dark ? "" : "-light"
+        switch source {
+        case .claude: return "session-brand-claude-code"
+        case .codex: return "session-brand-codex"
+        case .qoder: return nil
+        case .grok: return "session-brand-grok\(lightSuffix)"
+        case .dsh: return "session-brand-deepseek"
+        case .cursor: return "session-brand-cursor\(lightSuffix)"
+        case .opencode: return "session-brand-opencode\(lightSuffix)"
+        case .pi: return "session-brand-pi\(lightSuffix)"
+        case .omp: return "session-brand-omp"
+        case .kiro: return "session-brand-kiro"
+        case .kimi: return "session-brand-kimi\(lightSuffix)"
+        case .gemini: return "session-brand-gemini"
+        case .copilot: return "session-brand-copilot\(lightSuffix)"
+        case .antigravity: return "session-brand-antigravity"
         }
     }
 
@@ -80,6 +132,35 @@ enum ConversationPresentation {
         formatter.dateStyle = dateStyle
         formatter.timeStyle = timeStyle
         return formatter
+    }
+}
+
+struct ConversationSourceBrandIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let source: HistorySource
+    var size: CGFloat = 14
+
+    var body: some View {
+        Group {
+            if let resource = ConversationPresentation.sourceBrandResource(
+                source,
+                dark: colorScheme == .dark
+            ) {
+                Image(resource, bundle: .main)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            } else {
+                Image(systemName: ConversationPresentation.sourceSymbol(source))
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(Color.ccMuted)
+                    .padding(1)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
@@ -744,7 +825,7 @@ private struct ConversationMarkdownTable: View {
 
 struct ConversationRailMaterial: ViewModifier {
     func body(content: Content) -> some View {
-        content.background(Color.ccConversationList)
+        content.background(Color.ccConversationList.ignoresSafeArea())
     }
 }
 

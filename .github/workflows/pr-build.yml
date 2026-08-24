@@ -30,10 +30,15 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
+          toolchain: 1.88.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: |
+            ./src-tauri -> target
+            ./native/GatewayHelper -> target
       - name: Install test dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
@@ -43,6 +48,11 @@ jobs:
         run: npm test
       - name: Rust tests
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
+      - name: Gateway helper tests
+        run: |
+          cargo +1.88.0 check --locked --all-targets --manifest-path native/GatewayHelper/Cargo.toml
+          cargo test --locked --manifest-path native/GatewayHelper/Cargo.toml
+          node native/Scripts/generate-gateway-third-party-notices.mjs --check
 
   native-arm64:
     name: Native arm64 tests and unsigned package
@@ -59,6 +69,12 @@ jobs:
         with:
           node-version: 24.19.0
           cache: npm
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: './native/GatewayHelper -> target'
       - name: Require the pinned Apple toolchain
         shell: bash
         run: |
@@ -71,11 +87,12 @@ jobs:
           set -euo pipefail
           native/Scripts/install-xcodegen.sh "$RUNNER_TEMP/xcodegen-2.46.0"
           echo "$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin" >> "$GITHUB_PATH"
-      - name: Prepare pinned helper and generated project
+      - name: Build locked gateway helper and generate project
         shell: bash
         run: |
           set -euo pipefail
-          CCBUD_BIFROST_ARCH=arm64 native/Scripts/fetch-bifrost.sh
+          native/Scripts/build-gateway-helper.sh
+          bash native/Scripts/tests/verify-gateway-helper.test.sh
           xcodegen generate --spec native/project.yml --project native
           git diff --exit-code -- native/CCBuddy.xcodeproj
           node scripts/release-version.js check
@@ -101,7 +118,7 @@ jobs:
       - name: Run native unit tests with all real E2Es
         shell: bash
         env:
-          CCBUD_BIFROST_BINARY: ${{ github.workspace }}/native/Vendor/bifrost-http
+          CCBUD_GATEWAY_BINARY: ${{ github.workspace }}/native/Vendor/ccbud-gateway
           CCBUD_CODEX_BINARY: ${{ runner.temp }}/ccbud-cli-e2e/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex
           CCBUD_CLAUDE_BINARY: ${{ runner.temp }}/ccbud-cli-e2e/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
           CCBUD_HOME: ${{ runner.temp }}/ccbud-native-unit/ccbud
@@ -132,10 +149,14 @@ jobs:
           jq -e '.result == "Passed" and .totalTestCount > 0
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
-          jq -e '[.. | objects | select(.nodeType == "Test Case")
-            | select((.nodeIdentifier // "")
-              | test("^(BifrostSupervisorIntegrationTests|BifrostResponsesProtocolIntegrationTests|ClaudeCLIBifrostE2ETests)/"))] as $e2e
-            | (($e2e | length) >= 11 and all($e2e[]; .result == "Passed"))' "$tests"
+          jq -e '[.. | objects | select(.nodeType == "Test Case")] as $cases
+            | ["GatewaySupervisorIntegrationTests",
+               "GatewayResponsesProtocolIntegrationTests",
+               "ClaudeCLIGatewayE2ETests",
+               "CodexCLIGatewayE2ETests"] as $suites
+            | all($suites[]; . as $suite
+                | [$cases[] | select((.nodeIdentifier // "") | startswith($suite + "/"))] as $matches
+                | (($matches | length) > 0 and all($matches[]; .result == "Passed")))' "$tests"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
             "$summary"
       - name: Run native UI tests
@@ -160,8 +181,8 @@ jobs:
             CCBUD_PRODUCT_BUNDLE_IDENTIFIER="$ui_bundle_id"
           xcrun xcresulttool get test-results summary \
             --path "$result" --compact > "$summary"
-          jq -e '.result == "Passed" and .totalTestCount == 10
-            and .passedTests == 10 and .failedTests == 0
+          jq -e '.result == "Passed" and .totalTestCount == 11
+            and .passedTests == 11 and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
             "$summary"

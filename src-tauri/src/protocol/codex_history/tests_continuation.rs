@@ -1,5 +1,5 @@
-use super::*;
 use super::materialize::request_input_is_materializable;
+use super::*;
 use serde_json::json;
 
 #[test]
@@ -132,4 +132,3 @@ async fn restores_text_continuation_and_deduplicates_explicit_prior_output() {
     assert_eq!(history.enrich_request(&mut explicit).await, 0);
     assert_eq!(explicit["input"].as_array().unwrap().len(), 3);
 }
-

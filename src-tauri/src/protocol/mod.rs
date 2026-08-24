@@ -24,6 +24,8 @@ mod signatures;
 pub mod stream;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_routes;
 mod wire;
 
 pub use codec::{

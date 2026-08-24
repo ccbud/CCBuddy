@@ -28,7 +28,11 @@ pub(super) fn serialized_size<T: serde::Serialize + ?Sized>(value: &T) -> usize 
     }
 }
 
-pub(super) fn cached_response_size(scope: &str, response_id: &str, response: &CachedResponse) -> usize {
+pub(super) fn cached_response_size(
+    scope: &str,
+    response_id: &str,
+    response: &CachedResponse,
+) -> usize {
     let origin_bytes = match &response.origin {
         ResponseOrigin::Local => 1,
         ResponseOrigin::Native(provider_id) => 1usize.saturating_add(serialized_size(provider_id)),

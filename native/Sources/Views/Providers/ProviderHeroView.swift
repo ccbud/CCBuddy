@@ -109,9 +109,9 @@ struct ProviderHeroView: View {
             if let name = model.activeProvider?.name {
                 return appLanguage.localized("经 \(name) 转发 · 点卡片切换")
             }
-            return "Bifrost · localhost:\(model.config.port)"
+            return "Gateway · localhost:\(model.config.port)"
         case .starting:
-            return appLanguage.localized("正在启动 Bifrost…")
+            return appLanguage.localized("正在启动网关…")
         case .failed(let message):
             return appLanguage.localized(message)
         case .stopped:
@@ -340,7 +340,7 @@ private struct ProviderUsageSparkline: View {
     }
 }
 
-private extension BifrostGatewayState {
+private extension GatewayState {
     var runningPort: Int? {
         if case .running(let port) = self { return port }
         return nil

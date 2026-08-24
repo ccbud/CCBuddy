@@ -23,7 +23,12 @@ impl HistoryInner {
         true
     }
 
-    pub(super) fn index_call(&mut self, scope: &str, call_id: &str, response_id: &ScopedResponseId) {
+    pub(super) fn index_call(
+        &mut self,
+        scope: &str,
+        call_id: &str,
+        response_id: &ScopedResponseId,
+    ) {
         let response_ids = self
             .call_index
             .entry((scope.to_string(), call_id.to_string()))
@@ -75,7 +80,11 @@ impl HistoryInner {
             .unwrap_or_default()
     }
 
-    pub(super) fn unique_response_for_call(&self, scope: &str, call_id: &str) -> Option<ScopedResponseId> {
+    pub(super) fn unique_response_for_call(
+        &self,
+        scope: &str,
+        call_id: &str,
+    ) -> Option<ScopedResponseId> {
         let response_ids = self
             .call_index
             .get(&(scope.to_string(), call_id.to_string()))?;

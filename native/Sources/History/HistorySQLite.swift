@@ -107,6 +107,20 @@ final class HistorySQLiteDatabase {
         textRow(sql, bindings: bindings)?.first
     }
 
+    func tableExists(_ name: String) -> Bool {
+        textValue(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            bindings: [name]
+        ) != nil
+    }
+
+    func columnNames(in table: String) -> Set<String> {
+        guard table.unicodeScalars.allSatisfy({
+            CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_")).contains($0)
+        }) else { return [] }
+        return Set(rows("PRAGMA table_info(\(table))").compactMap { $0["name"]?.stringValue })
+    }
+
     /// Reads heterogeneous SQLite rows without assuming a producer's schema is frozen. Any busy,
     /// malformed, or mid-query failure is a cache miss; callers always retain their file fallback.
     func rows(_ sql: String, bindings: [String] = []) -> [HistorySQLiteRow] {

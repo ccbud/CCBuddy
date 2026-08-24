@@ -31,12 +31,6 @@ mod encode_sse;
 mod helpers;
 mod history;
 mod parts;
-mod tool_collect;
-mod tool_items;
-mod tool_names;
-mod tool_registry;
-mod tools;
-mod validate;
 #[cfg(test)]
 mod tests_aliases;
 #[cfg(test)]
@@ -51,6 +45,12 @@ mod tests_request;
 mod tests_response;
 #[cfg(test)]
 mod tests_validate;
+mod tool_collect;
+mod tool_items;
+mod tool_names;
+mod tool_registry;
+mod tools;
+mod validate;
 
 pub use decode_request::{decode_request, decode_request_with_context};
 pub use decode_response::decode_response;
@@ -60,6 +60,6 @@ pub use encode_sse::{encode_response_sse, encode_response_sse_with_context};
 pub use tools::{CodexToolContext, CodexToolKind};
 // CodexToolSpec is part of this module's public surface (kept resolving at
 // crate::protocol::openai_responses::CodexToolSpec) but only referenced internally today.
+pub(crate) use helpers::{custom_tool_input_from_chat_arguments, response_scoped_call_id};
 #[allow(unused_imports)]
 pub use tools::CodexToolSpec;
-pub(crate) use helpers::{custom_tool_input_from_chat_arguments, response_scoped_call_id};

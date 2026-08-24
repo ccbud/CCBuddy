@@ -339,7 +339,7 @@ struct CLIConnectionManager {
         select(Self.claudeTarget, in: &config)
 
         var nextEnvironment = settings["env"]?.objectValue ?? [:]
-        nextEnvironment["ANTHROPIC_BASE_URL"] = .string("http://localhost:\(config.port)/anthropic")
+        nextEnvironment["ANTHROPIC_BASE_URL"] = .string("http://localhost:\(config.port)")
         nextEnvironment["ANTHROPIC_AUTH_TOKEN"] = .string(currentToken(for: config))
         Self.claudeModelKeys.forEach { nextEnvironment.removeValue(forKey: $0) }
         settings["env"] = .object(nextEnvironment)

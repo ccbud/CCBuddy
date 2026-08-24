@@ -24,11 +24,18 @@ final class HistoryRepositoryTests: XCTestCase {
             HistoryTestSupport.claudeLine(type: "user", role: "user", contentJSON: #""other""#, sessionID: "other", cwd: "/repo/two", timestamp: "2026-02-01T00:00:00Z")
         ], to: other, modifiedAt: otherDate)
 
-        let active = HistoryRepository(historyDirs: [firstRoot.path, secondRoot.path], active: firstRoot.path)
+        let active = HistoryRepository(
+            historyDirs: [firstRoot.path, secondRoot.path],
+            active: firstRoot.path,
+            homeDirectory: parent
+        )
         XCTAssertEqual(active.listSessions().map(\.sessionID), ["newer", "older"], "mtime, not record timestamp, is the phase-one ordering key")
         XCTAssertEqual(active.listSessions(limit: 1).map(\.sessionID), ["newer"])
 
-        let all = HistoryRepository(historyDirs: [firstRoot.path, firstRoot.path, secondRoot.path])
+        let all = HistoryRepository(
+            historyDirs: [firstRoot.path, firstRoot.path, secondRoot.path],
+            homeDirectory: parent
+        )
         XCTAssertEqual(all.listSessions().map(\.sessionID), ["newer", "other", "older"])
         XCTAssertEqual(all.listProjects().map(\.cwd), ["/repo/one", "/repo/two"])
         XCTAssertEqual(all.listProjects().first?.sessions.count, 2)
@@ -50,7 +57,9 @@ final class HistoryRepositoryTests: XCTestCase {
             HistoryTestSupport.codexLine(timestamp: "2026-08-22T00:00:01Z", type: "response_item", payload: #"{"type":"message","role":"user","content":[{"type":"input_text","text":"new duplicate"}]}"#),
         ], to: newer, modifiedAt: Date(timeIntervalSince1970: 1_800_000_000))
 
-        let rows = HistoryRepository(historyDirs: [root.path]).listSessions()
+        let rows = HistoryRepository(
+            historyDirs: [root.path], homeDirectory: root
+        ).listSessions()
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].file, newer.resolvingSymlinksInPath().standardizedFileURL)
         XCTAssertEqual(rows[0].title, "new duplicate")
@@ -84,9 +93,10 @@ final class HistoryRepositoryTests: XCTestCase {
             ),
         ], to: codex)
 
-        let statistics = HistoryRepository(historyDirs: [
-            claudeRoot.path, codexRoot.path, missingRoot.path,
-        ]).directoryStatistics()
+        let statistics = HistoryRepository(
+            historyDirs: [claudeRoot.path, codexRoot.path, missingRoot.path],
+            homeDirectory: parent
+        ).directoryStatistics()
         let byID = Dictionary(uniqueKeysWithValues: statistics.map { ($0.id, $0) })
 
         XCTAssertEqual(byID[claudeRoot.path]?.sessionCount, 1)
@@ -167,7 +177,7 @@ final class HistoryRepositoryTests: XCTestCase {
             HistoryTestSupport.codexLine(timestamp: "2026-08-22T00:00:01Z", type: "response_item", payload: #"{"type":"message","role":"user","content":[{"type":"input_text","text":"codex quokka request"}]}"#),
         ], to: codex, modifiedAt: Date(timeIntervalSince1970: 1_700_000_000))
 
-        let repository = HistoryRepository(historyDirs: [root.path])
+        let repository = HistoryRepository(historyDirs: [root.path], homeDirectory: root)
         XCTAssertEqual(repository.search(query: "zEbRa").map(\.sessionID), ["claude"])
         XCTAssertEqual(repository.search(query: "kangaroo").map(\.sessionID), ["claude"])
         XCTAssertEqual(repository.search(query: "QUOKKA").map(\.sessionID), ["c1"])

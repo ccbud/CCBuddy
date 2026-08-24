@@ -15,7 +15,6 @@ mod merge;
 mod resolve;
 mod sizing;
 mod store;
-mod types;
 #[cfg(test)]
 mod tests_call_fallback;
 #[cfg(test)]
@@ -30,6 +29,7 @@ mod tests_limits;
 mod tests_materialize;
 #[cfg(test)]
 mod tests_native;
+mod types;
 
 pub use types::{CodexHistoryStore, HistoryResolution, ResponseOrigin};
 // ResponseMetadata is this module's public return type for `response_metadata`; keep it resolving

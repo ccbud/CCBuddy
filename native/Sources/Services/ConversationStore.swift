@@ -40,13 +40,37 @@ protocol ConversationMutating: Sendable {
     ) throws
     func softDelete(_ metadata: HistorySessionMetadata) throws
     func restore(_ metadata: HistorySessionMetadata) throws
+    func toggleStarred(_ metadata: HistorySessionMetadata) throws
+    func togglePinned(_ metadata: HistorySessionMetadata) throws
     func canPermanentlyDelete(_ metadata: HistorySessionMetadata) -> Bool
     func permanentlyDelete(_ metadata: HistorySessionMetadata) throws
     func importFile(_ source: URL) -> ConversationImportDisposition
+    /// Returns the complete suffix (without a leading dot) for the producer's physical export.
+    /// Most values are a single extension; compressed DSH logs use `jsonl.zstd`.
+    func suggestedRawFileExtension(for metadata: HistorySessionMetadata) throws -> String
     func exportRaw(
         _ metadata: HistorySessionMetadata,
         to destination: URL
     ) throws -> ConversationRawExportResult
+}
+
+extension ConversationMutating {
+    func suggestedRawFileExtension(for metadata: HistorySessionMetadata) throws -> String {
+        if metadata.source == .antigravity { return "db" }
+        if metadata.source == .dsh,
+           metadata.file.lastPathComponent.hasSuffix(".jsonl.zstd") {
+            return "jsonl.zstd"
+        }
+        return metadata.subagentCount > 0 ? "zip" : "jsonl"
+    }
+
+    func toggleStarred(_ metadata: HistorySessionMetadata) throws {
+        try updateMetadata(for: metadata, patch: .init(starred: !metadata.starred))
+    }
+
+    func togglePinned(_ metadata: HistorySessionMetadata) throws {
+        try updateMetadata(for: metadata, patch: .init(pinned: !metadata.pinned))
+    }
 }
 
 extension ConversationMutationService: ConversationMutating {}
@@ -57,6 +81,12 @@ protocol ConversationHTMLExporting: Sendable {
 }
 
 extension ConversationHTMLExporter: ConversationHTMLExporting {}
+
+protocol ConversationMarkdownExporting: Sendable {
+    func export(_ session: HistorySession, to destination: URL) throws
+}
+
+extension ConversationMarkdownExporter: ConversationMarkdownExporting {}
 
 protocol ConversationExportResultOpening: Sendable {
     @MainActor func openExportedHTML(_ file: URL)
@@ -106,7 +136,22 @@ protocol ConversationFileInspecting: Sendable {
 
 struct ConversationFileInspector: ConversationFileInspecting {
     func modificationDate(for file: URL) throws -> Date? {
-        try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        try Self.storageFile(for: file)
+            .resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate
+    }
+
+    /// SQLite adapters expose one stable logical URL per conversation below a synthetic
+    /// `<database>.ccbuddy-sessions` directory. Live-detail polling must observe the physical
+    /// container or every fresh SQLite conversation is incorrectly treated as a missing file.
+    static func storageFile(for logicalFile: URL) -> URL {
+        let file = logicalFile.standardizedFileURL
+        let virtualContainer = file.deletingLastPathComponent()
+        guard virtualContainer.pathExtension == "ccbuddy-sessions" else { return file }
+        return URL(
+            fileURLWithPath: virtualContainer.deletingPathExtension().path,
+            isDirectory: false
+        ).standardizedFileURL
     }
 }
 
@@ -115,6 +160,29 @@ enum ConversationLoadState: Equatable {
     case loading
     case loaded
     case failed(String)
+}
+
+private enum ConversationSessionLocationRefreshFailure: Sendable {
+    case cancelled
+    case failed(String)
+}
+
+private struct ConversationSessionLocationRuntimeUpdate: Sendable {
+    var repository: any ConversationIndexedHistoryProviding
+    var rows: [ConversationSessionLocationRow]
+    var overrides: ConversationSessionLocationOverrides
+    var refreshFailure: ConversationSessionLocationRefreshFailure?
+}
+
+private enum ConversationSessionLocationUpdateError: LocalizedError, Sendable {
+    case rollbackFailed(reload: String, rollback: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .rollbackFailed(let reload, let rollback):
+            "无法载入新会话位置（\(reload)），且无法恢复原配置（\(rollback)）"
+        }
+    }
 }
 
 enum ConversationIndexingState: Equatable, Sendable {
@@ -374,6 +442,16 @@ enum ConversationFilter {
 /// Rules shared by the timeline and its data-driven search index. Keeping the index on parsed
 /// messages means a long transcript never has to be fully materialized just to find a phrase.
 enum ConversationVisibleText {
+    static let maximumTimelineMessageTextBytes = 32 * 1_024
+    static let maximumTimelineToolValueBytes = 16 * 1_024
+    private static let timelineKeyPriorities: [String: Int] = Dictionary(
+        uniqueKeysWithValues: [
+            "type", "name", "file_path", "path", "command", "description", "code",
+            "old_string", "new_string", "content", "patch", "pattern", "query", "url",
+            "prompt", "subagent_type", "todos", "snapshot", "source", "media_type", "data",
+        ].enumerated().map { ($0.element, $0.offset) }
+    )
+
     static func resultMap(in messages: [HistoryMessage]) -> [String: HistoryContentBlock] {
         var result: [String: HistoryContentBlock] = [:]
         for message in messages {
@@ -386,9 +464,186 @@ enum ConversationVisibleText {
     }
 
     static func pairedToolResultIDs(in messages: [HistoryMessage]) -> Set<String> {
-        Set(messages.flatMap(\.content).compactMap { block in
-            block.type == "tool_use" ? block.id : nil
+        var result: Set<String> = []
+        for message in messages {
+            for block in message.content where block.type == "tool_use" {
+                if let id = block.id { result.insert(id) }
+            }
+        }
+        return result
+    }
+
+    /// Timeline rows must not retain the complete session-wide tool-result dictionary. SwiftUI
+    /// compares stored view inputs while reconciling a `ForEach`; attaching the full dictionary to
+    /// every message turns a long transcript into quadratic deep equality work. Project only the
+    /// results referenced by this message so each lazy row stays proportional to its own content.
+    static func resultMap(
+        for message: HistoryMessage,
+        from allResults: [String: HistoryContentBlock]
+    ) -> [String: HistoryContentBlock] {
+        var result: [String: HistoryContentBlock] = [:]
+        for block in message.content where block.type == "tool_use" {
+            guard let id = block.id, let value = allResults[id] else { continue }
+            result[id] = timelineBlock(value)
+        }
+        return result
+    }
+
+    /// As with tool results, pass a row only the paired ids it can actually use. Standalone
+    /// results remain visible while paired results stay embedded in their tool card.
+    static func pairedToolResultIDs(
+        for message: HistoryMessage,
+        from allPairedIDs: Set<String>
+    ) -> Set<String> {
+        Set(message.content.compactMap { block in
+            guard block.type == "tool_result",
+                  let id = block.toolUseID,
+                  allPairedIDs.contains(id) else { return nil }
+            return id
         })
+    }
+
+    /// Wake bounds presentation text independently from the producer-owned source file. Hand
+    /// SwiftUI a compact row value so one multi-megabyte tool output cannot make layout consume
+    /// gigabytes; lossless raw export/replay/analysis continue to use the complete producer file.
+    static func timelineMessage(_ original: HistoryMessage) -> HistoryMessage {
+        var message = original
+        message.content = original.content.map(timelineBlock)
+        return message
+    }
+
+    private static func timelineBlock(_ original: HistoryContentBlock) -> HistoryContentBlock {
+        var block = original
+        block.text = original.text.map {
+            clippedTimelineString(
+                $0,
+                maximumUTF8Bytes: original.type == "text"
+                    ? maximumTimelineMessageTextBytes
+                    : maximumTimelineToolValueBytes
+            )
+        }
+        block.thinking = original.thinking.map {
+            clippedTimelineString($0, maximumUTF8Bytes: maximumTimelineToolValueBytes)
+        }
+        block.input = original.input.map {
+            clippedTimelineValue($0, maximumUTF8Bytes: maximumTimelineToolValueBytes)
+        }
+        block.content = original.content.map {
+            clippedTimelineValue($0, maximumUTF8Bytes: maximumTimelineToolValueBytes)
+        }
+        // Text, thinking, and tool blocks already promote every field the renderer needs. Their
+        // producer-specific raw envelope can be enormous. The producer file remains authoritative;
+        // do not duplicate that envelope into the SwiftUI view graph. Image/skill/unknown blocks
+        // render from raw, so retain only a structure-preserving bounded projection for those rows.
+        if ["text", "thinking", "tool_use", "tool_result"].contains(original.type) {
+            block.raw = nil
+        } else {
+            block.raw = original.raw.map {
+                clippedTimelineValue($0, maximumUTF8Bytes: maximumTimelineToolValueBytes)
+            }
+        }
+        return block
+    }
+
+    private static func clippedTimelineValue(
+        _ value: HistoryValue,
+        maximumUTF8Bytes: Int
+    ) -> HistoryValue {
+        // Preserve string semantics. Encoding first and clipping the JSON literal would make a
+        // plain tool result render with quotes and escaped newlines.
+        if case .string(let string) = value {
+            return .string(clippedTimelineString(
+                string,
+                maximumUTF8Bytes: maximumUTF8Bytes
+            ))
+        }
+
+        let encoded = value.jsonString
+        guard encoded.utf8.count > maximumUTF8Bytes else { return value }
+
+        // Keep object/array shape where possible so large Write/Edit/Bash inputs still expose the
+        // fields used by their cards, and skill/image rows retain useful metadata. The per-child
+        // budget deliberately leaves room for keys, punctuation, and JSON escaping; the exact
+        // encoded-size check below is the final bound.
+        if let projected = projectedTimelineContainer(
+            value,
+            maximumUTF8Bytes: maximumUTF8Bytes
+        ), projected.jsonString.utf8.count <= maximumUTF8Bytes {
+            return projected
+        }
+        return .string(clippedTimelineString(encoded, maximumUTF8Bytes: maximumUTF8Bytes))
+    }
+
+    private static func projectedTimelineContainer(
+        _ value: HistoryValue,
+        maximumUTF8Bytes: Int
+    ) -> HistoryValue? {
+        let collectionLimit = 64
+        let structuralReserve = min(1_024, maximumUTF8Bytes / 4)
+
+        switch value {
+        case .object(let object):
+            guard !object.isEmpty else { return value }
+            let keys = object.keys.sorted { lhs, rhs in
+                let left = timelineKeyPriorities[lhs] ?? timelineKeyPriorities.count
+                let right = timelineKeyPriorities[rhs] ?? timelineKeyPriorities.count
+                return left == right ? lhs < rhs : left < right
+            }
+            let retainedKeys = Array(keys.prefix(collectionLimit))
+            let omittedCount = keys.count - retainedKeys.count
+            let slotCount = retainedKeys.count + (omittedCount > 0 ? 1 : 0)
+            let childBudget = max(
+                64,
+                (maximumUTF8Bytes - structuralReserve) / max(1, slotCount)
+            )
+            var projected: [String: HistoryValue] = [:]
+            projected.reserveCapacity(slotCount)
+            for key in retainedKeys {
+                guard let child = object[key] else { continue }
+                projected[key] = clippedTimelineValue(
+                    child,
+                    maximumUTF8Bytes: childBudget
+                )
+            }
+            if omittedCount > 0 {
+                projected["_ccbuddy_omitted"] = .string("\(omittedCount) fields")
+            }
+            return .object(projected)
+
+        case .array(let values):
+            guard !values.isEmpty else { return value }
+            let retainedCount = min(collectionLimit, values.count)
+            let omittedCount = values.count - retainedCount
+            let slotCount = retainedCount + (omittedCount > 0 ? 1 : 0)
+            let childBudget = max(
+                64,
+                (maximumUTF8Bytes - structuralReserve) / max(1, slotCount)
+            )
+            var projected = values.prefix(retainedCount).map {
+                clippedTimelineValue($0, maximumUTF8Bytes: childBudget)
+            }
+            if omittedCount > 0 {
+                projected.append(.string("… \(omittedCount) values omitted"))
+            }
+            return .array(projected)
+
+        case .string, .number, .bool, .null:
+            return nil
+        }
+    }
+
+    private static func clippedTimelineString(
+        _ value: String,
+        maximumUTF8Bytes: Int
+    ) -> String {
+        guard value.utf8.count > maximumUTF8Bytes else { return value }
+        let marker = "\n… (truncated)"
+        let prefixLimit = max(0, maximumUTF8Bytes - marker.utf8.count)
+        var prefix = Array(value.utf8.prefix(prefixLimit))
+        while !prefix.isEmpty, String(bytes: prefix, encoding: .utf8) == nil {
+            prefix.removeLast()
+        }
+        return String(decoding: prefix, as: UTF8.self) + marker
     }
 
     static func searchableText(
@@ -540,18 +795,27 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var importProgress: ConversationImportProgress?
     @Published private(set) var historyActive = "all"
     @Published private(set) var scopeSnapshot = ConversationScopeSnapshot()
+    @Published private(set) var sessionLocationRows: [ConversationSessionLocationRow] = []
+    @Published private(set) var sessionLocationOverrides = ConversationSessionLocationOverrides()
+    @Published private(set) var isUpdatingSessionLocations = false
     private(set) var configuredHistoryDirectories: [String] = []
 
     private var repository: any ConversationHistoryProviding
     private var mutationService: (any ConversationMutating)?
     private var htmlExporter: any ConversationHTMLExporting
+    private var markdownExporter: any ConversationMarkdownExporting
+    private let resumeService: any ConversationResuming
     private let exportResultOpener: any ConversationExportResultOpening
     private let fileInspector: any ConversationFileInspecting
     private let pathCopier: (String) -> Void
+    private let commandCopier: (String) -> Bool
+    private let fileRevealer: (URL) -> Void
+    private let replayPreparer: any ConversationReplayPreparing
     private let replayURLLauncher: (URL) -> Bool
     private let pollIntervalNanoseconds: UInt64
     private let searchDelayNanoseconds: UInt64
     private let now: @Sendable () -> Date
+    private let configurationHomeDirectory: URL
     private var configurationSignature: String?
     private var isActive = false
     private var observedModificationDate: Date?
@@ -610,8 +874,20 @@ final class ConversationStore: ObservableObject {
 
     var selectedRawExportExtension: String {
         guard let metadata = selectedMetadata else { return "jsonl" }
-        if metadata.source == .antigravity { return "db" }
+        if let mutationService,
+           let fileExtension = try? mutationService.suggestedRawFileExtension(for: metadata) {
+            return fileExtension
+        }
         return metadata.subagentCount > 0 ? "zip" : "jsonl"
+    }
+
+    var availableResumeTerminals: [ConversationTerminal] {
+        guard let selectedMetadata else { return [] }
+        return resumeService.availableTerminals(for: selectedMetadata)
+    }
+
+    var canResumeSelected: Bool {
+        !availableResumeTerminals.isEmpty
     }
 
     var totalDetailOccurrences: Int {
@@ -632,13 +908,24 @@ final class ConversationStore: ObservableObject {
         repository: any ConversationHistoryProviding,
         mutationService: (any ConversationMutating)? = nil,
         htmlExporter: any ConversationHTMLExporting = ConversationHTMLExporter(),
+        markdownExporter: any ConversationMarkdownExporting = ConversationMarkdownExporter(),
+        resumeService: any ConversationResuming = SystemConversationResumeService(),
         exportResultOpener: any ConversationExportResultOpening = ConversationWorkspaceExportResultOpener(),
         historyActive: String = "all",
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         fileInspector: any ConversationFileInspecting = ConversationFileInspector(),
         pathCopier: @escaping (String) -> Void = { path in
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(path, forType: .string)
         },
+        commandCopier: @escaping (String) -> Bool = { command in
+            NSPasteboard.general.clearContents()
+            return NSPasteboard.general.setString(command, forType: .string)
+        },
+        fileRevealer: @escaping (URL) -> Void = { file in
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+        },
+        replayPreparer: any ConversationReplayPreparing = ConversationReplayPassthrough(),
         replayURLLauncher: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) },
         pollIntervalNanoseconds: UInt64 = 4_000_000_000,
         searchDelayNanoseconds: UInt64 = 220_000_000,
@@ -647,10 +934,16 @@ final class ConversationStore: ObservableObject {
         self.repository = repository
         self.mutationService = mutationService
         self.htmlExporter = htmlExporter
+        self.markdownExporter = markdownExporter
+        self.resumeService = resumeService
         self.exportResultOpener = exportResultOpener
         self.historyActive = historyActive
+        configurationHomeDirectory = homeDirectory.standardizedFileURL
         self.fileInspector = fileInspector
         self.pathCopier = pathCopier
+        self.commandCopier = commandCopier
+        self.fileRevealer = fileRevealer
+        self.replayPreparer = replayPreparer
         self.replayURLLauncher = replayURLLauncher
         self.pollIntervalNanoseconds = pollIntervalNanoseconds
         self.searchDelayNanoseconds = searchDelayNanoseconds
@@ -660,29 +953,45 @@ final class ConversationStore: ObservableObject {
     convenience init(
         config: AppConfig,
         importsRoot: URL? = nil,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         fileInspector: any ConversationFileInspecting = ConversationFileInspector(),
         pollIntervalNanoseconds: UInt64 = 4_000_000_000,
         searchDelayNanoseconds: UInt64 = 220_000_000,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        let mutationConfiguration = ConversationMutationConfiguration(
+        var mutationConfiguration = ConversationMutationConfiguration(
             historyDirs: config.historyDirs,
+            homeDirectory: homeDirectory,
             importsRoot: importsRoot
         )
+        let provider = Self.productionHistoryProvider(
+            config: config,
+            homeDirectory: homeDirectory,
+            importsRoot: mutationConfiguration.importsRoot
+        )
+        if let indexed = provider as? any ConversationIndexedHistoryProviding {
+            mutationConfiguration.sessionLocationOverrides =
+                (try? indexed.sessionLocationOverrides()) ?? .init()
+        }
         self.init(
-            repository: Self.productionHistoryProvider(
-                config: config,
-                importsRoot: mutationConfiguration.importsRoot
-            ),
+            repository: provider,
             mutationService: ConversationMutationService(configuration: mutationConfiguration),
             historyActive: config.historyActive,
+            homeDirectory: homeDirectory,
             fileInspector: fileInspector,
+            replayPreparer: ConversationReplayMaterializer(
+                root: mutationConfiguration.appDataRoot.appendingPathComponent(
+                    "replay",
+                    isDirectory: true
+                )
+            ),
             pollIntervalNanoseconds: pollIntervalNanoseconds,
             searchDelayNanoseconds: searchDelayNanoseconds,
             now: now
         )
         configurationSignature = Self.signature(
             for: config,
+            homeDirectory: homeDirectory,
             importsRoot: mutationConfiguration.importsRoot
         )
         configuredHistoryDirectories = config.historyDirs
@@ -701,12 +1010,14 @@ final class ConversationStore: ObservableObject {
 
     func configure(config: AppConfig, importsRoot: URL? = nil) {
         configuredHistoryDirectories = config.historyDirs
-        let mutationConfiguration = ConversationMutationConfiguration(
+        var mutationConfiguration = ConversationMutationConfiguration(
             historyDirs: config.historyDirs,
+            homeDirectory: configurationHomeDirectory,
             importsRoot: importsRoot
         )
         let signature = Self.signature(
             for: config,
+            homeDirectory: configurationHomeDirectory,
             importsRoot: mutationConfiguration.importsRoot
         )
         let indexed = repository as? any ConversationIndexedHistoryProviding
@@ -724,6 +1035,7 @@ final class ConversationStore: ObservableObject {
             } else {
                 repository = Self.productionHistoryProvider(
                     config: config,
+                    homeDirectory: configurationHomeDirectory,
                     importsRoot: mutationConfiguration.importsRoot
                 )
             }
@@ -749,8 +1061,13 @@ final class ConversationStore: ObservableObject {
         stopIndexing()
         repository = Self.productionHistoryProvider(
             config: config,
+            homeDirectory: configurationHomeDirectory,
             importsRoot: mutationConfiguration.importsRoot
         )
+        if let indexed = repository as? any ConversationIndexedHistoryProviding {
+            mutationConfiguration.sessionLocationOverrides =
+                (try? indexed.sessionLocationOverrides()) ?? .init()
+        }
         observedIndexRevision = nil
         mutationService = ConversationMutationService(configuration: mutationConfiguration)
         historyActive = config.historyActive
@@ -776,6 +1093,7 @@ final class ConversationStore: ObservableObject {
         restartContentSearchIfNeeded()
         startIndexing()
         startPolling()
+        Task { await refreshSessionLocations() }
     }
 
     func deactivate() {
@@ -842,6 +1160,240 @@ final class ConversationStore: ObservableObject {
                       self.indexObservationGeneration == observation else { return }
                 self.publishIndexFailure("会话索引失败：\(error.localizedDescription)")
             }
+        }
+    }
+
+    func refreshSessionLocations() async {
+        guard let indexed = repository as? any ConversationIndexedHistoryProviding else {
+            let layouts = ConversationSessionLocationLayout.defaults(
+                homeDirectory: configurationHomeDirectory
+            )
+            sessionLocationOverrides = .init()
+            sessionLocationRows = layouts.flatMap { layout in
+                layout.dataRoots.map { root in
+                    ConversationSessionLocationRow(
+                        source: layout.source,
+                        dataRoot: root,
+                        storedCustomRoot: nil,
+                        sessionCount: 0,
+                        exists: FileManager.default.fileExists(atPath: root.path)
+                    )
+                }
+            }
+            return
+        }
+        do {
+            let snapshot = try await Task.detached(priority: .utility) {
+                (try indexed.sessionLocationRows(), try indexed.sessionLocationOverrides())
+            }.value
+            guard !Task.isCancelled else { return }
+            sessionLocationRows = snapshot.0
+            sessionLocationOverrides = snapshot.1
+        } catch {
+            reportActionError("无法读取会话位置：\(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    func addSessionLocation(source: HistorySource, path: String) async -> String? {
+        guard let normalized = normalizedSessionLocation(source: source, path: path) else {
+            let message = "请输入有效的本地文件夹路径"
+            reportActionError(message)
+            return message
+        }
+        guard !ConversationSessionLocationValidator.overlapsExisting(
+            normalized,
+            rows: sessionLocationRows
+        ) else {
+            let message = "此文件夹已包含在 CC Buddy 的会话位置中"
+            reportActionError(message)
+            return message
+        }
+        return await updateSessionLocations { indexed in
+            try indexed.addSessionLocation(normalized)
+        }
+    }
+
+    @discardableResult
+    func replaceSessionLocation(
+        originalRow: ConversationSessionLocationRow,
+        source: HistorySource,
+        path: String
+    ) async -> String? {
+        guard let normalized = normalizedSessionLocation(source: source, path: path) else {
+            let message = "请输入有效的本地文件夹路径"
+            reportActionError(message)
+            return message
+        }
+        if ConversationSessionLocationValidator.isUnchanged(
+            normalized,
+            editing: originalRow
+        ) {
+            clearActionMessage()
+            return nil
+        }
+        guard !ConversationSessionLocationValidator.overlapsExisting(
+            normalized,
+            rows: sessionLocationRows,
+            editing: originalRow
+        ) else {
+            let message = "此文件夹已包含在 CC Buddy 的会话位置中"
+            reportActionError(message)
+            return message
+        }
+        return await updateSessionLocations { indexed in
+            try indexed.replaceSessionLocation(
+                oldSource: originalRow.source,
+                oldCustomPath: originalRow.storedCustomRoot?.path,
+                with: normalized
+            )
+        }
+    }
+
+    @discardableResult
+    func removeSessionLocation(_ row: ConversationSessionLocationRow) async -> String? {
+        await updateSessionLocations { indexed in
+            try indexed.removeSessionLocation(
+                source: row.source,
+                customPath: row.storedCustomRoot?.path
+            )
+        }
+    }
+
+    func restoreDefaultSessionLocations() async {
+        await updateSessionLocations { indexed in
+            try indexed.restoreDefaultSessionLocations()
+        }
+    }
+
+    private func normalizedSessionLocation(
+        source: HistorySource,
+        path rawPath: String
+    ) -> ConversationSessionLocation? {
+        ConversationSessionLocationValidator.normalizedLocation(
+            source: source,
+            path: rawPath,
+            homeDirectory: configurationHomeDirectory
+        )
+    }
+
+    @discardableResult
+    private func updateSessionLocations(
+        _ operation: @escaping @Sendable (
+            any ConversationIndexedHistoryProviding
+        ) throws -> Void
+    ) async -> String? {
+        guard !isUpdatingSessionLocations else { return nil }
+        guard let indexed = repository as? any ConversationIndexedHistoryProviding else {
+            let message = "会话索引不可用，无法更改扫描位置"
+            reportActionError(message)
+            return message
+        }
+
+        isUpdatingSessionLocations = true
+        clearActionMessage()
+        stopIndexing()
+        do {
+            let previousOverrides = try indexed.sessionLocationOverrides()
+            let update = try await Task.detached(priority: .userInitiated) {
+                try operation(indexed)
+                let reloaded: any ConversationIndexedHistoryProviding
+                do {
+                    reloaded = try indexed.reloadedForSessionLocations()
+                } catch is CancellationError {
+                    do {
+                        try indexed.replaceSessionLocationOverrides(previousOverrides)
+                    } catch {
+                        throw ConversationSessionLocationUpdateError.rollbackFailed(
+                            reload: "cancelled",
+                            rollback: error.localizedDescription
+                        )
+                    }
+                    throw CancellationError()
+                } catch {
+                    let reloadError = error
+                    do {
+                        try indexed.replaceSessionLocationOverrides(previousOverrides)
+                    } catch {
+                        throw ConversationSessionLocationUpdateError.rollbackFailed(
+                            reload: reloadError.localizedDescription,
+                            rollback: error.localizedDescription
+                        )
+                    }
+                    throw reloadError
+                }
+                let overrides = reloaded.locationHistoryConfiguration.sessionLocationOverrides
+                let refreshFailure: ConversationSessionLocationRefreshFailure?
+                do {
+                    try reloaded.reconcileIndex()
+                    refreshFailure = nil
+                } catch is CancellationError {
+                    refreshFailure = .cancelled
+                } catch {
+                    refreshFailure = .failed(error.localizedDescription)
+                }
+
+                let rows: [ConversationSessionLocationRow]
+                do {
+                    rows = try reloaded.sessionLocationRows()
+                } catch {
+                    rows = []
+                    return ConversationSessionLocationRuntimeUpdate(
+                        repository: reloaded,
+                        rows: rows,
+                        overrides: overrides,
+                        refreshFailure: refreshFailure ?? .failed(error.localizedDescription)
+                    )
+                }
+                return ConversationSessionLocationRuntimeUpdate(
+                    repository: reloaded,
+                    rows: rows,
+                    overrides: overrides,
+                    refreshFailure: refreshFailure
+                )
+            }.value
+
+            repository = update.repository
+            sessionLocationRows = update.rows
+            sessionLocationOverrides = update.overrides
+            let configuration = update.repository.locationHistoryConfiguration
+            mutationService = ConversationMutationService(configuration: .init(
+                historyDirs: configuration.historyDirs,
+                homeDirectory: configuration.homeDirectory,
+                importsRoot: configuration.importsRoot,
+                sessionLocationOverrides: configuration.sessionLocationOverrides
+            ))
+            observedIndexRevision = nil
+            projects = []
+            scopeSnapshot = .init()
+            listState = .idle
+            clearSelection()
+            if isActive {
+                requestReload()
+                restartContentSearchIfNeeded()
+                startIndexing()
+            }
+            isUpdatingSessionLocations = false
+            switch update.refreshFailure {
+            case nil, .cancelled:
+                actionMessage = "会话位置已更新"
+                actionIsError = false
+                return nil
+            case .failed(let detail):
+                let message = "会话位置已保存，但索引更新失败：\(detail)"
+                reportActionError(message)
+                return message
+            }
+        } catch is CancellationError {
+            if isActive { startIndexing() }
+            isUpdatingSessionLocations = false
+            return nil
+        } catch {
+            let message = "无法更新会话位置：\(error.localizedDescription)"
+            reportActionError(message)
+            if isActive { startIndexing() }
+            isUpdatingSessionLocations = false
+            return message
         }
     }
 
@@ -1034,7 +1586,7 @@ final class ConversationStore: ObservableObject {
 
     func revealSelectedInFinder() {
         guard let file = selectedFile else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([file])
+        fileRevealer(ConversationFileInspector.storageFile(for: file))
         actionMessage = "已在 Finder 中显示"
         actionIsError = false
     }
@@ -1042,11 +1594,27 @@ final class ConversationStore: ObservableObject {
     func replaySelected(
         in destination: ConversationReplayDestination,
         language: AppLanguage = .simplifiedChinese
-    ) {
-        guard let session = activeTranscript else { return }
+    ) async {
+        guard !isMutating, let session = activeTranscript else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let preparer = replayPreparer
+        let prepared: HistorySession
+        do {
+            prepared = try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                return try preparer.prepare(session)
+            }.value
+        } catch is CancellationError {
+            return
+        } catch {
+            actionMessage = "无法准备 \(destination.displayName) 分析附件：\(error.localizedDescription)"
+            actionIsError = true
+            return
+        }
         guard let url = ConversationReplayLink.makeURL(
             destination: destination,
-            session: session,
+            session: prepared,
             language: language
         ) else {
             actionMessage = "无法生成 \(destination.displayName) 复盘链接"
@@ -1060,6 +1628,31 @@ final class ConversationStore: ObservableObject {
         }
         actionMessage = "已在 \(destination.displayName) 中打开会话记录"
         actionIsError = false
+    }
+
+    func resumeSelected(in terminal: ConversationTerminal) async {
+        guard !isMutating, let metadata = selectedMetadata else { return }
+        let service = resumeService
+        isMutating = true
+        defer { isMutating = false }
+        let outcome = await Task.detached(priority: .userInitiated) {
+            service.resume(metadata, in: terminal)
+        }.value
+        if outcome.opened {
+            actionMessage = "已在 \(terminal.displayName) 中继续会话"
+            actionIsError = false
+            return
+        }
+        if !outcome.command.isEmpty {
+            if commandCopier(outcome.command) {
+                actionMessage = "\(outcome.error ?? "无法继续会话")；命令已复制，可粘贴到终端运行"
+            } else {
+                actionMessage = "\(outcome.error ?? "无法继续会话")；请手动运行：\(outcome.command)"
+            }
+        } else {
+            actionMessage = outcome.error ?? "无法继续会话"
+        }
+        actionIsError = true
     }
 
     func updateSelectedMetadata(title: String, tags: [String]) async {
@@ -1084,6 +1677,52 @@ final class ConversationStore: ObservableObject {
             return
         } catch {
             actionMessage = "更新失败：\(error.localizedDescription)"
+            actionIsError = true
+        }
+    }
+
+    func toggleSelectedStarred() async {
+        guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let file = metadata.file
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                try mutationService.toggleStarred(metadata)
+                try Task.checkCancellation()
+            }.value
+            await synchronizeIndex(files: [file])
+            await reloadAndReselect(file)
+            actionMessage = metadata.starred ? "已取消收藏" : "已收藏会话"
+            actionIsError = false
+        } catch is CancellationError {
+            return
+        } catch {
+            actionMessage = "收藏失败：\(error.localizedDescription)"
+            actionIsError = true
+        }
+    }
+
+    func toggleSelectedPinned() async {
+        guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let file = metadata.file
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                try mutationService.togglePinned(metadata)
+                try Task.checkCancellation()
+            }.value
+            await synchronizeIndex(files: [file])
+            await reloadAndReselect(file)
+            actionMessage = metadata.pinned ? "已取消置顶" : "已置顶会话"
+            actionIsError = false
+        } catch is CancellationError {
+            return
+        } catch {
+            actionMessage = "置顶失败：\(error.localizedDescription)"
             actionIsError = true
         }
     }
@@ -1241,6 +1880,23 @@ final class ConversationStore: ObservableObject {
         }
     }
 
+    func exportSelectedMarkdown(to destination: URL) async {
+        guard let session = selectedSession else { return }
+        let exporter = markdownExporter
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try exporter.export(session, to: destination)
+            }.value
+            actionMessage = "已导出 Markdown"
+            actionIsError = false
+        } catch {
+            actionMessage = "Markdown 导出失败：\(error.localizedDescription)"
+            actionIsError = true
+        }
+    }
+
     var selectedExportBaseName: String {
         guard let session = selectedSession else { return "conversation" }
         return htmlExporter.suggestedBaseName(for: session)
@@ -1274,12 +1930,14 @@ final class ConversationStore: ObservableObject {
 
     private static func productionHistoryProvider(
         config: AppConfig,
+        homeDirectory: URL,
         importsRoot: URL
     ) -> any ConversationHistoryProviding {
         do {
             return try IndexedHistoryRepository(
                 historyDirs: config.historyDirs,
                 active: config.historyActive,
+                homeDirectory: homeDirectory,
                 importsRoot: importsRoot
             )
         } catch {
@@ -1288,6 +1946,7 @@ final class ConversationStore: ObservableObject {
             return HistoryRepository(
                 historyDirs: config.historyDirs,
                 active: config.historyActive,
+                homeDirectory: homeDirectory,
                 importsRoot: importsRoot
             )
         }
@@ -1346,6 +2005,10 @@ final class ConversationStore: ObservableObject {
             } else {
                 indexingState = .idle
             }
+            // Progress revisions can arrive faster than a fallback content search can scan a cold
+            // catalog. Refresh exactly once at the terminal snapshot instead of restarting the
+            // same query for every batch while FTS is still dirty.
+            restartContentSearchIfNeeded()
         }
     }
 
@@ -1353,8 +2016,6 @@ final class ConversationStore: ObservableObject {
         guard isActive, observedIndexRevision != revision else { return }
         observedIndexRevision = revision
         requestReload()
-        let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty { updateListQuery(listQuery) }
     }
 
     private func publishIndexFailure(_ message: String) {
@@ -1386,10 +2047,14 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    private static func signature(for config: AppConfig, importsRoot: URL) -> String {
+    private static func signature(
+        for config: AppConfig,
+        homeDirectory: URL,
+        importsRoot: URL
+    ) -> String {
         IndexedHistoryRepository.topologySignature(
             historyDirs: config.historyDirs,
-            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            homeDirectory: homeDirectory,
             importsRoot: importsRoot
         )
     }
@@ -1405,7 +2070,7 @@ final class ConversationStore: ObservableObject {
         let provider = repository
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let projects = try provider.listProjects(limit: 600)
+            let projects = try provider.listProjects(limit: .max)
             try Task.checkCancellation()
             let explicitScopes = provider.conversationScopeSnapshot()
             try Task.checkCancellation()

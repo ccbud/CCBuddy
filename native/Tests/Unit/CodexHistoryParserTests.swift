@@ -61,7 +61,9 @@ final class CodexHistoryParserTests: XCTestCase {
         ]
         try HistoryTestSupport.write(lines, to: file)
 
-        let session = try HistoryRepository(historyDirs: [root.path]).getSession(file: file)
+        let session = try HistoryRepository(
+            historyDirs: [root.path], homeDirectory: root
+        ).getSession(file: file)
         XCTAssertEqual(session.metadata.source, .codex)
         XCTAssertEqual(session.metadata.threadID, threadID)
         XCTAssertEqual(session.metadata.rootSessionID, threadID)
@@ -99,11 +101,176 @@ final class CodexHistoryParserTests: XCTestCase {
             #"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}"#,
         ], to: file)
 
-        let session = try HistoryRepository(historyDirs: [root.path]).getSession(file: file)
+        let session = try HistoryRepository(
+            historyDirs: [root.path], homeDirectory: root
+        ).getSession(file: file)
         XCTAssertEqual(session.metadata.source, .codex)
         XCTAssertEqual(session.metadata.sessionID, "old-1")
         XCTAssertEqual(session.metadata.cwd, "/tmp/old")
         XCTAssertEqual(session.metadata.title, "hello old codex")
         XCTAssertEqual(session.messages.map(\.role), ["user", "assistant"])
+    }
+
+    func testLargeCodexRolloutStreamsIntoBoundedPresentation() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("codex-stream-bounded")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let threadID = "922b8fee-5f94-47cb-bfff-5f19c29d23f6"
+        let file = root.appendingPathComponent(
+            "sessions/2026/08/24/rollout-\(threadID).jsonl"
+        )
+        let largeUser = "synthetic-message-head-"
+            + String(repeating: "m", count: 96 * 1_024)
+            + "-synthetic-message-tail"
+        let largeOutput = "synthetic-result-head-"
+            + String(repeating: "r", count: 128 * 1_024)
+            + "-synthetic-result-tail"
+        var lines = [
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:00.000Z",
+                type: "session_meta",
+                payload: #"{"id":"\#(threadID)","cwd":"/tmp/synthetic-stream"}"#
+            ),
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:01.000Z",
+                type: "response_item",
+                payload: #"{"type":"message","role":"user","content":[{"type":"input_text","text":"\#(largeUser)"}]}"#
+            ),
+        ]
+        for index in 0..<16 {
+            lines.append(HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:02.000Z",
+                type: "response_item",
+                payload: #"{"type":"custom_tool_call","name":"exec","call_id":"synthetic-\#(index)","input":"bounded-input"}"#
+            ))
+            lines.append(HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:03.000Z",
+                type: "response_item",
+                payload: #"{"type":"custom_tool_call_output","call_id":"synthetic-\#(index)","output":"\#(largeOutput)"}"#
+            ))
+        }
+        try HistoryTestSupport.write(lines, to: file)
+        let originalSource = try Data(contentsOf: file)
+
+        let streamed = try CodexMessageNormalizer.normalizeStreaming(from: file)
+        XCTAssertTrue(streamed.transcript.lines.isEmpty)
+        XCTAssertGreaterThan(streamed.metrics.bytesRead, 2 * 1_024 * 1_024)
+        XCTAssertLessThan(streamed.metrics.peakBufferedRecordBytes, 160 * 1_024)
+        XCTAssertEqual(streamed.metrics.diagnostics.malformedLines, 0)
+
+        let session = try HistoryRepository(
+            historyDirs: [root.path], homeDirectory: root
+        ).getSession(file: file)
+        XCTAssertEqual(session.metadata.file, file.standardizedFileURL)
+        XCTAssertGreaterThan(session.metadata.sizeBytes, 2 * 1_024 * 1_024)
+        XCTAssertEqual(ConversationReplayLink.transcriptFiles(in: session), [file.standardizedFileURL])
+
+        let userText = try XCTUnwrap(session.messages.first?.content.first?.text)
+        XCTAssertLessThanOrEqual(
+            userText.utf8.count,
+            CodexMessageNormalizer.maximumMessageTextBytes
+        )
+        XCTAssertTrue(userText.hasSuffix("… (truncated)"))
+        XCTAssertFalse(userText.contains("synthetic-message-tail"))
+
+        let results = session.messages.flatMap(\.content).filter { $0.type == "tool_result" }
+        XCTAssertEqual(results.count, 16)
+        for result in results {
+            let output = try XCTUnwrap(result.content?.stringValue)
+            XCTAssertLessThanOrEqual(
+                output.utf8.count,
+                CodexMessageNormalizer.maximumToolValueBytes
+            )
+            XCTAssertTrue(output.hasSuffix("… (truncated)"))
+            XCTAssertFalse(output.contains("synthetic-result-tail"))
+        }
+
+        let mutation = ConversationMutationService(configuration: .init(
+            historyDirs: [root.path],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        ))
+        let rawExport = root.appendingPathComponent("streamed-export.jsonl")
+        let rawResult = try mutation.exportRaw(session.metadata, to: rawExport)
+        XCTAssertFalse(rawResult.bundled)
+        XCTAssertEqual(try Data(contentsOf: rawExport), originalSource)
+        XCTAssertEqual(try Data(contentsOf: file), originalSource)
+
+        let html = root.appendingPathComponent("streamed-export.html")
+        try ConversationHTMLExporter().export(session, to: html)
+        XCTAssertTrue(
+            try String(contentsOf: html, encoding: .utf8).hasPrefix("<!doctype html>")
+        )
+        let markdown = root.appendingPathComponent("streamed-export.md")
+        try ConversationMarkdownExporter().export(session, to: markdown)
+        XCTAssertTrue(
+            try String(contentsOf: markdown, encoding: .utf8).hasPrefix("# ")
+        )
+        XCTAssertEqual(try Data(contentsOf: file), originalSource)
+    }
+
+    func testImportedCodexAlsoUsesStreamingPresentationPath() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("codex-stream-imported")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let imports = root.appendingPathComponent("app/imports")
+        let file = imports.appendingPathComponent("projects/synthetic/imported.jsonl")
+        let largeText = "imported-head-"
+            + String(repeating: "i", count: 96 * 1_024)
+            + "-imported-tail"
+        try HistoryTestSupport.write([
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:00.000Z",
+                type: "session_meta",
+                payload: #"{"id":"imported-stream","cwd":"/tmp/imported"}"#
+            ),
+            HistoryTestSupport.codexLine(
+                timestamp: "2026-08-24T00:00:01.000Z",
+                type: "response_item",
+                payload: #"{"type":"message","role":"user","content":[{"type":"input_text","text":"\#(largeText)"}]}"#
+            ),
+        ], to: file)
+        let loader = HistorySessionLoader(
+            historyDirs: [],
+            homeDirectory: root,
+            importsRoot: imports
+        )
+
+        let session = try loader.load(file: file).session
+
+        XCTAssertEqual(session.metadata.source, .codex)
+        XCTAssertTrue(session.metadata.imported)
+        XCTAssertEqual(session.metadata.file, file.standardizedFileURL)
+        let text = try XCTUnwrap(session.messages.first?.content.first?.text)
+        XCTAssertLessThanOrEqual(
+            text.utf8.count,
+            CodexMessageNormalizer.maximumMessageTextBytes
+        )
+        XCTAssertFalse(text.contains("imported-tail"))
+    }
+
+    func testStreamReaderDropsOneOversizedRecordAndContinuesWithinItsBufferLimit() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("jsonl-stream-line-limit")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("synthetic.jsonl")
+        let oversized = #"{"type":"ignored","payload":""#
+            + String(repeating: "x", count: 256 * 1_024)
+            + #""}"#
+        let retained = #"{"type":"session_meta","payload":{"id":"bounded-reader"}}"#
+        try HistoryTestSupport.write([oversized, retained], to: file)
+        var decodedTypes: [String] = []
+
+        let metrics = try HistoryJSONLStreamReader.scan(
+            from: file,
+            maximumRecordBytes: 64 * 1_024,
+            chunkBytes: 4 * 1_024
+        ) { record in
+            decodedTypes.append(record["type"]?.stringValue ?? "")
+            return true
+        }
+
+        XCTAssertEqual(decodedTypes, ["session_meta"])
+        XCTAssertEqual(metrics.diagnostics.decodedLines, 1)
+        XCTAssertEqual(metrics.diagnostics.malformedLines, 1)
+        XCTAssertGreaterThan(metrics.bytesRead, 256 * 1_024)
+        XCTAssertLessThanOrEqual(metrics.peakBufferedRecordBytes, 64 * 1_024)
     }
 }

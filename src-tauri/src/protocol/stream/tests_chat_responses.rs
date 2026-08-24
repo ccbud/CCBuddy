@@ -1,5 +1,5 @@
-use super::*;
 use super::super::openai_responses::response_scoped_call_id;
+use super::*;
 
 #[test]
 fn chat_to_responses_text_and_split_tool_call() {
@@ -96,9 +96,11 @@ fn chat_to_responses_skips_nameless_tool_calls() {
     let mut tc = ChatToResponses::new("alias-x");
     let mut out = String::new();
     out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]}}]}"));
-    out.push_str(&tc.push(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
-    ));
+    out.push_str(
+        &tc.push(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+        ),
+    );
     out.push_str(&tc.push("data: [DONE]"));
     assert!(!out.contains("response.function_call_arguments.done"));
     assert!(

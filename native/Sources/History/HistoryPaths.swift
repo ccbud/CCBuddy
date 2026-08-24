@@ -5,6 +5,13 @@ struct HistoryConfiguration: Equatable, Sendable {
     var active: String
     var homeDirectory: URL
     var importsRoot: URL
+    /// Startup-resolved OpenCode database. This is intentionally a snapshot: adopting an XDG
+    /// candidate in only some discovery passes would make the UI and scanner disagree.
+    var openCodeDefaultDatabase: URL
+    var sessionLocationOverrides: ConversationSessionLocationOverrides
+    /// Set only while a custom adapter instance delegates into the producer's ordinary parser.
+    /// It is intentionally transient and never persisted in AppConfig.
+    var activeSessionLocation: ConversationSessionLocationLayout?
 
     var appDataRoot: URL { importsRoot.deletingLastPathComponent() }
 
@@ -12,7 +19,10 @@ struct HistoryConfiguration: Equatable, Sendable {
         historyDirs: [String],
         active: String = "all",
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        importsRoot: URL? = nil
+        importsRoot: URL? = nil,
+        sessionLocationOverrides: ConversationSessionLocationOverrides = .init(),
+        activeSessionLocation: ConversationSessionLocationLayout? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.historyDirs = historyDirs
         self.active = active.isEmpty ? "all" : active
@@ -20,6 +30,41 @@ struct HistoryConfiguration: Equatable, Sendable {
         self.importsRoot = (importsRoot
             ?? homeDirectory.appendingPathComponent(".ccbud/imports", isDirectory: true))
             .standardizedFileURL
+        openCodeDefaultDatabase = ConversationSessionLocationLayout.defaultOpenCodeDatabase(
+            homeDirectory: self.homeDirectory,
+            environment: environment
+        )
+        self.sessionLocationOverrides = sessionLocationOverrides
+        self.activeSessionLocation = activeSessionLocation
+    }
+
+    func activating(_ layout: ConversationSessionLocationLayout) -> HistoryConfiguration {
+        var copy = self
+        copy.activeSessionLocation = layout
+        return copy
+    }
+
+    func dataRoots(for source: HistorySource, defaults: [URL]) -> [URL] {
+        guard let location = activeSessionLocation, location.source == source else {
+            return defaults.map(\.standardizedFileURL)
+        }
+        return location.dataRoots
+    }
+
+    func primaryDataRoot(for source: HistorySource, default defaultRoot: URL) -> URL {
+        dataRoots(for: source, defaults: [defaultRoot]).first ?? defaultRoot.standardizedFileURL
+    }
+
+    func companionFile(
+        _ key: String,
+        for source: HistorySource,
+        default defaultFile: URL
+    ) -> URL {
+        guard let location = activeSessionLocation, location.source == source else {
+            return defaultFile.standardizedFileURL
+        }
+        return location.companionFiles[key]?.standardizedFileURL
+            ?? defaultFile.standardizedFileURL
     }
 }
 
@@ -28,6 +73,14 @@ struct HistoryFileCandidate: Equatable, Sendable {
     var projectDirectoryName: String?
     var directory: HistoryDirectory
     var formatHint: HistoryTranscriptFormat? = nil
+    /// Producer-native identifier when the source is a container rather than one-file-per-session.
+    /// SQLite adapters use it to address one logical conversation inside a shared database.
+    var nativeID: String? = nil
+    /// Physical primary storage for virtual candidates. Ordinary file-backed candidates leave this
+    /// nil and use `file` directly.
+    var backingFile: URL? = nil
+
+    var primaryStorageFile: URL { (backingFile ?? file).standardizedFileURL }
 }
 
 struct HistoryPathResolver: Sendable {
@@ -67,7 +120,7 @@ struct HistoryPathResolver: Sendable {
         let includeConfigured = !activeOnly || active == "all" || active == "__trash__"
             || active != "__imported__"
         if includeConfigured {
-            for raw in configuration.historyDirs
+            for raw in effectiveHistoryDirectories
                 where !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if activeOnly, active != "all", active != "__trash__", active != raw { continue }
 
@@ -100,6 +153,32 @@ struct HistoryPathResolver: Sendable {
             }
         }
         return result
+    }
+
+    private var effectiveHistoryDirectories: [String] {
+        configuration.historyDirs.filter { raw in
+            let root = Self.expandTilde(raw, homeDirectory: configuration.homeDirectory)
+            let name = root.lastPathComponent.lowercased()
+            var source: HistorySource?
+            switch name {
+            case ".claude": source = .claude
+            case ".codex": source = .codex
+            case ".qoder", ".qoderwork": source = .qoder
+            default: source = nil
+            }
+            if source == nil {
+                source = ConversationSessionLocationLayout.defaults(
+                    homeDirectory: configuration.homeDirectory,
+                    openCodeDatabase: configuration.openCodeDefaultDatabase
+                ).first { layout in
+                    layout.ownerRoot.path == root.path
+                        || layout.dataRoots.contains(where: { $0.path == root.path })
+                }?.source
+            }
+            return source.map {
+                !configuration.sessionLocationOverrides.removedDefaults.contains($0)
+            } ?? true
+        }
     }
 
     func watchRoots() -> [URL] {

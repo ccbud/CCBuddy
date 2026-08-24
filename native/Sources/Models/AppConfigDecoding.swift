@@ -4,7 +4,7 @@ extension AppConfig {
     enum CodingKeys: String, CodingKey {
         case port, activeProviderId, requireToken, gatewayToken, gatewayEnabled, openAtLogin
         case claudeBackup, codexBackup, trayUsage, language, convFontPx, historyDirs, historyActive, connectTargets
-        case retry429, insecureSkipVerify, autoUpdate, providers
+        case retry429, gatewayFailover, insecureSkipVerify, autoUpdate, providers
     }
 
     init(from decoder: Decoder) throws {
@@ -24,6 +24,7 @@ extension AppConfig {
         historyActive = try c.decodeIfPresent(String.self, forKey: .historyActive) ?? "all"
         connectTargets = try c.decodeIfPresent([String].self, forKey: .connectTargets) ?? []
         retry429 = c.decodeRetry429()
+        gatewayFailover = c.decodeGatewayFailover()
         insecureSkipVerify = try c.decodeIfPresent(Bool.self, forKey: .insecureSkipVerify) ?? false
         autoUpdate = c.decodeAutoUpdate()
         providers = try c.decodeIfPresent([Provider].self, forKey: .providers) ?? []
@@ -53,6 +54,7 @@ extension AppConfig {
         try c.encode(historyActive, forKey: .historyActive)
         try c.encode(connectTargets, forKey: .connectTargets)
         try c.encode(retry429, forKey: .retry429)
+        try c.encode(gatewayFailover, forKey: .gatewayFailover)
         try c.encode(insecureSkipVerify, forKey: .insecureSkipVerify)
         try c.encode(autoUpdate, forKey: .autoUpdate)
         try c.encode(providers, forKey: .providers)
@@ -70,6 +72,10 @@ private enum TrayUsageCodingKeys: String, CodingKey {
 
 private enum Retry429CodingKeys: String, CodingKey {
     case enabled, max, baseMs
+}
+
+private enum GatewayFailoverCodingKeys: String, CodingKey {
+    case enabled, providerIds
 }
 
 private enum AutoUpdateCodingKeys: String, CodingKey {
@@ -118,6 +124,17 @@ private extension KeyedDecodingContainer where Key == AppConfig.CodingKeys {
         )
     }
 
+    func decodeGatewayFailover() -> AppConfig.GatewayFailover {
+        guard let nested = try? nestedContainer(
+            keyedBy: GatewayFailoverCodingKeys.self,
+            forKey: .gatewayFailover
+        ) else { return .init() }
+        return .init(
+            enabled: (try? nested.decode(Bool.self, forKey: .enabled)) ?? false,
+            providerIds: (try? nested.decode([String].self, forKey: .providerIds)) ?? []
+        )
+    }
+
     func decodeAutoUpdate() -> AppConfig.AutoUpdate {
         guard let nested = try? nestedContainer(
             keyedBy: AutoUpdateCodingKeys.self,
@@ -152,7 +169,7 @@ private extension AppConfig.CodingKeys {
         [
             .port, .activeProviderId, .requireToken, .gatewayToken, .gatewayEnabled,
             .openAtLogin, .claudeBackup, .codexBackup, .trayUsage, .language, .convFontPx,
-            .historyDirs, .historyActive, .connectTargets, .retry429,
+            .historyDirs, .historyActive, .connectTargets, .retry429, .gatewayFailover,
             .insecureSkipVerify, .autoUpdate, .providers,
         ]
     }

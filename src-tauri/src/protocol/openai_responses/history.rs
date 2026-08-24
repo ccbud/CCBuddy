@@ -6,7 +6,10 @@ use super::tools::CodexToolContext;
 use llm_connector::types::{FunctionCall, Message, Role, ToolCall};
 use serde_json::{json, Value};
 
-pub(super) fn response_history_tool_call(item: &Value, context: &CodexToolContext) -> Option<ToolCall> {
+pub(super) fn response_history_tool_call(
+    item: &Value,
+    context: &CodexToolContext,
+) -> Option<ToolCall> {
     let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
     let id = response_item_call_id(item).unwrap_or("").to_string();
     if id.is_empty() {

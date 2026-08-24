@@ -9,7 +9,11 @@ pub fn encode_response(resp: &ChatResponse, client_model: &str) -> Value {
     let msg = choice.map(|c| &c.message);
     let text = {
         let t = msg.map(|m| m.content_as_text()).unwrap_or_default();
-        if t.is_empty() { resp.content.clone() } else { t }
+        if t.is_empty() {
+            resp.content.clone()
+        } else {
+            t
+        }
     };
     let mut message = json!({ "role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) } });
     // Normalize the finish reason to OpenAI vocabulary (the IR may carry an Anthropic stop_reason
@@ -61,7 +65,10 @@ pub fn encode_response_sse(resp: &ChatResponse, client_model: &str) -> String {
     let full = encode_response(resp, client_model);
     let choice = &full["choices"][0];
     let message = &choice["message"];
-    let finish = choice.get("finish_reason").and_then(|v| v.as_str()).unwrap_or("stop");
+    let finish = choice
+        .get("finish_reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("stop");
     let id = full.get("id").cloned().unwrap_or(json!("chatcmpl-ccbud"));
     let chunk = |delta: Value, fin: Value| {
         format!(
@@ -69,7 +76,8 @@ pub fn encode_response_sse(resp: &ChatResponse, client_model: &str) -> String {
             serde_json::to_string(&json!({
                 "id": id, "object": "chat.completion.chunk", "created": 0, "model": client_model,
                 "choices": [{ "index": 0, "delta": delta, "finish_reason": fin }],
-            })).unwrap_or_default()
+            }))
+            .unwrap_or_default()
         )
     };
     let mut out = String::new();

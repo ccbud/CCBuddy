@@ -44,9 +44,9 @@ struct UsageModelSummary: Identifiable, Equatable, Sendable {
 
 struct UsageSnapshot: Equatable, Sendable {
     enum Coverage: Equatable, Sendable {
-        /// Headline values are from Bifrost's dedicated aggregate endpoint. Bifrost does not
-        /// expose an equivalent per-model aggregate, so model rows remain cache-scoped.
-        case bifrostAllTime(cachedModelRequestCount: Int)
+        /// Headline request values are from the current gateway process. Per-model rows remain
+        /// scoped to the helper's bounded in-memory monitor ring.
+        case gatewayRuntime(cachedModelRequestCount: Int)
         /// Every value is derived from MonitorStore's bounded, currently loaded request buffer.
         case monitorBuffer(included: Int, available: Int, undatedExcluded: Int)
     }
@@ -63,8 +63,8 @@ struct UsageSnapshot: Equatable, Sendable {
 
     var coverageDescription: String {
         switch coverage {
-        case .bifrostAllTime(let cachedModelRequestCount):
-            return "总览来自 Bifrost 全库；模型仅基于当前缓存的 \(cachedModelRequestCount) 条。"
+        case .gatewayRuntime(let cachedModelRequestCount):
+            return "请求总览来自当前网关进程；模型仅基于当前缓存的 \(cachedModelRequestCount) 条。"
         case .monitorBuffer(let included, let available, let undatedExcluded):
             var value = "基于监控缓存中的 \(included)/\(available) 条；缓存最多 100 条。"
             if undatedExcluded > 0 { value += " \(undatedExcluded) 条无时间记录未计入。" }
@@ -75,31 +75,25 @@ struct UsageSnapshot: Equatable, Sendable {
 
 enum UsageAggregator {
     static func aggregate(
-        logs: [BifrostLog],
+        logs: [GatewayLog],
         range: UsageRange,
         now: Date = Date(),
-        allTimeStats: BifrostLogStats? = nil
+        allTimeStats: GatewayLogStats? = nil
     ) -> UsageSnapshot {
-        let filtered = logs.filter { range.contains($0.timestamp ?? $0.createdAt, now: now) }
+        let filtered = logs.filter { range.contains($0.startedAt, now: now) }
         let excludedUndated = range == .all ? 0 : logs.reduce(into: 0) { count, log in
-            if log.timestamp == nil && log.createdAt == nil { count += 1 }
+            if log.startedAt == nil { count += 1 }
         }
 
-        var promptTokens = 0
-        var completionTokens = 0
-        var totalTokens = 0
-        var totalCost = 0.0
+        let promptTokens = 0
+        let completionTokens = 0
+        let totalTokens = 0
+        let totalCost = 0.0
         var terminalCount = 0
         var successCount = 0
         var modelBuckets: [String: ModelBucket] = [:]
 
         for log in filtered {
-            let usage = resolvedUsage(log.tokenUsage)
-            promptTokens += usage.prompt
-            completionTokens += usage.completion
-            totalTokens += usage.total
-            if let cost = log.cost, cost.isFinite { totalCost += cost }
-
             if log.isTerminal {
                 terminalCount += 1
                 if log.isSuccess { successCount += 1 }
@@ -110,7 +104,6 @@ enum UsageAggregator {
             let key = "\(provider)\u{0}\(model)"
             var bucket = modelBuckets[key] ?? ModelBucket(model: model, provider: provider)
             bucket.requestCount += 1
-            bucket.totalTokens += usage.total
             modelBuckets[key] = bucket
         }
 
@@ -140,7 +133,7 @@ enum UsageAggregator {
                 successRate: normalizedPercent(stats.successRate),
                 totalCost: stats.totalCost.isFinite ? max(0, stats.totalCost) : 0,
                 models: models,
-                coverage: .bifrostAllTime(cachedModelRequestCount: filtered.count)
+                coverage: .gatewayRuntime(cachedModelRequestCount: filtered.count)
             )
         }
 
@@ -166,14 +159,6 @@ enum UsageAggregator {
         let provider: String
         var requestCount = 0
         var totalTokens = 0
-    }
-
-    private static func resolvedUsage(_ usage: BifrostTokenUsage?) -> (prompt: Int, completion: Int, total: Int) {
-        guard let usage else { return (0, 0, 0) }
-        let prompt = max(0, usage.promptTokens ?? usage.inputTokens ?? 0)
-        let completion = max(0, usage.completionTokens ?? usage.outputTokens ?? 0)
-        let total = max(0, usage.totalTokens ?? (prompt + completion))
-        return (prompt, completion, total)
     }
 
     private static func nonempty(_ value: String, fallback: String) -> String {

@@ -546,7 +546,7 @@ final class UpdateServiceTests: XCTestCase {
         let termination = TerminationFlag()
         let model = AppModel(
             repository: ConfigRepository(configURL: root.appendingPathComponent("model/config.json")),
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"],
             updateService: service,
             updateRelaunchScheduler: scheduler,
@@ -971,7 +971,7 @@ final class UpdateServiceTests: XCTestCase {
         )
         return AppModel(
             repository: ConfigRepository(configURL: root.appendingPathComponent("model/config.json")),
-            supervisor: BifrostSupervisor(environment: ["CCBUD_HOME": root.path]),
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
             environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"],
             updateService: service,
             automaticUpdateLifecycle: lifecycle,

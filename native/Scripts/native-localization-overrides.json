@@ -41,54 +41,47 @@
     "zh-Hans": "当前服务商的 API 地址为空",
     "zh-Hant": "目前服務商的 API 位址為空"
   },
-  "未找到 bifrost-http；请运行 native/Scripts/fetch-bifrost.sh": {
-    "en": "bifrost-http was not found; run native/Scripts/fetch-bifrost.sh",
-    "ja": "bifrost-http が見つかりません。native/Scripts/fetch-bifrost.sh を実行してください",
-    "ko": "bifrost-http를 찾을 수 없습니다. native/Scripts/fetch-bifrost.sh를 실행하세요",
-    "zh-Hans": "未找到 bifrost-http；请运行 native/Scripts/fetch-bifrost.sh",
-    "zh-Hant": "找不到 bifrost-http；請執行 native/Scripts/fetch-bifrost.sh"
+  "网关异常退出（{code}）": {
+    "en": "Gateway exited unexpectedly ({code})",
+    "ja": "ゲートウェイが異常終了しました（{code}）",
+    "ko": "게이트웨이가 비정상적으로 종료되었습니다({code})",
+    "zh-Hans": "网关异常退出（{code}）",
+    "zh-Hant": "閘道異常結束（{code}）"
   },
-  "Bifrost 异常退出（{code}）": {
-    "en": "Bifrost exited unexpectedly ({code})",
-    "ja": "Bifrost が異常終了しました（{code}）",
-    "ko": "Bifrost가 비정상적으로 종료되었습니다({code})",
-    "zh-Hans": "Bifrost 异常退出（{code}）",
-    "zh-Hant": "Bifrost 異常結束（{code}）"
+  "网关启动健康检查超时": {
+    "en": "Gateway startup health check timed out",
+    "ja": "ゲートウェイの起動ヘルスチェックがタイムアウトしました",
+    "ko": "게이트웨이 시작 상태 확인 시간이 초과되었습니다",
+    "zh-Hans": "网关启动健康检查超时",
+    "zh-Hant": "閘道啟動健康檢查逾時"
   },
-  "Bifrost 启动健康检查超时": {
-    "en": "Bifrost startup health check timed out",
-    "ja": "Bifrost の起動ヘルスチェックがタイムアウトしました",
-    "ko": "Bifrost 시작 상태 확인 시간이 초과되었습니다",
-    "zh-Hans": "Bifrost 启动健康检查超时",
-    "zh-Hant": "Bifrost 啟動健康檢查逾時"
+  "无法刷新网关模型目录缓存：{detail}": {
+    "en": "Could not refresh the gateway model catalog cache: {detail}",
+    "ja": "ゲートウェイモデルカタログのキャッシュを更新できませんでした：{detail}",
+    "ko": "게이트웨이 모델 카탈로그 캐시를 새로 고칠 수 없습니다: {detail}",
+    "zh-Hans": "无法刷新网关模型目录缓存：{detail}",
+    "zh-Hant": "無法重新整理閘道模型目錄快取：{detail}"
   },
-  "无法刷新 Bifrost 模型目录缓存：{detail}": {
-    "en": "Could not refresh the Bifrost model catalog cache: {detail}",
-    "ja": "Bifrost モデルカタログのキャッシュを更新できませんでした：{detail}",
-    "ko": "Bifrost 모델 카탈로그 캐시를 새로 고칠 수 없습니다: {detail}",
-    "zh-Hans": "无法刷新 Bifrost 模型目录缓存：{detail}",
-    "zh-Hant": "無法重新整理 Bifrost 模型目錄快取：{detail}"
+  "网关数据目录不安全：{detail}": {
+    "en": "The gateway data directory is unsafe: {detail}",
+    "ja": "ゲートウェイデータディレクトリは安全ではありません：{detail}",
+    "ko": "게이트웨이 데이터 디렉터리가 안전하지 않습니다: {detail}",
+    "zh-Hans": "网关数据目录不安全：{detail}",
+    "zh-Hant": "閘道資料目錄不安全：{detail}"
   },
-  "Bifrost 数据目录不安全：{detail}": {
-    "en": "The Bifrost data directory is unsafe: {detail}",
-    "ja": "Bifrost データディレクトリは安全ではありません：{detail}",
-    "ko": "Bifrost 데이터 디렉터리가 안전하지 않습니다: {detail}",
-    "zh-Hans": "Bifrost 数据目录不安全：{detail}",
-    "zh-Hant": "Bifrost 資料目錄不安全：{detail}"
+  "无效的网关管理地址：{url}": {
+    "en": "Invalid gateway management URL: {url}",
+    "ja": "ゲートウェイ管理 URL が無効です：{url}",
+    "ko": "잘못된 게이트웨이 관리 URL: {url}",
+    "zh-Hans": "无效的网关管理地址：{url}",
+    "zh-Hant": "無效的閘道管理位址：{url}"
   },
-  "无效的 Bifrost 管理地址：{url}": {
-    "en": "Invalid Bifrost management URL: {url}",
-    "ja": "Bifrost 管理 URL が無効です：{url}",
-    "ko": "잘못된 Bifrost 관리 URL: {url}",
-    "zh-Hans": "无效的 Bifrost 管理地址：{url}",
-    "zh-Hant": "無效的 Bifrost 管理位址：{url}"
-  },
-  "无效的 Bifrost 端口：{port}": {
-    "en": "Invalid Bifrost port: {port}",
-    "ja": "Bifrost ポートが無効です：{port}",
-    "ko": "잘못된 Bifrost 포트: {port}",
-    "zh-Hans": "无效的 Bifrost 端口：{port}",
-    "zh-Hant": "無效的 Bifrost 連接埠：{port}"
+  "无效的网关端口：{port}": {
+    "en": "Invalid gateway port: {port}",
+    "ja": "ゲートウェイポートが無効です：{port}",
+    "ko": "잘못된 게이트웨이 포트: {port}",
+    "zh-Hans": "无效的网关端口：{port}",
+    "zh-Hant": "無效的閘道連接埠：{port}"
   },
   "日志分页 limit 必须在 1...1000，当前为 {limit}": {
     "en": "Log page limit must be 1...1000; received {limit}",
@@ -111,54 +104,54 @@
     "zh-Hans": "日志 ID 不能为空",
     "zh-Hant": "日誌 ID 不得為空"
   },
-  "Bifrost 返回了无效的 HTTP 响应": {
-    "en": "Bifrost returned an invalid HTTP response",
-    "ja": "Bifrost が無効な HTTP レスポンスを返しました",
-    "ko": "Bifrost가 잘못된 HTTP 응답을 반환했습니다",
-    "zh-Hans": "Bifrost 返回了无效的 HTTP 响应",
-    "zh-Hant": "Bifrost 傳回了無效的 HTTP 回應"
+  "网关返回了无效的 HTTP 响应": {
+    "en": "Gateway returned an invalid HTTP response",
+    "ja": "ゲートウェイが無効な HTTP レスポンスを返しました",
+    "ko": "게이트웨이가 잘못된 HTTP 응답을 반환했습니다",
+    "zh-Hans": "网关返回了无效的 HTTP 响应",
+    "zh-Hant": "閘道傳回了無效的 HTTP 回應"
   },
-  "无法解析 Bifrost 响应：{detail}": {
-    "en": "Could not decode the Bifrost response: {detail}",
-    "ja": "Bifrost レスポンスを解析できませんでした：{detail}",
-    "ko": "Bifrost 응답을 디코딩할 수 없습니다: {detail}",
-    "zh-Hans": "无法解析 Bifrost 响应：{detail}",
-    "zh-Hant": "無法解析 Bifrost 回應：{detail}"
+  "无法解析网关响应：{detail}": {
+    "en": "Could not decode the gateway response: {detail}",
+    "ja": "ゲートウェイレスポンスを解析できませんでした：{detail}",
+    "ko": "게이트웨이 응답을 디코딩할 수 없습니다: {detail}",
+    "zh-Hans": "无法解析网关响应：{detail}",
+    "zh-Hant": "無法解析閘道回應：{detail}"
   },
-  "Bifrost 请求失败（HTTP {statusCode}，事件 {eventID}）：{message}": {
-    "en": "Bifrost request failed (HTTP {statusCode}, event {eventID}): {message}",
-    "ja": "Bifrost リクエストに失敗しました（HTTP {statusCode}、イベント {eventID}）：{message}",
-    "ko": "Bifrost 요청 실패(HTTP {statusCode}, 이벤트 {eventID}): {message}",
-    "zh-Hans": "Bifrost 请求失败（HTTP {statusCode}，事件 {eventID}）：{message}",
-    "zh-Hant": "Bifrost 請求失敗（HTTP {statusCode}，事件 {eventID}）：{message}"
+  "网关请求失败（HTTP {statusCode}，事件 {eventID}）：{message}": {
+    "en": "Gateway request failed (HTTP {statusCode}, event {eventID}): {message}",
+    "ja": "ゲートウェイのリクエストに失敗しました（HTTP {statusCode}、イベント {eventID}）：{message}",
+    "ko": "게이트웨이 요청 실패(HTTP {statusCode}, 이벤트 {eventID}): {message}",
+    "zh-Hans": "网关请求失败（HTTP {statusCode}，事件 {eventID}）：{message}",
+    "zh-Hant": "閘道請求失敗（HTTP {statusCode}，事件 {eventID}）：{message}"
   },
-  "Bifrost 请求失败（HTTP {statusCode}）：{message}": {
-    "en": "Bifrost request failed (HTTP {statusCode}): {message}",
-    "ja": "Bifrost リクエストに失敗しました（HTTP {statusCode}）：{message}",
-    "ko": "Bifrost 요청 실패(HTTP {statusCode}): {message}",
-    "zh-Hans": "Bifrost 请求失败（HTTP {statusCode}）：{message}",
-    "zh-Hant": "Bifrost 請求失敗（HTTP {statusCode}）：{message}"
+  "网关请求失败（HTTP {statusCode}）：{message}": {
+    "en": "Gateway request failed (HTTP {statusCode}): {message}",
+    "ja": "ゲートウェイのリクエストに失敗しました（HTTP {statusCode}）：{message}",
+    "ko": "게이트웨이 요청 실패(HTTP {statusCode}): {message}",
+    "zh-Hans": "网关请求失败（HTTP {statusCode}）：{message}",
+    "zh-Hant": "閘道請求失敗（HTTP {statusCode}）：{message}"
   },
-  "Bifrost 请求失败": {
-    "en": "Bifrost request failed",
-    "ja": "Bifrost リクエストに失敗しました",
-    "ko": "Bifrost 요청 실패",
-    "zh-Hans": "Bifrost 请求失败",
-    "zh-Hant": "Bifrost 請求失敗"
+  "网关请求失败": {
+    "en": "Gateway request failed",
+    "ja": "ゲートウェイのリクエストに失敗しました",
+    "ko": "게이트웨이 요청 실패",
+    "zh-Hans": "网关请求失败",
+    "zh-Hant": "閘道請求失敗"
   },
-  "Bifrost 请求失败 · 上游 HTTP {statusCode}": {
-    "en": "Bifrost request failed · upstream HTTP {statusCode}",
-    "ja": "Bifrost リクエストに失敗しました · アップストリーム HTTP {statusCode}",
-    "ko": "Bifrost 요청 실패 · 업스트림 HTTP {statusCode}",
-    "zh-Hans": "Bifrost 请求失败 · 上游 HTTP {statusCode}",
-    "zh-Hant": "Bifrost 請求失敗 · 上游 HTTP {statusCode}"
+  "网关请求失败 · 上游 HTTP {statusCode}": {
+    "en": "Gateway request failed · upstream HTTP {statusCode}",
+    "ja": "ゲートウェイのリクエストに失敗しました · アップストリーム HTTP {statusCode}",
+    "ko": "게이트웨이 요청 실패 · 업스트림 HTTP {statusCode}",
+    "zh-Hans": "网关请求失败 · 上游 HTTP {statusCode}",
+    "zh-Hant": "閘道請求失敗 · 上游 HTTP {statusCode}"
   },
-  "Bifrost 请求已重试 {count} 次": {
-    "en": "Bifrost retried the request {count} times",
-    "ja": "Bifrost がリクエストを {count} 回再試行しました",
-    "ko": "Bifrost가 요청을 {count}회 재시도했습니다",
-    "zh-Hans": "Bifrost 请求已重试 {count} 次",
-    "zh-Hant": "Bifrost 請求已重試 {count} 次"
+  "网关请求已重试 {count} 次": {
+    "en": "Gateway retried the request {count} times",
+    "ja": "ゲートウェイがリクエストを {count} 回再試行しました",
+    "ko": "게이트웨이가 요청을 {count}회 재시도했습니다",
+    "zh-Hans": "网关请求已重试 {count} 次",
+    "zh-Hant": "閘道請求已重試 {count} 次"
   },
   "暂无网关事件": {
     "en": "No gateway events",
@@ -174,26 +167,26 @@
     "zh-Hans": "启动、停止、重试与请求错误会显示在这里",
     "zh-Hant": "啟動、停止、重試與請求錯誤會顯示在這裡"
   },
-  "Bifrost 日志分页没有继续前进": {
-    "en": "Bifrost log pagination did not advance",
-    "ja": "Bifrost ログのページ送りが進みませんでした",
-    "ko": "Bifrost 로그 페이지 매김이 진행되지 않았습니다",
-    "zh-Hans": "Bifrost 日志分页没有继续前进",
-    "zh-Hant": "Bifrost 日誌分頁未繼續前進"
+  "网关日志分页没有继续前进": {
+    "en": "Gateway log pagination did not advance",
+    "ja": "ゲートウェイログのページ送りが進みませんでした",
+    "ko": "게이트웨이 로그 페이지 매김이 진행되지 않았습니다",
+    "zh-Hans": "网关日志分页没有继续前进",
+    "zh-Hant": "閘道日誌分頁未繼續前進"
   },
-  "Bifrost 全库": {
-    "en": "Bifrost all-time",
-    "ja": "Bifrost 全期間",
-    "ko": "Bifrost 전체 기간",
-    "zh-Hans": "Bifrost 全库",
-    "zh-Hant": "Bifrost 全期間"
+  "网关全库": {
+    "en": "Gateway all-time",
+    "ja": "ゲートウェイ全期間",
+    "ko": "게이트웨이 전체 기간",
+    "zh-Hans": "网关全库",
+    "zh-Hant": "閘道全期間"
   },
-  "Bifrost 已记录费用": {
-    "en": "Cost recorded by Bifrost",
-    "ja": "Bifrost が記録した費用",
-    "ko": "Bifrost가 기록한 비용",
-    "zh-Hans": "Bifrost 已记录费用",
-    "zh-Hant": "Bifrost 已記錄費用"
+  "网关已记录费用": {
+    "en": "Cost recorded by gateway",
+    "ja": "ゲートウェイが記録した費用",
+    "ko": "게이트웨이가 기록한 비용",
+    "zh-Hans": "网关已记录费用",
+    "zh-Hant": "閘道已記錄費用"
   },
   "CC Buddy 菜单栏": {
     "en": "CC Buddy menu bar",
@@ -811,6 +804,20 @@
     "zh-Hans": "导出独立 HTML",
     "zh-Hant": "匯出獨立 HTML"
   },
+  "导出 Markdown": {
+    "en": "Export Markdown",
+    "ja": "Markdown を書き出す",
+    "ko": "Markdown 내보내기",
+    "zh-Hans": "导出 Markdown",
+    "zh-Hant": "匯出 Markdown"
+  },
+  "已导出 Markdown": {
+    "en": "Markdown exported",
+    "ja": "Markdown を書き出しました",
+    "ko": "Markdown을 내보냈습니다",
+    "zh-Hans": "已导出 Markdown",
+    "zh-Hant": "已匯出 Markdown"
+  },
   "留空以使用自动标题": {
     "en": "Leave blank to use the automatic title",
     "ja": "自動タイトルを使う場合は空欄",
@@ -908,6 +915,13 @@
     "ko": "계속",
     "zh-Hans": "继续",
     "zh-Hant": "繼續"
+  },
+  "选择终端": {
+    "en": "Choose terminal",
+    "ja": "ターミナルを選択",
+    "ko": "터미널 선택",
+    "zh-Hans": "选择终端",
+    "zh-Hant": "選擇終端"
   },
   "确定要继续吗？": {
     "en": "Are you sure you want to continue?",
@@ -1196,12 +1210,12 @@
     "zh-Hans": "点按切换到此服务",
     "zh-Hant": "點按以切換到此服務"
   },
-  "由 Bifrost 自动转换协议": {
-    "en": "Protocol converted automatically by Bifrost",
-    "ja": "Bifrost がプロトコルを自動変換",
-    "ko": "Bifrost가 프로토콜을 자동 변환",
-    "zh-Hans": "由 Bifrost 自动转换协议",
-    "zh-Hant": "由 Bifrost 自動轉換協定"
+  "由网关自动转换协议": {
+    "en": "Protocol converted automatically by gateway",
+    "ja": "ゲートウェイがプロトコルを自動変換",
+    "ko": "게이트웨이가 프로토콜을 자동 변환",
+    "zh-Hans": "由网关自动转换协议",
+    "zh-Hant": "由閘道自動轉換協定"
   },
   "Anthropic 协议直通": {
     "en": "Anthropic protocol pass-through",
@@ -1266,12 +1280,12 @@
     "zh-Hans": "选择",
     "zh-Hant": "選擇"
   },
-  "本机 Bifrost 网关服务：接入的 CLI 都通过它转发请求。": {
-    "en": "The local Bifrost gateway service forwards requests for every connected CLI.",
-    "ja": "ローカル Bifrost ゲートウェイサービスは、接続済み CLI のリクエストを転送します。",
-    "ko": "로컬 Bifrost 게이트웨이 서비스는 연결된 모든 CLI의 요청을 전달합니다.",
-    "zh-Hans": "本机 Bifrost 网关服务：接入的 CLI 都通过它转发请求。",
-    "zh-Hant": "本機 Bifrost 閘道服務：已接入的 CLI 都透過它轉送請求。"
+  "本机 CC Buddy 网关服务：接入的 CLI 都通过它转发请求。": {
+    "en": "The local CC Buddy Gateway forwards requests for every connected CLI.",
+    "ja": "ローカルの CC Buddy Gateway は、接続済み CLI のリクエストを転送します。",
+    "ko": "로컬 CC Buddy Gateway는 연결된 모든 CLI의 요청을 전달합니다.",
+    "zh-Hans": "本机 CC Buddy 网关服务：接入的 CLI 都通过它转发请求。",
+    "zh-Hant": "本機 CC Buddy 閘道服務：已接入的 CLI 都透過它轉送請求。"
   },
   "独立于接入配置的本机服务开关；停止后转发暂停，CLI 配置保持不变。": {
     "en": "Controls the local service independently of CLI connections. Stopping pauses forwarding without changing CLI configuration.",
@@ -1287,12 +1301,68 @@
     "zh-Hans": "开关会立即、原子地写入或恢复各 CLI 的配置文件。",
     "zh-Hant": "開關會立即且以原子方式寫入或還原各 CLI 的設定檔。"
   },
-  "供应商限流时由 Bifrost 重试策略处理。": {
-    "en": "Bifrost's retry policy handles provider rate limits.",
-    "ja": "プロバイダーのレート制限は Bifrost のリトライ方針で処理します。",
-    "ko": "공급자 속도 제한은 Bifrost 재시도 정책으로 처리합니다.",
-    "zh-Hans": "供应商限流时由 Bifrost 重试策略处理。",
-    "zh-Hant": "供應商限流時由 Bifrost 重試策略處理。"
+  "网关故障转移": {
+    "en": "Gateway failover",
+    "ja": "ゲートウェイのフェイルオーバー",
+    "ko": "게이트웨이 장애 조치",
+    "zh-Hans": "网关故障转移",
+    "zh-Hant": "閘道故障轉移"
+  },
+  "当前服务不可用时，按顺序尝试备用服务。重试次数是整条队列的总预算。": {
+    "en": "When the current provider is unavailable, try fallback providers in order. Retries are a total budget for the entire queue.",
+    "ja": "現在のプロバイダーが利用できない場合、予備のプロバイダーを順番に試します。再試行回数はキュー全体の合計上限です。",
+    "ko": "현재 공급자를 사용할 수 없으면 대체 공급자를 순서대로 시도합니다. 재시도 횟수는 전체 대기열에 적용되는 총 한도입니다.",
+    "zh-Hans": "当前服务不可用时，按顺序尝试备用服务。重试次数是整条队列的总预算。",
+    "zh-Hant": "目前服務不可用時，依序嘗試備用服務。重試次數是整條佇列的總預算。"
+  },
+  "故障转移顺序": {
+    "en": "Failover order",
+    "ja": "フェイルオーバー順序",
+    "ko": "장애 조치 순서",
+    "zh-Hans": "故障转移顺序",
+    "zh-Hant": "故障轉移順序"
+  },
+  "当前": {
+    "en": "Current",
+    "ja": "現在",
+    "ko": "현재",
+    "zh-Hans": "当前",
+    "zh-Hant": "目前"
+  },
+  "上移备用服务": {
+    "en": "Move fallback provider up",
+    "ja": "予備のプロバイダーを上へ移動",
+    "ko": "대체 공급자 위로 이동",
+    "zh-Hans": "上移备用服务",
+    "zh-Hant": "上移備用服務"
+  },
+  "下移备用服务": {
+    "en": "Move fallback provider down",
+    "ja": "予備のプロバイダーを下へ移動",
+    "ko": "대체 공급자 아래로 이동",
+    "zh-Hans": "下移备用服务",
+    "zh-Hant": "下移備用服務"
+  },
+  "移出故障转移队列": {
+    "en": "Remove from failover queue",
+    "ja": "フェイルオーバーキューから削除",
+    "ko": "장애 조치 대기열에서 제거",
+    "zh-Hans": "移出故障转移队列",
+    "zh-Hant": "移出故障轉移佇列"
+  },
+  "添加备用服务": {
+    "en": "Add fallback provider",
+    "ja": "予備のプロバイダーを追加",
+    "ko": "대체 공급자 추가",
+    "zh-Hans": "添加备用服务",
+    "zh-Hant": "新增備用服務"
+  },
+  "供应商限流时由网关重试策略处理。": {
+    "en": "Gateway's retry policy handles provider rate limits.",
+    "ja": "プロバイダーのレート制限はゲートウェイのリトライ方針で処理します。",
+    "ko": "공급자 속도 제한은 게이트웨이 재시도 정책으로 처리합니다.",
+    "zh-Hans": "供应商限流时由网关重试策略处理。",
+    "zh-Hant": "供應商限流時由閘道重試策略處理。"
   },
   "会降低安全性；仅在自签名或企业代理证书导致连接失败时临时开启。": {
     "en": "Reduces security. Enable temporarily only when self-signed or corporate proxy certificates prevent connection.",
@@ -1525,6 +1595,13 @@
     "zh-Hans": "导出独立 HTML…",
     "zh-Hant": "匯出獨立 HTML…"
   },
+  "导出 Markdown…": {
+    "en": "Export Markdown…",
+    "ja": "Markdown を書き出す…",
+    "ko": "Markdown 내보내기…",
+    "zh-Hans": "导出 Markdown…",
+    "zh-Hant": "匯出 Markdown…"
+  },
   "恢复会话": {
     "en": "Restore session",
     "ja": "セッションを復元",
@@ -1623,12 +1700,12 @@
     "zh-Hans": "永久清除",
     "zh-Hant": "永久清除"
   },
-  "将从 Bifrost 永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。": {
-    "en": "This permanently deletes all request logs before the current time from Bifrost and clears lifecycle records held in this app's memory. New requests created while clearing are retained.",
-    "ja": "現在時刻より前のすべてのリクエストログを Bifrost から完全に削除し、このアプリのメモリにあるライフサイクル記録も消去します。消去中に発生した新しいリクエストは保持されます。",
-    "ko": "현재 시각 이전의 모든 요청 로그를 Bifrost에서 영구 삭제하고 이 앱의 메모리에 있는 수명 주기 기록도 지웁니다. 지우는 동안 생성된 새 요청은 유지됩니다.",
-    "zh-Hans": "将从 Bifrost 永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。",
-    "zh-Hant": "將從 Bifrost 永久刪除目前時間前的所有請求記錄，並清除本機記憶體中的生命週期記錄。清除期間產生的新請求會保留。"
+  "将从网关永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。": {
+    "en": "This permanently deletes all request logs before the current time from gateway and clears lifecycle records held in this app's memory. New requests created while clearing are retained.",
+    "ja": "現在時刻より前のすべてのリクエストログをゲートウェイから完全に削除し、このアプリのメモリにあるライフサイクル記録も消去します。消去中に発生した新しいリクエストは保持されます。",
+    "ko": "현재 시각 이전의 모든 요청 로그를 게이트웨이에서 영구 삭제하고 이 앱의 메모리에 있는 수명 주기 기록도 지웁니다. 지우는 동안 생성된 새 요청은 유지됩니다.",
+    "zh-Hans": "将从网关永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。",
+    "zh-Hant": "將從閘道永久刪除目前時間前的所有請求記錄，並清除本機記憶體中的生命週期記錄。清除期間產生的新請求會保留。"
   },
   "正在显示未经脱敏的监控内容；关闭页面后会自动恢复保护": {
     "en": "Showing unredacted monitor content; protection is restored automatically when this page closes",
@@ -1686,12 +1763,12 @@
     "zh-Hans": "网关未运行",
     "zh-Hant": "閘道未執行"
   },
-  "正在读取 Bifrost…": {
-    "en": "Loading from Bifrost…",
-    "ja": "Bifrost から読み込み中…",
-    "ko": "Bifrost에서 불러오는 중…",
-    "zh-Hans": "正在读取 Bifrost…",
-    "zh-Hant": "正在從 Bifrost 讀取…"
+  "正在读取网关…": {
+    "en": "Loading from gateway…",
+    "ja": "ゲートウェイから読み込み中…",
+    "ko": "게이트웨이에서 불러오는 중…",
+    "zh-Hans": "正在读取网关…",
+    "zh-Hant": "正在從閘道讀取…"
   },
   "最近 {count} 条 · 每 10 秒自动刷新": {
     "en": "Latest {count} · Refreshes every 10 seconds",
@@ -1721,12 +1798,12 @@
     "zh-Hans": "刷新失败：{message}",
     "zh-Hant": "更新失敗：{message}"
   },
-  "查看 Bifrost 保存的规范化内容与上游原始正文": {
-    "en": "View the normalized content and original upstream body saved by Bifrost",
-    "ja": "Bifrost が保存した正規化内容と上流の元の本文を表示",
-    "ko": "Bifrost가 저장한 정규화 내용과 원본 업스트림 본문 보기",
-    "zh-Hans": "查看 Bifrost 保存的规范化内容与上游原始正文",
-    "zh-Hant": "檢視 Bifrost 儲存的正規化內容與上游原始本文"
+  "查看网关保存的规范化内容与上游原始正文": {
+    "en": "View the normalized content and original upstream body saved by gateway",
+    "ja": "ゲートウェイが保存した正規化内容と上流の元の本文を表示",
+    "ko": "게이트웨이가 저장한 정규화 내용과 원본 업스트림 본문 보기",
+    "zh-Hans": "查看网关保存的规范化内容与上游原始正文",
+    "zh-Hant": "檢視閘道儲存的正規化內容與上游原始本文"
   },
   "错误，真实上游 HTTP 状态码 {code}": {
     "en": "Error, actual upstream HTTP status {code}",
@@ -1791,12 +1868,12 @@
     "zh-Hans": "暂无本地生命周期事件",
     "zh-Hant": "暫無本機生命週期事件"
   },
-  "Bifrost 请求日志不会被冒充为进程启动、停止或异常日志": {
-    "en": "Bifrost request logs are not presented as process start, stop, or error logs",
-    "ja": "Bifrost のリクエストログをプロセスの起動、停止、異常ログとして表示することはありません",
-    "ko": "Bifrost 요청 로그를 프로세스 시작, 중지 또는 오류 로그인 것처럼 표시하지 않습니다",
-    "zh-Hans": "Bifrost 请求日志不会被冒充为进程启动、停止或异常日志",
-    "zh-Hant": "Bifrost 請求記錄不會被當作程序啟動、停止或異常記錄"
+  "网关请求日志不会被冒充为进程启动、停止或异常日志": {
+    "en": "Gateway request logs are not presented as process start, stop, or error logs",
+    "ja": "ゲートウェイのリクエストログをプロセスの起動、停止、異常ログとして表示することはありません",
+    "ko": "게이트웨이 요청 로그를 프로세스 시작, 중지 또는 오류 로그인 것처럼 표시하지 않습니다",
+    "zh-Hans": "网关请求日志不会被冒充为进程启动、停止或异常日志",
+    "zh-Hant": "閘道請求記錄不會被當作程序啟動、停止或異常記錄"
   },
   "处理中": {
     "en": "Processing",
@@ -1889,61 +1966,61 @@
     "zh-Hans": "成本",
     "zh-Hant": "成本"
   },
-  "Bifrost · 错误 · 上游 HTTP {code}": {
-    "en": "Bifrost · Error · Upstream HTTP {code}",
-    "ja": "Bifrost · エラー · 上流 HTTP {code}",
-    "ko": "Bifrost · 오류 · 업스트림 HTTP {code}",
-    "zh-Hans": "Bifrost · 错误 · 上游 HTTP {code}",
-    "zh-Hant": "Bifrost · 錯誤 · 上游 HTTP {code}"
+  "网关 · 错误 · 上游 HTTP {code}": {
+    "en": "Gateway · Error · Upstream HTTP {code}",
+    "ja": "ゲートウェイ · エラー · 上流 HTTP {code}",
+    "ko": "게이트웨이 · 오류 · 업스트림 HTTP {code}",
+    "zh-Hans": "网关 · 错误 · 上游 HTTP {code}",
+    "zh-Hant": "閘道 · 錯誤 · 上游 HTTP {code}"
   },
-  "Bifrost · {status}": {
-    "en": "Bifrost · {status}",
-    "ja": "Bifrost · {status}",
-    "ko": "Bifrost · {status}",
-    "zh-Hans": "Bifrost · {status}",
-    "zh-Hant": "Bifrost · {status}"
+  "网关 · {status}": {
+    "en": "Gateway · {status}",
+    "ja": "ゲートウェイ · {status}",
+    "ko": "게이트웨이 · {status}",
+    "zh-Hans": "网关 · {status}",
+    "zh-Hant": "閘道 · {status}"
   },
-  "Bifrost 保存的请求正文": {
-    "en": "Request body saved by Bifrost",
-    "ja": "Bifrost が保存したリクエスト本文",
-    "ko": "Bifrost가 저장한 요청 본문",
-    "zh-Hans": "Bifrost 保存的请求正文",
-    "zh-Hant": "Bifrost 儲存的請求本文"
+  "网关保存的请求正文": {
+    "en": "Request body saved by gateway",
+    "ja": "ゲートウェイが保存したリクエスト本文",
+    "ko": "게이트웨이가 저장한 요청 본문",
+    "zh-Hans": "网关保存的请求正文",
+    "zh-Hant": "閘道儲存的請求本文"
   },
-  "Bifrost 保存的响应正文": {
-    "en": "Response body saved by Bifrost",
-    "ja": "Bifrost が保存したレスポンス本文",
-    "ko": "Bifrost가 저장한 응답 본문",
-    "zh-Hans": "Bifrost 保存的响应正文",
-    "zh-Hant": "Bifrost 儲存的回應本文"
+  "网关保存的响应正文": {
+    "en": "Response body saved by gateway",
+    "ja": "ゲートウェイが保存したレスポンス本文",
+    "ko": "게이트웨이가 저장한 응답 본문",
+    "zh-Hans": "网关保存的响应正文",
+    "zh-Hant": "閘道儲存的回應本文"
   },
-  "客户端进入 Bifrost 后的规范化请求": {
-    "en": "Normalized client request received by Bifrost",
-    "ja": "Bifrost が受信した正規化済みクライアントリクエスト",
-    "ko": "Bifrost가 수신한 정규화된 클라이언트 요청",
-    "zh-Hans": "客户端进入 Bifrost 后的规范化请求",
-    "zh-Hant": "用戶端進入 Bifrost 後的正規化請求"
+  "客户端进入网关后的规范化请求": {
+    "en": "Normalized client request received by gateway",
+    "ja": "ゲートウェイが受信した正規化済みクライアントリクエスト",
+    "ko": "게이트웨이가 수신한 정규화된 클라이언트 요청",
+    "zh-Hans": "客户端进入网关后的规范化请求",
+    "zh-Hant": "用戶端進入閘道後的正規化請求"
   },
-  "Bifrost 发往 Provider 的原始请求正文": {
-    "en": "Original request body sent by Bifrost to Provider",
-    "ja": "Bifrost から Provider に送信した元のリクエスト本文",
-    "ko": "Bifrost가 Provider로 보낸 원본 요청 본문",
-    "zh-Hans": "Bifrost 发往 Provider 的原始请求正文",
-    "zh-Hant": "Bifrost 傳送至 Provider 的原始請求本文"
+  "网关发往 Provider 的原始请求正文": {
+    "en": "Original request body sent by gateway to Provider",
+    "ja": "ゲートウェイから Provider に送信した元のリクエスト本文",
+    "ko": "게이트웨이가 Provider로 보낸 원본 요청 본문",
+    "zh-Hans": "网关发往 Provider 的原始请求正文",
+    "zh-Hant": "閘道傳送至 Provider 的原始請求本文"
   },
-  "Provider 返回给 Bifrost 的原始响应正文": {
-    "en": "Original response body returned by Provider to Bifrost",
-    "ja": "Provider から Bifrost に返された元のレスポンス本文",
-    "ko": "Provider가 Bifrost에 반환한 원본 응답 본문",
-    "zh-Hans": "Provider 返回给 Bifrost 的原始响应正文",
-    "zh-Hant": "Provider 傳回 Bifrost 的原始回應本文"
+  "Provider 返回给网关的原始响应正文": {
+    "en": "Original response body returned by Provider to gateway",
+    "ja": "Provider からゲートウェイに返された元のレスポンス本文",
+    "ko": "Provider가 게이트웨이에 반환한 원본 응답 본문",
+    "zh-Hans": "Provider 返回给网关的原始响应正文",
+    "zh-Hant": "Provider 傳回閘道的原始回應本文"
   },
-  "Bifrost 返回客户端前的规范化响应": {
-    "en": "Normalized response before Bifrost returns it to the client",
-    "ja": "Bifrost がクライアントに返す前の正規化済みレスポンス",
-    "ko": "Bifrost가 클라이언트에 반환하기 전의 정규화된 응답",
-    "zh-Hans": "Bifrost 返回客户端前的规范化响应",
-    "zh-Hant": "Bifrost 傳回用戶端前的正規化回應"
+  "网关返回客户端前的规范化响应": {
+    "en": "Normalized response before gateway returns it to the client",
+    "ja": "ゲートウェイがクライアントに返す前の正規化済みレスポンス",
+    "ko": "게이트웨이가 클라이언트에 반환하기 전의 정규화된 응답",
+    "zh-Hans": "网关返回客户端前的规范化响应",
+    "zh-Hant": "閘道傳回用戶端前的正規化回應"
   },
   "捕获原文": {
     "en": "Captured raw",
@@ -1959,12 +2036,12 @@
     "zh-Hans": "规范化 JSON",
     "zh-Hant": "正規化 JSON"
   },
-  "Bifrost 未保存此字段": {
-    "en": "Bifrost did not save this field",
-    "ja": "Bifrost はこのフィールドを保存していません",
-    "ko": "Bifrost가 이 필드를 저장하지 않았습니다",
-    "zh-Hans": "Bifrost 未保存此字段",
-    "zh-Hant": "Bifrost 未儲存此欄位"
+  "网关未保存此字段": {
+    "en": "Gateway did not save this field",
+    "ja": "ゲートウェイはこのフィールドを保存していません",
+    "ko": "게이트웨이가 이 필드를 저장하지 않았습니다",
+    "zh-Hans": "网关未保存此字段",
+    "zh-Hant": "閘道未儲存此欄位"
   },
   "界面不会从其他字段猜测或拼装内容": {
     "en": "The interface does not infer or assemble content from other fields",
@@ -2001,19 +2078,19 @@
     "zh-Hans": "搜索正文…",
     "zh-Hant": "搜尋本文…"
   },
-  "来源为 Bifrost 管理 API。原文复制保留 Bifrost 捕获的正文；规范化标签的“原文”是无缩进 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 状态不会被推断。": {
-    "en": "Source: Bifrost management API. Copying raw content preserves the body captured by Bifrost; Raw on normalized tabs is compact JSON. Headers, URLs, and successful HTTP statuses absent from the management API are not inferred.",
-    "ja": "ソースは Bifrost 管理 API です。原文のコピーでは Bifrost がキャプチャした本文を保持し、正規化タブの「原文」はインデントなしの JSON です。管理 API が提供しない headers、URL、成功時の HTTP ステータスは推測しません。",
-    "ko": "출처는 Bifrost 관리 API입니다. 원문 복사는 Bifrost가 캡처한 본문을 유지하며, 정규화 탭의 원문은 들여쓰기 없는 JSON입니다. 관리 API가 제공하지 않은 headers, URL 또는 성공 HTTP 상태는 추측하지 않습니다.",
-    "zh-Hans": "来源为 Bifrost 管理 API。原文复制保留 Bifrost 捕获的正文；规范化标签的“原文”是无缩进 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 状态不会被推断。",
-    "zh-Hant": "來源為 Bifrost 管理 API。複製原文會保留 Bifrost 擷取的本文；正規化分頁的「原文」是無縮排 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 狀態不會被推測。"
+  "来源为网关管理 API。原文复制保留网关捕获的正文；规范化标签的“原文”是无缩进 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 状态不会被推断。": {
+    "en": "Source: gateway management API. Copying raw content preserves the body captured by gateway; Raw on normalized tabs is compact JSON. Headers, URLs, and successful HTTP statuses absent from the management API are not inferred.",
+    "ja": "ソースはゲートウェイ管理 API です。原文のコピーではゲートウェイがキャプチャした本文を保持し、正規化タブの「原文」はインデントなしの JSON です。管理 API が提供しない headers、URL、成功時の HTTP ステータスは推測しません。",
+    "ko": "출처는 게이트웨이 관리 API입니다. 원문 복사는 게이트웨이가 캡처한 본문을 유지하며, 정규화 탭의 원문은 들여쓰기 없는 JSON입니다. 관리 API가 제공하지 않은 headers, URL 또는 성공 HTTP 상태는 추측하지 않습니다.",
+    "zh-Hans": "来源为网关管理 API。原文复制保留网关捕获的正文；规范化标签的“原文”是无缩进 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 状态不会被推断。",
+    "zh-Hant": "來源為閘道管理 API。複製原文會保留閘道擷取的本文；正規化分頁的「原文」是無縮排 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 狀態不會被推測。"
   },
-  "正在读取 Bifrost 请求详情…": {
-    "en": "Loading Bifrost request details…",
-    "ja": "Bifrost のリクエスト詳細を読み込み中…",
-    "ko": "Bifrost 요청 상세 정보를 불러오는 중…",
-    "zh-Hans": "正在读取 Bifrost 请求详情…",
-    "zh-Hant": "正在讀取 Bifrost 請求詳情…"
+  "正在读取网关请求详情…": {
+    "en": "Loading gateway request details…",
+    "ja": "ゲートウェイのリクエスト詳細を読み込み中…",
+    "ko": "게이트웨이 요청 상세 정보를 불러오는 중…",
+    "zh-Hans": "正在读取网关请求详情…",
+    "zh-Hant": "正在讀取閘道請求詳情…"
   },
   "无法读取详情": {
     "en": "Could not load details",
@@ -2022,12 +2099,12 @@
     "zh-Hans": "无法读取详情",
     "zh-Hant": "無法讀取詳情"
   },
-  "这条记录可能已从 Bifrost 日志中清除": {
-    "en": "This record may have been cleared from the Bifrost log",
-    "ja": "この記録は Bifrost ログから消去された可能性があります",
-    "ko": "이 기록이 Bifrost 로그에서 지워졌을 수 있습니다",
-    "zh-Hans": "这条记录可能已从 Bifrost 日志中清除",
-    "zh-Hant": "這筆記錄可能已從 Bifrost 記錄中清除"
+  "这条记录可能已从网关日志中清除": {
+    "en": "This record may have been cleared from the gateway log",
+    "ja": "この記録はゲートウェイログから消去された可能性があります",
+    "ko": "이 기록이 게이트웨이 로그에서 지워졌을 수 있습니다",
+    "zh-Hans": "这条记录可能已从网关日志中清除",
+    "zh-Hant": "這筆記錄可能已從閘道記錄中清除"
   },
   "复制（部分）": {
     "en": "Copy (partial)",
@@ -2092,12 +2169,12 @@
     "zh-Hans": "正在启动网关",
     "zh-Hant": "正在啟動閘道"
   },
-  "正在启动 Bifrost…": {
-    "en": "Starting Bifrost…",
-    "ja": "Bifrost を起動中…",
-    "ko": "Bifrost 시작 중…",
-    "zh-Hans": "正在启动 Bifrost…",
-    "zh-Hant": "正在啟動 Bifrost…"
+  "正在启动网关…": {
+    "en": "Starting gateway…",
+    "ja": "ゲートウェイを起動中…",
+    "ko": "게이트웨이 시작 중…",
+    "zh-Hans": "正在启动网关…",
+    "zh-Hant": "正在啟動閘道…"
   },
   "在设置中开启网关服务；启动服务会保留此选择": {
     "en": "Enable the gateway in Settings; starting the service keeps this selection",
@@ -2365,61 +2442,47 @@
     "zh-Hans": "HTML 导出失败：{error}",
     "zh-Hant": "HTML 匯出失敗：{error}"
   },
-  "导入失败：{error}": {
-    "en": "Import failed: {error}",
-    "ja": "インポートに失敗しました：{error}",
-    "ko": "가져오기 실패: {error}",
-    "zh-Hans": "导入失败：{error}",
-    "zh-Hant": "匯入失敗：{error}"
+  "正在启动网关 · localhost:{port}": {
+    "en": "Starting gateway · localhost:{port}",
+    "ja": "ゲートウェイを起動中 · localhost:{port}",
+    "ko": "게이트웨이 시작 중 · localhost:{port}",
+    "zh-Hans": "正在启动网关 · localhost:{port}",
+    "zh-Hant": "正在啟動閘道 · localhost:{port}"
   },
-  "仅支持导入 JSONL 或 ZIP": {
-    "en": "Only JSONL or ZIP files can be imported",
-    "ja": "インポートできるのは JSONL または ZIP のみです",
-    "ko": "JSONL 또는 ZIP 파일만 가져올 수 있습니다",
-    "zh-Hans": "仅支持导入 JSONL 或 ZIP",
-    "zh-Hant": "僅支援匯入 JSONL 或 ZIP"
+  "正在重启网关 · localhost:{port}": {
+    "en": "Restarting gateway · localhost:{port}",
+    "ja": "ゲートウェイを再起動中 · localhost:{port}",
+    "ko": "게이트웨이 재시작 중 · localhost:{port}",
+    "zh-Hans": "正在重启网关 · localhost:{port}",
+    "zh-Hant": "正在重新啟動閘道 · localhost:{port}"
   },
-  "正在启动 Bifrost · localhost:{port}": {
-    "en": "Starting Bifrost · localhost:{port}",
-    "ja": "Bifrost を起動中 · localhost:{port}",
-    "ko": "Bifrost 시작 중 · localhost:{port}",
-    "zh-Hans": "正在启动 Bifrost · localhost:{port}",
-    "zh-Hant": "正在啟動 Bifrost · localhost:{port}"
+  "网关已启动 · localhost:{port}": {
+    "en": "Gateway started · localhost:{port}",
+    "ja": "ゲートウェイを起動しました · localhost:{port}",
+    "ko": "게이트웨이 시작됨 · localhost:{port}",
+    "zh-Hans": "网关已启动 · localhost:{port}",
+    "zh-Hant": "閘道已啟動 · localhost:{port}"
   },
-  "正在重启 Bifrost · localhost:{port}": {
-    "en": "Restarting Bifrost · localhost:{port}",
-    "ja": "Bifrost を再起動中 · localhost:{port}",
-    "ko": "Bifrost 재시작 중 · localhost:{port}",
-    "zh-Hans": "正在重启 Bifrost · localhost:{port}",
-    "zh-Hant": "正在重新啟動 Bifrost · localhost:{port}"
+  "网关启动失败 · {error}": {
+    "en": "Gateway failed to start · {error}",
+    "ja": "ゲートウェイの起動に失敗しました · {error}",
+    "ko": "게이트웨이 시작 실패 · {error}",
+    "zh-Hans": "网关启动失败 · {error}",
+    "zh-Hant": "閘道啟動失敗 · {error}"
   },
-  "Bifrost 已启动 · localhost:{port}": {
-    "en": "Bifrost started · localhost:{port}",
-    "ja": "Bifrost を起動しました · localhost:{port}",
-    "ko": "Bifrost 시작됨 · localhost:{port}",
-    "zh-Hans": "Bifrost 已启动 · localhost:{port}",
-    "zh-Hant": "Bifrost 已啟動 · localhost:{port}"
+  "正在停止网关 · localhost:{port}": {
+    "en": "Stopping gateway · localhost:{port}",
+    "ja": "ゲートウェイを停止中 · localhost:{port}",
+    "ko": "게이트웨이 중지 중 · localhost:{port}",
+    "zh-Hans": "正在停止网关 · localhost:{port}",
+    "zh-Hant": "正在停止閘道 · localhost:{port}"
   },
-  "Bifrost 启动失败 · {error}": {
-    "en": "Bifrost failed to start · {error}",
-    "ja": "Bifrost の起動に失敗しました · {error}",
-    "ko": "Bifrost 시작 실패 · {error}",
-    "zh-Hans": "Bifrost 启动失败 · {error}",
-    "zh-Hant": "Bifrost 啟動失敗 · {error}"
-  },
-  "正在停止 Bifrost · localhost:{port}": {
-    "en": "Stopping Bifrost · localhost:{port}",
-    "ja": "Bifrost を停止中 · localhost:{port}",
-    "ko": "Bifrost 중지 중 · localhost:{port}",
-    "zh-Hans": "正在停止 Bifrost · localhost:{port}",
-    "zh-Hant": "正在停止 Bifrost · localhost:{port}"
-  },
-  "Bifrost 已停止": {
-    "en": "Bifrost stopped",
-    "ja": "Bifrost を停止しました",
-    "ko": "Bifrost 중지됨",
-    "zh-Hans": "Bifrost 已停止",
-    "zh-Hant": "Bifrost 已停止"
+  "网关已停止": {
+    "en": "Gateway stopped",
+    "ja": "ゲートウェイを停止しました",
+    "ko": "게이트웨이 중지됨",
+    "zh-Hans": "网关已停止",
+    "zh-Hant": "閘道已停止"
   },
   "保存网关开关失败，已恢复先前状态 · {error}": {
     "en": "Could not save the gateway setting; the previous state was restored · {error}",
@@ -2428,12 +2491,12 @@
     "zh-Hans": "保存网关开关失败，已恢复先前状态 · {error}",
     "zh-Hant": "儲存閘道開關失敗，已復原先前狀態 · {error}"
   },
-  "正在将 Bifrost 从 localhost:{oldPort} 重启到 localhost:{newPort}": {
-    "en": "Restarting Bifrost from localhost:{oldPort} to localhost:{newPort}",
-    "ja": "Bifrost を localhost:{oldPort} から localhost:{newPort} へ再起動中",
-    "ko": "Bifrost를 localhost:{oldPort}에서 localhost:{newPort}(으)로 재시작 중",
-    "zh-Hans": "正在将 Bifrost 从 localhost:{oldPort} 重启到 localhost:{newPort}",
-    "zh-Hant": "正在將 Bifrost 從 localhost:{oldPort} 重新啟動至 localhost:{newPort}"
+  "正在将网关从 localhost:{oldPort} 重启到 localhost:{newPort}": {
+    "en": "Restarting gateway from localhost:{oldPort} to localhost:{newPort}",
+    "ja": "ゲートウェイを localhost:{oldPort} から localhost:{newPort} へ再起動中",
+    "ko": "게이트웨이를 localhost:{oldPort}에서 localhost:{newPort}(으)로 재시작 중",
+    "zh-Hans": "正在将网关从 localhost:{oldPort} 重启到 localhost:{newPort}",
+    "zh-Hant": "正在將閘道從 localhost:{oldPort} 重新啟動至 localhost:{newPort}"
   },
   "切换网关端口失败 · {error}": {
     "en": "Could not change the gateway port · {error}",
@@ -2456,33 +2519,33 @@
     "zh-Hans": "已恢复上游 TLS 证书校验",
     "zh-Hant": "已恢復上游 TLS 憑證驗證"
   },
-  "正在重启 Bifrost · 已允许上游使用不受信任的 TLS 证书": {
-    "en": "Restarting Bifrost · untrusted upstream TLS certificates are now allowed",
-    "ja": "Bifrost を再起動中 · 信頼されていない上流 TLS 証明書を許可しました",
-    "ko": "Bifrost 재시작 중 · 신뢰할 수 없는 업스트림 TLS 인증서를 허용했습니다",
-    "zh-Hans": "正在重启 Bifrost · 已允许上游使用不受信任的 TLS 证书",
-    "zh-Hant": "正在重新啟動 Bifrost · 已允許上游使用不受信任的 TLS 憑證"
+  "正在重启网关 · 已允许上游使用不受信任的 TLS 证书": {
+    "en": "Restarting gateway · untrusted upstream TLS certificates are now allowed",
+    "ja": "ゲートウェイを再起動中 · 信頼されていない上流 TLS 証明書を許可しました",
+    "ko": "게이트웨이 재시작 중 · 신뢰할 수 없는 업스트림 TLS 인증서를 허용했습니다",
+    "zh-Hans": "正在重启网关 · 已允许上游使用不受信任的 TLS 证书",
+    "zh-Hant": "正在重新啟動閘道 · 已允許上游使用不受信任的 TLS 憑證"
   },
-  "正在重启 Bifrost · 已恢复上游 TLS 证书校验": {
-    "en": "Restarting Bifrost · upstream TLS certificate verification restored",
-    "ja": "Bifrost を再起動中 · 上流 TLS 証明書の検証を再開しました",
-    "ko": "Bifrost 재시작 중 · 업스트림 TLS 인증서 검증을 복원했습니다",
-    "zh-Hans": "正在重启 Bifrost · 已恢复上游 TLS 证书校验",
-    "zh-Hant": "正在重新啟動 Bifrost · 已恢復上游 TLS 憑證驗證"
+  "正在重启网关 · 已恢复上游 TLS 证书校验": {
+    "en": "Restarting gateway · upstream TLS certificate verification restored",
+    "ja": "ゲートウェイを再起動中 · 上流 TLS 証明書の検証を再開しました",
+    "ko": "게이트웨이 재시작 중 · 업스트림 TLS 인증서 검증을 복원했습니다",
+    "zh-Hans": "正在重启网关 · 已恢复上游 TLS 证书校验",
+    "zh-Hant": "正在重新啟動閘道 · 已恢復上游 TLS 憑證驗證"
   },
-  "Bifrost 已重启 · 已允许上游使用不受信任的 TLS 证书": {
-    "en": "Bifrost restarted · untrusted upstream TLS certificates are now allowed",
-    "ja": "Bifrost を再起動しました · 信頼されていない上流 TLS 証明書を許可しました",
-    "ko": "Bifrost 재시작됨 · 신뢰할 수 없는 업스트림 TLS 인증서를 허용했습니다",
-    "zh-Hans": "Bifrost 已重启 · 已允许上游使用不受信任的 TLS 证书",
-    "zh-Hant": "Bifrost 已重新啟動 · 已允許上游使用不受信任的 TLS 憑證"
+  "网关已重启 · 已允许上游使用不受信任的 TLS 证书": {
+    "en": "Gateway restarted · untrusted upstream TLS certificates are now allowed",
+    "ja": "ゲートウェイを再起動しました · 信頼されていない上流 TLS 証明書を許可しました",
+    "ko": "게이트웨이 재시작됨 · 신뢰할 수 없는 업스트림 TLS 인증서를 허용했습니다",
+    "zh-Hans": "网关已重启 · 已允许上游使用不受信任的 TLS 证书",
+    "zh-Hant": "閘道已重新啟動 · 已允許上游使用不受信任的 TLS 憑證"
   },
-  "Bifrost 已重启 · 已恢复上游 TLS 证书校验": {
-    "en": "Bifrost restarted · upstream TLS certificate verification restored",
-    "ja": "Bifrost を再起動しました · 上流 TLS 証明書の検証を再開しました",
-    "ko": "Bifrost 재시작됨 · 업스트림 TLS 인증서 검증을 복원했습니다",
-    "zh-Hans": "Bifrost 已重启 · 已恢复上游 TLS 证书校验",
-    "zh-Hant": "Bifrost 已重新啟動 · 已恢復上游 TLS 憑證驗證"
+  "网关已重启 · 已恢复上游 TLS 证书校验": {
+    "en": "Gateway restarted · upstream TLS certificate verification restored",
+    "ja": "ゲートウェイを再起動しました · 上流 TLS 証明書の検証を再開しました",
+    "ko": "게이트웨이 재시작됨 · 업스트림 TLS 인증서 검증을 복원했습니다",
+    "zh-Hans": "网关已重启 · 已恢复上游 TLS 证书校验",
+    "zh-Hant": "閘道已重新啟動 · 已恢復上游 TLS 憑證驗證"
   },
   "更新上游 TLS 设置失败，已恢复先前状态 · {error}": {
     "en": "Could not update upstream TLS settings; the previous state was restored · {error}",
@@ -2505,33 +2568,33 @@
     "zh-Hans": "已关闭 429 自动重试",
     "zh-Hant": "已關閉 429 自動重試"
   },
-  "正在重启 Bifrost · 已启用 429 自动重试": {
-    "en": "Restarting Bifrost · automatic retry on 429 enabled",
-    "ja": "Bifrost を再起動中 · 429 の自動再試行を有効にしました",
-    "ko": "Bifrost 재시작 중 · 429 자동 재시도를 활성화했습니다",
-    "zh-Hans": "正在重启 Bifrost · 已启用 429 自动重试",
-    "zh-Hant": "正在重新啟動 Bifrost · 已啟用 429 自動重試"
+  "正在重启网关 · 已启用 429 自动重试": {
+    "en": "Restarting gateway · automatic retry on 429 enabled",
+    "ja": "ゲートウェイを再起動中 · 429 の自動再試行を有効にしました",
+    "ko": "게이트웨이 재시작 중 · 429 자동 재시도를 활성화했습니다",
+    "zh-Hans": "正在重启网关 · 已启用 429 自动重试",
+    "zh-Hant": "正在重新啟動閘道 · 已啟用 429 自動重試"
   },
-  "正在重启 Bifrost · 已关闭 429 自动重试": {
-    "en": "Restarting Bifrost · automatic retry on 429 disabled",
-    "ja": "Bifrost を再起動中 · 429 の自動再試行を無効にしました",
-    "ko": "Bifrost 재시작 중 · 429 자동 재시도를 비활성화했습니다",
-    "zh-Hans": "正在重启 Bifrost · 已关闭 429 自动重试",
-    "zh-Hant": "正在重新啟動 Bifrost · 已關閉 429 自動重試"
+  "正在重启网关 · 已关闭 429 自动重试": {
+    "en": "Restarting gateway · automatic retry on 429 disabled",
+    "ja": "ゲートウェイを再起動中 · 429 の自動再試行を無効にしました",
+    "ko": "게이트웨이 재시작 중 · 429 자동 재시도를 비활성화했습니다",
+    "zh-Hans": "正在重启网关 · 已关闭 429 自动重试",
+    "zh-Hant": "正在重新啟動閘道 · 已關閉 429 自動重試"
   },
-  "Bifrost 已重启 · 已启用 429 自动重试": {
-    "en": "Bifrost restarted · automatic retry on 429 enabled",
-    "ja": "Bifrost を再起動しました · 429 の自動再試行を有効にしました",
-    "ko": "Bifrost 재시작됨 · 429 자동 재시도를 활성화했습니다",
-    "zh-Hans": "Bifrost 已重启 · 已启用 429 自动重试",
-    "zh-Hant": "Bifrost 已重新啟動 · 已啟用 429 自動重試"
+  "网关已重启 · 已启用 429 自动重试": {
+    "en": "Gateway restarted · automatic retry on 429 enabled",
+    "ja": "ゲートウェイを再起動しました · 429 の自動再試行を有効にしました",
+    "ko": "게이트웨이 재시작됨 · 429 자동 재시도를 활성화했습니다",
+    "zh-Hans": "网关已重启 · 已启用 429 自动重试",
+    "zh-Hant": "閘道已重新啟動 · 已啟用 429 自動重試"
   },
-  "Bifrost 已重启 · 已关闭 429 自动重试": {
-    "en": "Bifrost restarted · automatic retry on 429 disabled",
-    "ja": "Bifrost を再起動しました · 429 の自動再試行を無効にしました",
-    "ko": "Bifrost 재시작됨 · 429 자동 재시도를 비활성화했습니다",
-    "zh-Hans": "Bifrost 已重启 · 已关闭 429 自动重试",
-    "zh-Hant": "Bifrost 已重新啟動 · 已關閉 429 自動重試"
+  "网关已重启 · 已关闭 429 自动重试": {
+    "en": "Gateway restarted · automatic retry on 429 disabled",
+    "ja": "ゲートウェイを再起動しました · 429 の自動再試行を無効にしました",
+    "ko": "게이트웨이 재시작됨 · 429 자동 재시도를 비활성화했습니다",
+    "zh-Hans": "网关已重启 · 已关闭 429 自动重试",
+    "zh-Hant": "閘道已重新啟動 · 已關閉 429 自動重試"
   },
   "更新 429 重试设置失败，已恢复先前状态 · {error}": {
     "en": "Could not update 429 retry settings; the previous state was restored · {error}",
@@ -2904,12 +2967,12 @@
     "zh-Hans": "Codex 配置不是有效的 UTF-8 文本，已拒绝覆盖：{path}",
     "zh-Hant": "Codex 設定不是有效的 UTF-8 文字，已拒絕覆寫：{path}"
   },
-  "正在将 Bifrost 从 localhost:{oldPort} 切换到 localhost:{newPort}": {
-    "en": "Switching Bifrost from localhost:{oldPort} to localhost:{newPort}",
-    "ja": "Bifrost を localhost:{oldPort} から localhost:{newPort} へ切り替え中",
-    "ko": "Bifrost를 localhost:{oldPort}에서 localhost:{newPort}(으)로 전환하는 중",
-    "zh-Hans": "正在将 Bifrost 从 localhost:{oldPort} 切换到 localhost:{newPort}",
-    "zh-Hant": "正在將 Bifrost 從 localhost:{oldPort} 切換至 localhost:{newPort}"
+  "正在将网关从 localhost:{oldPort} 切换到 localhost:{newPort}": {
+    "en": "Switching gateway from localhost:{oldPort} to localhost:{newPort}",
+    "ja": "ゲートウェイを localhost:{oldPort} から localhost:{newPort} へ切り替え中",
+    "ko": "게이트웨이를 localhost:{oldPort}에서 localhost:{newPort}(으)로 전환하는 중",
+    "zh-Hans": "正在将网关从 localhost:{oldPort} 切换到 localhost:{newPort}",
+    "zh-Hant": "正在將閘道從 localhost:{oldPort} 切換至 localhost:{newPort}"
   },
   "网关端口已更新 · localhost:{port}": {
     "en": "Gateway port updated · localhost:{port}",
@@ -2932,12 +2995,12 @@
     "zh-Hans": "更新 429 重试设置失败 · {error}",
     "zh-Hant": "更新 429 重試設定失敗 · {error}"
   },
-  "正在应用服务商配置并重启 Bifrost": {
-    "en": "Applying provider configuration and restarting Bifrost",
-    "ja": "プロバイダー設定を適用して Bifrost を再起動中",
-    "ko": "공급자 구성을 적용하고 Bifrost를 재시작하는 중",
-    "zh-Hans": "正在应用服务商配置并重启 Bifrost",
-    "zh-Hant": "正在套用服務商設定並重新啟動 Bifrost"
+  "正在应用服务商配置并重启网关": {
+    "en": "Applying provider configuration and restarting gateway",
+    "ja": "プロバイダー設定を適用してゲートウェイを再起動中",
+    "ko": "공급자 구성을 적용하고 게이트웨이를 재시작하는 중",
+    "zh-Hans": "正在应用服务商配置并重启网关",
+    "zh-Hant": "正在套用服務商設定並重新啟動閘道"
   },
   "服务商配置已更新": {
     "en": "Provider configuration updated",
@@ -2953,12 +3016,12 @@
     "zh-Hans": "应用服务商配置失败 · {error}",
     "zh-Hant": "套用服務商設定失敗 · {error}"
   },
-  "正在应用插件服务配置并重启 Bifrost": {
-    "en": "Applying plugin service configuration and restarting Bifrost",
-    "ja": "プラグインサービス設定を適用して Bifrost を再起動中",
-    "ko": "플러그인 서비스 구성을 적용하고 Bifrost를 재시작하는 중",
-    "zh-Hans": "正在应用插件服务配置并重启 Bifrost",
-    "zh-Hant": "正在套用插件服務設定並重新啟動 Bifrost"
+  "正在应用插件服务配置并重启网关": {
+    "en": "Applying plugin service configuration and restarting gateway",
+    "ja": "プラグインサービス設定を適用してゲートウェイを再起動中",
+    "ko": "플러그인 서비스 구성을 적용하고 게이트웨이를 재시작하는 중",
+    "zh-Hans": "正在应用插件服务配置并重启网关",
+    "zh-Hant": "正在套用插件服務設定並重新啟動閘道"
   },
   "插件服务配置已更新": {
     "en": "Plugin service configuration updated",
@@ -2974,12 +3037,12 @@
     "zh-Hans": "保存插件服务失败 · {error}",
     "zh-Hant": "儲存插件服務失敗 · {error}"
   },
-  "正在切换备用服务并重启 Bifrost": {
-    "en": "Switching to a fallback service and restarting Bifrost",
-    "ja": "代替サービスに切り替えて Bifrost を再起動中",
-    "ko": "대체 서비스로 전환하고 Bifrost를 재시작하는 중",
-    "zh-Hans": "正在切换备用服务并重启 Bifrost",
-    "zh-Hant": "正在切換至備用服務並重新啟動 Bifrost"
+  "正在切换备用服务并重启网关": {
+    "en": "Switching to a fallback service and restarting gateway",
+    "ja": "代替サービスに切り替えてゲートウェイを再起動中",
+    "ko": "대체 서비스로 전환하고 게이트웨이를 재시작하는 중",
+    "zh-Hans": "正在切换备用服务并重启网关",
+    "zh-Hant": "正在切換至備用服務並重新啟動閘道"
   },
   "已停止没有可用服务商的网关": {
     "en": "Gateway stopped because no provider is available",
@@ -3058,12 +3121,12 @@
     "zh-Hans": "{detail}；恢复后的应用配置仍无法读取：{error}",
     "zh-Hant": "{detail}；仍無法讀取復原後的應用程式設定：{error}"
   },
-  "无法恢复先前的 Bifrost 服务": {
-    "en": "Could not restore the previous Bifrost service",
-    "ja": "以前の Bifrost サービスを復元できませんでした",
-    "ko": "이전 Bifrost 서비스를 복원할 수 없습니다",
-    "zh-Hans": "无法恢复先前的 Bifrost 服务",
-    "zh-Hant": "無法復原先前的 Bifrost 服務"
+  "无法恢复先前的网关服务": {
+    "en": "Could not restore the previous gateway service",
+    "ja": "以前のゲートウェイサービスを復元できませんでした",
+    "ko": "이전 게이트웨이 서비스를 복원할 수 없습니다",
+    "zh-Hans": "无法恢复先前的网关服务",
+    "zh-Hant": "無法復原先前的閘道服務"
   },
   "{error}；恢复先前状态失败：{recoveryError}": {
     "en": "{error}; restoring the previous state also failed: {recoveryError}",
@@ -3093,19 +3156,19 @@
     "zh-Hans": "更新网关访问令牌失败 · {error}",
     "zh-Hant": "更新閘道存取權杖失敗 · {error}"
   },
-  "Bifrost 运行异常 · {error}": {
-    "en": "Bifrost encountered a runtime error · {error}",
-    "ja": "Bifrost の実行中に異常が発生しました · {error}",
-    "ko": "Bifrost 실행 오류 · {error}",
-    "zh-Hans": "Bifrost 运行异常 · {error}",
-    "zh-Hant": "Bifrost 執行異常 · {error}"
+  "网关运行异常 · {error}": {
+    "en": "Gateway encountered a runtime error · {error}",
+    "ja": "ゲートウェイの実行中に異常が発生しました · {error}",
+    "ko": "게이트웨이 실행 오류 · {error}",
+    "zh-Hans": "网关运行异常 · {error}",
+    "zh-Hant": "閘道執行異常 · {error}"
   },
-  "Bifrost 服务不可用": {
-    "en": "Bifrost service unavailable",
-    "ja": "Bifrost サービスを利用できません",
-    "ko": "Bifrost 서비스를 사용할 수 없습니다",
-    "zh-Hans": "Bifrost 服务不可用",
-    "zh-Hant": "Bifrost 服務無法使用"
+  "网关服务不可用": {
+    "en": "Gateway service unavailable",
+    "ja": "ゲートウェイサービスを利用できません",
+    "ko": "게이트웨이 서비스를 사용할 수 없습니다",
+    "zh-Hans": "网关服务不可用",
+    "zh-Hant": "閘道服務無法使用"
   },
   "切换网关端口失败 · {error}；恢复先前状态失败：{recoveryError}": {
     "en": "Could not change the gateway port · {error}; restoring the previous state also failed: {recoveryError}",
@@ -3155,5 +3218,383 @@
     "ko": "게이트웨이 액세스 토큰 업데이트 실패 · {error}; 이전 상태 복원도 실패했습니다: {recoveryError}",
     "zh-Hans": "更新网关访问令牌失败 · {error}；恢复先前状态失败：{recoveryError}",
     "zh-Hant": "更新閘道存取權杖失敗 · {error}；復原先前狀態失敗：{recoveryError}"
+  },
+  "会话排序": {
+    "en": "Sort conversations",
+    "ja": "会話の並べ替え",
+    "ko": "대화 정렬",
+    "zh-Hans": "会话排序",
+    "zh-Hant": "對話排序"
+  },
+  "更新时间": {
+    "en": "Updated",
+    "ja": "更新日時",
+    "ko": "업데이트 시간",
+    "zh-Hans": "更新时间",
+    "zh-Hant": "更新時間"
+  },
+  "创建时间": {
+    "en": "Created",
+    "ja": "作成日時",
+    "ko": "생성 시간",
+    "zh-Hans": "创建时间",
+    "zh-Hant": "建立時間"
+  },
+  "消息数量": {
+    "en": "Message count",
+    "ja": "メッセージ数",
+    "ko": "메시지 수",
+    "zh-Hans": "消息数量",
+    "zh-Hant": "訊息數量"
+  },
+  "实时更新关闭": {
+    "en": "Live updates are off",
+    "ja": "リアルタイム更新はオフです",
+    "ko": "실시간 업데이트 꺼짐",
+    "zh-Hans": "实时更新关闭",
+    "zh-Hant": "即時更新已關閉"
+  },
+  "会话实时更新状态": {
+    "en": "Conversation live update status",
+    "ja": "会話のリアルタイム更新状態",
+    "ko": "대화 실시간 업데이트 상태",
+    "zh-Hans": "会话实时更新状态",
+    "zh-Hant": "對話即時更新狀態"
+  },
+  "已置顶": {
+    "en": "Pinned",
+    "ja": "ピン留め済み",
+    "ko": "고정됨",
+    "zh-Hans": "已置顶",
+    "zh-Hant": "已置頂"
+  },
+  "已收藏": {
+    "en": "Starred",
+    "ja": "お気に入り",
+    "ko": "즐겨찾기",
+    "zh-Hans": "已收藏",
+    "zh-Hant": "已收藏"
+  },
+  "{n} 个会话": {
+    "en": "{n} sessions",
+    "ja": "{n} セッション",
+    "ko": "세션 {n}개",
+    "zh-Hans": "{n} 个会话",
+    "zh-Hant": "{n} 個會話"
+  },
+  "正在导入会话": {
+    "en": "Importing sessions",
+    "ja": "セッションをインポート中",
+    "ko": "세션 가져오는 중",
+    "zh-Hans": "正在导入会话",
+    "zh-Hant": "正在匯入會話"
+  },
+  "更新会话索引": {
+    "en": "Refresh conversation index",
+    "ja": "会話インデックスを更新",
+    "ko": "대화 색인 업데이트",
+    "zh-Hans": "更新会话索引",
+    "zh-Hant": "更新會話索引"
+  },
+  "Conversations": {
+    "en": "Conversations",
+    "ja": "会話",
+    "ko": "대화",
+    "zh-Hans": "会话",
+    "zh-Hant": "對話"
+  },
+  "Search Conversations": {
+    "en": "Search Conversations",
+    "ja": "会話を検索",
+    "ko": "대화 검색",
+    "zh-Hans": "搜索会话",
+    "zh-Hant": "搜尋對話"
+  },
+  "Refresh Sessions": {
+    "en": "Refresh Sessions",
+    "ja": "セッションを更新",
+    "ko": "세션 새로 고침",
+    "zh-Hans": "刷新会话",
+    "zh-Hant": "重新整理工作階段"
+  },
+  "{source} 暂不支持从终端继续": {
+    "en": "{source} cannot currently be continued from a terminal",
+    "ja": "{source} は現在ターミナルから続行できません",
+    "ko": "{source}은(는) 현재 터미널에서 계속할 수 없습니다",
+    "zh-Hans": "{source} 暂不支持从终端继续",
+    "zh-Hant": "{source} 暫不支援從終端機繼續"
+  },
+  "项目目录已不存在：{path}": {
+    "en": "The project directory no longer exists: {path}",
+    "ja": "プロジェクトディレクトリが存在しません：{path}",
+    "ko": "프로젝트 디렉터리가 더 이상 존재하지 않습니다: {path}",
+    "zh-Hans": "项目目录已不存在：{path}",
+    "zh-Hant": "專案目錄已不存在：{path}"
+  },
+  "未找到命令 {command}，请确认已安装并可从登录 shell 访问": {
+    "en": "Command {command} was not found; make sure it is installed and available to your login shell",
+    "ja": "コマンド {command} が見つかりません。インストール済みでログインシェルから実行できることを確認してください",
+    "ko": "{command} 명령을 찾을 수 없습니다. 설치되어 있고 로그인 셸에서 사용할 수 있는지 확인하세요",
+    "zh-Hans": "未找到命令 {command}，请确认已安装并可从登录 shell 访问",
+    "zh-Hant": "找不到指令 {command}，請確認已安裝且可從登入 shell 存取"
+  },
+  "无法打开 {terminal}：{detail}": {
+    "en": "Could not open {terminal}: {detail}",
+    "ja": "{terminal} を開けませんでした：{detail}",
+    "ko": "{terminal}을(를) 열 수 없습니다: {detail}",
+    "zh-Hans": "无法打开 {terminal}：{detail}",
+    "zh-Hant": "無法開啟 {terminal}：{detail}"
+  },
+  "已在 {terminal} 中继续会话": {
+    "en": "Continued the conversation in {terminal}",
+    "ja": "{terminal} で会話を続行しました",
+    "ko": "{terminal}에서 대화를 계속했습니다",
+    "zh-Hans": "已在 {terminal} 中继续会话",
+    "zh-Hant": "已在 {terminal} 中繼續對話"
+  },
+  "{detail}；命令已复制，可粘贴到终端运行": {
+    "en": "{detail}; the command was copied and can be pasted into a terminal",
+    "ja": "{detail}；コマンドをコピーしました。ターミナルに貼り付けて実行できます",
+    "ko": "{detail}; 명령을 복사했으며 터미널에 붙여 넣어 실행할 수 있습니다",
+    "zh-Hans": "{detail}；命令已复制，可粘贴到终端运行",
+    "zh-Hant": "{detail}；指令已複製，可貼到終端機執行"
+  },
+  "无法继续会话": {
+    "en": "Could not continue the conversation",
+    "ja": "会話を続行できませんでした",
+    "ko": "대화를 계속할 수 없습니다",
+    "zh-Hans": "无法继续会话",
+    "zh-Hant": "無法繼續對話"
+  },
+  "会话位置": {
+    "en": "Session locations",
+    "ja": "セッションの保存場所",
+    "ko": "세션 위치",
+    "zh-Hans": "会话位置",
+    "zh-Hant": "對話位置"
+  },
+  "此文件夹已包含在 CC Buddy 的会话位置中": {
+    "en": "This folder is already included in CC Buddy's session locations",
+    "ja": "このフォルダはすでに CC Buddy のセッションの保存場所に含まれています",
+    "ko": "이 폴더는 이미 CC Buddy의 세션 위치에 포함되어 있습니다",
+    "zh-Hans": "此文件夹已包含在 CC Buddy 的会话位置中",
+    "zh-Hant": "此資料夾已包含在 CC Buddy 的對話位置中"
+  },
+  "正在更新会话位置": {
+    "en": "Updating session locations",
+    "ja": "セッションの保存場所を更新中",
+    "ko": "세션 위치 업데이트 중",
+    "zh-Hans": "正在更新会话位置",
+    "zh-Hant": "正在更新對話位置"
+  },
+  "正在读取会话位置…": {
+    "en": "Loading session locations…",
+    "ja": "セッションの保存場所を読み込み中…",
+    "ko": "세션 위치 불러오는 중…",
+    "zh-Hans": "正在读取会话位置…",
+    "zh-Hant": "正在讀取對話位置…"
+  },
+  "没有可用的会话位置": {
+    "en": "No session locations available",
+    "ja": "利用できるセッションの保存場所がありません",
+    "ko": "사용 가능한 세션 위치가 없습니다",
+    "zh-Hans": "没有可用的会话位置",
+    "zh-Hant": "沒有可用的對話位置"
+  },
+  "添加位置": {
+    "en": "Add location",
+    "ja": "保存場所を追加",
+    "ko": "위치 추가",
+    "zh-Hans": "添加位置",
+    "zh-Hant": "新增位置"
+  },
+  "恢复默认位置": {
+    "en": "Restore defaults",
+    "ja": "デフォルトに戻す",
+    "ko": "기본값 복원",
+    "zh-Hans": "恢复默认位置",
+    "zh-Hant": "恢復預設位置"
+  },
+  "未找到": {
+    "en": "Not found",
+    "ja": "見つかりません",
+    "ko": "찾을 수 없음",
+    "zh-Hans": "未找到",
+    "zh-Hant": "找不到"
+  },
+  "编辑位置": {
+    "en": "Edit location",
+    "ja": "保存場所を編集",
+    "ko": "위치 편집",
+    "zh-Hans": "编辑位置",
+    "zh-Hant": "編輯位置"
+  },
+  "文件夹": {
+    "en": "Folder",
+    "ja": "フォルダ",
+    "ko": "폴더",
+    "zh-Hans": "文件夹",
+    "zh-Hant": "資料夾"
+  },
+  "绝对文件夹路径或 ~/…": {
+    "en": "Absolute folder path or ~/…",
+    "ja": "絶対フォルダパスまたは ~/…",
+    "ko": "절대 폴더 경로 또는 ~/…",
+    "zh-Hans": "绝对文件夹路径或 ~/…",
+    "zh-Hant": "絕對資料夾路徑或 ~/…"
+  },
+  "选择文件夹": {
+    "en": "Choose a folder",
+    "ja": "フォルダを選択",
+    "ko": "폴더 선택",
+    "zh-Hans": "选择文件夹",
+    "zh-Hant": "選擇資料夾"
+  },
+  "添加": {
+    "en": "Add",
+    "ja": "追加",
+    "ko": "추가",
+    "zh-Hans": "添加",
+    "zh-Hant": "新增"
+  },
+  "选择会话数据文件夹": {
+    "en": "Choose a session data folder",
+    "ja": "セッションデータのフォルダを選択",
+    "ko": "세션 데이터 폴더 선택",
+    "zh-Hans": "选择会话数据文件夹",
+    "zh-Hant": "選擇對話資料夾"
+  },
+  "请输入绝对文件夹路径": {
+    "en": "Enter an absolute folder path",
+    "ja": "絶対フォルダパスを入力してください",
+    "ko": "절대 폴더 경로를 입력하세요",
+    "zh-Hans": "请输入绝对文件夹路径",
+    "zh-Hant": "請輸入絕對資料夾路徑"
+  },
+  "请求总览来自当前网关进程；模型仅基于当前缓存的 {cachedModelRequestCount} 条。": {
+    "en": "Request totals come from the current gateway process; model breakdowns use only the {cachedModelRequestCount} cached requests.",
+    "ja": "リクエスト集計は現在のゲートウェイプロセスから取得し、モデル別の内訳はキャッシュ済みの {cachedModelRequestCount} 件のみを使用します。",
+    "ko": "요청 요약은 현재 게이트웨이 프로세스에서 가져오며, 모델별 집계는 현재 캐시된 {cachedModelRequestCount}건만 기준으로 합니다.",
+    "zh-Hans": "请求总览来自当前网关进程；模型仅基于当前缓存的 {cachedModelRequestCount} 条。",
+    "zh-Hant": "請求總覽來自目前的閘道程序；模型僅以目前快取的 {cachedModelRequestCount} 筆為準。"
+  },
+  "网关未捕获此字段": {
+    "en": "Gateway did not capture this field",
+    "ja": "ゲートウェイはこのフィールドをキャプチャしていません",
+    "ko": "게이트웨이가 이 필드를 캡처하지 않았습니다",
+    "zh-Hans": "网关未捕获此字段",
+    "zh-Hant": "閘道未擷取此欄位"
+  },
+  "来源为本机网关管理 API。四个标签分别对应真实捕获边界，包含已脱敏 headers、正文和截断标记；未提供的内容不会被推断。": {
+    "en": "Source: local gateway management API. The four tabs correspond to actual capture boundaries and include redacted headers, bodies, and truncation markers; unavailable content is not inferred.",
+    "ja": "ソースはローカルゲートウェイ管理 API です。4 つのタブは実際のキャプチャ境界に対応し、マスキング済みの headers、本文、切り詰めマーカーを含みます。提供されていない内容は推測しません。",
+    "ko": "출처는 로컬 게이트웨이 관리 API입니다. 네 탭은 실제 캡처 경계에 해당하며 마스킹된 headers, 본문 및 잘림 표시를 포함합니다. 제공되지 않은 내용은 추측하지 않습니다.",
+    "zh-Hans": "来源为本机网关管理 API。四个标签分别对应真实捕获边界，包含已脱敏 headers、正文和截断标记；未提供的内容不会被推断。",
+    "zh-Hant": "來源為本機閘道管理 API。四個分頁分別對應實際擷取邊界，包含已脫敏的 headers、本文與截斷標記；未提供的內容不會被推測。"
+  },
+  "仅显示前 {shown} / 共 {total}（已截断）": {
+    "en": "Showing {shown} of {total} (truncated)",
+    "ja": "先頭 {shown} / 全 {total} 件を表示（切り詰め済み）",
+    "ko": "앞의 {shown} / 총 {total}개만 표시(잘림)",
+    "zh-Hans": "仅显示前 {shown} / 共 {total}（已截断）",
+    "zh-Hant": "僅顯示前 {shown} / 共 {total}（已截斷）"
+  },
+  "网关仅提供截断预览（原始总大小未知）": {
+    "en": "Gateway provides only a truncated preview (original total size unknown)",
+    "ja": "ゲートウェイが提供するのは切り詰められたプレビューのみです（元の合計サイズは不明）",
+    "ko": "게이트웨이는 잘린 미리보기만 제공합니다(원본 전체 크기는 알 수 없음)",
+    "zh-Hans": "网关仅提供截断预览（原始总大小未知）",
+    "zh-Hant": "閘道僅提供截斷預覽（原始總大小未知）"
+  },
+  "客户端请求": {
+    "en": "Client request",
+    "ja": "クライアントリクエスト",
+    "ko": "클라이언트 요청",
+    "zh-Hans": "客户端请求",
+    "zh-Hant": "用戶端請求"
+  },
+  "上游请求": {
+    "en": "Upstream request",
+    "ja": "アップストリームリクエスト",
+    "ko": "업스트림 요청",
+    "zh-Hans": "上游请求",
+    "zh-Hant": "上游請求"
+  },
+  "上游响应": {
+    "en": "Upstream response",
+    "ja": "アップストリームレスポンス",
+    "ko": "업스트림 응답",
+    "zh-Hans": "上游响应",
+    "zh-Hant": "上游回應"
+  },
+  "客户端响应": {
+    "en": "Client response",
+    "ja": "クライアントレスポンス",
+    "ko": "클라이언트 응답",
+    "zh-Hans": "客户端响应",
+    "zh-Hant": "用戶端回應"
+  },
+  "客户端发送到本机网关的请求": {
+    "en": "Request sent from the client to the local gateway",
+    "ja": "クライアントからローカルゲートウェイに送信されたリクエスト",
+    "ko": "클라이언트에서 로컬 게이트웨이로 보낸 요청",
+    "zh-Hans": "客户端发送到本机网关的请求",
+    "zh-Hant": "用戶端傳送至本機閘道的請求"
+  },
+  "本机网关发往 Provider 的请求": {
+    "en": "Request sent from the local gateway to the Provider",
+    "ja": "ローカルゲートウェイから Provider に送信されたリクエスト",
+    "ko": "로컬 게이트웨이에서 Provider로 보낸 요청",
+    "zh-Hans": "本机网关发往 Provider 的请求",
+    "zh-Hant": "本機閘道傳送至 Provider 的請求"
+  },
+  "Provider 返回给本机网关的响应": {
+    "en": "Response returned from the Provider to the local gateway",
+    "ja": "Provider からローカルゲートウェイに返されたレスポンス",
+    "ko": "Provider에서 로컬 게이트웨이로 반환한 응답",
+    "zh-Hans": "Provider 返回给本机网关的响应",
+    "zh-Hant": "Provider 傳回本機閘道的回應"
+  },
+  "本机网关返回给客户端的响应": {
+    "en": "Response returned from the local gateway to the client",
+    "ja": "ローカルゲートウェイからクライアントに返されたレスポンス",
+    "ko": "로컬 게이트웨이에서 클라이언트로 반환한 응답",
+    "zh-Hans": "本机网关返回给客户端的响应",
+    "zh-Hant": "本機閘道傳回用戶端的回應"
+  },
+  "将清空本机网关当前保存的全部请求日志，并清除本机内存中的生命周期记录。此操作无法撤销。": {
+    "en": "This clears all request logs currently stored by the local gateway and lifecycle records held in this app's memory. This action cannot be undone.",
+    "ja": "ローカルゲートウェイに現在保存されているすべてのリクエストログと、このアプリのメモリ内にあるライフサイクル記録を消去します。この操作は元に戻せません。",
+    "ko": "로컬 게이트웨이에 현재 저장된 모든 요청 로그와 이 앱의 메모리에 있는 수명 주기 기록을 지웁니다. 이 작업은 되돌릴 수 없습니다.",
+    "zh-Hans": "将清空本机网关当前保存的全部请求日志，并清除本机内存中的生命周期记录。此操作无法撤销。",
+    "zh-Hant": "將清空本機閘道目前儲存的所有請求記錄，並清除本機記憶體中的生命週期記錄。此操作無法復原。"
+  },
+  "查看网关捕获的客户端与上游请求响应": {
+    "en": "View client and upstream requests and responses captured by the gateway",
+    "ja": "ゲートウェイがキャプチャしたクライアントとアップストリームのリクエストおよびレスポンスを表示",
+    "ko": "게이트웨이가 캡처한 클라이언트 및 업스트림 요청과 응답 보기",
+    "zh-Hans": "查看网关捕获的客户端与上游请求响应",
+    "zh-Hant": "檢視閘道擷取的用戶端與上游請求及回應"
+  },
+  "接入网关后，转发记录将实时显示": {
+    "en": "Forwarding records appear here in real time after connecting to the gateway",
+    "ja": "ゲートウェイに接続すると、転送記録がここにリアルタイムで表示されます",
+    "ko": "게이트웨이에 연결하면 전달 기록이 여기에 실시간으로 표시됩니다",
+    "zh-Hans": "接入网关后，转发记录将实时显示",
+    "zh-Hant": "接入閘道後，轉送記錄會即時顯示"
+  },
+  "网关日志": {
+    "en": "Gateway log",
+    "ja": "ゲートウェイログ",
+    "ko": "게이트웨이 로그",
+    "zh-Hans": "网关日志",
+    "zh-Hant": "閘道記錄"
+  },
+  "网关日志，{state}": {
+    "en": "Gateway log, {state}",
+    "ja": "ゲートウェイログ、{state}",
+    "ko": "게이트웨이 로그, {state}",
+    "zh-Hans": "网关日志，{state}",
+    "zh-Hant": "閘道記錄，{state}"
   }
 }

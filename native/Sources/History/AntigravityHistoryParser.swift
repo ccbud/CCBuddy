@@ -13,12 +13,32 @@ private struct AntigravitySummary {
     var cwd: String?
 }
 
+struct AntigravitySQLiteSummaryRow: Sendable {
+    var id: String
+    var title: String
+    var preview: String
+    var stepCount: Int
+    var modifiedAt: Date?
+    var cwd: String?
+
+    var contentLength: UInt64 {
+        UInt64(title.utf8.count) + UInt64(preview.utf8.count)
+    }
+}
+
 enum AntigravityHistoryParser {
     static func parse(
         candidate: HistoryFileCandidate,
         facts: HistoryFileFacts,
         appDataRoot: URL
     ) -> HistorySession {
+        if candidate.backingFile != nil {
+            return parseSummaryDatabase(
+                candidate: candidate,
+                facts: facts,
+                appDataRoot: appDataRoot
+            )
+        }
         let uuid = candidate.file.deletingPathExtension().lastPathComponent
         let summary = summary(for: candidate.file, uuid: uuid)
         var normalized = normalizeDatabase(candidate.file)
@@ -37,7 +57,7 @@ enum AntigravityHistoryParser {
         } else if !preview.isEmpty {
             autoTitle = String(preview.prefix(90))
         } else {
-            autoTitle = fallbackTitle
+            autoTitle = fallbackTitle.isEmpty ? uuid : fallbackTitle
         }
 
         let metadata = HistorySessionMetadata(
@@ -61,6 +81,116 @@ enum AntigravityHistoryParser {
             messageCount: normalized.messages.count
         )
         return HistorySession(metadata: metadata, messages: normalized.messages)
+    }
+
+    static func sqliteSummaryRows(
+        database: HistorySQLiteDatabase,
+        id: String? = nil
+    ) -> [AntigravitySQLiteSummaryRow] {
+        guard database.tableExists("conversation_summaries") else { return [] }
+        let idPredicate = id == nil ? "" : "AND conversation_id = ?1"
+        return database.rows(
+            """
+            SELECT conversation_id, title, preview, step_count, last_modified_time,
+                   workspace_uris
+            FROM conversation_summaries
+            WHERE parent_conversation_id = '' AND nesting_depth = 0 \(idPredicate)
+            """,
+            bindings: id.map { [$0] } ?? []
+        ).compactMap { row in
+            guard let nativeID = WakeHistoryAdapterSupport.nonempty(
+                row["conversation_id"]?.stringValue
+            ) else { return nil }
+            let rawStepCount = max(0, row["step_count"]?.int64Value ?? 0)
+            return AntigravitySQLiteSummaryRow(
+                id: nativeID,
+                title: row["title"]?.stringValue ?? "",
+                preview: row["preview"]?.stringValue ?? "",
+                stepCount: rawStepCount > Int64(Int.max) ? Int.max : Int(rawStepCount),
+                modifiedAt: WakeHistoryAdapterSupport.sqliteDate(
+                    row["last_modified_time"]?.stringValue
+                ),
+                cwd: firstWorkspace(row["workspace_uris"]?.stringValue)
+            )
+        }
+    }
+
+    private static func parseSummaryDatabase(
+        candidate: HistoryFileCandidate,
+        facts: HistoryFileFacts,
+        appDataRoot: URL
+    ) -> HistorySession {
+        let databaseFile = candidate.primaryStorageFile
+        let nativeID = WakeHistoryAdapterSupport.nativeID(candidate)
+        guard let database = HistorySQLiteDatabase(databaseFile),
+              let row = sqliteSummaryRows(database: database, id: nativeID).first else {
+            let custom = ForeignHistorySupport.customMetadata(
+                source: .antigravity,
+                sessionKey: nativeID,
+                appDataRoot: appDataRoot
+            )
+            let metadata = HistorySessionMetadata(
+                id: "antigravity:\(nativeID)",
+                file: candidate.file,
+                source: .antigravity,
+                dirID: candidate.directory.id,
+                dirLabel: candidate.directory.label,
+                sessionID: nativeID,
+                project: "",
+                title: custom.title ?? nativeID,
+                autoTitle: nativeID,
+                tags: custom.tags,
+                imported: false,
+                deleted: custom.deleted,
+                createdAt: facts.createdAt,
+                lastActivity: facts.modifiedAt,
+                sizeBytes: facts.sizeBytes
+            )
+            return HistorySession(metadata: metadata, messages: [])
+        }
+
+        let preview = row.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        var detail = preview
+        if !detail.isEmpty { detail += "\n\n" }
+        detail += "Antigravity stores conversation content encrypted — only this summary is available in CC Buddy."
+        let timestampText = WakeHistoryAdapterSupport.timestampText(row.modifiedAt)
+        let messages = [HistoryMessage(
+            role: "system",
+            content: [.init(type: "text", text: detail)],
+            timestamp: row.modifiedAt,
+            timestampText: timestampText,
+            isMetadata: true
+        )]
+        let custom = ForeignHistorySupport.customMetadata(
+            source: .antigravity,
+            sessionKey: nativeID,
+            appDataRoot: appDataRoot
+        )
+        let producerTitle = WakeHistoryAdapterSupport.nonempty(row.title)
+            ?? WakeHistoryAdapterSupport.nonempty(preview)
+            .map { String($0.prefix(90)) }
+        let autoTitle = producerTitle ?? nativeID
+        let timestamp = row.modifiedAt ?? facts.modifiedAt
+        let metadata = HistorySessionMetadata(
+            id: "antigravity:\(nativeID)",
+            file: candidate.file,
+            source: .antigravity,
+            dirID: candidate.directory.id,
+            dirLabel: candidate.directory.label,
+            sessionID: nativeID,
+            cwd: row.cwd,
+            project: HistoryParsingSupport.projectName(cwd: row.cwd, encodedDirectory: nil),
+            title: custom.title ?? autoTitle,
+            autoTitle: autoTitle,
+            tags: custom.tags,
+            imported: false,
+            deleted: custom.deleted,
+            createdAt: timestamp,
+            lastActivity: timestamp,
+            sizeBytes: row.contentLength,
+            messageCount: row.stepCount
+        )
+        return HistorySession(metadata: metadata, messages: messages)
     }
 
     private static func normalizeDatabase(_ file: URL) -> AntigravityNormalizedTranscript {
@@ -201,6 +331,12 @@ enum AntigravityHistoryParser {
     private static func workspacePath(_ uri: String) -> String {
         let value = uri.hasPrefix("file://") ? String(uri.dropFirst("file://".count)) : uri
         return ForeignHistorySupport.percentDecode(value)
+    }
+
+    private static func firstWorkspace(_ rawValue: String?) -> String? {
+        guard let value = WakeHistoryAdapterSupport.historyValue(json: rawValue),
+              let uri = value.arrayValue?.first?.stringValue else { return nil }
+        return WakeHistoryAdapterSupport.nonempty(workspacePath(uri))
     }
 
     private static func walAwareModifiedAt(_ file: URL, fallback: Date) -> Date {

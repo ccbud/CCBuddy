@@ -1,19 +1,27 @@
 # CC Buddy Native
 
 This directory is the macOS-native replacement for the legacy Tauri application. It uses
-SwiftUI/AppKit for the product surface, preserves the existing `~/.ccbud/config.json` schema,
-and supervises Maxim Bifrost's `bifrost-http` executable for all LLM gateway traffic.
+SwiftUI/AppKit for the product surface, preserves the existing `~/.ccbud/config.json` schema, and
+supervises the bundled `ccbud-gateway` Rust helper for local LLM gateway traffic. The helper follows
+the core proxy architecture of cc-switch while keeping configuration and lifecycle ownership in the
+native app.
 
-Generate and build the project:
+Build the locked arm64 helper, generate the project, and build the app:
 
 ```bash
 cd native
+./Scripts/build-gateway-helper.sh
 xcodegen generate
-xcodebuild -project CCBuddy.xcodeproj -scheme CCBuddy -destination 'platform=macOS' build
+xcodebuild -project CCBuddy.xcodeproj -scheme CCBuddy \
+  -destination 'platform=macOS,arch=arm64' build
 ```
 
-Run unit/integration tests with an isolated application and CLI configuration root. Supplying all
-three explicit binaries makes the real loopback Bifrost, Codex, and Claude E2Es mandatory instead
+`build-gateway-helper.sh` requires an Apple-silicon Mac and Rust 1.88 or newer. It runs Cargo in
+locked release mode and installs the verified result at `Vendor/ccbud-gateway`. The Xcode copy phase
+then embeds that binary at `CC Buddy.app/Contents/MacOS/ccbud-gateway`.
+
+Run unit/integration tests with isolated application and CLI configuration roots. Supplying the
+three explicit binaries makes the real loopback gateway, Codex, and Claude E2Es mandatory instead
 of skippable:
 
 ```bash
@@ -22,13 +30,16 @@ mkdir -p "$test_root/ccbud" "$test_root/claude" "$test_root/codex"
 CCBUD_HOME="$test_root/ccbud" \
 CCBUD_CLAUDE_SETTINGS="$test_root/claude/settings.json" \
 CCBUD_CODEX_CONFIG="$test_root/codex/config.toml" \
-CCBUD_BIFROST_BINARY="$PWD/Vendor/bifrost-http" \
+CCBUD_GATEWAY_BINARY="$PWD/Vendor/ccbud-gateway" \
 CCBUD_CODEX_BINARY="$(command -v codex)" \
 CCBUD_CLAUDE_BINARY="$(command -v claude)" \
 xcodebuild -project CCBuddy.xcodeproj -scheme CCBuddy \
   -destination 'platform=macOS,arch=arm64' -only-testing:CCBuddyTests \
   -parallel-testing-enabled NO test
 ```
+
+`CCBUD_GATEWAY_BINARY` is a development and test override. Production launches resolve only the
+bundled helper.
 
 Run UI tests under a unique application identifier. This is required when a production CC Buddy
 with `dev.ccbud.gateway` is installed or running, because `XCUIApplication.terminate()` operates
@@ -42,24 +53,26 @@ xcodebuild -project CCBuddy.xcodeproj -scheme CCBuddy \
   CCBUD_PRODUCT_BUNDLE_IDENTIFIER="dev.ccbud.gateway.uitest.$ui_suffix" test
 ```
 
-The app resolves Bifrost in this order: `CCBUD_BIFROST_BINARY`, an executable bundled in the app,
-then `native/Vendor/bifrost-http`. Release builds will bundle the pinned sidecar; local UI work can
-set the environment variable to any compatible Bifrost build.
-
-The development fetcher pins Bifrost HTTP `v1.6.11` and verifies the published arm64 SHA-256 before
-installing it locally:
+Run the helper's Rust tests independently with:
 
 ```bash
-./Scripts/fetch-bifrost.sh
-CCBUD_BIFROST_BINARY="$PWD/Vendor/bifrost-http" xcodebuild \
-  -project CCBuddy.xcodeproj -scheme CCBuddy -destination 'platform=macOS' build
+cargo test --locked --manifest-path GatewayHelper/Cargo.toml
 ```
 
 ## Gateway log privacy
 
-The monitor inspector requires Bifrost to persist structured inference logs and provider-wire raw
-request/response payloads in its app-private local SQLite database. Generated configuration applies
-Bifrost's minimum one-day retention threshold through `client.log_retention_days`. Bifrost prunes
-expired rows at startup and then approximately daily, so deletion is asynchronous rather than an
-exact 24-hour guarantee. In Bifrost v1.6.11, `logs_store.retention_days` controls ClickHouse TTL and
-does not control the SQLite cleaner.
+The monitor inspector reads a bounded, in-memory ring of request records from the authenticated
+loopback management listener. Credential-bearing headers are redacted, captured payloads are
+truncated at the helper's safety limit, and all records disappear when the helper exits. Prompt and
+response bodies may still contain sensitive content, so management credentials and the generated
+owner-only configuration must remain private.
+
+## Attribution
+
+The gateway helper derives part of its architecture and implementation from cc-switch. Its upstream
+MIT notice is maintained in `GatewayHelper/NOTICE` and ships byte-for-byte in the app as
+`CCBuddyGateway-NOTICE.txt`. Locked Rust dependency licenses are generated with
+`node Scripts/generate-gateway-third-party-notices.mjs`, checked into
+`GatewayHelper/THIRD-PARTY-NOTICES.txt`, and bundled as
+`CCBuddyGateway-THIRD-PARTY-NOTICES.txt`. Release verification also checks the project GPL license
+and the bundled Wake and Zstandard notices.

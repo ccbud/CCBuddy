@@ -17,7 +17,8 @@ native/*.xcresult/
 native/TestResults*-attachments/
 native/ReleaseValidation-*/
 native/VisualComparison/
-native/Vendor/bifrost-http
+native/GatewayHelper/target/
+native/Vendor/ccbud-gateway
 native/Vendor/test-tools/
 native/*.xcworkspace/xcuserdata/
 native/*.xcodeproj/xcuserdata/

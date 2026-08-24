@@ -31,6 +31,26 @@ final class AppLocalizationTests: XCTestCase {
         XCTAssertEqual(AppLanguage.japanese.localized("启动服务"), "サービスを起動")
         XCTAssertEqual(AppLanguage.korean.localized("成功率"), "성공률")
         XCTAssertEqual(AppLanguage.english.localized("model-id-does-not-translate"), "model-id-does-not-translate")
+        XCTAssertEqual(AppLanguage.traditionalChinese.localized("Conversations"), "對話")
+        XCTAssertEqual(AppLanguage.japanese.localized("Search Conversations"), "会話を検索")
+        XCTAssertEqual(AppLanguage.korean.localized("Refresh Sessions"), "세션 새로 고침")
+    }
+
+    func testConversationWorkbenchControlLabelsAreLocalized() {
+        XCTAssertEqual(AppLanguage.english.localized("会话排序"), "Sort conversations")
+        XCTAssertEqual(AppLanguage.japanese.localized("更新时间"), "更新日時")
+        XCTAssertEqual(AppLanguage.english.localized("创建时间"), "Created")
+        XCTAssertEqual(AppLanguage.korean.localized("消息数量"), "메시지 수")
+        XCTAssertEqual(AppLanguage.traditionalChinese.localized("实时更新关闭"), "即時更新已關閉")
+        XCTAssertEqual(
+            AppLanguage.english.localized("会话实时更新状态"),
+            "Conversation live update status"
+        )
+        XCTAssertEqual(AppLanguage.japanese.localized("已置顶"), "ピン留め済み")
+        XCTAssertEqual(AppLanguage.korean.localized("已收藏"), "즐겨찾기")
+        XCTAssertEqual(AppLanguage.english.localized("12 个会话"), "12 sessions")
+        XCTAssertEqual(AppLanguage.traditionalChinese.localized("正在导入会话"), "正在匯入會話")
+        XCTAssertEqual(AppLanguage.japanese.localized("更新会话索引"), "会話インデックスを更新")
     }
 
     func testDynamicUsageConversationLifecycleAndPluginTemplatesPreserveRuntimeValues() {
@@ -49,20 +69,20 @@ final class AppLocalizationTests: XCTestCase {
             "Claude을(를) 열 수 없습니다. 데스크톱 앱이 설치되어 있는지 확인하세요"
         )
         XCTAssertEqual(
-            AppLanguage.english.localized("正在将 Bifrost 从 localhost:8788 重启到 localhost:9799"),
-            "Restarting Bifrost from localhost:8788 to localhost:9799"
+            AppLanguage.english.localized("正在将网关从 localhost:8788 重启到 localhost:9799"),
+            "Restarting gateway from localhost:8788 to localhost:9799"
         )
         XCTAssertEqual(
-            AppLanguage.traditionalChinese.localized("Bifrost 启动失败 · socket detail"),
-            "Bifrost 啟動失敗 · socket detail"
+            AppLanguage.traditionalChinese.localized("网关启动失败 · socket detail"),
+            "閘道啟動失敗 · socket detail"
         )
         XCTAssertEqual(
-            AppLanguage.english.localized("Bifrost 请求已重试 3 次"),
-            "Bifrost retried the request 3 times"
+            AppLanguage.english.localized("网关请求已重试 3 次"),
+            "Gateway retried the request 3 times"
         )
         XCTAssertEqual(
-            AppLanguage.korean.localized("Bifrost 请求失败 · 上游 HTTP 429"),
-            "Bifrost 요청 실패 · 업스트림 HTTP 429"
+            AppLanguage.korean.localized("网关请求失败 · 上游 HTTP 429"),
+            "게이트웨이 요청 실패 · 업스트림 HTTP 429"
         )
         XCTAssertEqual(
             AppLanguage.english.localized("插件“raw-plugin-id”已安装"),
@@ -71,6 +91,22 @@ final class AppLocalizationTests: XCTestCase {
         XCTAssertEqual(
             AppLanguage.japanese.localized("Qoder CLI helper 读取失败：raw helper detail"),
             "Qoder CLI helper の読み取りに失敗しました：raw helper detail"
+        )
+        XCTAssertEqual(
+            AppLanguage.english.localized("已在 Terminal 中继续会话"),
+            "Continued the conversation in Terminal"
+        )
+        XCTAssertEqual(
+            AppLanguage.japanese.localized(
+                "未找到命令 qodercli，请确认已安装并可从登录 shell 访问"
+            ),
+            "コマンド qodercli が見つかりません。インストール済みでログインシェルから実行できることを確認してください"
+        )
+        XCTAssertEqual(
+            AppLanguage.korean.localized(
+                "permission denied；命令已复制，可粘贴到终端运行"
+            ),
+            "permission denied; 명령을 복사했으며 터미널에 붙여 넣어 실행할 수 있습니다"
         )
     }
 
@@ -132,17 +168,34 @@ final class AppLocalizationTests: XCTestCase {
     func testNativeGatewayErrorsAndCollapsedControlsAreLocalized() {
         XCTAssertEqual(
             AppLanguage.english.localized(
-                "Bifrost 请求失败（HTTP 502，事件 event-7）：upstream unavailable"
+                "网关请求失败（HTTP 502，事件 event-7）：upstream unavailable"
             ),
-            "Bifrost request failed (HTTP 502, event event-7): upstream unavailable"
+            "Gateway request failed (HTTP 502, event event-7): upstream unavailable"
         )
         XCTAssertEqual(
-            AppLanguage.japanese.localized("Bifrost 启动健康检查超时"),
-            "Bifrost の起動ヘルスチェックがタイムアウトしました"
+            AppLanguage.japanese.localized("网关启动健康检查超时"),
+            "ゲートウェイの起動ヘルスチェックがタイムアウトしました"
         )
         XCTAssertEqual(AppLanguage.korean.localized("展开侧边栏"), "사이드바 펼치기")
         XCTAssertEqual(AppLanguage.english.localized("切换到深色模式"), "Switch to dark mode")
         XCTAssertEqual(AppLanguage.english.localized("会话时间线"), "Conversation timeline")
+    }
+
+    func testGatewayFailoverControlsAreLocalized() {
+        XCTAssertEqual(AppLanguage.english.localized("网关故障转移"), "Gateway failover")
+        XCTAssertEqual(AppLanguage.japanese.localized("故障转移顺序"), "フェイルオーバー順序")
+        XCTAssertEqual(AppLanguage.korean.localized("上移备用服务"), "대체 공급자 위로 이동")
+        XCTAssertEqual(
+            AppLanguage.traditionalChinese.localized("移出故障转移队列"),
+            "移出故障轉移佇列"
+        )
+        XCTAssertEqual(
+            AppLanguage.english.localized(
+                "当前服务不可用时，按顺序尝试备用服务。重试次数是整条队列的总预算。"
+            ),
+            "When the current provider is unavailable, try fallback providers in order. "
+                + "Retries are a total budget for the entire queue."
+        )
     }
 
     func testCLIManualRecoveryInstructionsAndDetailsAreLocalized() {

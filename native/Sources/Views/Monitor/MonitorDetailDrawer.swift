@@ -3,7 +3,6 @@ import SwiftUI
 struct MonitorDetailDrawer: View {
     @ObservedObject var store: MonitorStore
     @Binding var revealsSensitiveData: Bool
-    let upstreamProtocol: Provider.WireProtocol?
     let width: CGFloat
     let expanded: Bool
     let toggleExpanded: () -> Void
@@ -11,7 +10,7 @@ struct MonitorDetailDrawer: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appLanguage) private var appLanguage
-    @State private var section: MonitorDetailSection = .request
+    @State private var section: MonitorDetailSection = .clientRequest
     @State private var presentation: MonitorPayloadPresentation = .pretty
     @State private var copied = false
     @State private var searchQuery = ""
@@ -23,10 +22,7 @@ struct MonitorDetailDrawer: View {
             Rectangle().fill(Color.ccBorder).frame(height: 1)
 
             if let detail = store.selectedDetail {
-                let document = MonitorInspectorDocument(
-                    log: detail,
-                    upstreamProtocol: upstreamProtocol
-                )
+                let document = MonitorInspectorDocument(log: detail)
                 meta(for: detail, document: document)
                 Rectangle().fill(Color.ccBorder).frame(height: 1)
                 tabs(document)
@@ -136,42 +132,32 @@ struct MonitorDetailDrawer: View {
         .accessibilityIdentifier(identifier)
     }
 
-    private var headerRecord: BifrostLog? {
+    private var headerRecord: GatewayLog? {
         if let detail = store.selectedDetail { return detail }
         guard let id = store.detailRequestID else { return nil }
         return store.requests.first { $0.id == id }
     }
 
-    private func meta(for detail: BifrostLog, document: MonitorInspectorDocument) -> some View {
+    private func meta(for detail: GatewayLog, document: MonitorInspectorDocument) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 chip(
                     label: "模型",
-                    value: "\(detail.requestedModel.isEmpty ? "—" : detail.requestedModel) → \(detail.outgoingModel.isEmpty ? "—" : detail.outgoingModel)"
+                    value: modelRouteLabel(detail)
                 )
                 chip(label: "Provider", value: detail.displayProvider.isEmpty ? "—" : detail.displayProvider)
                 if let translationLabel = document.protocolDisposition.translationLabel {
                     chip(label: "协议转换", value: translationLabel)
                 }
-                if additionalBool("aborted", in: detail) == true {
-                    chip(label: "已中断", value: appLanguage.localized("客户端中途断开"))
-                }
+                if !detail.routeLabel.isEmpty { chip(label: "路由", value: detail.routeLabel) }
+                if detail.attempts > 0 { chip(label: "尝试", value: String(detail.attempts)) }
                 chip(label: "耗时", value: "\(MonitorFormat.milliseconds(detail.latency)) ms")
-                if let sessionID = additionalString(["session_id", "sessionId"], in: detail) {
-                    chip(label: "会话", value: String(sessionID.prefix(8)))
-                }
-                if additionalString(["agent_id", "agentId"], in: detail) != nil {
-                    chip(label: "代理", value: appLanguage.localized("子代理"))
-                }
                 chip(label: "时间", value: MonitorFormat.timestamp(detail.monitorTimestamp))
                 if detail.stream == true {
                     chip(label: "模式", value: appLanguage.localized("流式"))
                 }
                 if detail.isError, let code = detail.errorStatusCode {
                     chip(label: "真实上游 HTTP", value: String(code))
-                }
-                if let cost = MonitorFormat.compactCost(detail.cost) {
-                    chip(label: "成本", value: cost)
                 }
             }
             .padding(.horizontal, 16)
@@ -191,12 +177,12 @@ struct MonitorDetailDrawer: View {
         .clipShape(Capsule())
     }
 
-    private func headerStatus(for record: BifrostLog) -> String {
+    private func headerStatus(for record: GatewayLog) -> String {
         if record.isError, let code = record.errorStatusCode {
-            return appLanguage.localized("Bifrost · 错误 · 上游 HTTP \(code)")
+            return appLanguage.localized("网关 · 错误 · 上游 HTTP \(code)")
         }
         let status = record.status.monitorLabel(language: appLanguage)
-        return appLanguage.localized("Bifrost · \(status)")
+        return appLanguage.localized("网关 · \(status)")
     }
 
     private func tabs(_ document: MonitorInspectorDocument) -> some View {
@@ -230,7 +216,7 @@ struct MonitorDetailDrawer: View {
     }
 
     @ViewBuilder
-    private func payloadBody(_ detail: BifrostLog, document: MonitorInspectorDocument) -> some View {
+    private func payloadBody(_ detail: GatewayLog, document: MonitorInspectorDocument) -> some View {
         let selectedSection = activeSection(in: document)
         let payload = document.payload(for: selectedSection)
         VStack(alignment: .leading, spacing: 11) {
@@ -244,7 +230,7 @@ struct MonitorDetailDrawer: View {
                             Text(appLanguage.localized(
                                 payload.isTruncated
                                     ? "截断预览"
-                                    : (payload.source == .capturedRaw ? "捕获原文" : "规范化 JSON")
+                                    : "捕获内容"
                             ))
                                 .font(.system(size: 9.5, weight: .semibold))
                                 .foregroundStyle(Color.ccCaption)
@@ -287,7 +273,7 @@ struct MonitorDetailDrawer: View {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 19, weight: .light))
                         .foregroundStyle(Color.ccCaption)
-                    Text("Bifrost 未保存此字段")
+                    Text("网关未捕获此字段")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(Color.ccMuted)
                     Text("界面不会从其他字段猜测或拼装内容")
@@ -396,7 +382,7 @@ struct MonitorDetailDrawer: View {
 
     private var sourceNotice: some View {
         Label {
-            Text("来源为 Bifrost 管理 API。原文复制保留 Bifrost 捕获的正文；规范化标签的“原文”是无缩进 JSON。管理 API 未提供的 headers、URL 或成功 HTTP 状态不会被推断。")
+            Text("来源为本机网关管理 API。四个标签分别对应真实捕获边界，包含已脱敏 headers、正文和截断标记；未提供的内容不会被推断。")
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: "checkmark.shield")
@@ -409,7 +395,7 @@ struct MonitorDetailDrawer: View {
     private var loadingBody: some View {
         VStack(spacing: 11) {
             ProgressView().controlSize(.small)
-            Text("正在读取 Bifrost 请求详情…")
+            Text("正在读取网关请求详情…")
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.ccMuted)
         }
@@ -424,7 +410,7 @@ struct MonitorDetailDrawer: View {
             Text("无法读取详情")
                 .font(.system(size: 12.5, weight: .semibold))
             Text(appLanguage.localized(
-                store.detailError ?? "这条记录可能已从 Bifrost 日志中清除"
+                store.detailError ?? "这条记录可能已从网关日志中清除"
             ))
                 .font(.system(size: 11))
                 .foregroundStyle(Color.ccCaption)
@@ -437,16 +423,13 @@ struct MonitorDetailDrawer: View {
 
     private var selectedVisibleText: String? {
         guard let detail = store.selectedDetail else { return nil }
-        let document = MonitorInspectorDocument(
-            log: detail,
-            upstreamProtocol: upstreamProtocol
-        )
+        let document = MonitorInspectorDocument(log: detail)
         guard let payload = document.payload(for: activeSection(in: document)) else { return nil }
         return visibleText(payload)
     }
 
     private func activeSection(in document: MonitorInspectorDocument) -> MonitorDetailSection {
-        document.sections.contains(section) ? section : (document.sections.first ?? .request)
+        document.sections.contains(section) ? section : (document.sections.first ?? .clientRequest)
     }
 
     private func visibleText(_ payload: MonitorInspectorPayload) -> String {
@@ -468,7 +451,7 @@ struct MonitorDetailDrawer: View {
     }
 
     private func resetInspector() {
-        section = .request
+        section = .clientRequest
         presentation = .pretty
         copied = false
         searchQuery = ""
@@ -499,7 +482,7 @@ struct MonitorDetailDrawer: View {
         if let totalBytes = payload.totalBytes {
             return "仅显示前 \(formattedBytes(payload.shownBytes)) / 共 \(formattedBytes(totalBytes))（已截断）"
         }
-        return "Bifrost 仅提供截断预览（原始总大小未知）"
+        return "网关仅提供截断预览（原始总大小未知）"
     }
 
     private func sectionAccessibilityLabel(_ section: MonitorDetailSection) -> String {
@@ -508,24 +491,9 @@ struct MonitorDetailDrawer: View {
         return appLanguage.localized("\(title)：\(explanation)")
     }
 
-    private func additionalString(_ names: [String], in detail: BifrostLog) -> String? {
-        for name in names {
-            guard let value = detail.additionalFields[name] else { continue }
-            if case .string(let string) = value,
-               !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return string
-            }
-        }
-        return nil
-    }
-
-    private func additionalBool(_ name: String, in detail: BifrostLog) -> Bool? {
-        guard let value = detail.additionalFields[name] else { return nil }
-        switch value {
-        case .bool(let bool): return bool
-        case .number(let number): return number != 0
-        case .string(let string): return ["true", "yes", "1"].contains(string.lowercased())
-        default: return nil
-        }
+    private func modelRouteLabel(_ detail: GatewayLog) -> String {
+        let requested = detail.requestedModel.isEmpty ? "—" : detail.requestedModel
+        let outgoing = detail.outgoingModel.isEmpty ? "—" : detail.outgoingModel
+        return requested == outgoing ? requested : "\(requested) → \(outgoing)"
     }
 }

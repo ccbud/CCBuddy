@@ -49,6 +49,10 @@ WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ccbud-package.XXXXXX")"
 readonly WORK_ROOT
 trap 'rm -rf "$WORK_ROOT"' EXIT
 readonly APP="$WORK_ROOT/CC Buddy.app"
+SOURCE_VERIFY_MODE="$([[ "$MODE" == "signed" ]] && echo signed || echo unsigned)"
+readonly SOURCE_VERIFY_MODE
+"$ROOT/native/Scripts/verify-release-app.sh" \
+  "$APP_SOURCE" "$VERSION" "$SOURCE_VERIFY_MODE"
 ditto "$APP_SOURCE" "$APP"
 
 if [[ "$MODE" == "signed" ]]; then
@@ -59,8 +63,6 @@ if [[ "$MODE" == "signed" ]]; then
   require_value TAURI_SIGNING_PRIVATE_KEY "$updater_signing_key"
   require_value TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$updater_signing_password"
   [[ -f "$apple_api_key_path" ]] || fail "APPLE_API_KEY_PATH is not a file"
-  "$ROOT/native/Scripts/verify-release-app.sh" "$APP" "$VERSION" signed
-
   readonly NOTARY_ZIP="$WORK_ROOT/CC.Buddy.notary.zip"
   ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
   xcrun notarytool submit "$NOTARY_ZIP" --key "$apple_api_key_path" \

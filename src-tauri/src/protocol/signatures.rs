@@ -26,8 +26,18 @@ pub(crate) fn json_thought_signature(value: &Value) -> Option<String> {
         .pointer("/extra_content/google/thought_signature")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .or_else(|| value.get("thought_signature").and_then(Value::as_str).filter(|s| !s.is_empty()))
-        .or_else(|| value.pointer("/function/thought_signature").and_then(Value::as_str).filter(|s| !s.is_empty()))
+        .or_else(|| {
+            value
+                .get("thought_signature")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            value
+                .pointer("/function/thought_signature")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        })
         .map(str::to_string)
 }
 
@@ -37,12 +47,19 @@ pub(crate) fn tool_call_thought_signature(call: &ToolCall) -> Option<String> {
     call.thought_signature
         .as_deref()
         .filter(|s| !s.is_empty())
-        .or_else(|| call.function.thought_signature.as_deref().filter(|s| !s.is_empty()))
+        .or_else(|| {
+            call.function
+                .thought_signature
+                .as_deref()
+                .filter(|s| !s.is_empty())
+        })
         .map(str::to_string)
 }
 
 fn strip_internal_thought_signature(call: &mut Value) {
-    let Some(call_obj) = call.as_object_mut() else { return };
+    let Some(call_obj) = call.as_object_mut() else {
+        return;
+    };
     call_obj.remove("thought_signature");
     if let Some(function) = call_obj.get_mut("function").and_then(Value::as_object_mut) {
         function.remove("thought_signature");
@@ -57,9 +74,13 @@ fn set_google_thought_signature(call: &mut Value, signature: &str) {
 /// llm-connector serializes its internal signature fields literally. Rewrite them into Gemini's
 /// OpenAI-compatible `extra_content.google.thought_signature` before forwarding.
 pub(super) fn normalize_openai_request_thought_signatures(body: &mut Value) {
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
     for message in messages {
-        let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) else { continue };
+        let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) else {
+            continue;
+        };
         for call in calls {
             if let Some(signature) = json_thought_signature(call) {
                 set_google_thought_signature(call, &signature);
@@ -75,10 +96,15 @@ pub(super) fn normalize_openai_request_thought_signatures(body: &mut Value) {
 /// this is the last-resort placeholder for turns whose reasoning didn't survive the wire.
 /// Providers without the requirement ignore the extra field.
 pub(super) fn ensure_chat_tool_call_reasoning_content(body: &mut Value) {
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
     for message in messages {
         let has_tool_calls = message.get("role").and_then(Value::as_str) == Some("assistant")
-            && message.get("tool_calls").and_then(Value::as_array).is_some_and(|c| !c.is_empty());
+            && message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .is_some_and(|c| !c.is_empty());
         if !has_tool_calls {
             continue;
         }
@@ -96,13 +122,17 @@ pub(super) fn ensure_chat_tool_call_reasoning_content(body: &mut Value) {
 /// when llm-connector parses a standard OpenAI ToolCall. Copy the opaque signature into the
 /// crate's internal field before parsing; the original response remains otherwise unchanged.
 pub(super) fn normalize_openai_response_thought_signatures(body: &mut Value) {
-    let Some(choices) = body.get_mut("choices").and_then(Value::as_array_mut) else { return };
+    let Some(choices) = body.get_mut("choices").and_then(Value::as_array_mut) else {
+        return;
+    };
     for choice in choices {
         let Some(calls) = choice
             .get_mut("message")
             .and_then(|message| message.get_mut("tool_calls"))
             .and_then(Value::as_array_mut)
-        else { continue };
+        else {
+            continue;
+        };
         for call in calls {
             if let Some(signature) = json_thought_signature(call) {
                 call["thought_signature"] = json!(signature);

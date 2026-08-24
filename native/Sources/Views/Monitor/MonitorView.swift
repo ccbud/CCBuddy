@@ -33,7 +33,7 @@ struct MonitorView: View {
     /// Convenience injection for previews, focused UI tests, and other callers that do not need
     /// to retain lifecycle history while Monitor is off-screen.
     init(
-        client: BifrostManagementClient,
+        client: GatewayManagementClient,
         port: Int,
         gatewayRunning: Bool,
         activeProvider: Provider?,
@@ -65,7 +65,6 @@ struct MonitorView: View {
                     MonitorDetailDrawer(
                         store: store,
                         revealsSensitiveData: $revealsSensitiveData,
-                        upstreamProtocol: activeProvider?.protocol,
                         width: detailExpanded
                             ? proxy.size.width
                             : min(640, max(480, proxy.size.width * 0.82)),
@@ -103,7 +102,7 @@ struct MonitorView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("将从 Bifrost 永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。")
+            Text("将清空本机网关当前保存的全部请求日志，并清除本机内存中的生命周期记录。此操作无法撤销。")
         }
         .background(Color.ccAppBackground)
         .monitorAccessibilityContainerIdentifier(

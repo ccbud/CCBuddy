@@ -1,11 +1,17 @@
 // Chat Completions REQUEST json → llm-connector ChatRequest IR.
 
-use llm_connector::types::{ChatRequest, FunctionCall, Message, MessageBlock, Role, Tool, ToolCall};
+use llm_connector::types::{
+    ChatRequest, FunctionCall, Message, MessageBlock, Role, Tool, ToolCall,
+};
 use serde_json::{json, Value};
 
 fn content_to_blocks(content: &Value) -> Vec<MessageBlock> {
     if let Some(s) = content.as_str() {
-        return if s.is_empty() { vec![] } else { vec![MessageBlock::text(s)] };
+        return if s.is_empty() {
+            vec![]
+        } else {
+            vec![MessageBlock::text(s)]
+        };
     }
     let arr = match content.as_array() {
         Some(a) => a,
@@ -20,7 +26,11 @@ fn content_to_blocks(content: &Value) -> Vec<MessageBlock> {
                 }
             }
             Some("image_url") => {
-                if let Some(u) = part.get("image_url").and_then(|i| i.get("url")).and_then(|v| v.as_str()) {
+                if let Some(u) = part
+                    .get("image_url")
+                    .and_then(|i| i.get("url"))
+                    .and_then(|v| v.as_str())
+                {
                     out.push(MessageBlock::image_url(u));
                 }
             }
@@ -32,9 +42,19 @@ fn content_to_blocks(content: &Value) -> Vec<MessageBlock> {
 
 /// Decode an OpenAI Chat Completions REQUEST json into the IR.
 pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
-    let model = req.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let model = req
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let mut messages: Vec<Message> = vec![];
-    for m in req.get("messages").and_then(|v| v.as_array()).cloned().unwrap_or_default().iter() {
+    for m in req
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+    {
         let role = match m.get("role").and_then(|v| v.as_str()) {
             Some("system") | Some("developer") => Role::System,
             Some("assistant") => Role::Assistant,
@@ -53,11 +73,25 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
             let calls: Vec<ToolCall> = tcs
                 .iter()
                 .map(|tc| ToolCall {
-                    id: tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    id: tc
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     call_type: "function".to_string(),
                     function: FunctionCall {
-                        name: tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        arguments: tc.get("function").and_then(|f| f.get("arguments")).and_then(|v| v.as_str()).unwrap_or("{}").to_string(),
+                        name: tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        arguments: tc
+                            .get("function")
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}")
+                            .to_string(),
                         thought_signature: None,
                     },
                     index: None,
@@ -93,8 +127,14 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
             .filter_map(|t| {
                 let f = t.get("function")?;
                 let name = f.get("name").and_then(|v| v.as_str())?;
-                let desc = f.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let params = f.get("parameters").cloned().unwrap_or_else(|| json!({ "type": "object" }));
+                let desc = f
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let params = f
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "type": "object" }));
                 Some(Tool::function(name, desc, params))
             })
             .collect();

@@ -22,6 +22,7 @@ struct CCBuddyApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            ConversationCommands()
         }
     }
 }

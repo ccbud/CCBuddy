@@ -63,7 +63,7 @@ enum MonitorFormat {
 
     static func percent(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "—" }
-        // Bifrost's `success_rate` is already expressed as a percentage (for example, 99 == 99%).
+        // Monitor success rates are already expressed as percentages (for example, 99 == 99%).
         return String(format: "%.0f%%", min(max(value, 0), 100))
     }
 
@@ -102,13 +102,12 @@ enum MonitorFormat {
     }
 }
 
-extension BifrostLogStatus {
+extension GatewayLogStatus {
     func monitorLabel(language: AppLanguage) -> String {
         switch self {
         case .processing: language.localized("处理中")
         case .success: language.localized("成功")
         case .error: language.localized("错误")
-        case .cancelled: language.localized("已取消")
         case .unknown(let value): value.isEmpty ? language.localized("未知") : value
         }
     }
@@ -118,7 +117,6 @@ extension BifrostLogStatus {
         case .processing: .ccOrange
         case .success: .ccGreen
         case .error: .ccRed
-        case .cancelled: .ccMuted
         case .unknown: .ccCaption
         }
     }
@@ -128,7 +126,7 @@ extension BifrostLogStatus {
         case .success: .ccGreenSoft
         case .error: .ccRedSoft
         case .processing: Color.ccOrange.opacity(0.13)
-        case .cancelled, .unknown: Color.ccForeground.opacity(0.055)
+        case .unknown: Color.ccForeground.opacity(0.055)
         }
     }
 }

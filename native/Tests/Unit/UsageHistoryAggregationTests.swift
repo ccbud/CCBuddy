@@ -168,6 +168,89 @@ final class UsageHistoryAggregationTests: XCTestCase {
         ])
     }
 
+    func testCodexStreamingIsEquivalentAcrossChunkBoundariesAndFiles() throws {
+        let root = try temporaryDirectory("usage-codex-stream-equivalence")
+        let sessions = root.appendingPathComponent("sessions/2026/07/01", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+
+        let first = Self.jsonLine([
+            "timestamp": "2026-07-01T12:00:00Z", "type": "turn_context",
+            "payload": ["model": "gpt-stream"],
+        ])
+            + Self.tokenLine("2026-07-01T12:00:01Z", last: (100, 40, 10), total: (100, 40, 10))
+            + Self.tokenLine("2026-07-01T12:00:02Z", last: nil, total: (180, 60, 25))
+        try Data(first.utf8).write(to: sessions.appendingPathComponent("rollout-a.jsonl"))
+
+        let second = Self.jsonLine([
+            "timestamp": "2026-07-01T12:10:00Z", "type": "turn_context",
+            "payload": ["model": "gpt-stream"],
+        ])
+            + Self.tokenLine("2026-07-01T12:00:01Z", last: (100, 40, 10), total: nil)
+            + Self.tokenLine("2026-07-01T12:10:01Z", last: (7, 2, 3), total: nil)
+        try Data(second.utf8).write(to: sessions.appendingPathComponent("rollout-b.jsonl"))
+
+        let configuration = UsageHistoryConfiguration(
+            historyDirs: [root.path],
+            homeDirectory: root
+        )
+        let ordinary = UsageHistoryScanner(
+            calendar: Self.utcCalendar,
+            lineReader: UsageHistoryLineReader(chunkBytes: 64 * 1_024)
+        ).scan(configuration: configuration)
+        let fragmented = UsageHistoryScanner(
+            calendar: Self.utcCalendar,
+            lineReader: UsageHistoryLineReader(chunkBytes: 7)
+        ).scan(configuration: configuration)
+
+        XCTAssertEqual(fragmented, ordinary)
+        let summary = UsageHistoryQuery.summary(
+            days: fragmented,
+            range: .all,
+            now: Self.date("2026-07-02T00:00:00Z"),
+            calendar: Self.utcCalendar
+        )
+        XCTAssertEqual(summary.requests, 3, "The duplicate resumed event remains globally deduped")
+        XCTAssertEqual(summary.input, 125)
+        XCTAssertEqual(summary.cacheRead, 62)
+        XCTAssertEqual(summary.output, 28)
+        XCTAssertEqual(summary.tokens, 215)
+        XCTAssertEqual(summary.favoriteModel, "gpt-stream")
+    }
+
+    func testCodexStreamingBoundsOversizedNoiseAndResumesAtNextLine() throws {
+        let root = try temporaryDirectory("usage-codex-stream-bound")
+        let sessions = root.appendingPathComponent("sessions/2026/07/01", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let file = sessions.appendingPathComponent("rollout-bounded.jsonl")
+        let oversizedNoise = #"{"type":"response_item","payload":""#
+            + String(repeating: "x", count: 8 * 1_024)
+            + #""}"#
+            + "\n"
+        let usage = Self.tokenLine(
+            "2026-07-01T15:00:01Z",
+            last: (20, 5, 4),
+            total: (20, 5, 4)
+        )
+        try Data((oversizedNoise + usage).utf8).write(to: file)
+
+        let days = UsageHistoryScanner(
+            calendar: Self.utcCalendar,
+            lineReader: UsageHistoryLineReader(chunkBytes: 31, maximumLineBytes: 512)
+        ).scan(configuration: .init(historyDirs: [root.path], homeDirectory: root))
+        let summary = UsageHistoryQuery.summary(
+            days: days,
+            range: .all,
+            now: Self.date("2026-07-02T00:00:00Z"),
+            calendar: Self.utcCalendar
+        )
+
+        XCTAssertEqual(summary.requests, 1)
+        XCTAssertEqual(summary.input, 15)
+        XCTAssertEqual(summary.cacheRead, 5)
+        XCTAssertEqual(summary.output, 4)
+        XCTAssertEqual(summary.tokens, 24)
+    }
+
     func testRangesHeatmapStreaksAndFavoritesUseLocalCalendarDays() {
         let days: [String: UsageHistoryDay] = [
             "2026-07-01": .init(

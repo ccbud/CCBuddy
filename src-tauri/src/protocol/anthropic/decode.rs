@@ -1,20 +1,30 @@
 // Anthropic Messages REQUEST json → llm-connector ChatRequest IR.
 
-use super::blocks::{blocks_text, image_blocks, system_message, tool_result_messages, tool_use_calls, tools};
+use super::blocks::{
+    blocks_text, image_blocks, system_message, tool_result_messages, tool_use_calls, tools,
+};
 use llm_connector::types::{ChatRequest, Message, MessageBlock, Role};
 use serde_json::Value;
 
 /// Decode an Anthropic Messages REQUEST json into the llm-connector IR. `model` is left as the
 /// request's model (gateway.rs already rewrote it to the provider's outgoing model before this).
 pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
-    let model = req.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let model = req
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let mut messages: Vec<Message> = vec![];
 
     if let Some(sys) = system_message(req) {
         messages.push(sys);
     }
 
-    let turns = req.get("messages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let turns = req
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     for m in &turns {
         let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
         let content = m.get("content").cloned().unwrap_or(Value::Null);
@@ -66,7 +76,10 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
         cr = cr.with_stream(true);
     }
     if let Some(stop) = req.get("stop_sequences").and_then(|v| v.as_array()) {
-        let v: Vec<String> = stop.iter().filter_map(|s| s.as_str().map(|x| x.to_string())).collect();
+        let v: Vec<String> = stop
+            .iter()
+            .filter_map(|s| s.as_str().map(|x| x.to_string()))
+            .collect();
         if !v.is_empty() {
             cr = cr.with_stop(v);
         }

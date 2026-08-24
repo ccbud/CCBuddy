@@ -17,47 +17,43 @@ final class MenuBarUsageTests: XCTestCase {
 
         let oneDay = UsageAggregator.aggregate(logs: logs, range: .oneDay, now: now)
         XCTAssertEqual(oneDay.requestCount, 1)
-        XCTAssertEqual(oneDay.totalTokens, 100)
-        XCTAssertEqual(oneDay.promptTokens, 40)
-        XCTAssertEqual(oneDay.completionTokens, 20)
+        XCTAssertEqual(oneDay.totalTokens, 0)
+        XCTAssertEqual(oneDay.promptTokens, 0)
+        XCTAssertEqual(oneDay.completionTokens, 0)
         XCTAssertEqual(oneDay.successRate, 0)
         XCTAssertEqual(oneDay.models.map(\.model), ["model-a"])
         XCTAssertEqual(oneDay.coverage, .monitorBuffer(included: 1, available: 4, undatedExcluded: 1))
 
         let sevenDays = UsageAggregator.aggregate(logs: logs, range: .sevenDays, now: now)
         XCTAssertEqual(sevenDays.requestCount, 2)
-        XCTAssertEqual(sevenDays.totalTokens, 115)
+        XCTAssertEqual(sevenDays.totalTokens, 0)
         XCTAssertEqual(sevenDays.successRate, 50)
         XCTAssertEqual(sevenDays.models.map(\.model), ["model-a", "model-b"])
     }
 
-    func testAllRangeUsesBifrostStatsWithoutFabricatingModelTotals() {
+    func testAllRangeUsesGatewayRuntimeStatsWithoutFabricatingUnavailableUsage() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let logs = [
             makeLog(id: "one", date: now, status: .success, model: "cached-model", provider: "provider",
                     prompt: 7, completion: 3),
         ]
-        let stats = BifrostLogStats(
+        let stats = GatewayLogStats(
             totalRequests: 432,
-            totalTokens: 9_876,
-            promptTokens: 7_000,
-            completionTokens: 2_876,
-            totalCost: 1.25,
             successRate: 98.5
         )
 
         let snapshot = UsageAggregator.aggregate(logs: logs, range: .all, now: now, allTimeStats: stats)
 
         XCTAssertEqual(snapshot.requestCount, 432)
-        XCTAssertEqual(snapshot.totalTokens, 9_876)
-        XCTAssertEqual(snapshot.promptTokens, 7_000)
-        XCTAssertEqual(snapshot.completionTokens, 2_876)
-        XCTAssertEqual(snapshot.totalCost, 1.25)
+        XCTAssertEqual(snapshot.totalTokens, 0)
+        XCTAssertEqual(snapshot.promptTokens, 0)
+        XCTAssertEqual(snapshot.completionTokens, 0)
+        XCTAssertEqual(snapshot.totalCost, 0)
         XCTAssertEqual(snapshot.successRate, 98.5)
         XCTAssertEqual(snapshot.models, [
-            UsageModelSummary(model: "cached-model", provider: "provider", requestCount: 1, totalTokens: 10),
+            UsageModelSummary(model: "cached-model", provider: "provider", requestCount: 1, totalTokens: 0),
         ])
-        XCTAssertEqual(snapshot.coverage, .bifrostAllTime(cachedModelRequestCount: 1))
+        XCTAssertEqual(snapshot.coverage, .gatewayRuntime(cachedModelRequestCount: 1))
     }
 
     func testCompactTokenFormattingIsStable() {
@@ -233,24 +229,26 @@ final class MenuBarUsageTests: XCTestCase {
     private func makeLog(
         id: String,
         date: Date?,
-        status: BifrostLogStatus,
+        status: GatewayLogStatus,
         model: String,
         provider: String,
         prompt: Int,
         completion: Int,
         total: Int? = nil
-    ) -> BifrostLog {
-        BifrostLog(
+    ) -> GatewayLog {
+        let httpStatusCode: Int? = switch status {
+        case .success: 200
+        case .error: 500
+        case .processing, .unknown: nil
+        }
+        return GatewayLog(
             id: id,
-            provider: provider,
-            model: model,
-            timestamp: date,
-            status: status,
-            tokenUsage: BifrostTokenUsage(
-                promptTokens: prompt,
-                completionTokens: completion,
-                totalTokens: total
-            )
+            startedAt: date,
+            httpStatusCode: httpStatusCode,
+            clientModel: model,
+            providerID: provider,
+            providerName: provider,
+            error: status == .error ? "failed" : nil
         )
     }
 }

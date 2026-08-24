@@ -60,7 +60,11 @@ pub fn estimate_input_tokens(body: &Value) -> i64 {
     }
     let has_sys = body.get("system").map(|v| !v.is_null()).unwrap_or(false);
 
-    let msgs = body.get("messages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let msgs = body
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     for m in &msgs {
         match m.get("content") {
             Some(Value::String(s)) => t += count(s),
@@ -69,7 +73,8 @@ pub fn estimate_input_tokens(body: &Value) -> i64 {
                     match b.get("type").and_then(|x| x.as_str()) {
                         Some("text") => t += count(str_at(b, "text")),
                         Some("tool_use") => {
-                            t += count(str_at(b, "name")) + count(&safe_json(b.get("input").unwrap_or(&Value::Null)))
+                            t += count(str_at(b, "name"))
+                                + count(&safe_json(b.get("input").unwrap_or(&Value::Null)))
                         }
                         Some("tool_result") => match b.get("content") {
                             Some(Value::String(s)) => t += count(s),
@@ -91,7 +96,11 @@ pub fn estimate_input_tokens(body: &Value) -> i64 {
         }
     }
 
-    let tools = body.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let tools = body
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     for tool in &tools {
         t += count(str_at(tool, "name"))
             + count(str_at(tool, "description"))
@@ -115,10 +124,19 @@ mod tests {
     use super::*;
     #[test]
     fn estimate_is_positive_and_grows_with_content() {
-        let small = estimate_input_tokens(&serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] }));
-        let big = estimate_input_tokens(&serde_json::json!({ "messages": [{ "role": "user", "content": "hello world this is a much longer message with many more tokens to count" }] }));
+        let small = estimate_input_tokens(
+            &serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+        );
+        let big = estimate_input_tokens(
+            &serde_json::json!({ "messages": [{ "role": "user", "content": "hello world this is a much longer message with many more tokens to count" }] }),
+        );
         assert!(small > 0);
-        assert!(big > small, "more content must estimate more tokens ({} vs {})", big, small);
+        assert!(
+            big > small,
+            "more content must estimate more tokens ({} vs {})",
+            big,
+            small
+        );
     }
     #[test]
     fn empty_body_is_at_least_one() {

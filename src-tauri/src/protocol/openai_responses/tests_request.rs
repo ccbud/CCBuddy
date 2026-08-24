@@ -151,4 +151,3 @@ fn decodes_codex_responses_request_to_ir() {
             .any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_1")));
     assert_eq!(body["system"], "You are Codex.");
 }
-

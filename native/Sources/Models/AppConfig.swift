@@ -3,6 +3,10 @@ import Foundation
 struct AppConfig: Codable, Equatable {
     struct TrayUsage: Codable, Equatable { var enabled = false; var range = "7d" }
     struct Retry429: Codable, Equatable { var enabled = true; var max = 3; var baseMs = 500 }
+    struct GatewayFailover: Codable, Equatable {
+        var enabled = false
+        var providerIds: [String] = []
+    }
     struct AutoUpdate: Codable, Equatable { var check = true; var autoDownload = true }
 
     var port = 8788
@@ -20,6 +24,7 @@ struct AppConfig: Codable, Equatable {
     var historyActive = "all"
     var connectTargets: [String] = []
     var retry429 = Retry429()
+    var gatewayFailover = GatewayFailover()
     var insecureSkipVerify = false
     var autoUpdate = AutoUpdate()
     var providers: [Provider] = []
@@ -65,9 +70,13 @@ struct AppConfig: Codable, Equatable {
             }
         }
         historyDirs = normalizedDirectories
+        // Wake's library always reads the shared all-session catalog, with only imported and
+        // trash remaining as persisted library scopes. Older releases persisted producer roots
+        // (and the retired `__codex__` selector), which can make a healthy catalog appear empty
+        // when that one producer has no rows. Normalize at the config boundary so every startup
+        // path gets the migration, including launches which temporarily skip auto-discovery.
         if historyActive != "all" && historyActive != "__imported__"
-            && historyActive != "__trash__" && historyActive != "__codex__"
-            && !historyDirs.contains(historyActive) {
+            && historyActive != "__trash__" {
             historyActive = "all"
         }
         if let language, !["en", "zh", "zh-TW", "ja", "ko"].contains(language) {
@@ -83,6 +92,17 @@ struct AppConfig: Codable, Equatable {
         }
         retry429.max = min(max(retry429.max, 0), 10)
         retry429.baseMs = min(max(retry429.baseMs, 0), 10_000)
+        normalizeGatewayFailover()
+    }
+
+    mutating func normalizeGatewayFailover() {
+        let providerIDs = providers.map(\.id)
+        let available = Set(providerIDs)
+        var seen = Set<String>()
+        let queue = gatewayFailover.providerIds.filter {
+            available.contains($0) && seen.insert($0).inserted
+        }
+        gatewayFailover.providerIds = queue
     }
 
     static let fixture = AppConfig(

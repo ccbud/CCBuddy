@@ -1,5 +1,5 @@
-use super::*;
 use super::super::Wire;
+use super::*;
 
 #[test]
 fn chat_error_events_are_terminal_for_translated_clients() {
@@ -8,8 +8,7 @@ fn chat_error_events_are_terminal_for_translated_clients() {
     let mut responses_out =
         responses.push(r#"data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}"#);
     responses_out.push_str(
-        &responses
-            .push(r#"data: {"error":{"type":"server_error","message":"upstream exploded"}}"#),
+        &responses.push(r#"data: {"error":{"type":"server_error","message":"upstream exploded"}}"#),
     );
     responses_out.push_str(&responses.finish());
     assert!(responses_out.contains(r#""type":"response.failed""#));
@@ -22,8 +21,7 @@ fn chat_error_events_are_terminal_for_translated_clients() {
     let mut anthropic_out =
         anthropic.push(r#"data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}"#);
     anthropic_out.push_str(
-        &anthropic
-            .push(r#"data: {"error":{"type":"server_error","message":"upstream exploded"}}"#),
+        &anthropic.push(r#"data: {"error":{"type":"server_error","message":"upstream exploded"}}"#),
     );
     anthropic_out.push_str(&anthropic.finish());
     assert!(anthropic_out.contains("event: error"));
@@ -91,8 +89,7 @@ fn premature_clean_eof_fails_but_reported_stop_reasons_can_finalize() {
     assert!(out.contains("event: message_stop"));
     assert!(chat_anthropic.succeeded());
 
-    let mut anthropic =
-        Transcoder::new(Wire::Anthropic, Wire::OpenAiResponses, "alias-x").unwrap();
+    let mut anthropic = Transcoder::new(Wire::Anthropic, Wire::OpenAiResponses, "alias-x").unwrap();
     anthropic.push(
         r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
     );
@@ -114,8 +111,7 @@ fn max_token_truncation_emits_incomplete_instead_of_completed() {
     assert!(chat.done());
     assert!(!chat.succeeded());
 
-    let mut anthropic =
-        Transcoder::new(Wire::Anthropic, Wire::OpenAiResponses, "alias-x").unwrap();
+    let mut anthropic = Transcoder::new(Wire::Anthropic, Wire::OpenAiResponses, "alias-x").unwrap();
     let mut anthropic_out = anthropic.push(
         r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
     );

@@ -22,7 +22,7 @@ CLI session histories ──▶ CC Buddy ──▶ browse · search · trace · 
 
 ## Session review
 
-Reads local histories from **Claude Code, Codex CLI, Qoder CLI, Grok Build CLI, GitHub Copilot CLI, and Antigravity CLI**.
+Reads local histories from **Claude Code, Codex CLI, Qoder CLI, Grok Build CLI, DSH, Cursor, OpenCode, Pi, OMP, Kiro, Kimi, Gemini CLI, GitHub Copilot CLI, and Antigravity CLI**.
 
 - **Reconstruct the run** — render Markdown, thinking, tool calls and results, patches, images, recorded model/token metadata, and main/subagent threads.
 - **Find the moment** — auto-discover histories, group by source and project, and search across sessions or inside one conversation.
@@ -49,12 +49,12 @@ brew install --cask ccbud/tap/ccbud
 
 ## Development
 
-Native development requires Xcode 26 and XcodeGen. Node.js is used by localization and release tooling.
+Native development requires Xcode 26, XcodeGen 2.46.0, and Rust 1.88 or newer. Node.js is used by localization and release tooling.
 
 ```bash
 git clone https://github.com/ccbud/ccbud.git && cd ccbud
 brew install xcodegen
-native/Scripts/fetch-bifrost.sh
+native/Scripts/build-gateway-helper.sh
 xcodegen generate --spec native/project.yml --project native
 xcodebuild -project native/CCBuddy.xcodeproj -scheme CCBuddy \
   -destination 'platform=macOS,arch=arm64' build
@@ -66,4 +66,5 @@ launch and termination scope.
 
 ## License
 
-Released under [GPL-3.0](./LICENSE).
+Released under [GPL-3.0](./LICENSE). The app bundle also includes the required cc-switch, Wake,
+and Zstandard attribution notices.

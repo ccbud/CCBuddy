@@ -38,8 +38,13 @@ final class CCBuddyUITests: XCTestCase {
         return application
     }
 
+    private var appShell: XCUIElement {
+        // WindowConfigurator marks the real AppKit content view, which XCTest exposes as a Group.
+        app.groups["app.shell"]
+    }
+
     func testMainNavigationAndProviderEditor() {
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         XCTAssertTrue(app.otherElements["providers.hero"].exists)
         XCTAssertTrue(app.groups["provider.p1"].exists)
 
@@ -52,7 +57,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testPluginManagementSurfaceLoads() {
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         let plugins = app.buttons["sidebar.plugins"]
         XCTAssertTrue(plugins.waitForExistence(timeout: 2))
         plugins.click()
@@ -86,7 +91,7 @@ final class CCBuddyUITests: XCTestCase {
         app.launch()
         app.activate()
 
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         let tokens = app.staticTexts["providers.usage.tokens"]
         XCTAssertTrue(tokens.waitForExistence(timeout: 5))
         XCTAssertEqual(tokens.value as? String, "15")
@@ -124,7 +129,7 @@ final class CCBuddyUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         let status = app.descendants(matching: .statusItem)["menubar.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 5))
         XCTAssertEqual(status.label, "CC Buddy menu bar")
@@ -167,7 +172,7 @@ final class CCBuddyUITests: XCTestCase {
         app.launch()
         app.activate()
 
-        let shell = app.otherElements["app.shell"]
+        let shell = appShell
         XCTAssertTrue(shell.waitForExistence(timeout: 5))
         let status = app.descendants(matching: .statusItem)["menubar.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 5))
@@ -203,7 +208,7 @@ final class CCBuddyUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         let delete = app.buttons["provider.p2.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 3))
         delete.click()
@@ -229,7 +234,7 @@ final class CCBuddyUITests: XCTestCase {
         app.launch()
         app.activate()
 
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         let pasteboard = NSPasteboard.general
         let originalItems = snapshotPasteboard(pasteboard)
         defer { restorePasteboard(originalItems, to: pasteboard) }
@@ -254,7 +259,7 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(exportsCopy.waitForExistence(timeout: 2))
         exportsCopy.click()
         XCTAssertTrue(waitForPasteboard {
-            $0 == "export ANTHROPIC_BASE_URL=http://localhost:8788/anthropic\n"
+            $0 == "export ANTHROPIC_BASE_URL=http://localhost:8788\n"
                 + "export ANTHROPIC_AUTH_TOKEN=ccbud-local"
         })
     }
@@ -267,7 +272,7 @@ final class CCBuddyUITests: XCTestCase {
         // Window restoration can remember the app's menu-bar-only state. Reopening is the same
         // user path as clicking the dock icon and asks AppDelegate to present the main window.
         app.activate()
-        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         app.buttons["sidebar.monitor"].click()
 
         let row = app.buttons["monitor.request.ui-monitor-translated"]
@@ -306,7 +311,7 @@ final class CCBuddyUITests: XCTestCase {
         pasteboard.clearContents()
         app.buttons["monitor.detail.copy"].click()
         XCTAssertTrue(waitForPasteboard { value in
-            value == #"{"authorization":"Bearer ui-secret-token","prompt":"Needle secret"}"#
+            value == #"{"body":{"model":"upstream-model","prompt":"Needle secret"},"headers":{"authorization":"Bearer ui-secret-token"},"truncated":false}"#
         })
 
         let expand = app.buttons["monitor.detail.expand"]
@@ -337,7 +342,7 @@ final class CCBuddyUITests: XCTestCase {
             ]
             app.launch()
 
-            XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5), language)
+            XCTAssertTrue(appShell.waitForExistence(timeout: 5), language)
             for (identifier, label) in zip(identifiers, labels) {
                 XCTAssertEqual(app.buttons["sidebar.\(identifier)"].label, label, language)
             }
@@ -369,7 +374,7 @@ final class CCBuddyUITests: XCTestCase {
         app.launch()
         app.activate()
 
-        let shell = app.otherElements["app.shell"]
+        let shell = appShell
         XCTAssertTrue(shell.waitForExistence(timeout: 5))
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)
@@ -489,7 +494,7 @@ final class CCBuddyUITests: XCTestCase {
         app.launch()
         app.activate()
 
-        let shell = app.otherElements["app.shell"]
+        let shell = appShell
         XCTAssertTrue(shell.waitForExistence(timeout: 5))
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)
@@ -553,7 +558,7 @@ final class CCBuddyUITests: XCTestCase {
             object: currentSession
         )
         XCTAssertEqual(XCTWaiter.wait(for: [sessionHittable], timeout: 5), .completed)
-        let conversationList = app.descendants(matching: .any)["conversation.list"]
+        let conversationList = app.groups["conversation.list"]
         XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
         XCTAssertEqual(
             conversationList.frame.minX - windowFrame.minX,
@@ -748,7 +753,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     private func assertWakeConversationColumns(in window: XCUIElement) {
-        let conversationList = app.descendants(matching: .any)["conversation.list"]
+        let conversationList = app.groups["conversation.list"]
         XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
         XCTAssertEqual(
             conversationList.frame.minX - window.frame.minX,
@@ -764,9 +769,8 @@ final class CCBuddyUITests: XCTestCase {
         )
     }
 
-    /// `app.shell` is deliberately a tiny, non-blocking accessibility marker. Its screen origin
-    /// identifies the first opaque app pixel, including the integrated title-bar surface, while
-    /// retaining normal XCUI hit-testing for all controls.
+    /// `app.shell` identifies the full-size AppKit hosting view, including the integrated native
+    /// title-bar surface, while retaining normal XCUI hit-testing for all child controls.
     private func keepMainContentScreenshot(named name: String, shell: XCUIElement) {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)

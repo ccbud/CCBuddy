@@ -37,8 +37,9 @@ struct HistoryCatalogThreadProjection: Codable, Equatable, Sendable {
 /// Raw producer files remain authoritative; this value contains only list/search projection data.
 struct HistoryCatalogProjection: Codable, Equatable, Sendable {
     /// Search projections are derived cache data, so they must not grow with arbitrarily large
-    /// producer payloads. These byte limits mirror Wake's indexing boundaries without changing
-    /// the normalized `HistorySession` used by detail, replay, and export paths.
+    /// producer payloads. These byte limits mirror Wake's indexing boundaries. Codex detail uses
+    /// the same bounded presentation contract, while its producer-owned JSONL stays authoritative
+    /// for lossless raw export, replay, and analysis attachments.
     static let maximumMessageSearchTextBytes = 32 * 1024
     static let maximumToolSearchTextBytes = 16 * 1024
     static let maximumRawSearchTextBytes = 16 * 1024
@@ -474,6 +475,7 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         _ lhs: HistorySessionMetadata,
         _ rhs: HistorySessionMetadata
     ) -> Bool {
+        if lhs.pinned != rhs.pinned { return lhs.pinned }
         if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
         if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
         let lhsID = lhs.threadID ?? lhs.sessionID

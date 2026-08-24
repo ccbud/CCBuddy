@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct AboutVersionPresentation: Equatable {
-    static let bifrostVersion = "v1.6.11"
+    static let gatewayVersion = "v0.1.0"
 
     let current: String
     let latest: String
@@ -62,10 +62,10 @@ struct AboutSettingsPane: View {
                 .textSelection(.enabled)
 
             HStack(spacing: 5) {
-                Text("Bifrost")
-                Text(AboutVersionPresentation.bifrostVersion)
+                Text("CC Buddy Gateway")
+                Text(AboutVersionPresentation.gatewayVersion)
                     .fontDesign(.monospaced)
-                    .accessibilityIdentifier("about.bifrost.version")
+                    .accessibilityIdentifier("about.gateway.version")
             }
             .font(.system(size: 10.5, weight: .medium))
             .foregroundStyle(Color.ccCaption)

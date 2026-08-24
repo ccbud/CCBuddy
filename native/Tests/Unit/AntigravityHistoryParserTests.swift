@@ -56,7 +56,7 @@ final class AntigravityHistoryParserTests: XCTestCase {
         )
         try Data("not a sqlite database".utf8).write(to: file)
 
-        let repository = HistoryRepository(historyDirs: [root.path])
+        let repository = HistoryRepository(historyDirs: [root.path], homeDirectory: root)
         let session = try repository.getSession(file: file)
         XCTAssertEqual(session.metadata.source, .antigravity)
         XCTAssertEqual(session.metadata.sessionID, "broken")

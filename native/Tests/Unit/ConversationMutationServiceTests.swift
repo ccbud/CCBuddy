@@ -3,14 +3,19 @@ import XCTest
 @testable import CCBuddy
 
 final class ConversationMutationServiceTests: XCTestCase {
-    func testInlineMetadataEditNormalizesAndClearsFields() throws {
+    func testMetadataEditNormalizesInSQLiteAndNeverRewritesClaudeJSONL() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
+        let original = "not-json\n" +
+            #"{"type":"user","sessionId":"edit","message":{"role":"user","content":"hello"}}"# +
+            "\n" + #"{"type":"assistant","message":{"role":"assistant","content":"world"}}"# + "\n"
         let file = try fixture.writeSession(
             name: "edit",
-            text: "not-json\n" +
-                #"{"type":"user","sessionId":"edit","message":{"role":"user","content":"hello"}}"# +
-                "\n" + #"{"type":"assistant","message":{"role":"assistant","content":"world"}}"# + "\n"
+            text: original
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o400],
+            ofItemAtPath: file.path
         )
         let metadata = fixture.metadata(file: file)
 
@@ -18,39 +23,45 @@ final class ConversationMutationServiceTests: XCTestCase {
             for: metadata,
             patch: .init(title: "  新标题  ", tags: [" one ", "one", "", "two"])
         )
-        var first = try firstJSONObject(file)
-        let custom = try XCTUnwrap(first["__ccbud__"] as? [String: Any])
-        XCTAssertEqual(custom["title"] as? String, "新标题")
-        XCTAssertEqual(custom["tagList"] as? [String], ["one", "two"])
+        var user = try fixture.database.userMetadata(for: file)
+        XCTAssertEqual(user.title, "新标题")
+        XCTAssertEqual(user.tags, ["one", "two"])
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), original)
 
         try fixture.service.updateMetadata(
             for: metadata,
             patch: .init(title: "", tags: [], deleted: false)
         )
-        first = try firstJSONObject(file)
-        XCTAssertNil(first["__ccbud__"])
-        let text = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(text.hasPrefix("not-json\n"), "malformed prefix must remain in place")
-        XCTAssertTrue(text.hasSuffix("\n"), "trailing newline must be preserved")
+        user = try fixture.database.userMetadata(for: file)
+        XCTAssertNil(user.title)
+        XCTAssertEqual(user.tags, [])
+        XCTAssertEqual(user.deleted, false)
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), original)
     }
 
-    func testEditDetectsConcurrentReplacement() throws {
+    func testMetadataEditsForQoderAndCodexDoNotWriteProducerOrLegacySidecars() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        let file = try fixture.writeSession(name: "conflict", text: Self.claudeJSONL(id: "conflict"))
-        let service = ConversationMutationService(
-            configuration: fixture.configuration,
-            beforeCommit: { target in
-                try? Data(Self.claudeJSONL(id: "other").utf8).write(to: target, options: [.atomic])
-            }
-        )
-        XCTAssertThrowsError(try service.updateMetadata(
-            for: fixture.metadata(file: file),
-            patch: .init(title: "must not win")
-        )) { error in
-            XCTAssertEqual(error as? ConversationMutationError, .conflict(file))
+        for source in [HistorySource.qoder, .codex] {
+            let raw = Self.claudeJSONL(id: source.rawValue)
+            let file = try fixture.writeSession(name: source.rawValue, text: raw)
+            let metadata = fixture.metadata(file: file, source: source)
+            try fixture.service.updateMetadata(
+                for: metadata,
+                patch: .init(title: "App title", tags: ["owned"], deleted: true)
+            )
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), raw)
+            let user = try fixture.database.userMetadata(for: file)
+            XCTAssertEqual(user.title, "App title")
+            XCTAssertEqual(user.tags, ["owned"])
+            XCTAssertEqual(user.deleted, true)
         }
-        XCTAssertFalse(try String(contentsOf: file).contains("must not win"))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.configuration.appDataRoot.appendingPathComponent("agent-meta.json").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.configuration.appDataRoot.appendingPathComponent("codex-meta.json").path
+        ))
     }
 
     func testScopeAndSymlinkAreRejected() throws {
@@ -70,7 +81,7 @@ final class ConversationMutationServiceTests: XCTestCase {
         }
     }
 
-    func testLiveForeignUsesSidecarAndCannotBePermanentlyDeleted() throws {
+    func testLiveProducerUsesSQLiteAndCannotBePermanentlyDeleted() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let file = try fixture.writeSession(
@@ -85,16 +96,66 @@ final class ConversationMutationServiceTests: XCTestCase {
             patch: .init(title: "Codex title", tags: ["live"], deleted: true)
         )
         XCTAssertFalse(try String(contentsOf: file).contains("__ccbud__"))
-        let sidecar = fixture.configuration.appDataRoot.appendingPathComponent("codex-meta.json")
-        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any]
-        let custom = root?["rollout-abc"] as? [String: Any]
-        XCTAssertEqual(custom?["title"] as? String, "Codex title")
-        XCTAssertEqual(custom?["delete"] as? Bool, true)
+        let custom = try fixture.database.userMetadata(for: file)
+        XCTAssertEqual(custom.title, "Codex title")
+        XCTAssertEqual(custom.tags, ["live"])
+        XCTAssertEqual(custom.deleted, true)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.configuration.appDataRoot.appendingPathComponent("codex-meta.json").path
+        ))
 
         XCTAssertThrowsError(try fixture.service.permanentlyDelete(metadata)) { error in
             XCTAssertEqual(error as? ConversationMutationError, .foreignPermanentDelete)
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testLiveClaudeIsAlsoReadOnlyForPermanentDelete() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeSession(name: "claude-live", text: Self.claudeJSONL(id: "live"))
+        let metadata = fixture.metadata(file: file, source: .claude, imported: false)
+
+        XCTAssertFalse(fixture.service.canPermanentlyDelete(metadata))
+        XCTAssertThrowsError(try fixture.service.permanentlyDelete(metadata)) { error in
+            XCTAssertEqual(error as? ConversationMutationError, .foreignPermanentDelete)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testForgedImportedFlagCannotDeleteAProducerFile() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeSession(name: "forged-import", text: Self.claudeJSONL(id: "forged"))
+        let metadata = fixture.metadata(file: file, source: .claude, imported: true)
+
+        XCTAssertFalse(fixture.service.canPermanentlyDelete(metadata))
+        XCTAssertThrowsError(try fixture.service.permanentlyDelete(metadata)) { error in
+            XCTAssertEqual(error as? ConversationMutationError, .foreignPermanentDelete)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testStarAndPinTogglesPersistThroughMutationProtocol() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeSession(name: "favorite", text: Self.claudeJSONL(id: "favorite"))
+        var metadata = fixture.metadata(file: file)
+        let mutating: any ConversationMutating = fixture.service
+
+        try mutating.toggleStarred(metadata)
+        try mutating.togglePinned(metadata)
+        var user = try fixture.database.userMetadata(for: file)
+        XCTAssertTrue(user.starred)
+        XCTAssertTrue(user.pinned)
+
+        metadata.starred = true
+        metadata.pinned = true
+        try mutating.toggleStarred(metadata)
+        try mutating.togglePinned(metadata)
+        user = try fixture.database.userMetadata(for: file)
+        XCTAssertFalse(user.starred)
+        XCTAssertFalse(user.pinned)
     }
 
     func testImportedPermanentDeleteCleansManifestAndSubagents() throws {
@@ -113,10 +174,13 @@ final class ConversationMutationServiceTests: XCTestCase {
             .write(to: subagents.appendingPathComponent("agent-a.jsonl"))
 
         let metadata = fixture.metadata(file: file, source: .codex, imported: true)
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: true, pinned: true))
+        XCTAssertTrue(try fixture.database.userMetadata(for: file).starred)
         try fixture.service.permanentlyDelete(metadata)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: subagents.path))
+        XCTAssertEqual(try fixture.database.userMetadata(for: file), .init())
     }
 
     func testJSONLAndZIPSubagentImportRoundTripAndDuplicateSummary() throws {
@@ -214,32 +278,25 @@ final class ConversationMutationServiceTests: XCTestCase {
         XCTAssertEqual(metadata.title, "Imported Qoder")
         XCTAssertEqual(metadata.tags, [])
 
+        _ = try fixture.database.replace(ConversationIndexedSession(
+            metadata: metadata,
+            fingerprint: .init(modificationTime: .now, sizeBytes: metadata.sizeBytes),
+            documents: []
+        ))
+        let importedBytes = try Data(contentsOf: imported)
         try fixture.service.updateMetadata(
             for: metadata,
             patch: .init(title: "Edited import", tags: ["local"], deleted: true)
         )
-        let trashRepository = HistoryRepository(
-            historyDirs: [fixture.historyRoot.path],
-            active: "__trash__",
-            homeDirectory: fixture.root,
-            importsRoot: fixture.configuration.importsRoot
+        let trashed = try XCTUnwrap(
+            fixture.database.listEntries(deleted: true, limit: .max).first?.metadata
         )
-        let trashed = try XCTUnwrap(trashRepository.listSessions().first)
         XCTAssertEqual(trashed.file, imported)
         XCTAssertEqual(trashed.title, "Edited import")
         XCTAssertEqual(trashed.tags, ["local"])
         XCTAssertTrue(trashed.deleted)
+        XCTAssertEqual(try Data(contentsOf: imported), importedBytes)
         XCTAssertEqual(try String(contentsOf: sidecar, encoding: .utf8), conflicting)
-    }
-
-    private func firstJSONObject(_ file: URL) throws -> [String: Any] {
-        for line in try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n") {
-            guard let data = line.data(using: .utf8),
-                  let value = try? JSONSerialization.jsonObject(with: data),
-                  let object = value as? [String: Any] else { continue }
-            return object
-        }
-        throw ConversationMutationError.noConversationRecords
     }
 
     private static func claudeJSONL(id: String, cwd: String = "/tmp/test") -> String {
@@ -252,6 +309,7 @@ private final class Fixture {
     let historyRoot: URL
     let projectDirectory: URL
     let configuration: ConversationMutationConfiguration
+    let database: ConversationIndexDatabase
     let service: ConversationMutationService
 
     init() throws {
@@ -265,7 +323,11 @@ private final class Fixture {
             homeDirectory: root,
             importsRoot: root.appendingPathComponent("app/imports", isDirectory: true)
         )
-        service = ConversationMutationService(configuration: configuration)
+        database = try ConversationIndexDatabase(file: configuration.conversationDatabase)
+        service = ConversationMutationService(
+            configuration: configuration,
+            metadataDatabase: database
+        )
     }
 
     func writeSession(name: String, text: String) throws -> URL {

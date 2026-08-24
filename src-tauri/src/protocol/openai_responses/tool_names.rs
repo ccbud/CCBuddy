@@ -2,8 +2,7 @@
 // OpenAI Chat name grammar (<=64 chars, alphanumeric/_/-), aliasing collisions deterministically.
 
 use super::tools::{
-    CodexToolContext, CodexToolKind, CodexToolSpec, CHAT_TOOL_NAME_HASH_LEN,
-    CHAT_TOOL_NAME_MAX_LEN,
+    CodexToolContext, CodexToolKind, CodexToolSpec, CHAT_TOOL_NAME_HASH_LEN, CHAT_TOOL_NAME_MAX_LEN,
 };
 use sha1::{Digest, Sha1};
 

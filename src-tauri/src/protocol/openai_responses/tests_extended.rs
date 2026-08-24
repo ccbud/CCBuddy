@@ -41,8 +41,7 @@ fn codex_request_with_extended_tools() -> Value {
 
 #[test]
 fn preserves_custom_namespace_and_tool_search_request_semantics() {
-    let (ir, context) =
-        decode_request_with_context(&codex_request_with_extended_tools()).unwrap();
+    let (ir, context) = decode_request_with_context(&codex_request_with_extended_tools()).unwrap();
     let tools = ir.tools.as_ref().unwrap();
     let names = tools
         .iter()
@@ -94,8 +93,7 @@ fn preserves_custom_namespace_and_tool_search_request_semantics() {
 fn restores_extended_tool_types_in_buffered_response_and_sse() {
     use llm_connector::core::Protocol;
 
-    let (_, context) =
-        decode_request_with_context(&codex_request_with_extended_tools()).unwrap();
+    let (_, context) = decode_request_with_context(&codex_request_with_extended_tools()).unwrap();
     let chat = r#"{
             "id":"chatcmpl-tools","object":"chat.completion","created":1,"model":"up",
             "choices":[{"index":0,"finish_reason":"tool_calls","message":{
@@ -142,4 +140,3 @@ fn restores_extended_tool_types_in_buffered_response_and_sse() {
     assert!(sse.contains(r#""type":"tool_search_call""#));
     assert!(sse.contains(r#""namespace":"multi_agent_v1""#));
 }
-

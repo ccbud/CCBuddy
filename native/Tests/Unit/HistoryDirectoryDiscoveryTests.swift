@@ -195,7 +195,7 @@ final class HistoryDirectoryDiscoveryTests: XCTestCase {
         ])
     }
 
-    func testRetiredCodexSelectionMapsToAlreadyConfiguredEnvironmentRoot() throws {
+    func testRetiredCodexSelectionMigratesToWakeAllSessions() throws {
         let home = try HistoryTestSupport.temporaryDirectory("directory-discovery-codex-configured")
         defer { try? FileManager.default.removeItem(at: home) }
         let codex = home.appendingPathComponent("custom-codex", isDirectory: true)
@@ -211,10 +211,10 @@ final class HistoryDirectoryDiscoveryTests: XCTestCase {
 
         XCTAssertTrue(result.didChange)
         XCTAssertTrue(result.addedDirectories.isEmpty)
-        XCTAssertEqual(result.config.historyActive, "~/custom-codex")
+        XCTAssertEqual(result.config.historyActive, "all")
     }
 
-    func testRetiredCodexSelectionMapsToRootDiscoveredDuringSameMigration() throws {
+    func testRetiredCodexSelectionKeepsDiscoveryButMigratesNavigationToAll() throws {
         let home = try HistoryTestSupport.temporaryDirectory("directory-discovery-codex-active")
         defer { try? FileManager.default.removeItem(at: home) }
         let codex = home.appendingPathComponent("custom-codex", isDirectory: true)
@@ -229,7 +229,7 @@ final class HistoryDirectoryDiscoveryTests: XCTestCase {
 
         XCTAssertTrue(result.didChange)
         XCTAssertEqual(result.addedDirectories, ["~/custom-codex"])
-        XCTAssertEqual(result.config.historyActive, "~/custom-codex")
+        XCTAssertEqual(result.config.historyActive, "all")
         XCTAssertEqual(result.config.additionalProperties["codexDirAutoAdded"], .bool(true))
     }
 
@@ -247,6 +247,29 @@ final class HistoryDirectoryDiscoveryTests: XCTestCase {
         XCTAssertTrue(result.didChange)
         XCTAssertTrue(result.addedDirectories.isEmpty)
         XCTAssertEqual(result.config.historyActive, "all")
+    }
+
+    func testLegacyConcreteDirectorySelectionMigratesToWakeAllSessions() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("directory-discovery-legacy-scope")
+        defer { try? FileManager.default.removeItem(at: home) }
+        var config = AppConfig()
+        config.historyDirs.append("~/.codex")
+        config.historyActive = "~/.claude"
+
+        let first = HistoryDirectoryDiscovery(
+            environment: ["HOME": home.path],
+            homeDirectory: home
+        ).discover(in: config)
+
+        XCTAssertTrue(first.didChange)
+        XCTAssertEqual(first.config.historyActive, "all")
+
+        let second = HistoryDirectoryDiscovery(
+            environment: ["HOME": home.path],
+            homeDirectory: home
+        ).discover(in: first.config)
+        XCTAssertFalse(second.didChange)
+        XCTAssertEqual(second.config.historyActive, "all")
     }
 
     private func makeDirectory(_ url: URL) throws {

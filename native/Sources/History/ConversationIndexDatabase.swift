@@ -135,6 +135,73 @@ struct ConversationIndexEntry: Equatable, Sendable {
     var scope: String
     var fingerprint: ConversationIndexFingerprint
     var indexedAt: Date
+    var userMetadata: ConversationUserMetadata = .init()
+}
+
+/// Durable, app-owned facts layered over a producer-derived conversation projection.
+///
+/// Optional fields distinguish "the user has not overridden this" from explicit values such as
+/// restoring a producer-marked deleted session or clearing all tags. Stars and pins default to
+/// false, matching Wake's `user_data` table.
+struct ConversationUserMetadata: Equatable, Sendable {
+    var title: String?
+    var tags: [String]?
+    var deleted: Bool?
+    var starred: Bool
+    var pinned: Bool
+    var updatedAt: Date?
+
+    init(
+        title: String? = nil,
+        tags: [String]? = nil,
+        deleted: Bool? = nil,
+        starred: Bool = false,
+        pinned: Bool = false,
+        updatedAt: Date? = nil
+    ) {
+        self.title = title
+        self.tags = tags
+        self.deleted = deleted
+        self.starred = starred
+        self.pinned = pinned
+        self.updatedAt = updatedAt
+    }
+
+    func applying(to producer: HistorySessionMetadata) -> HistorySessionMetadata {
+        var projected = producer
+        if let title { projected.title = title }
+        if let tags { projected.tags = tags }
+        if let deleted { projected.deleted = deleted }
+        projected.starred = starred
+        projected.pinned = pinned
+        return projected
+    }
+}
+
+struct ConversationUserMetadataPatch: Equatable, Sendable {
+    var title: String?
+    var tags: [String]?
+    var deleted: Bool?
+    var starred: Bool?
+    var pinned: Bool?
+
+    init(
+        title: String? = nil,
+        tags: [String]? = nil,
+        deleted: Bool? = nil,
+        starred: Bool? = nil,
+        pinned: Bool? = nil
+    ) {
+        self.title = title
+        self.tags = tags
+        self.deleted = deleted
+        self.starred = starred
+        self.pinned = pinned
+    }
+
+    var isEmpty: Bool {
+        title == nil && tags == nil && deleted == nil && starred == nil && pinned == nil
+    }
 }
 
 struct ConversationIndexScopeSummary: Equatable, Sendable {
@@ -193,9 +260,10 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 /// mutations while an independent query-only connection keeps list/detail reads responsive during
 /// indexing. WAL provides the snapshot boundary between them.
 final class ConversationIndexDatabase: @unchecked Sendable {
-    /// Version 2 preserves the warm derived index while adding bounded deferred-maintenance
-    /// markers. Version 1 could retain gigabytes of obsolete FTS segments after replacement.
-    static let schemaVersion: Int32 = 2
+    /// Version 3 adds non-rebuildable app-owned conversation metadata beside the derived catalog.
+    /// Version 2 added bounded deferred-maintenance markers; version 1 could retain gigabytes of
+    /// obsolete FTS segments after replacement.
+    static let schemaVersion: Int32 = 4
 
     let file: URL
 
@@ -268,6 +336,22 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         normalizedPath(file.path)
     }
 
+    private static func validSessionLocation(
+        _ location: ConversationSessionLocation
+    ) throws -> ConversationSessionLocation {
+        let raw = location.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, raw.count <= 16_384,
+              (raw as NSString).isAbsolutePath, !raw.utf8.contains(0) else {
+            throw ConversationIndexDatabaseError.invalidRecord(
+                "session location must be an absolute local path"
+            )
+        }
+        return ConversationSessionLocation(
+            source: location.source,
+            path: normalizedPath(raw)
+        )
+    }
+
     var supportsTrigramSearch: Bool {
         withLock { trigramFTSAvailable }
     }
@@ -287,6 +371,429 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 "SELECT EXISTS(SELECT 1 FROM conversation_sessions LIMIT 1)",
                 connection: connection
             ) != 0
+        }
+    }
+
+    /// Applies one user action without touching the producer-derived session row. The user table
+    /// intentionally has no foreign key: a temporary source disappearance or a full index rebuild
+    /// must not erase stars, pins, titles, tags, or trash state.
+    @discardableResult
+    func updateUserMetadata(
+        for file: URL,
+        patch: ConversationUserMetadataPatch
+    ) throws -> Int64 {
+        try withLock {
+            guard !patch.isEmpty else { return try currentGeneration() }
+            let path = Self.normalizedPath(file)
+            let normalizedTitle: String?
+            if let title = patch.title {
+                let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard value.count <= 4_096 else {
+                    throw ConversationIndexDatabaseError.invalidRecord("title is too long")
+                }
+                normalizedTitle = value.isEmpty ? nil : value
+            } else {
+                normalizedTitle = nil
+            }
+
+            let normalizedTags: [String]?
+            if let tags = patch.tags {
+                var values: [String] = []
+                for raw in tags {
+                    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard value.count <= 512 else {
+                        throw ConversationIndexDatabaseError.invalidRecord("tag is too long")
+                    }
+                    if !value.isEmpty, !values.contains(value) { values.append(value) }
+                    guard values.count <= 256 else {
+                        throw ConversationIndexDatabaseError.invalidRecord("too many tags")
+                    }
+                }
+                normalizedTags = values
+            } else {
+                normalizedTags = nil
+            }
+            let tagsJSON = try normalizedTags.map { tags -> String in
+                let data = try metadataEncoder.encode(tags)
+                guard let text = String(data: data, encoding: .utf8) else {
+                    throw ConversationIndexDatabaseError.invalidRecord("tags are not UTF-8")
+                }
+                return text
+            }
+            let updatedAt = Date()
+            let generation = try transaction {
+                try execute(
+                    """
+                    INSERT INTO conversation_user_metadata (
+                        session_path, title, tags_json, deleted, starred, pinned, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_path) DO UPDATE SET
+                        title = CASE WHEN ? THEN excluded.title
+                                     ELSE conversation_user_metadata.title END,
+                        tags_json = CASE WHEN ? THEN excluded.tags_json
+                                        ELSE conversation_user_metadata.tags_json END,
+                        deleted = CASE WHEN ? THEN excluded.deleted
+                                      ELSE conversation_user_metadata.deleted END,
+                        starred = CASE WHEN ? THEN excluded.starred
+                                      ELSE conversation_user_metadata.starred END,
+                        pinned = CASE WHEN ? THEN excluded.pinned
+                                     ELSE conversation_user_metadata.pinned END,
+                        updated_at = excluded.updated_at
+                    """,
+                    bindings: [
+                        .text(path),
+                        normalizedTitle.map(SQLiteValue.text) ?? .null,
+                        tagsJSON.map(SQLiteValue.text) ?? .null,
+                        patch.deleted.map { .integer($0 ? 1 : 0) } ?? .null,
+                        .integer(patch.starred == true ? 1 : 0),
+                        .integer(patch.pinned == true ? 1 : 0),
+                        .double(updatedAt.timeIntervalSince1970),
+                        .integer(patch.title == nil ? 0 : 1),
+                        .integer(patch.tags == nil ? 0 : 1),
+                        .integer(patch.deleted == nil ? 0 : 1),
+                        .integer(patch.starred == nil ? 0 : 1),
+                        .integer(patch.pinned == nil ? 0 : 1),
+                    ]
+                )
+                return try advanceGeneration()
+            }
+            try hardenPermissions()
+            return generation
+        }
+    }
+
+    func userMetadata(for file: URL) throws -> ConversationUserMetadata {
+        try withReadLock { connection in
+            let statement = try prepare(
+                """
+                SELECT title, tags_json, deleted, starred, pinned, updated_at
+                FROM conversation_user_metadata WHERE session_path = ? LIMIT 1
+                """,
+                bindings: [.text(Self.normalizedPath(file))],
+                connection: connection
+            )
+            defer { sqlite3_finalize(statement) }
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return .init() }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("read user metadata", status, connection: connection)
+            }
+            return try decodeUserMetadata(statement, offset: 0)
+        }
+    }
+
+    /// Session-location copies share one logical producer conversation even though the catalog
+    /// and user metadata remain path-addressed. Mirror the most recently edited metadata row to
+    /// every replica so an mtime-driven winner change cannot lose titles, tags, trash, stars, or
+    /// pins. Imported library snapshots are excluded by discovery before this method is called.
+    @discardableResult
+    func synchronizeUserMetadata(for files: [URL]) throws -> Int64? {
+        try withLock {
+            let paths = Array(Set(files.map(Self.normalizedPath))).sorted()
+            guard paths.count > 1 else { return nil }
+
+            let placeholders = Array(repeating: "?", count: paths.count).joined(separator: ", ")
+            let statement = try prepare(
+                """
+                SELECT session_path, title, tags_json, deleted, starred, pinned, updated_at
+                FROM conversation_user_metadata
+                WHERE session_path IN (\(placeholders))
+                ORDER BY updated_at DESC, session_path ASC
+                """,
+                bindings: paths.map(SQLiteValue.text)
+            )
+            defer { sqlite3_finalize(statement) }
+
+            var rows: [String: ConversationUserMetadata] = [:]
+            var canonical: ConversationUserMetadata?
+            while true {
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read replica user metadata", status)
+                }
+                let path = try textColumn(statement, 0, field: "session_path")
+                let metadata = try decodeUserMetadata(statement, offset: 1)
+                if canonical == nil { canonical = metadata }
+                rows[path] = metadata
+            }
+            guard let canonical,
+                  paths.contains(where: { rows[$0] != canonical }) else { return nil }
+
+            let tagsJSON = try canonical.tags.map { tags -> String in
+                let data = try metadataEncoder.encode(tags)
+                guard let text = String(data: data, encoding: .utf8) else {
+                    throw ConversationIndexDatabaseError.invalidRecord("tags are not UTF-8")
+                }
+                return text
+            }
+            let updatedAt = canonical.updatedAt ?? Date()
+            let generation = try transaction {
+                for path in paths where rows[path] != canonical {
+                    try execute(
+                        """
+                        INSERT INTO conversation_user_metadata (
+                            session_path, title, tags_json, deleted, starred, pinned, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(session_path) DO UPDATE SET
+                            title = excluded.title,
+                            tags_json = excluded.tags_json,
+                            deleted = excluded.deleted,
+                            starred = excluded.starred,
+                            pinned = excluded.pinned,
+                            updated_at = excluded.updated_at
+                        """,
+                        bindings: [
+                            .text(path),
+                            canonical.title.map(SQLiteValue.text) ?? .null,
+                            tagsJSON.map(SQLiteValue.text) ?? .null,
+                            canonical.deleted.map { .integer($0 ? 1 : 0) } ?? .null,
+                            .integer(canonical.starred ? 1 : 0),
+                            .integer(canonical.pinned ? 1 : 0),
+                            .double(updatedAt.timeIntervalSince1970),
+                        ]
+                    )
+                }
+                return try advanceGeneration()
+            }
+            try hardenPermissions()
+            return generation
+        }
+    }
+
+    // MARK: - Session locations
+
+    /// User-managed locations live beside stars and pins rather than in the rebuildable catalog.
+    /// A full index reconciliation therefore cannot forget a custom root or re-enable a removed
+    /// producer default.
+    func sessionLocationOverrides() throws -> ConversationSessionLocationOverrides {
+        try withReadLock { connection in
+            let customStatement = try prepare(
+                "SELECT source, path FROM conversation_custom_roots ORDER BY added_at, path",
+                bindings: [],
+                connection: connection
+            )
+            defer { sqlite3_finalize(customStatement) }
+            var custom: [ConversationSessionLocation] = []
+            while true {
+                let status = sqlite3_step(customStatement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read custom session locations", status, connection: connection)
+                }
+                guard let source = try? textColumn(customStatement, 0, field: "source"),
+                      let value = HistorySource(rawValue: source),
+                      let path = try? textColumn(customStatement, 1, field: "path") else {
+                    continue
+                }
+                custom.append(.init(source: value, path: path))
+            }
+
+            let removedStatement = try prepare(
+                "SELECT source FROM conversation_removed_default_roots ORDER BY source",
+                bindings: [],
+                connection: connection
+            )
+            defer { sqlite3_finalize(removedStatement) }
+            var removed = Set<HistorySource>()
+            while true {
+                let status = sqlite3_step(removedStatement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read removed session locations", status, connection: connection)
+                }
+                if let raw = try? textColumn(removedStatement, 0, field: "source"),
+                   let source = HistorySource(rawValue: raw) {
+                    removed.insert(source)
+                }
+            }
+            return ConversationSessionLocationOverrides(
+                custom: custom,
+                removedDefaults: removed
+            )
+        }
+    }
+
+    func addCustomSessionLocation(_ location: ConversationSessionLocation) throws {
+        let normalized = try Self.validSessionLocation(location)
+        try withLock {
+            try execute(
+                "INSERT OR IGNORE INTO conversation_custom_roots(source, path, added_at) "
+                    + "VALUES (?, ?, ?)",
+                bindings: [
+                    .text(normalized.source.rawValue),
+                    .text(normalized.path),
+                    .double(Date().timeIntervalSince1970),
+                ]
+            )
+            try hardenPermissions()
+        }
+    }
+
+    /// Atomically edits either a custom row or a producer default. Editing a default suppresses
+    /// that producer's canonical adapter and appends the replacement as a custom instance.
+    func replaceSessionLocation(
+        oldSource: HistorySource,
+        oldCustomPath: String?,
+        with replacement: ConversationSessionLocation
+    ) throws {
+        let normalized = try Self.validSessionLocation(replacement)
+        try withLock {
+            try transaction {
+                if let oldCustomPath {
+                    try execute(
+                        "DELETE FROM conversation_custom_roots WHERE source = ? AND path = ?",
+                        bindings: [
+                            .text(oldSource.rawValue),
+                            .text(Self.normalizedPath(oldCustomPath)),
+                        ]
+                    )
+                } else {
+                    try execute(
+                        "INSERT OR IGNORE INTO conversation_removed_default_roots"
+                            + "(source, removed_at) VALUES (?, ?)",
+                        bindings: [
+                            .text(oldSource.rawValue),
+                            .double(Date().timeIntervalSince1970),
+                        ]
+                    )
+                }
+                try execute(
+                    "INSERT OR IGNORE INTO conversation_custom_roots(source, path, added_at) "
+                        + "VALUES (?, ?, ?)",
+                    bindings: [
+                        .text(normalized.source.rawValue),
+                        .text(normalized.path),
+                        .double(Date().timeIntervalSince1970),
+                    ]
+                )
+            }
+            try hardenPermissions()
+        }
+    }
+
+    func removeCustomSessionLocation(source: HistorySource, path: String) throws {
+        try withLock {
+            try execute(
+                "DELETE FROM conversation_custom_roots WHERE source = ? AND path = ?",
+                bindings: [.text(source.rawValue), .text(Self.normalizedPath(path))]
+            )
+            try hardenPermissions()
+        }
+    }
+
+    func removeDefaultSessionLocation(source: HistorySource) throws {
+        try withLock {
+            try execute(
+                "INSERT OR IGNORE INTO conversation_removed_default_roots(source, removed_at) "
+                    + "VALUES (?, ?)",
+                bindings: [.text(source.rawValue), .double(Date().timeIntervalSince1970)]
+            )
+            try hardenPermissions()
+        }
+    }
+
+    func restoreDefaultSessionLocations() throws {
+        try withLock {
+            try transaction {
+                try execute("DELETE FROM conversation_custom_roots")
+                try execute("DELETE FROM conversation_removed_default_roots")
+            }
+            try hardenPermissions()
+        }
+    }
+
+    /// Replaces the complete user-managed location state in one transaction. The conversation
+    /// store uses this only to roll back a mutation when a new runtime roster cannot be created;
+    /// the previous repository can then safely resume because disk and runtime still agree.
+    func replaceSessionLocationOverrides(
+        _ overrides: ConversationSessionLocationOverrides
+    ) throws {
+        let custom = try overrides.custom.map(Self.validSessionLocation)
+        try withLock {
+            try transaction {
+                try execute("DELETE FROM conversation_custom_roots")
+                try execute("DELETE FROM conversation_removed_default_roots")
+                let timestamp = Date().timeIntervalSince1970
+                for (index, location) in custom.enumerated() {
+                    try execute(
+                        "INSERT INTO conversation_custom_roots(source, path, added_at) VALUES (?, ?, ?)",
+                        bindings: [
+                            .text(location.source.rawValue),
+                            .text(location.path),
+                            .double(timestamp + Double(index) / 1_000_000),
+                        ]
+                    )
+                }
+                for source in overrides.removedDefaults.sorted(by: {
+                    $0.rawValue < $1.rawValue
+                }) {
+                    try execute(
+                        "INSERT INTO conversation_removed_default_roots(source, removed_at) "
+                            + "VALUES (?, ?)",
+                        bindings: [.text(source.rawValue), .double(timestamp)]
+                    )
+                }
+            }
+            try hardenPermissions()
+        }
+    }
+
+    /// Counts each physical session under the first matching `(source, data root)` pair. The
+    /// boundary check is shared with adapter routing so `/sessions-old` cannot leak into
+    /// `/sessions`, and a custom root nested beneath another root wins when callers order longest
+    /// paths first.
+    func sessionCounts(
+        for locations: [(source: HistorySource, root: URL)]
+    ) throws -> [Int] {
+        try withReadLock { connection in
+            let statement = try prepare(
+                "SELECT source, source_path FROM conversation_sessions",
+                bindings: [],
+                connection: connection
+            )
+            defer { sqlite3_finalize(statement) }
+            var result = Array(repeating: 0, count: locations.count)
+            while true {
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { return result }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("count session locations", status, connection: connection)
+                }
+                guard let raw = try? textColumn(statement, 0, field: "source"),
+                      let source = HistorySource(rawValue: raw),
+                      let path = try? textColumn(statement, 1, field: "source_path") else {
+                    continue
+                }
+                if let index = locations.firstIndex(where: { location in
+                    location.source == source
+                        && ConversationSessionLocationLayout.pathOwns(
+                            root: location.root.standardizedFileURL.path,
+                            path: ConversationFileInspector.storageFile(
+                                for: URL(fileURLWithPath: path)
+                            ).path
+                        )
+                }) {
+                    result[index] += 1
+                }
+            }
+        }
+    }
+
+    /// Used only after an app-owned imported transcript was permanently removed.
+    @discardableResult
+    func removeUserMetadata(for file: URL) throws -> Int64 {
+        try withLock {
+            let generation = try transaction {
+                try execute(
+                    "DELETE FROM conversation_user_metadata WHERE session_path = ?",
+                    bindings: [.text(Self.normalizedPath(file))]
+                )
+                guard sqlite3_changes(connection) > 0 else { return try currentGeneration() }
+                return try advanceGeneration()
+            }
+            try hardenPermissions()
+            return generation
         }
     }
 
@@ -564,7 +1071,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
     func entry(forPath path: String) throws -> ConversationIndexEntry? {
         try withReadLock { connection in
-            let sql = Self.entrySelect + " WHERE source_path = ? LIMIT 1"
+            let sql = Self.entrySelect + " WHERE s.source_path = ? LIMIT 1"
             let statement = try prepare(
                 sql,
                 bindings: [.text(Self.normalizedPath(path))],
@@ -592,6 +1099,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         scope: String? = nil,
         source: HistorySource? = nil,
         deleted: Bool? = false,
+        starred: Bool? = nil,
         limit: Int = 400,
         offset: Int = 0
     ) throws -> [ConversationIndexEntry] {
@@ -600,20 +1108,25 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             var conditions: [String] = []
             var bindings: [SQLiteValue] = []
             if let scope {
-                conditions.append("scope = ?")
+                conditions.append("s.scope = ?")
                 bindings.append(.text(scope))
             }
             if let source {
-                conditions.append("source = ?")
+                conditions.append("s.source = ?")
                 bindings.append(.text(source.rawValue))
             }
             if let deleted {
-                conditions.append("deleted = ?")
+                conditions.append("COALESCE(u.deleted, s.deleted) = ?")
                 bindings.append(.integer(deleted ? 1 : 0))
+            }
+            if let starred {
+                conditions.append("COALESCE(u.starred, 0) = ?")
+                bindings.append(.integer(starred ? 1 : 0))
             }
             var sql = Self.entrySelect
             if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
-            sql += " ORDER BY last_activity DESC, created_at DESC, source_path DESC"
+            sql += " ORDER BY COALESCE(u.pinned, 0) DESC, s.last_activity DESC, "
+                + "s.created_at DESC, s.source_path DESC"
             return try queryEntries(
                 sql,
                 bindings: bindings,
@@ -627,15 +1140,16 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     func scopeSummaries(deleted: Bool? = false) throws -> [ConversationIndexScopeSummary] {
         try withReadLock { connection in
             var sql = """
-                SELECT scope, COUNT(*), MAX(last_activity)
-                FROM conversation_sessions
+                SELECT s.scope, COUNT(*), MAX(s.last_activity)
+                FROM conversation_sessions s
+                LEFT JOIN conversation_user_metadata u ON u.session_path = s.source_path
                 """
             var bindings: [SQLiteValue] = []
             if let deleted {
-                sql += " WHERE deleted = ?"
+                sql += " WHERE COALESCE(u.deleted, s.deleted) = ?"
                 bindings.append(.integer(deleted ? 1 : 0))
             }
-            sql += " GROUP BY scope ORDER BY MAX(last_activity) DESC, scope"
+            sql += " GROUP BY s.scope ORDER BY MAX(s.last_activity) DESC, s.scope"
             let statement = try prepare(sql, bindings: bindings, connection: connection)
             defer { sqlite3_finalize(statement) }
             var result: [ConversationIndexScopeSummary] = []
@@ -692,9 +1206,12 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         scope: String? = nil,
         source: HistorySource? = nil,
         deleted: Bool? = false,
-        limit: Int? = nil
+        limit: Int? = nil,
+        isCancelled: @escaping ConversationIndexScanCancellation = { Task.isCancelled }
     ) throws -> ConversationIndexCandidateBatch {
         try withReadLock { connection in
+            let cancellation = SQLiteCancellationContext(isCancelled: isCancelled)
+            try cancellation.check()
             let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty, limit.map({ $0 > 0 }) ?? true else {
                 return ConversationIndexCandidateBatch(documents: [], usedFallback: false)
@@ -705,6 +1222,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1",
                 connection: connection
             ) == 0
+            try cancellation.check()
             let canUseFTS = trigramFTSAvailable
                 && ftsIsReady
                 && !segments.isEmpty
@@ -720,15 +1238,19 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                             deleted: deleted,
                             limit: limit,
                             useFTS: true,
-                            connection: connection
+                            connection: connection,
+                            cancellation: cancellation
                         ),
                         usedFallback: false
                     )
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     // A copied database can contain an FTS table unsupported by the current
                     // SQLite runtime. The ordinary document table is always a safe fallback.
                 }
             }
+            try cancellation.check()
             return ConversationIndexCandidateBatch(
                 documents: try queryCandidateDocuments(
                     query: query,
@@ -737,7 +1259,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     deleted: deleted,
                     limit: limit,
                     useFTS: false,
-                    connection: connection
+                    connection: connection,
+                    cancellation: cancellation
                 ),
                 usedFallback: true
             )
@@ -759,109 +1282,105 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     /// full VACUUM; pending bits make repeated unchanged scans no-ops, and maintenance never
     /// advances generation.
     func finishFullScanMaintenance(
-        isCancelled: ConversationIndexScanCancellation = { false }
+        isCancelled: @escaping ConversationIndexScanCancellation = { false }
     ) throws {
-        try withoutActuallyEscaping(isCancelled) { escapableIsCancelled in
-            try withLock {
-                let cancellation = SQLiteCancellationContext(
-                    isCancelled: escapableIsCancelled
-                )
-                try cancellation.check()
-                let maintenancePending = try int64Value(
-                    "SELECT maintenance_pending FROM conversation_catalog_state WHERE singleton = 1"
+        try withLock {
+            let cancellation = SQLiteCancellationContext(isCancelled: isCancelled)
+            try cancellation.check()
+            let maintenancePending = try int64Value(
+                "SELECT maintenance_pending FROM conversation_catalog_state WHERE singleton = 1"
+            ) != 0
+            let oneTimeCompactionPending = try int64Value(
+                "SELECT one_time_compaction_pending FROM conversation_catalog_state "
+                    + "WHERE singleton = 1"
+            ) != 0
+            guard maintenancePending || oneTimeCompactionPending else { return }
+
+            // FTS rebuild and compaction can temporarily need another database-sized copy.
+            // Low disk is a normal condition for a disposable cache: leave the retry marker
+            // set and keep serving bounded fallback search instead of risking ENOSPC.
+            guard hasCapacityForMaintenance() else { return }
+
+            if trigramFTSAvailable {
+                let dirty = try int64Value(
+                    "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
                 ) != 0
-                let oneTimeCompactionPending = try int64Value(
-                    "SELECT one_time_compaction_pending FROM conversation_catalog_state "
-                        + "WHERE singleton = 1"
-                ) != 0
-                guard maintenancePending || oneTimeCompactionPending else { return }
-
-                // FTS rebuild and compaction can temporarily need another database-sized copy.
-                // Low disk is a normal condition for a disposable cache: leave the retry marker
-                // set and keep serving bounded fallback search instead of risking ENOSPC.
-                guard hasCapacityForMaintenance() else { return }
-
-                if trigramFTSAvailable {
-                    let dirty = try int64Value(
-                        "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
-                    ) != 0
-                    if dirty {
-                        try executeCancellableMaintenance(
-                            "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                                + "VALUES ('rebuild')",
-                            cancellation: cancellation
-                        )
-                        try markFTSState(dirty: false)
-                        try cancellation.check()
-                    }
-                }
-
-                if oneTimeCompactionPending {
-                    // Never run a full VACUUM automatically. It takes an exclusive writer and may
-                    // require a complete second copy of a large catalog. New catalogs already use
-                    // incremental auto-vacuum; legacy files simply transition to bounded cleanup.
-                    try execute("PRAGMA auto_vacuum = INCREMENTAL")
-                    try execute(
-                        "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
-                            + "WHERE singleton = 1"
-                    )
-                    try cancellation.check()
-                }
-
-                if trigramFTSAvailable {
+                if dirty {
                     try executeCancellableMaintenance(
                         "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                            + "VALUES ('optimize')",
+                            + "VALUES ('rebuild')",
                         cancellation: cancellation
                     )
+                    try markFTSState(dirty: false)
                     try cancellation.check()
                 }
-                try executeCancellableMaintenance(
-                    "PRAGMA optimize",
-                    cancellation: cancellation
-                )
-                try cancellation.check()
-                // This also reclaims pages freed by the FTS optimize which follows a successful
-                // one-time VACUUM. It is bounded on every subsequent maintenance pass.
-                try executeCancellableMaintenance(
-                    "PRAGMA incremental_vacuum(8192)",
-                    cancellation: cancellation
-                )
-                try cancellation.check()
-                guard try checkpointWALTruncating(cancellation: cancellation) else {
-                    try cancellation.check()
-                    return
-                }
+            }
 
+            if oneTimeCompactionPending {
+                // Never run a full VACUUM automatically. It takes an exclusive writer and may
+                // require a complete second copy of a large catalog. New catalogs already use
+                // incremental auto-vacuum; legacy files simply transition to bounded cleanup.
+                try execute("PRAGMA auto_vacuum = INCREMENTAL")
                 try execute(
-                    "UPDATE conversation_catalog_state SET maintenance_pending = 0, "
-                        + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                    "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
+                        + "WHERE singleton = 1"
                 )
-                do {
-                    guard try checkpointWALTruncating(cancellation: cancellation) else {
-                        // An independent reader raced the final state write. Restore the retry
-                        // marker; the next successful full scan can finish truncation.
-                        try execute(
-                            "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
-                                + "one_time_compaction_pending = 0 WHERE singleton = 1"
-                        )
-                        try cancellation.check()
-                        return
-                    }
-                } catch {
-                    // The completion marker itself may be in the WAL when truncation is cancelled
-                    // or fails. Restore the ordinary retry bit for every checkpoint error so a
-                    // transient I/O/locking failure cannot silently suppress future maintenance.
-                    let checkpointError = error
+                try cancellation.check()
+            }
+
+            if trigramFTSAvailable {
+                try executeCancellableMaintenance(
+                    "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
+                        + "VALUES ('optimize')",
+                    cancellation: cancellation
+                )
+                try cancellation.check()
+            }
+            try executeCancellableMaintenance(
+                "PRAGMA optimize",
+                cancellation: cancellation
+            )
+            try cancellation.check()
+            // This also reclaims pages freed by the FTS optimize which follows a successful
+            // one-time VACUUM. It is bounded on every subsequent maintenance pass.
+            try executeCancellableMaintenance(
+                "PRAGMA incremental_vacuum(8192)",
+                cancellation: cancellation
+            )
+            try cancellation.check()
+            guard try checkpointWALTruncating(cancellation: cancellation) else {
+                try cancellation.check()
+                return
+            }
+
+            try execute(
+                "UPDATE conversation_catalog_state SET maintenance_pending = 0, "
+                    + "one_time_compaction_pending = 0 WHERE singleton = 1"
+            )
+            do {
+                guard try checkpointWALTruncating(cancellation: cancellation) else {
+                    // An independent reader raced the final state write. Restore the retry
+                    // marker; the next successful full scan can finish truncation.
                     try execute(
                         "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
                             + "one_time_compaction_pending = 0 WHERE singleton = 1"
                     )
-                    if checkpointError is CancellationError { throw CancellationError() }
-                    throw checkpointError
+                    try cancellation.check()
+                    return
                 }
-                try hardenPermissions()
+            } catch {
+                // The completion marker itself may be in the WAL when truncation is cancelled
+                // or fails. Restore the ordinary retry bit for every checkpoint error so a
+                // transient I/O/locking failure cannot silently suppress future maintenance.
+                let checkpointError = error
+                try execute(
+                    "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
+                        + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                )
+                if checkpointError is CancellationError { throw CancellationError() }
+                throw checkpointError
             }
+            try hardenPermissions()
         }
     }
 
@@ -930,6 +1449,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             let version = try int64Value("PRAGMA user_version")
             if version == 1 {
                 try migrateVersionOneSchema()
+            } else if version == 2 {
+                try migrateVersionTwoSchema()
+            } else if version == 3 {
+                try migrateVersionThreeSchema()
             } else if version != Int64(Self.schemaVersion) {
                 if trigramFTSAvailable {
                     try execute("DROP TABLE IF EXISTS conversation_documents_fts")
@@ -1015,6 +1538,20 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         try createBaseSchema()
     }
 
+    private func migrateVersionTwoSchema() throws {
+        // The producer-derived rows and their FTS documents remain warm. `createBaseSchema`
+        // installs only the new user table/indexes under the same cross-process migration lock.
+        try createBaseSchema()
+        try execute("PRAGMA user_version = \(Self.schemaVersion)")
+    }
+
+    private func migrateVersionThreeSchema() throws {
+        // Location configuration is non-rebuildable user data. Install the two additive tables
+        // without touching warm catalog rows, FTS documents, stars, pins, tags, or trash state.
+        try createBaseSchema()
+        try execute("PRAGMA user_version = \(Self.schemaVersion)")
+    }
+
     private func createBaseSchema() throws {
         try execute(
             """
@@ -1065,6 +1602,45 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         )
         try execute(
             """
+            CREATE TABLE IF NOT EXISTS conversation_user_metadata (
+                session_path TEXT PRIMARY KEY NOT NULL,
+                title TEXT,
+                tags_json TEXT,
+                deleted INTEGER CHECK (deleted IS NULL OR deleted IN (0, 1)),
+                starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
+                pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+                updated_at REAL NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        try execute(
+            "CREATE INDEX IF NOT EXISTS conversation_user_metadata_starred "
+                + "ON conversation_user_metadata(starred, updated_at DESC)"
+        )
+        try execute(
+            "CREATE INDEX IF NOT EXISTS conversation_user_metadata_pinned "
+                + "ON conversation_user_metadata(pinned, updated_at DESC)"
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_custom_roots (
+                source TEXT NOT NULL,
+                path TEXT NOT NULL,
+                added_at REAL NOT NULL,
+                PRIMARY KEY (source, path)
+            ) WITHOUT ROWID
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_removed_default_roots (
+                source TEXT PRIMARY KEY NOT NULL,
+                removed_at REAL NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        try execute(
+            """
             CREATE TABLE IF NOT EXISTS conversation_documents (
                 id INTEGER PRIMARY KEY,
                 session_path TEXT NOT NULL
@@ -1102,9 +1678,11 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     // MARK: - Queries
 
     private static let entrySelect = """
-        SELECT source_path, scope, file_mtime, file_size, dependency_fingerprint,
-               metadata_json, indexed_at
-        FROM conversation_sessions
+        SELECT s.source_path, s.scope, s.file_mtime, s.file_size, s.dependency_fingerprint,
+               s.metadata_json, s.indexed_at, u.title, u.tags_json, u.deleted,
+               COALESCE(u.starred, 0), COALESCE(u.pinned, 0), u.updated_at
+        FROM conversation_sessions s
+        LEFT JOIN conversation_user_metadata u ON u.session_path = s.source_path
         """
 
     private static let documentSelect = """
@@ -1149,7 +1727,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         deleted: Bool?,
         limit: Int?,
         useFTS: Bool,
-        connection: OpaquePointer
+        connection: OpaquePointer,
+        cancellation: SQLiteCancellationContext
     ) throws -> [ConversationIndexDocumentCandidate] {
         var bindings: [SQLiteValue] = []
         var conditions: [String] = []
@@ -1159,6 +1738,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 FROM conversation_documents_fts
                 JOIN conversation_documents d ON d.id = conversation_documents_fts.rowid
                 JOIN conversation_sessions s ON s.source_path = d.session_path
+                LEFT JOIN conversation_user_metadata u ON u.session_path = s.source_path
                 """
             let expression = query
                 .split(whereSeparator: \.isWhitespace)
@@ -1170,6 +1750,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             from = """
                 FROM conversation_documents d
                 JOIN conversation_sessions s ON s.source_path = d.session_path
+                LEFT JOIN conversation_user_metadata u ON u.session_path = s.source_path
                 """
             conditions.append("instr(lower(d.search_text), lower(?)) > 0")
             bindings.append(.text(query))
@@ -1183,40 +1764,52 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             bindings.append(.text(source.rawValue))
         }
         if let deleted {
-            conditions.append("s.deleted = ?")
+            conditions.append("COALESCE(u.deleted, s.deleted) = ?")
             bindings.append(.integer(deleted ? 1 : 0))
         }
 
         let sql = """
             SELECT s.source_path, s.scope, s.file_mtime, s.file_size,
                    s.dependency_fingerprint, s.metadata_json, s.indexed_at,
+                   u.title, u.tags_json, u.deleted, COALESCE(u.starred, 0),
+                   COALESCE(u.pinned, 0), u.updated_at,
                    d.transcript_id, d.agent_type, d.sort_order, d.search_text,
                    d.message_spans_json
             \(from)
             WHERE \(conditions.joined(separator: " AND "))
-            ORDER BY s.last_activity DESC, d.sort_order, d.transcript_id
+            ORDER BY COALESCE(u.pinned, 0) DESC, s.last_activity DESC,
+                     d.sort_order, d.transcript_id
             """
         let statement = try prepare(sql, bindings: bindings, connection: connection)
         defer { sqlite3_finalize(statement) }
-        var result: [ConversationIndexDocumentCandidate] = []
-        while true {
-            let status = sqlite3_step(statement)
-            if status == SQLITE_DONE { return result }
-            guard status == SQLITE_ROW else {
-                throw sqliteError(
-                    useFTS ? "search FTS" : "search documents",
-                    status,
-                    connection: connection
-                )
-            }
-            do {
-                result.append(ConversationIndexDocumentCandidate(
-                    entry: try decodeEntry(statement, offset: 0),
-                    document: try decodeDocument(statement, offset: 7)
-                ))
-                if let limit, result.count == limit { return result }
-            } catch ConversationIndexDatabaseError.corruptRow(_) {
-                continue
+        return try withCancellableSQLiteQuery(
+            connection: connection,
+            cancellation: cancellation
+        ) {
+            var result: [ConversationIndexDocumentCandidate] = []
+            while true {
+                try cancellation.check()
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { return result }
+                if status != SQLITE_ROW, cancellation.wasCancelled {
+                    throw CancellationError()
+                }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError(
+                        useFTS ? "search FTS" : "search documents",
+                        status,
+                        connection: connection
+                    )
+                }
+                do {
+                    result.append(ConversationIndexDocumentCandidate(
+                        entry: try decodeEntry(statement, offset: 0),
+                        document: try decodeDocument(statement, offset: 13)
+                    ))
+                    if let limit, result.count == limit { return result }
+                } catch ConversationIndexDatabaseError.corruptRow(_) {
+                    continue
+                }
             }
         }
     }
@@ -1232,17 +1825,18 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             throw ConversationIndexDatabaseError.corruptRow("negative file size for \(path)")
         }
         let metadataData = try blobColumn(statement, offset + 5, field: "metadata_json")
-        let metadata: HistorySessionMetadata
+        let producerMetadata: HistorySessionMetadata
         do {
-            metadata = try metadataDecoder.decode(HistorySessionMetadata.self, from: metadataData)
+            producerMetadata = try metadataDecoder.decode(HistorySessionMetadata.self, from: metadataData)
         } catch {
             throw ConversationIndexDatabaseError.corruptRow(
                 "metadata JSON for \(path): \(error.localizedDescription)"
             )
         }
+        let userMetadata = try decodeUserMetadata(statement, offset: offset + 7)
         return ConversationIndexEntry(
             sourcePath: path,
-            metadata: metadata,
+            metadata: userMetadata.applying(to: producerMetadata),
             scope: scope,
             fingerprint: ConversationIndexFingerprint(
                 modificationTime: Date(
@@ -1251,7 +1845,49 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 sizeBytes: UInt64(fileSize),
                 dependencyFingerprint: optionalTextColumn(statement, offset + 4)
             ),
-            indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, offset + 6))
+            indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, offset + 6)),
+            userMetadata: userMetadata
+        )
+    }
+
+    private func decodeUserMetadata(
+        _ statement: OpaquePointer,
+        offset: Int32
+    ) throws -> ConversationUserMetadata {
+        let tags: [String]?
+        if let tagsJSON = optionalTextColumn(statement, offset + 1) {
+            guard let data = tagsJSON.data(using: .utf8) else {
+                throw ConversationIndexDatabaseError.corruptRow("user tags are not UTF-8")
+            }
+            do {
+                tags = try metadataDecoder.decode([String].self, from: data)
+            } catch {
+                throw ConversationIndexDatabaseError.corruptRow(
+                    "user tags JSON: \(error.localizedDescription)"
+                )
+            }
+        } else {
+            tags = nil
+        }
+        let deleted: Bool?
+        if sqlite3_column_type(statement, offset + 2) == SQLITE_NULL {
+            deleted = nil
+        } else {
+            deleted = sqlite3_column_int64(statement, offset + 2) != 0
+        }
+        let updatedAt: Date?
+        if sqlite3_column_type(statement, offset + 5) == SQLITE_NULL {
+            updatedAt = nil
+        } else {
+            updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, offset + 5))
+        }
+        return ConversationUserMetadata(
+            title: optionalTextColumn(statement, offset),
+            tags: tags,
+            deleted: deleted,
+            starred: sqlite3_column_int64(statement, offset + 3) != 0,
+            pinned: sqlite3_column_int64(statement, offset + 4) != 0,
+            updatedAt: updatedAt
         )
     }
 
@@ -1579,13 +2215,45 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
+    /// A cancelled Swift task must stop SQLite while it is scanning or sorting, not only after
+    /// `sqlite3_step` eventually returns. The progress handler covers ordinary VM execution and
+    /// the monitor supplies SQLite's documented cross-thread interruption path for long built-ins.
+    private func withCancellableSQLiteQuery<T>(
+        connection: OpaquePointer,
+        cancellation: SQLiteCancellationContext,
+        _ body: () throws -> T
+    ) throws -> T {
+        try cancellation.check()
+        let pointer = Unmanaged.passUnretained(cancellation).toOpaque()
+        sqlite3_progress_handler(
+            connection,
+            1_000,
+            Self.maintenanceProgressHandler,
+            pointer
+        )
+        defer { sqlite3_progress_handler(connection, 0, nil, nil) }
+        do {
+            let result = try withSQLiteInterruptionMonitor(
+                connection: connection,
+                cancellation: cancellation,
+                body
+            )
+            try cancellation.check()
+            return result
+        } catch {
+            if cancellation.wasCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+
     private func withSQLiteInterruptionMonitor<T>(
+        connection interruptedConnection: OpaquePointer? = nil,
         cancellation: SQLiteCancellationContext,
         _ body: () throws -> T
     ) throws -> T {
         let operationFinished = DispatchSemaphore(value: 0)
         let monitorFinished = DispatchSemaphore(value: 0)
-        let connection = self.connection
+        let connection = interruptedConnection ?? self.connection
         Self.maintenanceCancellationQueue.async {
             defer { monitorFinished.signal() }
             while operationFinished.wait(timeout: .now() + 0.005) == .timedOut {

@@ -14,7 +14,15 @@ enum HistoryTranscriptFormat: Equatable, Sendable {
     case qoder
     case grok
     case copilot
+    case cursor
+    case opencode
+    case kiro
+    case gemini
+    case pi
+    case omp
+    case kimi
     case antigravity
+    case dsh
 
     static func detect(_ records: [[String: HistoryValue]]) -> HistoryTranscriptFormat? {
         if records.contains(where: isQoderRecord) { return .qoder }

@@ -52,7 +52,7 @@ struct MonitorRequestStream: View {
     private var streamHint: String {
         if !gatewayRunning { return appLanguage.localized("网关未运行") }
         if store.requests.isEmpty {
-            return appLanguage.localized(store.isRefreshing ? "正在读取 Bifrost…" : "等待请求")
+            return appLanguage.localized(store.isRefreshing ? "正在读取网关…" : "等待请求")
         }
         return appLanguage.localized("最近 \(store.requests.count) 条 · 每 10 秒自动刷新")
     }
@@ -118,7 +118,7 @@ struct MonitorRequestStream: View {
 private struct MonitorRequestRow: View {
     @Environment(\.appLanguage) private var appLanguage
 
-    let request: BifrostLog
+    let request: GatewayLog
     let selected: Bool
     let loadingDetail: Bool
     let action: () -> Void
@@ -136,18 +136,18 @@ private struct MonitorRequestRow: View {
                         Text(requestedModelLabel)
                             .foregroundStyle(Color.ccForeground)
                             .lineLimit(1)
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(Color.ccBrandStrong.opacity(0.62))
-                        Text(outgoingModelLabel)
-                            .foregroundStyle(Color.ccMuted)
-                            .lineLimit(1)
+                        if outgoingModelLabel != requestedModelLabel {
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Color.ccBrandStrong.opacity(0.62))
+                            Text(outgoingModelLabel)
+                                .foregroundStyle(Color.ccMuted)
+                                .lineLimit(1)
+                        }
                     }
                     .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                     HStack(spacing: 5) {
-                        if let object = request.object, !object.isEmpty {
-                            Text(object)
-                        }
+                        if !request.routeLabel.isEmpty { Text(request.routeLabel) }
                         Text(String(request.id.prefix(8)))
                     }
                     .font(.system(size: 9.5, design: .monospaced))
@@ -162,11 +162,6 @@ private struct MonitorRequestRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(width: 92, alignment: .trailing)
-
-                Text(MonitorFormat.compactCost(request.cost) ?? "")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
-                    .frame(width: 52, alignment: .trailing)
 
                 Text(rowStatusLabel)
                     .font(.system(size: 10.5, weight: .semibold))
@@ -206,7 +201,7 @@ private struct MonitorRequestRow: View {
         }
         .buttonStyle(MonitorPressableButtonStyle())
         .onHover { hovering = $0 }
-        .help(appLanguage.localized("查看 Bifrost 保存的规范化内容与上游原始正文"))
+        .help(appLanguage.localized("查看网关捕获的客户端与上游请求响应"))
         .accessibilityLabel(requestAccessibilityLabel)
         .accessibilityIdentifier("monitor.request.\(request.id)")
     }

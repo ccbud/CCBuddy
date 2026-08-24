@@ -154,7 +154,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var navigation = NavigationState()
     @Published private(set) var sidebarCollapsed: Bool
     @Published private(set) var themeMode: ThemeMode
-    @Published var gatewayState: BifrostGatewayState = .stopped
+    @Published var gatewayState: GatewayState = .stopped
     @Published private(set) var claudeConnected = false
     @Published private(set) var codexConnected = false
     @Published private(set) var claudeAvailable = false
@@ -178,7 +178,7 @@ final class AppModel: ObservableObject {
 
     private let repository: ConfigRepository
     private let importsRoot: URL
-    private let supervisor: BifrostSupervisor
+    private let supervisor: GatewaySupervisor
     private let connectionManager: CLIConnectionManager
     private let launchAtLoginController: LaunchAtLoginController
     private let pluginManager: any PluginManaging
@@ -237,7 +237,7 @@ final class AppModel: ObservableObject {
 
     init(
         repository: ConfigRepository = ConfigRepository(),
-        supervisor: BifrostSupervisor = BifrostSupervisor(),
+        supervisor: GatewaySupervisor = GatewaySupervisor(),
         connectionManager: CLIConnectionManager? = nil,
         launchAtLoginController: LaunchAtLoginController = LaunchAtLoginController(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -257,6 +257,10 @@ final class AppModel: ObservableObject {
     ) {
         let runtimeMode = Self.runtimeMode(environment: environment)
         let uiVisualFixture = Self.uiVisualFixture(environment: environment)
+        let conversationHistoryHomeDirectory = Self.conversationHistoryHomeDirectory(
+            runtimeMode: runtimeMode,
+            environment: environment
+        )
         // Constructing the process-wide instance coordinator acquires its on-disk lock. Test and
         // self-check modes must not touch it merely to initialize an AppModel.
         let applicationIsPrimaryInstance = runtimeMode == .application
@@ -328,7 +332,7 @@ final class AppModel: ObservableObject {
             let pluginRepository = PluginRepository(layout: .init(ccbudHome: pluginHome))
             self.pluginManager = LivePluginManager(repository: pluginRepository)
         }
-        self.monitorStore = MonitorStore(client: BifrostManagementClient(
+        self.monitorStore = MonitorStore(client: GatewayManagementClient(
             port: 8_788,
             credentials: supervisor.managementCredentials
         ), requestActivity: supervisor.requestActivity)
@@ -371,21 +375,11 @@ final class AppModel: ObservableObject {
             // Its functional probes create their own fixtures below the explicitly isolated
             // CCBUD_HOME; this in-memory UI model uses the same isolated tree and never starts
             // normal background services or the updater.
-            let isolatedRoot: URL
-            if case .enabled(let request) = SelfCheckEnvironmentGate.evaluate(
-                environment: environment
-            ) {
-                isolatedRoot = request.homeDirectory
-            } else {
-                isolatedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
-                    "ccbud-rejected-selfcheck-\(ProcessInfo.processInfo.processIdentifier)",
-                    isDirectory: true
-                )
-            }
             var fixture = AppConfig.fixture
             fixture.gatewayEnabled = false
             fixture.historyDirs = [
-                isolatedRoot.appendingPathComponent("history", isDirectory: true).path,
+                conversationHistoryHomeDirectory
+                    .appendingPathComponent("history", isDirectory: true).path,
             ]
             fixture.historyActive = "all"
             fixture.autoUpdate.check = false
@@ -428,7 +422,16 @@ final class AppModel: ObservableObject {
             }
         }
         config = initialConfig
-        conversationStore = ConversationStore(config: initialConfig, importsRoot: importsRoot)
+        // Wake-style canonical adapters discover producer-owned roots below `homeDirectory`, in
+        // addition to the explicitly configured legacy roots. Automated modes must therefore
+        // pass their isolated home into the store itself; changing only `historyDirs` can still
+        // scan the real ~/.cursor, ~/.gemini, etc. tree and trigger TCC prompts during UI tests.
+        // ConversationStore retains this value for every later `configure(config:)` call.
+        conversationStore = ConversationStore(
+            config: initialConfig,
+            importsRoot: importsRoot,
+            homeDirectory: conversationHistoryHomeDirectory
+        )
         conversationStore.usageHistoryDidChange = { [weak self] in
             self?.scheduleUsageHistoryRefresh(invalidate: true)
         }
@@ -533,6 +536,45 @@ final class AppModel: ObservableObject {
             return .unitTestHost
         }
         return .application
+    }
+
+    /// Canonical Wake adapters discover producer-owned roots relative to this directory rather
+    /// than `AppConfig.historyDirs`. Keep that authority inside the same isolation boundary as
+    /// UI tests and packaged self-checks, including their rejected/misconfigured fallback path.
+    static func conversationHistoryHomeDirectory(
+        runtimeMode: RuntimeMode,
+        environment: [String: String],
+        userHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+        processIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier
+    ) -> URL {
+        switch runtimeMode {
+        case .application, .unitTestHost:
+            return userHomeDirectory.standardizedFileURL
+
+        case .uiTesting:
+            if let rawHome = environment[SelfCheckEnvironmentGate.homeKey]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               rawHome.hasPrefix("/") {
+                return URL(fileURLWithPath: rawHome, isDirectory: true).standardizedFileURL
+            }
+            return temporaryDirectory.appendingPathComponent(
+                "ccbud-ui-history-home-\(processIdentifier)",
+                isDirectory: true
+            ).standardizedFileURL
+
+        case .selfCheck:
+            if case .enabled(let request) = SelfCheckEnvironmentGate.evaluate(
+                environment: environment,
+                userHomeDirectory: userHomeDirectory
+            ) {
+                return request.homeDirectory.standardizedFileURL
+            }
+            return temporaryDirectory.appendingPathComponent(
+                "ccbud-rejected-selfcheck-\(processIdentifier)",
+                isDirectory: true
+            ).standardizedFileURL
+        }
     }
 
     /// Xcode does not consistently copy its XCTest marker variables into a hosted macOS test
@@ -722,17 +764,30 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Discovers installed plugins before starting Bifrost. A plugin-backed active provider must
-    /// be healthy first because Bifrost starts routing as soon as its configuration is accepted.
+    /// Discovers installed plugins before starting the gateway. Every plugin-backed provider that
+    /// can receive traffic must be healthy first because routing starts as soon as the gateway
+    /// accepts its configuration.
     func startApplicationServices(allowGatewayStartup: Bool = true) async {
         guard pluginMayMutateState, !isShuttingDown,
               !reassertCLIRecoveryIfNeeded() else { return }
         await refreshPlugins(reconcileProviders: true, restartRunningGateway: false)
 
-        if let provider = activeProvider, provider.backend == .plugin,
-           let pluginID = provider.pluginId,
-           plugins.first(where: { $0.id == pluginID })?.isRunning != true {
+        var requiredProviderIDs = config.activeProviderId.map { [$0] } ?? []
+        if config.gatewayFailover.enabled {
+            requiredProviderIDs.append(contentsOf: config.gatewayFailover.providerIds)
+        }
+        var seenPluginIDs = Set<String>()
+        let requiredPluginIDs = requiredProviderIDs.compactMap { providerID -> String? in
+            guard let provider = config.providers.first(where: { $0.id == providerID }),
+                  provider.backend == .plugin,
+                  let pluginID = provider.pluginId,
+                  seenPluginIDs.insert(pluginID).inserted else { return nil }
+            return pluginID
+        }
+        for pluginID in requiredPluginIDs
+        where plugins.first(where: { $0.id == pluginID })?.isRunning != true {
             await setPluginEnabled(pluginID, enabled: true, announceSuccess: false)
+            guard !isShuttingDown, !reassertCLIRecoveryIfNeeded() else { return }
         }
 
         guard !isShuttingDown, !reassertCLIRecoveryIfNeeded() else { return }
@@ -910,7 +965,7 @@ final class AppModel: ObservableObject {
         monitorStore.configure(port: config.port, gatewayRunning: false)
         monitorStore.appendLifecycle(
             level: .info,
-            message: "\(wasRunning ? "正在重启" : "正在启动") Bifrost · localhost:\(config.port)"
+            message: "\(wasRunning ? "正在重启网关" : "正在启动网关") · localhost:\(config.port)"
         )
         do {
             try await supervisor.start(config: config)
@@ -937,7 +992,7 @@ final class AppModel: ObservableObject {
             monitorStore.configure(port: config.port, gatewayRunning: gatewayState.isRunning)
             monitorStore.appendLifecycle(
                 level: .info,
-                message: "Bifrost 已启动 · localhost:\(config.port)"
+                message: "网关已启动 · localhost:\(config.port)"
             )
             lastError = nil
         } catch {
@@ -953,7 +1008,7 @@ final class AppModel: ObservableObject {
             }
             gatewayState = .failed(detail)
             monitorStore.configure(port: config.port, gatewayRunning: false)
-            monitorStore.appendLifecycle(level: .error, message: "Bifrost 启动失败 · \(detail)")
+            monitorStore.appendLifecycle(level: .error, message: "网关启动失败 · \(detail)")
             lastError = detail
         }
     }
@@ -977,7 +1032,7 @@ final class AppModel: ObservableObject {
     private func stopGatewayLocked(operation: UInt64) async {
         let wasRunningOrStarting = gatewayState.isRunningOrStarting
         if wasRunningOrStarting {
-            monitorStore.appendLifecycle(level: .info, message: "正在停止 Bifrost · localhost:\(config.port)")
+            monitorStore.appendLifecycle(level: .info, message: "正在停止网关 · localhost:\(config.port)")
         }
         await supervisor.stop()
         guard isCurrentGatewayOperation(operation) else { return }
@@ -985,7 +1040,7 @@ final class AppModel: ObservableObject {
         gatewayState = .stopped
         monitorStore.configure(port: config.port, gatewayRunning: false)
         if wasRunningOrStarting {
-            monitorStore.appendLifecycle(level: .info, message: "Bifrost 已停止")
+            monitorStore.appendLifecycle(level: .info, message: "网关已停止")
         }
     }
 
@@ -1023,7 +1078,7 @@ final class AppModel: ObservableObject {
         if enabled {
             gatewayState = .starting
             monitorStore.configure(port: next.port, gatewayRunning: false)
-            monitorStore.appendLifecycle(level: .info, message: "正在启动 Bifrost · localhost:\(next.port)")
+            monitorStore.appendLifecycle(level: .info, message: "正在启动网关 · localhost:\(next.port)")
             do {
                 try await supervisor.start(config: next)
                 await gatewayStartupVerificationHook?()
@@ -1049,7 +1104,7 @@ final class AppModel: ObservableObject {
                 config = next
                 gatewayState = runningState
                 monitorStore.configure(port: config.port, gatewayRunning: gatewayState.isRunning)
-                monitorStore.appendLifecycle(level: .info, message: "Bifrost 已启动 · localhost:\(config.port)")
+                monitorStore.appendLifecycle(level: .info, message: "网关已启动 · localhost:\(config.port)")
                 lastError = nil
             } catch {
                 guard isCurrentGatewayOperation(operation) else { return }
@@ -1067,12 +1122,12 @@ final class AppModel: ObservableObject {
                 config = previous
                 gatewayState = .failed(detail)
                 monitorStore.configure(port: previous.port, gatewayRunning: false)
-                monitorStore.appendLifecycle(level: .error, message: "Bifrost 启动失败 · \(detail)")
+                monitorStore.appendLifecycle(level: .error, message: "网关启动失败 · \(detail)")
                 lastError = detail
             }
         } else {
             if gatewayState.isRunningOrStarting {
-                monitorStore.appendLifecycle(level: .info, message: "正在停止 Bifrost · localhost:\(previous.port)")
+                monitorStore.appendLifecycle(level: .info, message: "正在停止网关 · localhost:\(previous.port)")
             }
             await supervisor.stop()
             guard isCurrentGatewayOperation(operation) else { return }
@@ -1082,7 +1137,7 @@ final class AppModel: ObservableObject {
                 config = next
                 gatewayState = .stopped
                 monitorStore.configure(port: config.port, gatewayRunning: false)
-                monitorStore.appendLifecycle(level: .info, message: "Bifrost 已停止")
+                monitorStore.appendLifecycle(level: .info, message: "网关已停止")
                 lastError = nil
             } catch {
                 config = previous
@@ -1111,7 +1166,7 @@ final class AppModel: ObservableObject {
         await applyGatewayConfiguration(
             mutating: { $0.port = port },
             refreshManagedCLIConnections: true,
-            progressMessage: "正在将 Bifrost 从 localhost:\(config.port) 切换到 localhost:\(port)",
+            progressMessage: "正在将网关从 localhost:\(config.port) 切换到 localhost:\(port)",
             successMessage: "网关端口已更新 · localhost:\(port)",
             failurePrefix: "切换网关端口失败"
         )
@@ -1122,7 +1177,7 @@ final class AppModel: ObservableObject {
         let setting = enabled ? "已允许上游使用不受信任的 TLS 证书" : "已恢复上游 TLS 证书校验"
         await applyGatewayConfiguration(
             mutating: { $0.insecureSkipVerify = enabled },
-            progressMessage: "正在重启 Bifrost · \(setting)",
+            progressMessage: "正在重启网关 · \(setting)",
             successMessage: setting,
             failurePrefix: "更新上游 TLS 设置失败"
         )
@@ -1133,9 +1188,66 @@ final class AppModel: ObservableObject {
         let setting = enabled ? "已启用 429 自动重试" : "已关闭 429 自动重试"
         await applyGatewayConfiguration(
             mutating: { $0.retry429.enabled = enabled },
-            progressMessage: "正在重启 Bifrost · \(setting)",
+            progressMessage: "正在重启网关 · \(setting)",
             successMessage: setting,
             failurePrefix: "更新 429 重试设置失败"
+        )
+    }
+
+    func setGatewayFailoverEnabled(_ enabled: Bool) async {
+        guard !isShuttingDown else { return }
+        let setting = enabled ? "已启用网关故障转移" : "已关闭网关故障转移"
+        await applyGatewayConfiguration(
+            mutating: { next in
+                if enabled {
+                    if next.gatewayFailover.providerIds.isEmpty,
+                       let activeProviderID = next.activeProviderId {
+                        next.gatewayFailover.providerIds = [activeProviderID]
+                    }
+                }
+                next.gatewayFailover.enabled = enabled
+            },
+            progressMessage: "正在重启网关 · \(setting)",
+            successMessage: setting,
+            failurePrefix: "更新网关故障转移设置失败"
+        )
+    }
+
+    func setGatewayFailoverProvider(_ id: String, enabled: Bool) async {
+        guard !isShuttingDown,
+              config.providers.contains(where: { $0.id == id }) else { return }
+        if !enabled,
+           config.gatewayFailover.enabled,
+           config.gatewayFailover.providerIds == [id] {
+            return
+        }
+        await applyGatewayConfiguration(
+            mutating: { next in
+                next.gatewayFailover.providerIds.removeAll { $0 == id }
+                if enabled { next.gatewayFailover.providerIds.append(id) }
+            },
+            progressMessage: "正在更新故障转移顺序并重启网关",
+            successMessage: "网关故障转移顺序已更新",
+            failurePrefix: "更新网关故障转移顺序失败"
+        )
+    }
+
+    func moveGatewayFailoverProvider(_ id: String, by offset: Int) async {
+        guard !isShuttingDown, offset != 0 else { return }
+        await applyGatewayConfiguration(
+            mutating: { next in
+                guard let source = next.gatewayFailover.providerIds.firstIndex(of: id) else { return }
+                let destination = min(
+                    max(source + offset, 0),
+                    next.gatewayFailover.providerIds.count - 1
+                )
+                guard source != destination else { return }
+                let providerID = next.gatewayFailover.providerIds.remove(at: source)
+                next.gatewayFailover.providerIds.insert(providerID, at: destination)
+            },
+            progressMessage: "正在更新故障转移顺序并重启网关",
+            successMessage: "网关故障转移顺序已更新",
+            failurePrefix: "更新网关故障转移顺序失败"
         )
     }
 
@@ -1221,7 +1333,6 @@ final class AppModel: ObservableObject {
         await withConfigMutation {
             guard !isShuttingDown else { return }
             let allowed = scope == "all" || scope == "__imported__" || scope == "__trash__"
-                || config.historyDirs.contains(scope)
             guard allowed, config.historyActive != scope else { return }
             var next = config
             next.historyActive = scope
@@ -1433,7 +1544,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Stops polling and the retained Bifrost child before AppKit completes application
+    /// Stops polling and the retained gateway child before AppKit completes application
     /// termination. This is deliberately idempotent because macOS may ask to terminate again
     /// while an async shutdown reply is pending.
     func shutdown() async {
@@ -1551,7 +1662,7 @@ final class AppModel: ObservableObject {
         await applyGatewayConfiguration(
             mutating: mutation,
             disableWhenProviderless: true,
-            progressMessage: "正在应用服务商配置并重启 Bifrost",
+            progressMessage: "正在应用服务商配置并重启网关",
             successMessage: "服务商配置已更新",
             failurePrefix: "应用服务商配置失败"
         )
@@ -1688,7 +1799,7 @@ final class AppModel: ObservableObject {
                 configurationIsCurrent: { [self] in
                     refreshGeneration == pluginRefreshGeneration
                 },
-                progressMessage: "正在应用插件服务配置并重启 Bifrost",
+                progressMessage: "正在应用插件服务配置并重启网关",
                 successMessage: "插件服务配置已更新",
                 failurePrefix: "保存插件服务失败"
             )
@@ -1788,7 +1899,7 @@ final class AppModel: ObservableObject {
         await applyGatewayConfiguration(
             mutating: { $0.activeProviderId = nextID },
             disableWhenProviderless: true,
-            progressMessage: "正在切换备用服务并重启 Bifrost",
+            progressMessage: "正在切换备用服务并重启网关",
             successMessage: nextID == nil ? "已停止没有可用服务商的网关" : "已切换备用服务",
             failurePrefix: "切换备用服务失败"
         )
@@ -1952,12 +2063,8 @@ final class AppModel: ObservableObject {
     }
 
     private func preflightGatewayConfiguration(_ candidate: AppConfig) throws {
-        let logDatabaseURL = repository.configURL.deletingLastPathComponent()
-            .appendingPathComponent("bifrost", isDirectory: true)
-            .appendingPathComponent("logs.db")
-        _ = try BifrostConfigBuilder.build(
+        _ = try GatewayConfigBuilder.build(
             from: candidate,
-            logDatabaseURL: logDatabaseURL,
             managementCredentials: supervisor.managementCredentials
         )
     }
@@ -2176,7 +2283,7 @@ final class AppModel: ObservableObject {
                     if gatewayShouldBeRunning {
                         recoveryFailure = Self.publicGatewayMessage(error)
                         forceGatewayStoppedIntent()
-                        gatewayState = .failed("无法恢复先前的 Bifrost 服务")
+                        gatewayState = .failed("无法恢复先前的网关服务")
                     } else {
                         gatewayState = .stopped
                     }
@@ -2217,13 +2324,14 @@ final class AppModel: ObservableObject {
     private static func generateGatewayToken() -> String {
         var bytes = [UInt8](repeating: 0, count: 18)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            return "sk-bf-ccbud-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            return "sk-ccbud-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         }
-        return "sk-bf-ccbud-" + bytes.map { String(format: "%02x", $0) }.joined()
+        return "sk-ccbud-" + bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func normalizeGatewayToken(_ rawToken: String) -> String {
-        normalizeInferenceToken(rawToken) ?? generateGatewayToken()
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? generateGatewayToken() : token
     }
 
     private static func rollbackFailure(_ error: Error) -> CLIConnectionError? {
@@ -2306,8 +2414,8 @@ final class AppModel: ObservableObject {
     }
 
     private func confirmedRunningGatewayState(
-        _ supervisorState: BifrostGatewayState
-    ) throws -> BifrostGatewayState {
+        _ supervisorState: GatewayState
+    ) throws -> GatewayState {
         // The state observer may win the main-actor race after start() reports health but before this
         // operation resumes. Do not replace that authoritative failure with a success publication.
         if case .failed(let detail) = gatewayState {
@@ -2318,7 +2426,7 @@ final class AppModel: ObservableObject {
             let detail = if case .failed(let detail) = publicState {
                 detail
             } else {
-                "Bifrost 服务不可用"
+                "网关服务不可用"
             }
             throw AppModelGatewayStartupStateError(detail: detail)
         }
@@ -2382,7 +2490,7 @@ final class AppModel: ObservableObject {
                     self.gatewayShouldBeRunning = false
                     self.monitorStore.appendLifecycle(
                         level: .error,
-                        message: "Bifrost 运行异常 · \(message)"
+                        message: "网关运行异常 · \(message)"
                     )
                     self.lastError = message
                 }
@@ -2397,16 +2505,16 @@ final class AppModel: ObservableObject {
             // journal path. Truncating it can remove the only actionable recovery location.
             return connectionError.localizedDescription
         }
-        if let bifrostError = error as? BifrostError,
-           case .startupFailed(let reason, _) = bifrostError {
+        if let gatewayError = error as? GatewayError,
+           case .startupFailed(let reason, _) = gatewayError {
             return String(reason.prefix(512))
         }
         return String(error.localizedDescription.prefix(512))
     }
 
-    private static func publicGatewayState(_ state: BifrostGatewayState) -> BifrostGatewayState {
+    private static func publicGatewayState(_ state: GatewayState) -> GatewayState {
         guard case .failed(let message) = state else { return state }
-        let reason = message.components(separatedBy: "\n\n").first ?? "Bifrost 服务不可用"
+        let reason = message.components(separatedBy: "\n\n").first ?? "网关服务不可用"
         return .failed(String(reason.prefix(512)))
     }
 

@@ -160,4 +160,3 @@ async fn unsupported_output_and_owner_only_calls_never_become_portable_fallback(
             .materializable
     );
 }
-

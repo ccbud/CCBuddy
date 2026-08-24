@@ -47,7 +47,7 @@ final class MenuBarContextMenuTests: XCTestCase {
             (.english, "Gateway stopped", "Start service", "Stop service"),
             (.simplifiedChinese, "网关已停止", "启动服务", "停止服务"),
             (.traditionalChinese, "閘道已停止", "啟動服務", "停止服務"),
-            (.japanese, "ゲートウェイ停止中", "サービスを起動", "サービスを停止"),
+            (.japanese, "ゲートウェイを停止しました", "サービスを起動", "サービスを停止"),
             (.korean, "게이트웨이 중지됨", "서비스 시작", "서비스 중지"),
         ]
 

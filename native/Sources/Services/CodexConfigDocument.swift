@@ -77,7 +77,7 @@ struct CodexConfigDocument: Equatable {
         appendBlock([
             "[model_providers.ccbud]",
             "name = \(Self.quoted("CC Buddy"))",
-            "base_url = \(Self.quoted("http://localhost:\(port)/openai/v1"))",
+            "base_url = \(Self.quoted("http://localhost:\(port)/v1"))",
             "wire_api = \(Self.quoted("responses"))",
             "requires_openai_auth = false",
             "experimental_bearer_token = \(Self.quoted(token))",

@@ -266,6 +266,38 @@ final class SelfCheckRunnerTests: XCTestCase {
         )
     }
 
+    func testBundledGatewayRequiresTheExactVersionIdentity() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("selfcheck-gateway-identity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let capture = OutputCapture()
+        var dependencies = validDependencies(output: capture)
+        dependencies.gatewayHelperProbe = {
+            SelfCheckGatewayHelperSnapshot(
+                exists: true,
+                isRegularFile: true,
+                executable: true,
+                architecture: "arm64",
+                sha256: String(repeating: "a", count: 64),
+                identity: "ccbud-gateway 9.9.9"
+            )
+        }
+
+        let result = await SelfCheckRunner(dependencies: dependencies).run(
+            request: SelfCheckRequest(
+                homeDirectory: root.appendingPathComponent("isolated"),
+                outputURL: nil
+            )
+        )
+
+        XCTAssertEqual(result.exitCode, SelfCheckExitCode.requiredCheckFailed)
+        let check = try XCTUnwrap(
+            result.report.requiredChecks.first { $0.id == "bundled_gateway" }
+        )
+        XCTAssertEqual(check.status, .failed)
+        XCTAssertEqual(check.values["identity"], "ccbud-gateway 9.9.9")
+        XCTAssertTrue(check.detail.contains("identity"))
+    }
+
     func testGlobalDeadlineBoundsNonCooperativeProbeAndStillAttemptsGatewayStop() async throws {
         let root = try HistoryTestSupport.temporaryDirectory("selfcheck-global-timeout")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -385,14 +417,15 @@ final class SelfCheckRunnerTests: XCTestCase {
                 architecture: "arm64"
             )
         }
-        dependencies.bifrostProbe = {
-            threads.record("bifrost", isMainThread: Thread.isMainThread)
-            return SelfCheckBifrostSnapshot(
+        dependencies.gatewayHelperProbe = {
+            threads.record("gatewayHelper", isMainThread: Thread.isMainThread)
+            return SelfCheckGatewayHelperSnapshot(
                 exists: true,
                 isRegularFile: true,
                 executable: true,
                 architecture: "arm64",
-                sha256: SelfCheckRunner.expectedBifrostSHA256
+                sha256: String(repeating: "a", count: 64),
+                identity: SelfCheckRunner.expectedGatewayIdentity
             )
         }
         dependencies.configProbe = { _, _ in
@@ -417,7 +450,7 @@ final class SelfCheckRunnerTests: XCTestCase {
         )
 
         XCTAssertEqual(result.exitCode, SelfCheckExitCode.success)
-        XCTAssertEqual(Set(threads.names), Set(["bundle", "bifrost", "config", "history"]))
+        XCTAssertEqual(Set(threads.names), Set(["bundle", "gatewayHelper", "config", "history"]))
         XCTAssertTrue(threads.mainThreadValues.allSatisfy { !$0 })
     }
 
@@ -581,6 +614,46 @@ final class SelfCheckRunnerTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? Int).map { $0 & 0o777 }, 0o600)
     }
 
+    func testGatewayIdentityProbeExecutesDirectlyAndTerminatesAHangingHelper() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("selfcheck-gateway-version")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = root.appendingPathComponent("ccbud-gateway;not-a-shell-command")
+        let script = """
+        #!/bin/sh
+        [ "$#" -eq 1 ] && [ "$1" = "--version" ] || exit 2
+        printf '%s\\n' 'ccbud-gateway 0.1.0'
+        """
+        try Data(script.utf8).write(to: helper, options: .atomic)
+        XCTAssertEqual(chmod(helper.path, 0o700), 0)
+        // The live self-check invokes this synchronous probe from a utility detached task. Mirror
+        // that context so this @MainActor test does not block on the probe's utility pipe readers.
+        let identity = try await Task.detached(priority: .utility) {
+            try SelfCheckGatewayIdentityProbe.read(executable: helper)
+        }.value
+        XCTAssertEqual(
+            identity,
+            SelfCheckRunner.expectedGatewayIdentity
+        )
+
+        let hanging = root.appendingPathComponent("hanging-gateway")
+        try Data("#!/bin/sh\nwhile :; do :; done\n".utf8).write(to: hanging, options: .atomic)
+        XCTAssertEqual(chmod(hanging.path, 0o700), 0)
+        let startedAt = Date()
+        let timeoutMessage = await Task.detached(priority: .utility) { () -> String? in
+            do {
+                _ = try SelfCheckGatewayIdentityProbe.read(executable: hanging, timeout: 0.05)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }.value
+        XCTAssertTrue(
+            timeoutMessage?.contains("timed out") == true,
+            timeoutMessage ?? "Expected the hanging helper probe to throw"
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1)
+    }
+
     func testSystemConfigAndNamedClipboardProbesRoundTripWithoutUserFixtures() throws {
         let root = try HistoryTestSupport.temporaryDirectory("selfcheck-system-probes")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -653,13 +726,14 @@ final class SelfCheckRunnerTests: XCTestCase {
                     architecture: "arm64"
                 )
             },
-            bifrostProbe: {
-                SelfCheckBifrostSnapshot(
+            gatewayHelperProbe: {
+                SelfCheckGatewayHelperSnapshot(
                     exists: true,
                     isRegularFile: true,
                     executable: true,
                     architecture: "arm64",
-                    sha256: SelfCheckRunner.expectedBifrostSHA256
+                    sha256: String(repeating: "a", count: 64),
+                    identity: SelfCheckRunner.expectedGatewayIdentity
                 )
             },
             configProbe: { _, _ in

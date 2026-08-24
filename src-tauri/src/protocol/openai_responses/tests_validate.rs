@@ -143,4 +143,3 @@ fn bridges_call_item_reasoning_without_duplicate_parallel_copies() {
         Some("cached reasoning")
     );
 }
-

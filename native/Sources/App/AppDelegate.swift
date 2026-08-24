@@ -219,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 normalizedEnvironment[SelfCheckEnvironmentGate.outputKey] = outputURL.path
             }
         }
-        let gatewaySupervisor = BifrostSupervisor(environment: normalizedEnvironment)
+        let gatewaySupervisor = GatewaySupervisor(environment: normalizedEnvironment)
         let gatewayPort = Result {
             try PluginDeterministicPortAllocator().allocate(
                 pluginID: "dev.ccbud.packaged-self-check",

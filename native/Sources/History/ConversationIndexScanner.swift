@@ -46,7 +46,13 @@ struct ConversationIndexFileSystemAvailability: ConversationIndexScopeAvailabili
               let baseChildren = directoryContents(base) else { return nil }
 
         var identities = [baseIdentity]
-        var availableRoots: [String] = []
+        // SQLite scopes expose virtual session URLs beside one physical database. Their containing
+        // directory is the stable authority when the database itself is deliberately deleted;
+        // unlike an ordinary producer tree it is recorded shallowly, never walked recursively.
+        let databaseBacked = ["db", "sqlite", "sqlite3"].contains(
+            directory.sessionsURL.pathExtension.lowercased()
+        )
+        var availableRoots: [String] = databaseBacked ? [base.path] : []
         var missingRoots: [String] = []
         let children = Set(baseChildren.map { $0.standardizedFileURL.path })
         for root in Self.discoveryRoots(for: directory) {
@@ -59,11 +65,20 @@ struct ConversationIndexFileSystemAvailability: ConversationIndexScopeAvailabili
                 missingRoots.append(root.path)
                 continue
             }
-            guard collectDirectoryIdentities(
-                root,
-                depth: 0,
-                identities: &identities
-            ) else { return nil }
+            let attributes = try? fileManager.attributesOfItem(atPath: root.path)
+            switch attributes?[.type] as? FileAttributeType {
+            case .typeDirectory:
+                guard collectDirectoryIdentities(
+                    root,
+                    depth: 0,
+                    identities: &identities
+                ) else { return nil }
+            case .typeRegular:
+                guard let identity = regularFileIdentity(root) else { return nil }
+                identities.append(identity)
+            default:
+                return nil
+            }
             availableRoots.append(root.path)
         }
         return ConversationIndexScopeAvailabilityToken(
@@ -134,6 +149,29 @@ struct ConversationIndexFileSystemAvailability: ConversationIndexScopeAvailabili
         ].joined(separator: "|")
     }
 
+    private func regularFileIdentity(_ file: URL) -> String? {
+        let values = try? file.resourceValues(forKeys: [.isSymbolicLinkKey])
+        guard values?.isSymbolicLink != true,
+              let attributes = try? fileManager.attributesOfItem(atPath: file.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else { return nil }
+        let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value
+        let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970
+        let size = (attributes[.size] as? NSNumber)?.uint64Value
+        let deviceText = device.map { String($0) } ?? "?"
+        let inodeText = inode.map { String($0) } ?? "?"
+        let modifiedText = modified.map { String(format: "%.9f", $0) } ?? "?"
+        let sizeText = size.map { String($0) } ?? "?"
+        let components: [String] = [
+            file.standardizedFileURL.path,
+            deviceText,
+            inodeText,
+            modifiedText,
+            sizeText,
+        ]
+        return components.joined(separator: "|")
+    }
+
     private func directoryContents(_ directory: URL) -> [URL]? {
         try? fileManager.contentsOfDirectory(
             at: directory,
@@ -149,6 +187,9 @@ protocol ConversationIndexScanStoring: Sendable {
     @discardableResult func replace(_ session: ConversationIndexedSession) throws -> Int64
     @discardableResult func replaceMetadata(_ sessions: [ConversationIndexedSession]) throws -> Int64
     @discardableResult func invalidateProjection() throws -> Int64
+    /// Copies the newest app-owned metadata across physical replicas of one logical session.
+    /// Returns the new catalog generation only when rows changed.
+    @discardableResult func synchronizeUserMetadata(for files: [URL]) throws -> Int64?
     func reconcile(
         scope: String,
         seenPaths: Set<String>,
@@ -163,6 +204,9 @@ extension ConversationIndexScanStoring {
         for session in sessions { revision = try replace(session) }
         return revision
     }
+
+    @discardableResult
+    func synchronizeUserMetadata(for files: [URL]) throws -> Int64? { nil }
 }
 
 extension ConversationIndexDatabase: ConversationIndexScanStoring {
@@ -181,11 +225,42 @@ protocol ConversationIndexSourceRegistering: Sendable {
         configuration: HistoryConfiguration,
         activeOnly: Bool
     ) -> [HistoryFileCandidate]
+    func discover(
+        configuration: HistoryConfiguration,
+        activeOnly: Bool
+    ) -> ConversationSourceDiscovery
+    func discoveryDirectories(configuration: HistoryConfiguration) -> [HistoryDirectory]
+    func watchRoots(configuration: HistoryConfiguration) -> [URL]
     func eventImpact(
         _ eventFiles: [URL],
         knownManifests: [ConversationDependencyManifest],
         configuration: HistoryConfiguration
     ) -> ConversationSourceEventImpact
+}
+
+extension ConversationIndexSourceRegistering {
+    func discover(
+        configuration: HistoryConfiguration,
+        activeOnly: Bool
+    ) -> ConversationSourceDiscovery {
+        ConversationSourceDiscovery(
+            candidates: discoverCandidates(
+                configuration: configuration,
+                activeOnly: activeOnly
+            ),
+            completeScopeIDs: Set(
+                discoveryDirectories(configuration: configuration).map(\.id)
+            )
+        )
+    }
+
+    func discoveryDirectories(configuration: HistoryConfiguration) -> [HistoryDirectory] {
+        HistoryPathResolver(configuration: configuration).directories(activeOnly: false)
+    }
+
+    func watchRoots(configuration: HistoryConfiguration) -> [URL] {
+        HistoryPathResolver(configuration: configuration).watchRoots()
+    }
 }
 
 extension ConversationSourceAdapterRegistry: ConversationIndexSourceRegistering {}
@@ -200,7 +275,9 @@ final class ConversationIndexScanner: @unchecked Sendable {
     private struct Discovery {
         var candidates: [HistoryFileCandidate]
         var directories: [HistoryDirectory]
+        var completeScopeIDs: Set<String>
         var availabilityBefore: [String: ConversationIndexScopeAvailabilityToken]
+        var fallbackCandidatesByWinnerPath: [String: [HistoryFileCandidate]]
     }
 
     private let configuration: HistoryConfiguration
@@ -330,6 +407,12 @@ final class ConversationIndexScanner: @unchecked Sendable {
             discovered: discovery.candidates.count,
             generation: lastGeneration
         )
+        try synchronizeCopyMetadata(
+            discovery.fallbackCandidatesByWinnerPath,
+            result: &result,
+            onProgress: onProgress,
+            isCancelled: isCancelled
+        )
         var entriesByPath = try indexedEntriesByPath()
         let ordered = Self.scanOrder(
             Self.unique(discovery.candidates),
@@ -346,8 +429,11 @@ final class ConversationIndexScanner: @unchecked Sendable {
         try Self.checkCancellation(isCancelled)
         loader.prefetch(ordered)
         try Self.checkCancellation(isCancelled)
+        var replicaSelections: [String: HistoryFileCandidate] = [:]
         try process(
             ordered,
+            fallbackCandidatesByWinnerPath: discovery.fallbackCandidatesByWinnerPath,
+            replicaSelections: &replicaSelections,
             entriesByPath: &entriesByPath,
             result: &result,
             onProgress: onProgress,
@@ -359,7 +445,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
             result: &result,
             onProgress: onProgress,
             isCancelled: isCancelled,
-            purgeUnconfiguredScopes: true
+            purgeUnconfiguredScopes: true,
+            replicaSelections: replicaSelections
         )
         try Self.checkCancellation(isCancelled)
         result.generation = try catalog.generation()
@@ -408,6 +495,14 @@ final class ConversationIndexScanner: @unchecked Sendable {
             discovered: work.count,
             generation: lastGeneration
         )
+        if let discovery {
+            try synchronizeCopyMetadata(
+                discovery.fallbackCandidatesByWinnerPath,
+                result: &result,
+                onProgress: onProgress,
+                isCancelled: isCancelled
+            )
+        }
         let ordered = Self.newestFirst(work)
         try Self.checkCancellation(isCancelled)
         try publishQuickMetadata(
@@ -420,8 +515,11 @@ final class ConversationIndexScanner: @unchecked Sendable {
         try Self.checkCancellation(isCancelled)
         loader.prefetch(ordered)
         try Self.checkCancellation(isCancelled)
+        var replicaSelections: [String: HistoryFileCandidate] = [:]
         try process(
             ordered,
+            fallbackCandidatesByWinnerPath: discovery?.fallbackCandidatesByWinnerPath ?? [:],
+            replicaSelections: &replicaSelections,
             entriesByPath: &entriesByPath,
             result: &result,
             onProgress: onProgress,
@@ -434,7 +532,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 result: &result,
                 onProgress: onProgress,
                 isCancelled: isCancelled,
-                purgeUnconfiguredScopes: false
+                purgeUnconfiguredScopes: false,
+                replicaSelections: replicaSelections
             )
         }
         try Self.checkCancellation(isCancelled)
@@ -451,24 +550,45 @@ final class ConversationIndexScanner: @unchecked Sendable {
     }
 
     private func beginDiscovery() -> Discovery {
-        let resolver = HistoryPathResolver(configuration: configuration)
-        let directories = resolver.directories(activeOnly: false)
+        let directories = registry.discoveryDirectories(configuration: configuration)
         var availabilityBefore: [String: ConversationIndexScopeAvailabilityToken] = [:]
         for directory in directories {
             availabilityBefore[directory.id] = availability.token(for: directory)
         }
+        let result = registry.discover(configuration: configuration, activeOnly: false)
         return Discovery(
-            candidates: registry.discoverCandidates(
-                configuration: configuration,
-                activeOnly: false
-            ),
+            candidates: result.candidates,
             directories: directories,
-            availabilityBefore: availabilityBefore
+            completeScopeIDs: result.completeScopeIDs,
+            availabilityBefore: availabilityBefore,
+            fallbackCandidatesByWinnerPath: result.fallbackCandidatesByWinnerPath
         )
+    }
+
+    private func synchronizeCopyMetadata(
+        _ fallbackCandidatesByWinnerPath: [String: [HistoryFileCandidate]],
+        result: inout ConversationIndexScanResult,
+        onProgress: ConversationIndexScanProgress?,
+        isCancelled: ConversationIndexScanCancellation
+    ) throws {
+        for winnerPath in fallbackCandidatesByWinnerPath.keys.sorted() {
+            try Self.checkCancellation(isCancelled)
+            let replicas = [URL(fileURLWithPath: winnerPath)]
+                + fallbackCandidatesByWinnerPath[winnerPath, default: []].map(\.file)
+            guard let generation = try catalog.synchronizeUserMetadata(for: replicas) else {
+                continue
+            }
+            lastGeneration = generation
+            result.generation = generation
+            result.metadataPublished += 1
+            onProgress?(result)
+        }
     }
 
     private func process(
         _ candidates: [HistoryFileCandidate],
+        fallbackCandidatesByWinnerPath: [String: [HistoryFileCandidate]],
+        replicaSelections: inout [String: HistoryFileCandidate],
         entriesByPath: inout [String: ConversationIndexEntry],
         result: inout ConversationIndexScanResult,
         onProgress: ConversationIndexScanProgress?,
@@ -476,56 +596,72 @@ final class ConversationIndexScanner: @unchecked Sendable {
     ) throws {
         for candidate in candidates {
             try Self.checkCancellation(isCancelled)
-            let path = Self.path(of: candidate)
-            let entry = entriesByPath[path]
-            if let preflight = preflight(candidate, entry: entry),
-               entry?.fingerprint == preflight.fingerprint,
-               entry?.scope == candidate.directory.id {
-                manifestsByPath[path] = preflight.manifest
-                result.unchanged += 1
-                onProgress?(result)
-                continue
-            }
+            // JSONDecoder, SQLite, and Foundation string bridging can leave autoreleased
+            // temporaries attached to this long-lived utility thread. Drain them after every
+            // candidate so a cold catalog scan is bounded by its largest transcript instead of
+            // the sum of every producer parsed before the queue becomes idle.
+            try autoreleasepool {
+                let path = Self.path(of: candidate)
+                let entry = entriesByPath[path]
+                if let preflight = preflight(candidate, entry: entry),
+                   entry?.fingerprint == preflight.fingerprint,
+                   entry?.scope == candidate.directory.id {
+                    manifestsByPath[path] = preflight.manifest
+                    if fallbackCandidatesByWinnerPath[path] != nil {
+                        replicaSelections[path] = candidate
+                    }
+                    result.unchanged += 1
+                    onProgress?(result)
+                    return
+                }
 
-            let loaded: LoadedHistorySession
-            do {
-                loaded = try loadRetryingDependencyChange(candidate)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
+                let attempts = [candidate]
+                    + fallbackCandidatesByWinnerPath[path, default: []]
+                for attempt in attempts {
+                    try Self.checkCancellation(isCancelled)
+                    let loaded: LoadedHistorySession
+                    do {
+                        loaded = try loadRetryingDependencyChange(attempt)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        continue
+                    }
+                    try Self.checkCancellation(isCancelled)
+                    guard let fingerprint = Self.fingerprint(
+                        manifest: loaded.manifest,
+                        snapshot: loaded.dependencySnapshot
+                    ) else { continue }
+
+                    let selectedPath = Self.path(of: attempt)
+                    let indexed = ConversationIndexedSession(
+                        projection: loaded.projection,
+                        scope: attempt.directory.id,
+                        fingerprint: fingerprint
+                    )
+                    try Self.checkCancellation(isCancelled)
+                    let replacementGeneration = try catalog.replace(indexed)
+                    lastGeneration = replacementGeneration
+                    result.generation = replacementGeneration
+                    entriesByPath[selectedPath] = ConversationIndexEntry(
+                        sourcePath: selectedPath,
+                        metadata: loaded.projection.metadata,
+                        scope: attempt.directory.id,
+                        fingerprint: fingerprint,
+                        indexedAt: Date()
+                    )
+                    manifestsByPath[selectedPath] = loaded.manifest
+                    if fallbackCandidatesByWinnerPath[path] != nil {
+                        replicaSelections[path] = attempt
+                    }
+                    result.parsed += 1
+                    onProgress?(result)
+                    return
+                }
+
                 result.failed += 1
                 onProgress?(result)
-                continue
             }
-            try Self.checkCancellation(isCancelled)
-            guard let fingerprint = Self.fingerprint(
-                manifest: loaded.manifest,
-                snapshot: loaded.dependencySnapshot
-            ) else {
-                result.failed += 1
-                onProgress?(result)
-                continue
-            }
-
-            let indexed = ConversationIndexedSession(
-                projection: loaded.projection,
-                scope: candidate.directory.id,
-                fingerprint: fingerprint
-            )
-            try Self.checkCancellation(isCancelled)
-            let replacementGeneration = try catalog.replace(indexed)
-            lastGeneration = replacementGeneration
-            result.generation = replacementGeneration
-            entriesByPath[path] = ConversationIndexEntry(
-                sourcePath: path,
-                metadata: loaded.projection.metadata,
-                scope: candidate.directory.id,
-                fingerprint: fingerprint,
-                indexedAt: Date()
-            )
-            manifestsByPath[path] = loaded.manifest
-            result.parsed += 1
-            onProgress?(result)
         }
     }
 
@@ -553,53 +689,55 @@ final class ConversationIndexScanner: @unchecked Sendable {
         )
         for requested in batches {
             try Self.checkCancellation(isCancelled)
-            let requestedPaths = Set(requested.map(Self.path))
-            let loaded = loader.loadQuickMetadata(requested)
+            try autoreleasepool {
+                let requestedPaths = Set(requested.map(Self.path))
+                let loaded = loader.loadQuickMetadata(requested)
 
-            var replacements: [ConversationIndexedSession] = []
-            var accepted: [(QuickLoadedHistorySession, ConversationIndexFingerprint)] = []
-            var seen = Set<String>()
-            for quick in loaded {
-                let path = Self.path(of: quick.candidate)
-                guard requestedPaths.contains(path), seen.insert(path).inserted,
-                      quick.metadata.file.standardizedFileURL.path == path,
-                      let sourceFingerprint = Self.fingerprint(
-                        manifest: quick.manifest,
-                        snapshot: quick.dependencySnapshot
-                      ) else { continue }
-                let sentinel = ConversationIndexFingerprint(
-                    modificationTime: Date(timeIntervalSince1970: 0),
-                    sizeBytes: sourceFingerprint.sizeBytes,
-                    dependencyFingerprint: "quick:\(sourceFingerprint.dependencyFingerprint ?? "")"
-                )
-                replacements.append(ConversationIndexedSession(
-                    metadata: quick.metadata,
-                    scope: quick.candidate.directory.id,
-                    fingerprint: sentinel,
-                    documents: []
-                ))
-                accepted.append((quick, sentinel))
-            }
-            guard !replacements.isEmpty else { continue }
+                var replacements: [ConversationIndexedSession] = []
+                var accepted: [(QuickLoadedHistorySession, ConversationIndexFingerprint)] = []
+                var seen = Set<String>()
+                for quick in loaded {
+                    let path = Self.path(of: quick.candidate)
+                    guard requestedPaths.contains(path), seen.insert(path).inserted,
+                          quick.metadata.file.standardizedFileURL.path == path,
+                          let sourceFingerprint = Self.fingerprint(
+                            manifest: quick.manifest,
+                            snapshot: quick.dependencySnapshot
+                          ) else { continue }
+                    let sentinel = ConversationIndexFingerprint(
+                        modificationTime: Date(timeIntervalSince1970: 0),
+                        sizeBytes: sourceFingerprint.sizeBytes,
+                        dependencyFingerprint: "quick:\(sourceFingerprint.dependencyFingerprint ?? "")"
+                    )
+                    replacements.append(ConversationIndexedSession(
+                        metadata: quick.metadata,
+                        scope: quick.candidate.directory.id,
+                        fingerprint: sentinel,
+                        documents: []
+                    ))
+                    accepted.append((quick, sentinel))
+                }
+                guard !replacements.isEmpty else { return }
 
-            try Self.checkCancellation(isCancelled)
-            let revision = try catalog.replaceMetadata(replacements)
-            lastGeneration = revision
-            result.generation = revision
-            result.metadataPublished += replacements.count
-            let indexedAt = Date()
-            for (quick, fingerprint) in accepted {
-                let path = Self.path(of: quick.candidate)
-                entriesByPath[path] = ConversationIndexEntry(
-                    sourcePath: path,
-                    metadata: quick.metadata,
-                    scope: quick.candidate.directory.id,
-                    fingerprint: fingerprint,
-                    indexedAt: indexedAt
-                )
-                manifestsByPath[path] = quick.manifest
+                try Self.checkCancellation(isCancelled)
+                let revision = try catalog.replaceMetadata(replacements)
+                lastGeneration = revision
+                result.generation = revision
+                result.metadataPublished += replacements.count
+                let indexedAt = Date()
+                for (quick, fingerprint) in accepted {
+                    let path = Self.path(of: quick.candidate)
+                    entriesByPath[path] = ConversationIndexEntry(
+                        sourcePath: path,
+                        metadata: quick.metadata,
+                        scope: quick.candidate.directory.id,
+                        fingerprint: fingerprint,
+                        indexedAt: indexedAt
+                    )
+                    manifestsByPath[path] = quick.manifest
+                }
+                onProgress?(result)
             }
-            onProgress?(result)
         }
     }
 
@@ -643,16 +781,50 @@ final class ConversationIndexScanner: @unchecked Sendable {
         result: inout ConversationIndexScanResult,
         onProgress: ConversationIndexScanProgress?,
         isCancelled: ConversationIndexScanCancellation,
-        purgeUnconfiguredScopes: Bool
+        purgeUnconfiguredScopes: Bool,
+        replicaSelections: [String: HistoryFileCandidate]
     ) throws {
-        let seenByScope = Dictionary(grouping: discovery.candidates, by: { $0.directory.id })
+        // A successful parse (or unchanged fingerprint reuse) is authoritative. If every current
+        // copy fails, fall back to one already-indexed replica: prefer a complete warm row over a
+        // quick-metadata placeholder, and preserve one placeholder only when no warm row exists.
+        // This keeps the conversation available without publishing duplicate cards across scopes.
+        var retainedReplicaSelections = replicaSelections
+        let winnersByPath = Dictionary(uniqueKeysWithValues: discovery.candidates.map {
+            (Self.path(of: $0), $0)
+        })
+        for (winnerPath, fallbacks) in discovery.fallbackCandidatesByWinnerPath
+            where retainedReplicaSelections[winnerPath] == nil {
+            guard let winner = winnersByPath[winnerPath] else { continue }
+            let indexedCopies = ([winner] + fallbacks).filter {
+                entriesByPath[Self.path(of: $0)] != nil
+            }
+            let warmCopy = indexedCopies.first { candidate in
+                entriesByPath[Self.path(of: candidate)]?.fingerprint
+                    .dependencyFingerprint?.hasPrefix("quick:") != true
+            }
+            if let retained = warmCopy ?? indexedCopies.first {
+                retainedReplicaSelections[winnerPath] = retained
+            }
+        }
+        let effectiveCandidates = discovery.candidates.map { candidate in
+            retainedReplicaSelections[Self.path(of: candidate)] ?? candidate
+        }
+        var intentionallyOmittedPaths = Set<String>()
+        for (winnerPath, fallbacks) in discovery.fallbackCandidatesByWinnerPath
+            where retainedReplicaSelections[winnerPath] != nil {
+            intentionallyOmittedPaths.insert(winnerPath)
+            intentionallyOmittedPaths.formUnion(fallbacks.map(Self.path))
+        }
+        let seenByScope = Dictionary(grouping: effectiveCandidates, by: { $0.directory.id })
             .mapValues { Set($0.map(Self.path)) }
         for directory in discovery.directories {
             try Self.checkCancellation(isCancelled)
-            guard let before = discovery.availabilityBefore[directory.id],
+            guard discovery.completeScopeIDs.contains(directory.id),
+                  let before = discovery.availabilityBefore[directory.id],
                   let after = availability.token(for: directory),
                   before == after else { continue }
             let indexedInScope = entriesByPath.values.filter { $0.scope == directory.id }
+            let seenPaths = seenByScope[directory.id, default: []]
             let availableRoots = after.availableDiscoveryRoots.map {
                 URL(fileURLWithPath: $0, isDirectory: true)
             }
@@ -664,10 +836,18 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 let file = URL(fileURLWithPath: entry.sourcePath)
                 return availableRoots.contains { Self.contains(file, in: $0) }
             }) else { continue }
+            // A decoder/header read can fail while the containing tree remains perfectly stable.
+            // An omitted physical primary is therefore not a deletion; virtual SQLite sessions
+            // are covered by the explicit completion proof above.
+            guard indexedInScope.allSatisfy({ entry in
+                seenPaths.contains(entry.sourcePath)
+                    || intentionallyOmittedPaths.contains(entry.sourcePath)
+                    || !fileManager.fileExists(atPath: entry.sourcePath)
+            }) else { continue }
             try Self.checkCancellation(isCancelled)
             let reconciliation = try catalog.reconcile(
                 scope: directory.id,
-                seenPaths: seenByScope[directory.id, default: []],
+                seenPaths: seenPaths,
                 allowEmpty: true
             )
             lastGeneration = reconciliation.generation
@@ -716,8 +896,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
     }
 
     private func watchRootsWithoutLock() -> [URL] {
-        let configured = HistoryPathResolver(configuration: configuration)
-            .watchRoots()
+        let configured = registry.watchRoots(configuration: configuration)
             .map(\.standardizedFileURL)
         var result = configured
         var seen = Set(configured.map(\.path))
@@ -768,7 +947,15 @@ final class ConversationIndexScanner: @unchecked Sendable {
         case .qoder: .qoder
         case .grok: .grok
         case .copilot: .copilot
+        case .cursor: .cursor
+        case .opencode: .opencode
+        case .kiro: .kiro
+        case .gemini: .gemini
+        case .pi: .pi
+        case .omp: .omp
+        case .kimi: .kimi
         case .antigravity: .antigravity
+        case .dsh: .dsh
         }
     }
 
@@ -822,12 +1009,36 @@ final class ConversationIndexScanner: @unchecked Sendable {
     private static func newestFirst(
         _ candidates: [HistoryFileCandidate]
     ) -> [HistoryFileCandidate] {
-        candidates.sorted { left, right in
-            let leftStamp = primaryStamp(left)
-            let rightStamp = primaryStamp(right)
-            if leftStamp != rightStamp { return leftStamp > rightStamp }
-            return path(of: left) < path(of: right)
+        newestFirst(candidates, primaryStamp: primaryStamp)
+    }
+
+    /// File attributes and URL standardization are Foundation-heavy operations. Computing them in
+    /// the sort comparator repeats that work O(n log n) times and leaves a large amount of allocator
+    /// churn on a cold scan. Decorate each candidate once, then keep the comparator pure.
+    static func newestFirst(
+        _ candidates: [HistoryFileCandidate],
+        primaryStamp readPrimaryStamp: (HistoryFileCandidate) -> Int64
+    ) -> [HistoryFileCandidate] {
+        var decorated: [(
+            candidate: HistoryFileCandidate,
+            stamp: Int64,
+            path: String
+        )] = []
+        decorated.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            decorated.append(autoreleasepool {
+                (
+                    candidate: candidate,
+                    stamp: readPrimaryStamp(candidate),
+                    path: path(of: candidate)
+                )
+            })
         }
+        decorated.sort { left, right in
+            if left.stamp != right.stamp { return left.stamp > right.stamp }
+            return left.path < right.path
+        }
+        return decorated.map(\.candidate)
     }
 
     /// A cold catalog must make the currently selected scope visible before spending time on
@@ -845,9 +1056,12 @@ final class ConversationIndexScanner: @unchecked Sendable {
     }
 
     private static func primaryStamp(_ candidate: HistoryFileCandidate) -> Int64 {
+        let databaseBacked = candidate.formatHint.map {
+            [.opencode, .copilot, .antigravity].contains($0)
+        } ?? false
         let dependency = ConversationSourceDependency(
-            file: candidate.file,
-            role: candidate.formatHint == .antigravity ? .primaryDatabase : .primaryTranscript
+            file: candidate.primaryStorageFile,
+            role: databaseBacked ? .primaryDatabase : .primaryTranscript
         )
         return ConversationDependencyStamp.read(dependency).modifiedAtNanoseconds ?? .min
     }

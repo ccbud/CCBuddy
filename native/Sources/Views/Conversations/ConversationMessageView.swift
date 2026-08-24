@@ -35,12 +35,14 @@ struct ConversationMessageView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            roleHeader
+        VStack(alignment: messageHorizontalAlignment, spacing: 5) {
+            if showsRoleHeader {
+                roleHeader
+            }
             messageBody
             messageMetadata
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: messageFrameAlignment)
         .padding(6)
         .background(isCurrentSearchMatch ? Color.ccBrandSoft.opacity(0.48) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -51,6 +53,20 @@ struct ConversationMessageView: View {
             }
         }
         .accessibilityIdentifier("conversation.message.\(messageIndex)")
+    }
+
+    private var showsRoleHeader: Bool {
+        message.isSidechain
+            || (!message.isMetadata && message.role != "user" && message.role != "assistant")
+    }
+
+    private var messageHorizontalAlignment: HorizontalAlignment {
+        message.role == "user" && !message.isMetadata ? .trailing : .leading
+    }
+
+    private var messageFrameAlignment: Alignment {
+        if message.isMetadata { return .center }
+        return message.role == "user" ? .trailing : .leading
     }
 
     private var roleHeader: some View {
@@ -79,7 +95,25 @@ struct ConversationMessageView: View {
             return !pairedToolResultIDs.contains(id)
         }
 
-        if message.role == "user" && !message.isMetadata {
+        if message.isMetadata {
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    ConversationBlockView(
+                        block: block,
+                        result: block.id.flatMap { toolResults[$0] },
+                        role: message.role,
+                        searchQuery: searchQuery,
+                        isCurrentSearchMatch: isCurrentSearchMatch,
+                        fontSize: fontSize
+                    )
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(Color.ccForeground.opacity(0.055))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        } else if message.role == "user" {
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     ConversationBlockView(
@@ -93,11 +127,9 @@ struct ConversationMessageView: View {
                 }
             }
             .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.ccElevated)
+            .frame(maxWidth: 540, alignment: .leading)
+            .background(Color.ccConversationSecondary)
             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.ccBorder))
-            .shadow(color: .black.opacity(0.045), radius: 5, y: 2)
         } else {
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
@@ -111,12 +143,8 @@ struct ConversationMessageView: View {
                     )
                 }
             }
-            .padding(.leading, 12)
             .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .leading) {
-                Rectangle().fill(Color.ccBorderStrong).frame(width: 2)
-            }
         }
     }
 
@@ -134,7 +162,7 @@ struct ConversationMessageView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
             }
-            .padding(.leading, message.role == "user" ? 0 : 12)
+            .frame(maxWidth: message.role == "user" ? 540 : .infinity, alignment: .leading)
         }
     }
 

@@ -24,6 +24,8 @@
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>CC Buddy uses automation to continue conversations in Terminal or iTerm.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSHumanReadableCopyright</key>

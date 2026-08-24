@@ -110,9 +110,7 @@ fn custom_tool_description_omits_full_definition_and_lark_grammar() {
         "Apply a patch to the workspace.\n\nPass the custom tool's raw input unchanged in the `input` string field."
     ));
     assert!(description.contains("*** Add File: path"));
-    assert!(
-        description.contains("*** Begin Patch\n*** Add File: path\n+content\n*** End Patch")
-    );
+    assert!(description.contains("*** Begin Patch\n*** Add File: path\n+content\n*** End Patch"));
     assert!(description.contains("never prefix either boundary marker"));
     assert!(!description.contains("Original Responses custom-tool definition"));
     assert!(!description.contains("definition"));

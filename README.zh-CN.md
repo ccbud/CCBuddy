@@ -22,7 +22,7 @@ CLI 会话记录 ──▶ CC Buddy ──▶ 浏览 · 搜索 · 追踪 · 导�
 
 ## 会话复盘
 
-支持读取 **Claude Code、Codex CLI、Qoder CLI、Grok Build CLI、GitHub Copilot CLI 和 Antigravity CLI** 的本地会话。
+支持读取 **Claude Code、Codex CLI、Qoder CLI、Grok Build CLI、DSH、Cursor、OpenCode、Pi、OMP、Kiro、Kimi、Gemini CLI、GitHub Copilot CLI 和 Antigravity CLI** 的本地会话。
 
 - **还原执行过程** —— 统一展示 Markdown、思考、工具调用与结果、补丁、图片、记录中包含的模型与 token 信息，以及主会话和子代理线程。
 - **快速定位问题** —— 自动发现记录，按来源和项目归类，支持跨会话全文搜索与会话内搜索。
@@ -49,12 +49,12 @@ brew install --cask ccbud/tap/ccbud
 
 ## 开发
 
-原生开发需要 Xcode 26 与 XcodeGen；本地化和发布工具还会使用 Node.js。
+原生开发需要 Xcode 26、XcodeGen 2.46.0 与 Rust 1.88 或更高版本；本地化和发布工具还会使用 Node.js。
 
 ```bash
 git clone https://github.com/ccbud/ccbud.git && cd ccbud
 brew install xcodegen
-native/Scripts/fetch-bifrost.sh
+native/Scripts/build-gateway-helper.sh
 xcodegen generate --spec native/project.yml --project native
 xcodebuild -project native/CCBuddy.xcodeproj -scheme CCBuddy \
   -destination 'platform=macOS,arch=arm64' build
@@ -66,4 +66,5 @@ CC Buddy 进程。
 
 ## 许可证
 
-基于 [GPL-3.0](./LICENSE) 协议开源。
+基于 [GPL-3.0](./LICENSE) 协议开源。应用包内同时附带 cc-switch、Wake 与 Zstandard
+所要求的署名和许可证声明。

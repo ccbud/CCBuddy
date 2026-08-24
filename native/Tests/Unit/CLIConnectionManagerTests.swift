@@ -51,7 +51,7 @@ final class CLIConnectionManagerTests: XCTestCase {
         var config = try manager.connectClaude(config: .fixture)
         var settings = try decodeJSONObject(at: claudeURL)
         var environment = try XCTUnwrap(settings["env"]?.objectValue)
-        XCTAssertEqual(environment["ANTHROPIC_BASE_URL"], .string("http://localhost:8788/anthropic"))
+        XCTAssertEqual(environment["ANTHROPIC_BASE_URL"], .string("http://localhost:8788"))
         XCTAssertEqual(environment["ANTHROPIC_AUTH_TOKEN"], .string("ccbud-local"))
         XCTAssertNil(environment["ANTHROPIC_MODEL"])
         XCTAssertNil(settings["model"])
@@ -62,7 +62,7 @@ final class CLIConnectionManagerTests: XCTestCase {
         config = try manager.connectClaude(config: config)
         settings = try decodeJSONObject(at: claudeURL)
         environment = try XCTUnwrap(settings["env"]?.objectValue)
-        XCTAssertEqual(environment["ANTHROPIC_BASE_URL"], .string("http://localhost:9876/anthropic"))
+        XCTAssertEqual(environment["ANTHROPIC_BASE_URL"], .string("http://localhost:9876"))
 
         config = try manager.disconnectClaude(config: config)
         settings = try decodeJSONObject(at: claudeURL)
@@ -107,7 +107,7 @@ final class CLIConnectionManagerTests: XCTestCase {
         XCTAssertTrue(connected.contains("# my codex config"))
         XCTAssertTrue(connected.contains("approval_policy = \"on-request\""))
         XCTAssertTrue(connected.contains("[model_providers.other]"))
-        XCTAssertTrue(connected.contains("base_url = \"http://localhost:8788/openai/v1\""))
+        XCTAssertTrue(connected.contains("base_url = \"http://localhost:8788/v1\""))
         XCTAssertTrue(connected.contains("wire_api = \"responses\""))
         XCTAssertTrue(connected.contains("supports_websockets = false"))
         XCTAssertTrue(manager.isCodexConnected(port: 8788))
@@ -115,7 +115,7 @@ final class CLIConnectionManagerTests: XCTestCase {
         config.port = 9988
         config = try manager.connectCodex(config: config)
         connected = try String(contentsOf: codexURL, encoding: .utf8)
-        XCTAssertTrue(connected.contains("base_url = \"http://localhost:9988/openai/v1\""))
+        XCTAssertTrue(connected.contains("base_url = \"http://localhost:9988/v1\""))
 
         config = try manager.disconnectCodex(config: config)
         let restored = try String(contentsOf: codexURL, encoding: .utf8)
@@ -164,10 +164,10 @@ final class CLIConnectionManagerTests: XCTestCase {
         let claudeEnvironment = try XCTUnwrap(claude["env"]?.objectValue)
         XCTAssertEqual(
             claudeEnvironment["ANTHROPIC_BASE_URL"],
-            .string("http://localhost:8788/anthropic")
+            .string("http://localhost:8788")
         )
         let codex = try String(contentsOf: codexURL, encoding: .utf8)
-        XCTAssertTrue(codex.contains("base_url = \"http://localhost:8788/openai/v1\""))
+        XCTAssertTrue(codex.contains("base_url = \"http://localhost:8788/v1\""))
         XCTAssertEqual(connected.port, 8788)
         XCTAssertEqual(try repository.load().port, 8788)
     }

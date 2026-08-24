@@ -1,13 +1,21 @@
 import Foundation
 
-enum HistorySource: String, Codable, Equatable, Sendable {
+enum HistorySource: String, Codable, Equatable, Hashable, Sendable {
     /// The Rust API called Claude's native transcript source `disk`.
     case claude = "disk"
     case codex
     case qoder
     case grok
     case copilot
+    case cursor
+    case opencode
+    case kiro
+    case gemini
+    case pi
+    case omp
+    case kimi
     case antigravity
+    case dsh
 }
 
 struct HistoryUsage: Codable, Equatable, Sendable {
@@ -133,6 +141,8 @@ struct HistorySessionMetadata: Codable, Equatable, Identifiable, Sendable {
     var agentRole: String?
     var agentDepth: Int?
     var subagentCount: Int = 0
+    var starred: Bool = false
+    var pinned: Bool = false
     var imported: Bool = false
     var deleted: Bool = false
     var createdAt: Date
@@ -141,6 +151,60 @@ struct HistorySessionMetadata: Codable, Equatable, Identifiable, Sendable {
     var totals: HistoryTotals = .init()
     var messageCount: Int = 0
     var diagnostics: HistoryReadDiagnostics = .init()
+}
+
+extension HistorySessionMetadata {
+    private enum CodingKeys: String, CodingKey {
+        case id, file, source, dirID, dirLabel, sessionID, threadID, rootSessionID
+        case parentThreadID, forkedFromID, canonicalThreadIDValid, cwd, project, gitBranch
+        case version, title, autoTitle, tags, summary, model, isSubagent, skill, agentPath
+        case agentNickname, agentRole, agentDepth, subagentCount, starred, pinned, imported
+        case deleted, createdAt, lastActivity, sizeBytes, totals, messageCount, diagnostics
+    }
+
+    /// `starred` and `pinned` were added after the first indexed-catalog release. Keep decoding
+    /// old metadata blobs so a schema migration can preserve a warm index instead of discarding
+    /// every producer-derived row just to add app-owned user metadata.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        file = try values.decode(URL.self, forKey: .file)
+        source = try values.decode(HistorySource.self, forKey: .source)
+        dirID = try values.decode(String.self, forKey: .dirID)
+        dirLabel = try values.decode(String.self, forKey: .dirLabel)
+        sessionID = try values.decode(String.self, forKey: .sessionID)
+        threadID = try values.decodeIfPresent(String.self, forKey: .threadID)
+        rootSessionID = try values.decodeIfPresent(String.self, forKey: .rootSessionID)
+        parentThreadID = try values.decodeIfPresent(String.self, forKey: .parentThreadID)
+        forkedFromID = try values.decodeIfPresent(String.self, forKey: .forkedFromID)
+        canonicalThreadIDValid = try values.decode(Bool.self, forKey: .canonicalThreadIDValid)
+        cwd = try values.decodeIfPresent(String.self, forKey: .cwd)
+        project = try values.decode(String.self, forKey: .project)
+        gitBranch = try values.decodeIfPresent(String.self, forKey: .gitBranch)
+        version = try values.decodeIfPresent(String.self, forKey: .version)
+        title = try values.decode(String.self, forKey: .title)
+        autoTitle = try values.decode(String.self, forKey: .autoTitle)
+        tags = try values.decode([String].self, forKey: .tags)
+        summary = try values.decodeIfPresent(HistoryValue.self, forKey: .summary)
+        model = try values.decodeIfPresent(String.self, forKey: .model)
+        isSubagent = try values.decode(Bool.self, forKey: .isSubagent)
+        skill = try values.decodeIfPresent(String.self, forKey: .skill)
+        agentPath = try values.decodeIfPresent(String.self, forKey: .agentPath)
+        agentNickname = try values.decodeIfPresent(String.self, forKey: .agentNickname)
+        agentRole = try values.decodeIfPresent(String.self, forKey: .agentRole)
+        agentDepth = try values.decodeIfPresent(Int.self, forKey: .agentDepth)
+        subagentCount = try values.decode(Int.self, forKey: .subagentCount)
+        starred = try values.decodeIfPresent(Bool.self, forKey: .starred) ?? false
+        pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        imported = try values.decode(Bool.self, forKey: .imported)
+        deleted = try values.decode(Bool.self, forKey: .deleted)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        lastActivity = try values.decode(Date.self, forKey: .lastActivity)
+        sizeBytes = try values.decode(UInt64.self, forKey: .sizeBytes)
+        totals = try values.decode(HistoryTotals.self, forKey: .totals)
+        messageCount = try values.decode(Int.self, forKey: .messageCount)
+        diagnostics = try values.decode(HistoryReadDiagnostics.self, forKey: .diagnostics)
+    }
 }
 
 struct HistorySubagent: Codable, Equatable, Sendable {

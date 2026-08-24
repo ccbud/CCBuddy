@@ -262,12 +262,13 @@ struct SelfCheckBundleSnapshot: Equatable, Sendable {
     let architecture: String
 }
 
-struct SelfCheckBifrostSnapshot: Equatable, Sendable {
+struct SelfCheckGatewayHelperSnapshot: Equatable, Sendable {
     let exists: Bool
     let isRegularFile: Bool
     let executable: Bool
     let architecture: String?
     let sha256: String?
+    let identity: String?
 }
 
 struct SelfCheckConfigSnapshot: Equatable, Sendable {
@@ -291,7 +292,7 @@ struct SelfCheckClipboardSnapshot: Equatable, Sendable {
 typealias SelfCheckClipboardProbe = @MainActor @Sendable (String) throws -> SelfCheckClipboardSnapshot
 typealias SelfCheckUIProbe = @MainActor @Sendable () async throws -> SelfCheckUISnapshot
 typealias SelfCheckBundleProbe = @Sendable () throws -> SelfCheckBundleSnapshot
-typealias SelfCheckBifrostProbe = @Sendable () throws -> SelfCheckBifrostSnapshot
+typealias SelfCheckGatewayHelperProbe = @Sendable () throws -> SelfCheckGatewayHelperSnapshot
 typealias SelfCheckConfigProbe = @Sendable (URL, String) throws -> SelfCheckConfigSnapshot
 typealias SelfCheckHistoryProbe = @Sendable (URL, String) throws -> SelfCheckHistorySnapshot
 
@@ -320,7 +321,7 @@ struct SelfCheckDependencies {
     var now: () -> Date
     var marker: () -> String
     var bundleProbe: SelfCheckBundleProbe
-    var bifrostProbe: SelfCheckBifrostProbe
+    var gatewayHelperProbe: SelfCheckGatewayHelperProbe
     var configProbe: SelfCheckConfigProbe
     var historyProbe: SelfCheckHistoryProbe
     var clipboardProbe: SelfCheckClipboardProbe
@@ -350,8 +351,8 @@ struct SelfCheckDependencies {
             now: Date.init,
             marker: { "ccbud-selfcheck-\(UUID().uuidString)" },
             bundleProbe: { SelfCheckSystemProbe.bundle(bundleBox.value) },
-            bifrostProbe: {
-                try SelfCheckSystemProbe.bifrost(
+            gatewayHelperProbe: {
+                try SelfCheckSystemProbe.gatewayHelper(
                     bundle: bundleBox.value,
                     fileManager: fileManagerBox.value
                 )
@@ -392,8 +393,7 @@ struct SelfCheckDependencies {
 
 @MainActor
 struct SelfCheckRunner {
-    nonisolated static let expectedBifrostSHA256 =
-        "422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263"
+    nonisolated static let expectedGatewayIdentity = "ccbud-gateway 0.1.0"
 
     var dependencies: SelfCheckDependencies
 
@@ -542,28 +542,32 @@ struct SelfCheckRunner {
 
         do {
             let snapshot = try await runBackgroundProbe(
-                id: "bundled_bifrost",
+                id: "bundled_gateway",
                 deadline: deadline,
-                operation: dependencies.bifrostProbe
+                operation: dependencies.gatewayHelperProbe
             )
             let passed = snapshot.exists && snapshot.isRegularFile && snapshot.executable
                 && snapshot.architecture == "arm64"
-                && snapshot.sha256 == Self.expectedBifrostSHA256
+                && snapshot.sha256?.count == 64
+                && snapshot.identity == Self.expectedGatewayIdentity
             required.append(check(
-                id: "bundled_bifrost",
+                id: "bundled_gateway",
                 passed: passed,
-                detail: passed ? "bundled bifrost-http matches the pinned arm64 artifact" : "bundled bifrost-http failed integrity checks",
+                detail: passed
+                    ? "bundled ccbud-gateway has the expected arm64 identity"
+                    : "bundled ccbud-gateway failed integrity or identity checks",
                 values: [
                     "exists": String(snapshot.exists),
                     "regularFile": String(snapshot.isRegularFile),
                     "executable": String(snapshot.executable),
                     "architecture": snapshot.architecture ?? "missing",
                     "sha256": snapshot.sha256 ?? "missing",
+                    "identity": snapshot.identity ?? "missing",
                 ],
                 redactor: redactor
             ))
         } catch {
-            required.append(failedCheck(id: "bundled_bifrost", error: error, redactor: redactor))
+            required.append(failedCheck(id: "bundled_gateway", error: error, redactor: redactor))
         }
 
         do {
@@ -1107,6 +1111,178 @@ private final class SelfCheckSendableBox<Value>: @unchecked Sendable {
     }
 }
 
+enum SelfCheckGatewayIdentityProbe {
+    private static let outputLimit = 1_024
+
+    static func read(
+        executable: URL,
+        timeout: TimeInterval = 2
+    ) throws -> String {
+        guard executable.isFileURL, timeout > 0 else {
+            throw SelfCheckGatewayIdentityError.invalidOutput
+        }
+
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = executable
+        process.arguments = ["--version"]
+        process.currentDirectoryURL = URL(fileURLWithPath: "/", isDirectory: true)
+        process.environment = [:]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+
+        let completion = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in completion.signal() }
+        do {
+            try process.run()
+        } catch {
+            throw SelfCheckGatewayIdentityError.launchFailed
+        }
+        try? standardOutput.fileHandleForWriting.close()
+        try? standardError.fileHandleForWriting.close()
+
+        let outputBuffer = SelfCheckBoundedProcessBuffer(limit: outputLimit)
+        let errorBuffer = SelfCheckBoundedProcessBuffer(limit: outputLimit)
+        let readers = DispatchGroup()
+        drain(standardOutput.fileHandleForReading, into: outputBuffer, group: readers)
+        drain(standardError.fileHandleForReading, into: errorBuffer, group: readers)
+
+        if completion.wait(timeout: .now() + timeout) == .timedOut {
+            stop(process)
+            finishReaders(readers, standardOutput: standardOutput, standardError: standardError)
+            throw SelfCheckGatewayIdentityError.timedOut
+        }
+        process.waitUntilExit()
+        finishReaders(readers, standardOutput: standardOutput, standardError: standardError)
+
+        guard outputBuffer.readError == nil, errorBuffer.readError == nil else {
+            throw SelfCheckGatewayIdentityError.invalidOutput
+        }
+        guard !outputBuffer.exceededLimit, !errorBuffer.exceededLimit else {
+            throw SelfCheckGatewayIdentityError.outputTooLarge
+        }
+        guard process.terminationStatus == 0 else {
+            throw SelfCheckGatewayIdentityError.nonzeroExit(process.terminationStatus)
+        }
+        guard errorBuffer.data.isEmpty,
+              var identity = String(data: outputBuffer.data, encoding: .utf8) else {
+            throw SelfCheckGatewayIdentityError.invalidOutput
+        }
+        if identity.hasSuffix("\n") { identity.removeLast() }
+        if identity.hasSuffix("\r") { identity.removeLast() }
+        guard !identity.isEmpty, !identity.contains("\n"), !identity.contains("\r") else {
+            throw SelfCheckGatewayIdentityError.invalidOutput
+        }
+        return identity
+    }
+
+    private static func drain(
+        _ handle: FileHandle,
+        into buffer: SelfCheckBoundedProcessBuffer,
+        group: DispatchGroup
+    ) {
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer { group.leave() }
+            do {
+                while let data = try handle.read(upToCount: 4 * 1_024), !data.isEmpty {
+                    buffer.append(data)
+                }
+            } catch {
+                buffer.record(error)
+            }
+        }
+    }
+
+    private static func finishReaders(
+        _ readers: DispatchGroup,
+        standardOutput: Pipe,
+        standardError: Pipe
+    ) {
+        if readers.wait(timeout: .now() + 1) == .timedOut {
+            try? standardOutput.fileHandleForReading.close()
+            try? standardError.fileHandleForReading.close()
+            _ = readers.wait(timeout: .now() + 1)
+        }
+    }
+
+    private static func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let deadline = DispatchTime.now().uptimeNanoseconds + 250_000_000
+        while process.isRunning, DispatchTime.now().uptimeNanoseconds < deadline {
+            usleep(10_000)
+        }
+        if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+        process.waitUntilExit()
+    }
+}
+
+private enum SelfCheckGatewayIdentityError: LocalizedError {
+    case launchFailed
+    case timedOut
+    case outputTooLarge
+    case nonzeroExit(Int32)
+    case invalidOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .launchFailed: "could not launch bundled ccbud-gateway"
+        case .timedOut: "bundled ccbud-gateway --version timed out"
+        case .outputTooLarge: "bundled ccbud-gateway --version output exceeded the safety limit"
+        case .nonzeroExit(let status): "bundled ccbud-gateway --version exited with status \(status)"
+        case .invalidOutput: "bundled ccbud-gateway returned an invalid version identity"
+        }
+    }
+}
+
+private final class SelfCheckBoundedProcessBuffer: @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var storage = Data()
+    private var overflow = false
+    private var failure: Error?
+
+    init(limit: Int) {
+        self.limit = max(0, limit)
+        storage.reserveCapacity(limit)
+    }
+
+    func append(_ data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = max(0, limit - storage.count)
+        if remaining > 0 { storage.append(data.prefix(remaining)) }
+        if data.count > remaining { overflow = true }
+    }
+
+    func record(_ error: Error) {
+        lock.lock()
+        if failure == nil { failure = error }
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    var exceededLimit: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return overflow
+    }
+
+    var readError: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+}
+
 private enum SelfCheckSystemProbe {
     static func bundle(_ bundle: Bundle) -> SelfCheckBundleSnapshot {
         SelfCheckBundleSnapshot(
@@ -1119,14 +1295,15 @@ private enum SelfCheckSystemProbe {
         )
     }
 
-    static func bifrost(bundle: Bundle, fileManager: FileManager) throws -> SelfCheckBifrostSnapshot {
-        guard let file = bundle.url(forAuxiliaryExecutable: "bifrost-http") else {
-            return SelfCheckBifrostSnapshot(
+    static func gatewayHelper(bundle: Bundle, fileManager: FileManager) throws -> SelfCheckGatewayHelperSnapshot {
+        guard let file = bundle.url(forAuxiliaryExecutable: "ccbud-gateway") else {
+            return SelfCheckGatewayHelperSnapshot(
                 exists: false,
                 isRegularFile: false,
                 executable: false,
                 architecture: nil,
-                sha256: nil
+                sha256: nil,
+                identity: nil
             )
         }
         let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -1140,12 +1317,20 @@ private enum SelfCheckSystemProbe {
         while let chunk = try handle.read(upToCount: 1 * 1_024 * 1_024), !chunk.isEmpty {
             digest.update(data: chunk)
         }
-        return SelfCheckBifrostSnapshot(
+        let architecture = machOArchitecture(header)
+        let identity: String?
+        if regular, executable, architecture == "arm64" {
+            identity = try SelfCheckGatewayIdentityProbe.read(executable: file)
+        } else {
+            identity = nil
+        }
+        return SelfCheckGatewayHelperSnapshot(
             exists: true,
             isRegularFile: regular,
             executable: executable,
-            architecture: machOArchitecture(header),
-            sha256: digest.finalize().map { String(format: "%02x", $0) }.joined()
+            architecture: architecture,
+            sha256: digest.finalize().map { String(format: "%02x", $0) }.joined(),
+            identity: identity
         )
     }
 

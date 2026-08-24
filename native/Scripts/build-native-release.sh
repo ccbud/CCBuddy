@@ -31,12 +31,13 @@ command -v xcodegen >/dev/null || fail "xcodegen is required"
 [[ "$(xcodegen --version)" == "Version: 2.46.0" ]] \
   || fail "XcodeGen 2.46.0 is required"
 
-if [[ ! -x "$ROOT/native/Vendor/bifrost-http" ]]; then
-  [[ "$MODE" == "unsigned" ]] \
-    || fail "signed builds require the pinned Bifrost helper to be prepared before credentials"
-  CCBUD_BIFROST_ARCH=arm64 "$ROOT/native/Scripts/fetch-bifrost.sh" >/dev/null
+if [[ "$MODE" == "signed" ]]; then
+  CARGO_NET_OFFLINE=true "$ROOT/native/Scripts/build-gateway-helper.sh" >/dev/null
+else
+  "$ROOT/native/Scripts/build-gateway-helper.sh" >/dev/null
 fi
-"$ROOT/native/Scripts/verify-bifrost.sh" "$ROOT/native/Vendor/bifrost-http" arm64
+"$ROOT/native/Scripts/verify-gateway-helper.sh" \
+  "$ROOT/native/Vendor/ccbud-gateway" arm64
 
 xcodegen generate --spec "$ROOT/native/project.yml" --project "$ROOT/native"
 node "$ROOT/scripts/release-version.js" check "$VERSION"

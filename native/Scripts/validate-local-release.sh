@@ -16,6 +16,8 @@ fi
 
 mkdir -p "$APP_DIR" "$ARTIFACT_DIR"
 "$ROOT/native/Scripts/build-native-release.sh" unsigned "$VERSION" 1 "$APP_DIR"
+"$ROOT/native/Scripts/run-packaged-selfcheck.sh" "$APP_DIR/CC Buddy.app" 150
+"$ROOT/native/Scripts/test-single-instance-handoff.sh" "$APP_DIR/CC Buddy.app" 20
 "$ROOT/native/Scripts/package-native-release.sh" \
   unsigned "$APP_DIR/CC Buddy.app" "$VERSION" "$ARTIFACT_DIR"
 

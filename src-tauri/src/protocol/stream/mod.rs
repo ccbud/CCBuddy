@@ -19,7 +19,6 @@ mod chat_responses_push;
 mod chat_responses_tools;
 mod common;
 mod resp_items;
-mod transcoder;
 #[cfg(test)]
 mod tests_anthropic_responses;
 #[cfg(test)]
@@ -32,6 +31,7 @@ mod tests_errors;
 mod tests_extended;
 #[cfg(test)]
 mod tests_ids;
+mod transcoder;
 
 // The three concrete transcoders stay reachable at their original
 // crate::protocol::stream::<Name> paths; gateway.rs drives them through `Transcoder`.

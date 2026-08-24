@@ -2,7 +2,9 @@
 // wire_api="responses").
 
 use super::helpers::{effort_to_budget, effort_to_reasoning_effort};
-use super::history::{append_history_tool_call, response_history_tool_call, response_tool_output_text};
+use super::history::{
+    append_history_tool_call, response_history_tool_call, response_tool_output_text,
+};
 use super::parts::{
     append_reasoning_content, parts_images, parts_text, reasoning_item_text, response_item_call_id,
 };

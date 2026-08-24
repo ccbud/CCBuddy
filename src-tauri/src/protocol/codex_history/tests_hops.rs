@@ -171,4 +171,3 @@ async fn missing_previous_response_fallback_requires_a_safe_scope() {
     assert_eq!(history.enrich_request(&mut request).await, 0);
     assert!(crate::protocol::openai_responses::decode_request(&request).is_err());
 }
-

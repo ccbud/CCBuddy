@@ -318,6 +318,55 @@ final class HistorySessionLoaderTests: XCTestCase {
         ).requiresProjectionRefresh)
     }
 
+    func testEventImpactDoesNotRediscoverEveryAdapterForEachWatchedPath() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("event-impact-batch-discovery")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("sessions/known.jsonl")
+        try HistoryTestSupport.write(["{}"], to: transcript)
+        let auxiliaryEvents = (0..<128).map {
+            root.appendingPathComponent("sessions/new-\($0)/terminal/output.log")
+        }
+
+        let directory = HistoryDirectory(
+            id: root.path,
+            label: root.path,
+            baseURL: root,
+            projectsURL: root.appendingPathComponent("projects"),
+            sessionsURL: root.appendingPathComponent("sessions")
+        )
+        let candidate = HistoryFileCandidate(
+            file: transcript,
+            directory: directory,
+            formatHint: .claude
+        )
+        let manifest = ConversationDependencyManifest(
+            candidate: candidate,
+            source: .claude,
+            dependencies: [.init(file: transcript, role: .primaryTranscript)]
+        )
+        let adapter = EventImpactCountingAdapter(watchRoot: root)
+        let registry = ConversationSourceAdapterRegistry(adapters: [adapter])
+        let configuration = HistoryConfiguration(
+            historyDirs: [root.path],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+
+        let impact = registry.eventImpact(
+            [transcript] + auxiliaryEvents,
+            knownManifests: [manifest],
+            configuration: configuration
+        )
+
+        XCTAssertEqual(impact.candidates.map(\.file), [transcript.standardizedFileURL])
+        XCTAssertTrue(impact.requiresDiscovery)
+        XCTAssertEqual(
+            adapter.candidateCallCount,
+            0,
+            "A large watched batch must use manifests plus one later discovery pass, not rediscover per event"
+        )
+    }
+
     func testQuickMetadataUsesBoundedCompleteLinesDetectsFormatsAndIsolatesFailures() throws {
         let root = try HistoryTestSupport.temporaryDirectory("quick-metadata-prefix")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -582,6 +631,210 @@ final class HistorySessionLoaderTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testCanonicalWakeGrokStreamsLargeUpdatesWithBoundedPresentationAndRawExport() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("wake-grok-stream")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nativeID = "77777777-aaaa-bbbb-cccc-000000000007"
+        let file = root.appendingPathComponent(
+            ".grok/sessions/%2Ftmp%2Fgrok-stream/\(nativeID)/updates.jsonl"
+        )
+
+        func row(timestamp: Double, update: [String: HistoryValue]) -> String {
+            HistoryValue.object([
+                "timestamp": .number(timestamp),
+                "method": .string("session/update"),
+                "params": .object([
+                    "sessionId": .string(nativeID),
+                    "update": .object(update),
+                ]),
+            ]).jsonString
+        }
+
+        let largeChunk = String(repeating: "chunk-data-", count: 12_000)
+        let largeToolInput = "tool-input-head-"
+            + String(repeating: "i", count: 96 * 1_024)
+            + "-tool-input-tail"
+        let largeToolOutput = "tool-output-head-"
+            + String(repeating: "o", count: 96 * 1_024)
+            + "-tool-output-tail"
+        let largeRawOutput = "raw-output-head-"
+            + String(repeating: "r", count: 96 * 1_024)
+            + "-raw-output-tail"
+        var lines: [String] = []
+        for index in 0..<20 {
+            let text = (index == 0 ? "grok-stream-head-" : "")
+                + largeChunk
+                + (index == 19 ? "-grok-stream-tail" : "")
+            lines.append(row(timestamp: 1_786_014_300 + Double(index), update: [
+                "sessionUpdate": .string("user_message_chunk"),
+                "content": .object(["type": .string("text"), "text": .string(text)]),
+            ]))
+        }
+        lines.append(row(timestamp: 1_786_014_321, update: [
+            "sessionUpdate": .string("agent_thought_chunk"),
+            "content": .object([
+                "type": .string("text"),
+                "text": .string("thinking-head-" + largeChunk + "-thinking-tail"),
+            ]),
+        ]))
+        lines.append(row(timestamp: 1_786_014_322, update: [
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("stream-tool"),
+            "title": .string("Grep"),
+        ]))
+        lines.append(row(timestamp: 1_786_014_323, update: [
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("stream-tool"),
+            "status": .string("running"),
+            "rawInput": .object(["query": .string(largeToolInput)]),
+            "content": .array([
+                .object(["content": .object([
+                    "type": .string("text"), "text": .string("initial output"),
+                ])]),
+            ]),
+        ]))
+        for index in 0..<1_024 {
+            lines.append(row(timestamp: 1_786_014_324 + Double(index) / 10_000, update: [
+                "sessionUpdate": .string("tool_call_update"),
+                "toolCallId": .string("stream-tool"),
+                "status": .string("running"),
+                "content": .array([
+                    .object(["content": .object([
+                        "type": .string("text"), "text": .string("pending update \(index)"),
+                    ])]),
+                ]),
+            ]))
+        }
+        lines.append(row(timestamp: 1_786_014_325, update: [
+            "sessionUpdate": .string("agent_message_chunk"),
+            "content": .object([
+                "type": .string("text"), "text": .string("assistant answer"),
+            ]),
+        ]))
+        lines.append(row(timestamp: 1_786_014_326, update: [
+            "sessionUpdate": .string("user_message_chunk"),
+            "content": .object(["type": .string("text"), "text": .string("follow-up")]),
+        ]))
+        for index in 0..<1_024 {
+            lines.append(row(timestamp: 1_786_014_327 + Double(index) / 10_000, update: [
+                "sessionUpdate": .string("tool_call_update"),
+                "toolCallId": .string("stream-tool"),
+                "status": .string("running"),
+                "content": .array([
+                    .object(["content": .object([
+                        "type": .string("text"), "text": .string("flushed update \(index)"),
+                    ])]),
+                ]),
+            ]))
+        }
+        lines.append(row(timestamp: 1_786_014_328, update: [
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("stream-tool"),
+            "status": .string("completed"),
+            "content": .array([
+                .object(["content": .object([
+                    "type": .string("text"), "text": .string(largeToolOutput),
+                ])]),
+            ]),
+            "rawOutput": .object(["stdout": .string(largeRawOutput)]),
+        ]))
+        lines.append("not valid json")
+        lines.append(row(timestamp: 1_786_014_329, update: [
+            "sessionUpdate": .string("user_message_chunk"),
+            "content": .object([
+                "type": .string("text"), "text": .string(" after malformed"),
+            ]),
+        ]))
+        try HistoryTestSupport.write(lines, to: file)
+        try HistoryTestSupport.write([
+            HistoryValue.object([
+                "info": .object(["cwd": .string("/tmp/grok-stream")]),
+                "generated_title": .string("Canonical Grok stream"),
+                "created_at": .string("2026-08-06T11:00:00Z"),
+                "updated_at": .string("2026-08-06T11:20:00Z"),
+                "head_branch": .string("feature/stream"),
+                "current_model_id": .string("grok-stream-model"),
+            ]).jsonString,
+        ], to: file.deletingLastPathComponent().appendingPathComponent("summary.json"))
+        let originalSource = try Data(contentsOf: file)
+
+        let streamed = try WakeGrokHistoryParser.normalizeStreaming(from: file)
+        XCTAssertEqual(streamed.metrics.bytesRead, originalSource.count)
+        XCTAssertGreaterThan(streamed.metrics.bytesRead, 2 * 1_024 * 1_024)
+        XCTAssertLessThan(streamed.metrics.peakBufferedRecordBytes, 256 * 1_024)
+        XCTAssertEqual(streamed.metrics.diagnostics.decodedLines, lines.count - 1)
+        XCTAssertEqual(streamed.metrics.diagnostics.malformedLines, 1)
+        XCTAssertEqual(streamed.messages.map(\.role), ["user", "assistant", "user"])
+
+        let configuration = HistoryConfiguration(
+            historyDirs: [],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let loader = HistorySessionLoader(configuration: configuration)
+        let candidate = try XCTUnwrap(loader.discoverCandidates(activeOnly: false).first {
+            $0.file.standardizedFileURL == file.standardizedFileURL
+        })
+        let session = try loader.load(candidate).session
+
+        XCTAssertEqual(session.metadata.source, .grok)
+        XCTAssertEqual(session.metadata.sessionID, nativeID)
+        XCTAssertEqual(session.metadata.title, "Canonical Grok stream")
+        XCTAssertEqual(session.metadata.cwd, "/tmp/grok-stream")
+        XCTAssertEqual(session.metadata.gitBranch, "feature/stream")
+        XCTAssertEqual(session.metadata.model, "grok-stream-model")
+        XCTAssertEqual(session.metadata.diagnostics, streamed.metrics.diagnostics)
+        XCTAssertEqual(session.metadata.messageCount, 3)
+        XCTAssertEqual(session.messages.map(\.role), ["user", "assistant", "user"])
+        XCTAssertEqual(session.messages.last?.content.first?.text, "follow-up after malformed")
+
+        let userText = try XCTUnwrap(session.messages[0].content.first?.text)
+        XCTAssertLessThanOrEqual(userText.utf8.count, WakeGrokHistoryParser.maximumMessageTextBytes)
+        XCTAssertTrue(userText.hasPrefix("grok-stream-head-"))
+        XCTAssertTrue(userText.hasSuffix("… (truncated)"))
+        XCTAssertFalse(userText.contains("grok-stream-tail"))
+
+        let assistant = session.messages[1]
+        let thinking = try XCTUnwrap(assistant.content.first { $0.type == "thinking" }?.thinking)
+        XCTAssertLessThanOrEqual(thinking.utf8.count, WakeGrokHistoryParser.maximumToolValueBytes)
+        XCTAssertFalse(thinking.contains("thinking-tail"))
+        let toolUse = try XCTUnwrap(assistant.content.first { $0.type == "tool_use" })
+        let toolResult = try XCTUnwrap(assistant.content.first { $0.type == "tool_result" })
+        XCTAssertEqual(assistant.content.filter { $0.type == "tool_result" }.count, 1)
+        XCTAssertEqual(toolUse.id, "stream-tool")
+        XCTAssertLessThanOrEqual(
+            toolUse.input?.jsonString.utf8.count ?? .max,
+            WakeGrokHistoryParser.maximumToolValueBytes
+        )
+        XCTAssertFalse(toolUse.input?.jsonString.contains("tool-input-tail") ?? true)
+        XCTAssertLessThanOrEqual(
+            toolUse.raw?.jsonString.utf8.count ?? .max,
+            WakeGrokHistoryParser.maximumToolValueBytes
+        )
+        XCTAssertLessThanOrEqual(
+            toolResult.content?.jsonString.utf8.count ?? .max,
+            WakeGrokHistoryParser.maximumToolValueBytes
+        )
+        XCTAssertTrue(toolResult.content?.jsonString.contains("tool-output-head") ?? false)
+        XCTAssertFalse(toolResult.content?.jsonString.contains("tool-output-tail") ?? true)
+        XCTAssertLessThanOrEqual(
+            toolResult.raw?.jsonString.utf8.count ?? .max,
+            WakeGrokHistoryParser.maximumToolValueBytes
+        )
+        XCTAssertFalse(toolResult.raw?.jsonString.contains("raw-output-tail") ?? true)
+        XCTAssertEqual(ConversationReplayLink.transcriptFiles(in: session), [file.standardizedFileURL])
+
+        let export = root.appendingPathComponent("grok-stream-export.jsonl")
+        let exported = try ConversationMutationService(configuration: .init(
+            historyDirs: [],
+            homeDirectory: root,
+            importsRoot: configuration.importsRoot
+        )).exportRaw(session.metadata, to: export)
+        XCTAssertFalse(exported.bundled)
+        XCTAssertEqual(try Data(contentsOf: export), originalSource)
+        XCTAssertEqual(try Data(contentsOf: file), originalSource)
+    }
+
     func testAntigravityQuickMetadataDoesNotOpenConversationSteps() throws {
         let root = try HistoryTestSupport.temporaryDirectory("quick-antigravity")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -670,6 +923,50 @@ private final class QuickMetadataScanProgressProbe: @unchecked Sendable {
         lock.lock()
         storage.append(result)
         lock.unlock()
+    }
+}
+
+private final class EventImpactCountingAdapter: ConversationSourceAdapter, @unchecked Sendable {
+    let source = HistorySource.claude
+    let format = HistoryTranscriptFormat.claude
+
+    private let watchRoot: URL
+    private let lock = NSLock()
+    private var candidateCalls = 0
+
+    init(watchRoot: URL) {
+        self.watchRoot = watchRoot
+    }
+
+    var candidateCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return candidateCalls
+    }
+
+    func candidate(
+        for file: URL,
+        configuration: HistoryConfiguration
+    ) -> HistoryFileCandidate? {
+        lock.lock()
+        candidateCalls += 1
+        lock.unlock()
+        return nil
+    }
+
+    func watchRoots(configuration: HistoryConfiguration) -> [URL] {
+        [watchRoot]
+    }
+
+    func dependencies(
+        for candidate: HistoryFileCandidate,
+        configuration: HistoryConfiguration
+    ) -> [ConversationSourceDependency] {
+        [.init(file: candidate.file, role: .primaryTranscript)]
+    }
+
+    func parse(_ input: ConversationSourceParseInput) throws -> HistorySession {
+        throw HistoryError.unsupportedTranscript(input.candidate.file)
     }
 }
 

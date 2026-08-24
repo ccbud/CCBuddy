@@ -5,16 +5,34 @@ import SwiftUI
 final class ConversationWorkbenchState: ObservableObject {
     enum Selection: Equatable {
         case all
+        case starred
         case agent(HistorySource)
         case project(String)
+    }
+
+    enum SortField: String, CaseIterable, Equatable {
+        case updated
+        case created
+        case messages
     }
 
     @Published private(set) var selection: Selection = .all
     @Published var agentsExpanded = true
     @Published var projectsExpanded = true
+    @Published var sortField: SortField = .updated
+    @Published var sortAscending = false
+    @Published private(set) var searchFocusRevision = 0
 
     func showAll() {
         selection = .all
+    }
+
+    func showStarred() {
+        selection = .starred
+    }
+
+    func requestSearchFocus() {
+        searchFocusRevision &+= 1
     }
 
     func select(agent: HistorySource) {
@@ -23,6 +41,32 @@ final class ConversationWorkbenchState: ObservableObject {
 
     func select(project: String) {
         selection = selection == .project(project) ? .all : .project(project)
+    }
+
+    /// A producer can disappear while the catalog is refreshing (CLI uninstall, directory move,
+    /// or an emptied project). Wake treats those sidebar filters as projections of the live
+    /// catalog, so never leave the workbench pinned to a projection which no longer exists.
+    func reconcileSelection(
+        projects: [HistoryProject],
+        historyActive: String
+    ) {
+        guard historyActive == "all" else {
+            if selection != .all { selection = .all }
+            return
+        }
+
+        switch selection {
+        case .agent(let source):
+            if !projects.lazy.flatMap(\.sessions).contains(where: { $0.source == source }) {
+                selection = .all
+            }
+        case .project(let cwd):
+            if !projects.contains(where: { $0.cwd == cwd }) {
+                selection = .all
+            }
+        case .all, .starred:
+            break
+        }
     }
 
     func filteredProjects(
@@ -34,6 +78,17 @@ final class ConversationWorkbenchState: ObservableObject {
         switch selection {
         case .all:
             return projects
+        case .starred:
+            return projects.compactMap { project in
+                let sessions = project.sessions.filter(\.starred)
+                guard !sessions.isEmpty else { return nil }
+                return HistoryProject(
+                    cwd: project.cwd,
+                    name: project.name,
+                    sessions: sessions,
+                    lastActivity: sessions.map(\.lastActivity).max() ?? project.lastActivity
+                )
+            }
         case .agent(let source):
             return projects.compactMap { project in
                 let sessions = project.sessions.filter { $0.source == source }
@@ -69,6 +124,8 @@ final class ConversationWorkbenchState: ObservableObject {
         switch selection {
         case .all:
             return language.localized("全部会话")
+        case .starred:
+            return language.localized("已收藏")
         case .agent(let source):
             return ConversationPresentation.sourceName(rawValue: source.rawValue)
         case .project(let cwd):
@@ -76,11 +133,38 @@ final class ConversationWorkbenchState: ObservableObject {
                 ?? URL(fileURLWithPath: cwd).lastPathComponent
         }
     }
+
+    func sorted(_ sessions: [HistorySessionMetadata]) -> [HistorySessionMetadata] {
+        sessions.sorted { lhs, rhs in
+            if lhs.pinned != rhs.pinned { return lhs.pinned && !rhs.pinned }
+
+            let ordered: Bool?
+            switch sortField {
+            case .updated:
+                ordered = comparison(lhs.lastActivity, rhs.lastActivity)
+            case .created:
+                ordered = comparison(lhs.createdAt, rhs.createdAt)
+            case .messages:
+                ordered = comparison(lhs.messageCount, rhs.messageCount)
+            }
+            if let ordered { return ordered }
+            if lhs.lastActivity != rhs.lastActivity {
+                return lhs.lastActivity > rhs.lastActivity
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func comparison<T: Comparable>(_ lhs: T, _ rhs: T) -> Bool? {
+        guard lhs != rhs else { return nil }
+        return sortAscending ? lhs < rhs : lhs > rhs
+    }
 }
 
 struct ConversationsView: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var workbench: ConversationWorkbenchState
+    @Environment(\.appLanguage) private var appLanguage
     var fontSize: Int?
     var historyDirectories: [String] = []
     var selectHistoryScope: (String) -> Void = { _ in }
@@ -98,11 +182,11 @@ struct ConversationsView: View {
             ConversationTimelinePane(store: store, fontSize: fontSize)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color.ccConversationBackground)
+        .background(Color.ccConversationBackground.ignoresSafeArea())
         .overlay(alignment: .bottom) {
             if let message = store.actionMessage {
                 ConversationNotice(
-                    message: message,
+                    message: appLanguage.localized(message),
                     isError: store.actionIsError,
                     dismiss: store.clearActionMessage
                 )
@@ -136,12 +220,32 @@ struct ConversationsView: View {
         }
         .onAppear {
             store.requestHistoryScope = selectHistoryScope
+            workbench.reconcileSelection(
+                projects: store.projects,
+                historyActive: store.historyActive
+            )
             store.activate()
+        }
+        .onChange(of: store.projects) { projects in
+            workbench.reconcileSelection(
+                projects: projects,
+                historyActive: store.historyActive
+            )
+        }
+        .onChange(of: store.historyActive) { active in
+            workbench.reconcileSelection(projects: store.projects, historyActive: active)
         }
         .onDisappear {
             store.requestHistoryScope = nil
             store.deactivate()
         }
+        .focusedSceneValue(
+            \.conversationCommandActions,
+            ConversationCommandActions(
+                focusSearch: workbench.requestSearchFocus,
+                refresh: store.retryIndexing
+            )
+        )
         .conversationAccessibilityContainerIdentifier("conversations.view", label: "会话")
     }
 

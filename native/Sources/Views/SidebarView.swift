@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.appLanguage) private var appLanguage
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var conversationWorkbench: ConversationWorkbenchState
 
     var body: some View {
@@ -14,15 +15,12 @@ struct SidebarView: View {
 
             brand
                 .padding(.horizontal, compact ? 5 : 8)
-                .padding(.bottom, model.selected == .conversations ? 12 : 18)
+                .padding(.bottom, 18)
 
             if model.selected == .conversations {
-                compactApplicationNavigation
-                    .padding(.bottom, 12)
                 ConversationLibraryNavigation(
                     store: model.conversationStore,
                     workbench: conversationWorkbench,
-                    historyDirectories: model.config.historyDirs,
                     selectHistoryScope: { scope in
                         Task { await model.setHistoryActive(scope) }
                     }
@@ -40,7 +38,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, compact ? 5 : 10)
         .padding(.bottom, 14)
-        .background(Color.ccSidebar)
+        .background(Color.ccSidebar.ignoresSafeArea())
     }
 
     private var compact: Bool {
@@ -59,33 +57,12 @@ struct SidebarView: View {
         }
     }
 
-    private var compactApplicationNavigation: some View {
-        HStack(spacing: 5) {
-            ForEach(AppModel.Destination.allCases) { destination in
-                let selected = model.selected == destination
-                Button {
-                    withAnimation(.easeOut(duration: 0.18)) { model.selected = destination }
-                } label: {
-                    Image(systemName: destination.symbol)
-                        .font(.system(size: 13, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? Color.ccForeground : Color.ccMuted)
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(selected ? Color.ccSidebarSelection : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableButtonStyle())
-                .help(appLanguage.localized(destination.title))
-                .accessibilityLabel(appLanguage.localized(destination.title))
-                .accessibilityIdentifier("sidebar.\(destination.rawValue)")
-            }
-        }
-    }
-
     private func navButton(_ destination: AppModel.Destination) -> some View {
         let selected = model.selected == destination
         return Button {
-            withAnimation(.easeOut(duration: 0.18)) { model.selected = destination }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                model.selected = destination
+            }
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: destination.symbol).frame(width: 16, height: 16)
@@ -108,28 +85,39 @@ struct SidebarView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            if !compact {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(model.gatewayState.isRunning ? Color.ccGreen : Color.ccMuted)
-                        .frame(width: 5, height: 5)
-                    Text(LocalizedStringKey(model.gatewayState.isRunning ? "已接入" : "未接入"))
+        VStack(spacing: 10) {
+            if model.selected == .conversations {
+                // Wake's library rail stays visually uninterrupted from the title bar through
+                // Projects. CC Buddy's broader product navigation remains available at the foot
+                // of the rail instead of inserting a second, translucent toolbar above Search.
+                HStack(spacing: 4) {
+                    ForEach(AppModel.Destination.allCases) { destination in
+                        conversationDestinationButton(destination)
+                    }
                 }
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(model.gatewayState.isRunning ? Color.ccGreen : Color.ccMuted)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                    model.gatewayState.isRunning
-                        ? Color.ccGreenSoft
-                        : Color.ccForeground.opacity(0.05)
-                )
-                .clipShape(Capsule())
-                Spacer(minLength: 0)
             }
 
-            VStack(spacing: 3) {
+            HStack(spacing: 8) {
+                if !compact {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(model.gatewayState.isRunning ? Color.ccGreen : Color.ccMuted)
+                            .frame(width: 5, height: 5)
+                        Text(LocalizedStringKey(model.gatewayState.isRunning ? "已接入" : "未接入"))
+                    }
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(model.gatewayState.isRunning ? Color.ccGreen : Color.ccMuted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
+                        model.gatewayState.isRunning
+                            ? Color.ccGreenSoft
+                            : Color.ccForeground.opacity(0.05)
+                    )
+                    .clipShape(Capsule())
+                    Spacer(minLength: 0)
+                }
+
                 if model.selected != .conversations {
                     footerButton(
                         symbol: model.sidebarCollapsed ? "chevron.right" : "chevron.left",
@@ -146,6 +134,27 @@ struct SidebarView: View {
         }
         .padding(.top, 12)
         .overlay(alignment: .top) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+    }
+
+    private func conversationDestinationButton(_ destination: AppModel.Destination) -> some View {
+        let selected = model.selected == destination
+        return Button {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                model.selected = destination
+            }
+        } label: {
+            Image(systemName: destination.symbol)
+                .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? Color.ccForeground : Color.ccMuted)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background(selected ? Color.ccSidebarSelection : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .help(appLanguage.localized(destination.title))
+        .accessibilityLabel(appLanguage.localized(destination.title))
+        .accessibilityIdentifier("sidebar.\(destination.rawValue)")
     }
 
     private func footerButton(
@@ -174,10 +183,13 @@ private struct ConversationLibraryNavigation: View {
     @ObservedObject var workbench: ConversationWorkbenchState
     @Environment(\.appLanguage) private var appLanguage
 
-    let historyDirectories: [String]
     let selectHistoryScope: (String) -> Void
 
     @State private var showingImporter = false
+    @State private var showingSessionLocations = false
+    @State private var hoveringSessionLocations = false
+    @State private var hoveringSessionRefresh = false
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -193,6 +205,18 @@ private struct ConversationLibraryNavigation: View {
                     identifier: "conversation.library.all"
                 ) {
                     workbench.showAll()
+                    selectHistoryScope("all")
+                }
+
+                libraryRow(
+                    symbol: "star",
+                    title: appLanguage.localized("已收藏"),
+                    count: starredSessionCount,
+                    selected: store.historyActive == "all"
+                        && workbench.selection == .starred,
+                    identifier: "conversation.library.starred"
+                ) {
+                    workbench.showStarred()
                     selectHistoryScope("all")
                 }
 
@@ -227,23 +251,6 @@ private struct ConversationLibraryNavigation: View {
 
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    if historyDirectories.count > 1 {
-                        groupHeading(appLanguage.localized("来源"), expanded: true, action: {})
-                        ForEach(historyDirectories, id: \.self) { directory in
-                            libraryRow(
-                                symbol: "externaldrive",
-                                title: URL(fileURLWithPath: directory).lastPathComponent,
-                                count: store.scopeSnapshot.sessionCounts[directory],
-                                selected: store.historyActive == directory,
-                                identifier: "conversation.library.root.\(stableIdentifier(directory))",
-                                sublevel: true
-                            ) {
-                                workbench.showAll()
-                                selectHistoryScope(directory)
-                            }
-                        }
-                    }
-
                     groupHeading(
                         appLanguage.localized("代理"),
                         expanded: workbench.agentsExpanded
@@ -253,7 +260,8 @@ private struct ConversationLibraryNavigation: View {
                     if workbench.agentsExpanded {
                         ForEach(agentCounts, id: \.source.rawValue) { item in
                             libraryRow(
-                                symbol: sourceSymbol(item.source),
+                                symbol: ConversationPresentation.sourceSymbol(item.source),
+                                source: item.source,
                                 title: ConversationPresentation.sourceName(rawValue: item.source.rawValue),
                                 count: item.count,
                                 selected: store.historyActive == "all"
@@ -293,6 +301,8 @@ private struct ConversationLibraryNavigation: View {
                 .padding(.bottom, 8)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            sessionLocationsFooter
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -305,6 +315,12 @@ private struct ConversationLibraryNavigation: View {
             case .failure(let error):
                 store.reportActionError("导入失败：\(error.localizedDescription)")
             }
+        }
+        .onChange(of: workbench.searchFocusRevision) { _ in
+            searchFocused = true
+        }
+        .sheet(isPresented: $showingSessionLocations) {
+            ConversationSessionLocationsView(store: store)
         }
     }
 
@@ -323,6 +339,7 @@ private struct ConversationLibraryNavigation: View {
                 )
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
+                .focused($searchFocused)
                 .accessibilityIdentifier("conversation.list.search")
                 if !store.listQuery.isEmpty {
                     Button { store.updateListQuery("") } label: {
@@ -367,16 +384,80 @@ private struct ConversationLibraryNavigation: View {
                 .disabled(store.isMutating)
             }
 
-            libraryToolButton(
-                symbol: "arrow.clockwise",
-                label: "更新会话索引",
-                identifier: "conversation.library.refresh"
-            ) {
-                store.retryIndexing()
-            }
-            .disabled(store.indexingState.isScanning)
         }
         .padding(.bottom, 12)
+    }
+
+    private var sessionLocationsFooter: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+
+            Button {
+                showingSessionLocations = true
+            } label: {
+                Image(systemName: "externaldrive")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .foregroundStyle(
+                        hoveringSessionLocations && !sessionLocationsBusy
+                            ? Color.ccForeground
+                            : Color.ccMuted
+                    )
+                    .background(
+                        hoveringSessionLocations && !sessionLocationsBusy
+                            ? Color.ccConversationSecondary
+                            : Color.clear
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(ConversationPressableButtonStyle())
+            .onHover { hoveringSessionLocations = $0 }
+            .help(appLanguage.localized("会话位置"))
+            .accessibilityLabel(appLanguage.localized("会话位置"))
+            .accessibilityIdentifier("conversation.locations.button")
+            .disabled(sessionLocationsBusy)
+
+            Button {
+                store.retryIndexing()
+            } label: {
+                Group {
+                    if store.indexingState.isScanning {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+                }
+                .frame(width: 30, height: 30)
+                .foregroundStyle(
+                    hoveringSessionRefresh && !sessionLocationsBusy
+                        ? Color.ccForeground
+                        : Color.ccMuted
+                )
+                .background(
+                    hoveringSessionRefresh && !sessionLocationsBusy
+                        ? Color.ccConversationSecondary
+                        : Color.clear
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(ConversationPressableButtonStyle())
+            .onHover { hoveringSessionRefresh = $0 }
+            .help(appLanguage.localized("更新会话索引"))
+            .accessibilityLabel(appLanguage.localized("更新会话索引"))
+            .accessibilityIdentifier("conversation.library.refresh")
+            .disabled(sessionLocationsBusy)
+        }
+        .padding(.top, 8)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.ccBorder).frame(height: 1)
+        }
+    }
+
+    private var sessionLocationsBusy: Bool {
+        store.indexingState.isScanning || store.isUpdatingSessionLocations
     }
 
     private func libraryToolButton(
@@ -426,6 +507,7 @@ private struct ConversationLibraryNavigation: View {
 
     private func libraryRow(
         symbol: String,
+        source: HistorySource? = nil,
         title: String,
         count: Int?,
         selected: Bool,
@@ -436,9 +518,14 @@ private struct ConversationLibraryNavigation: View {
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: sublevel ? 11.5 : 13, weight: .medium))
-                    .frame(width: 18)
+                if let source {
+                    ConversationSourceBrandIcon(source: source, size: sublevel ? 14 : 16)
+                        .frame(width: 18)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: sublevel ? 11.5 : 13, weight: .medium))
+                        .frame(width: 18)
+                }
                 Text(title).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 4)
                 if let count, count > 0 {
@@ -471,25 +558,15 @@ private struct ConversationLibraryNavigation: View {
         store.projects.reduce(0) { $0 + $1.sessions.count }
     }
 
-    private var agentCounts: [(source: HistorySource, count: Int)] {
-        let preferredOrder: [HistorySource] = [
-            .claude, .codex, .qoder, .grok, .copilot, .antigravity,
-        ]
-        let sessions = store.projects.flatMap(\.sessions)
-        return preferredOrder.compactMap { source in
-            let count = sessions.lazy.filter { $0.source == source }.count
-            return count > 0 ? (source, count) : nil
-        }
+    private var starredSessionCount: Int {
+        store.projects.lazy.flatMap(\.sessions).filter(\.starred).count
     }
 
-    private func sourceSymbol(_ source: HistorySource) -> String {
-        switch source {
-        case .claude: "sparkles"
-        case .codex: "terminal"
-        case .qoder: "q.square"
-        case .grok: "bolt"
-        case .copilot: "chevron.left.forwardslash.chevron.right"
-        case .antigravity: "atom"
+    private var agentCounts: [(source: HistorySource, count: Int)] {
+        let sessions = store.projects.flatMap(\.sessions)
+        return ConversationPresentation.sourceOrder.compactMap { source in
+            let count = sessions.lazy.filter { $0.source == source }.count
+            return count > 0 ? (source, count) : nil
         }
     }
 

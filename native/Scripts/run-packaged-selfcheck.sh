@@ -79,7 +79,7 @@ jq -e --arg expectedVersion "$EXPECTED_VERSION" '
   and .success == true
   and ([
     "main_bundle",
-    "bundled_bifrost",
+    "bundled_gateway",
     "config_atomic_round_trip",
     "history_round_trip",
     "clipboard_round_trip",
@@ -92,8 +92,8 @@ jq -e --arg expectedVersion "$EXPECTED_VERSION" '
 if grep -Fq "$SELF_CHECK_ROOT" "$REPORT"; then
   fail "report leaked its isolated path"
 fi
-if pgrep -f "$SELF_CHECK_ROOT/bifrost" >/dev/null 2>&1; then
-  fail "an isolated Bifrost process remains after app exit"
+if pgrep -f "$SELF_CHECK_ROOT/gateway" >/dev/null 2>&1; then
+  fail "an isolated ccbud-gateway process remains after app exit"
 fi
 
 echo "packaged self-check passed: $EXPECTED_VERSION"

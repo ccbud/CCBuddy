@@ -1,8 +1,8 @@
 use super::decode::decode_request;
 use super::encode::encode_response;
-use serde_json::{json, Value};
 use llm_connector::core::Protocol;
 use llm_connector::protocols::adapters::openai::OpenAIProtocol;
+use serde_json::{json, Value};
 
 // A representative Claude Code request: system + a user prose turn (input_text blocks), an
 // assistant tool_use, and the user's tool_result — the shape the messages→chat path must map.
@@ -30,7 +30,11 @@ fn claude_request() -> Value {
 fn decodes_anthropic_request_to_openai_chat_body() {
     let ir = decode_request(&claude_request()).unwrap();
     // system prepended, tool_result split into its own tool message, ordering preserved.
-    let roles: Vec<_> = ir.messages.iter().map(|m| format!("{:?}", m.role)).collect();
+    let roles: Vec<_> = ir
+        .messages
+        .iter()
+        .map(|m| format!("{:?}", m.role))
+        .collect();
     assert_eq!(roles, vec!["System", "User", "Assistant", "Tool"]);
     // input_text was recognized (not dropped → this is the Claude Code footgun).
     assert_eq!(ir.messages[1].content_as_text(), "read a.txt");
@@ -45,7 +49,9 @@ fn decodes_anthropic_request_to_openai_chat_body() {
     assert_eq!(ir.tools.as_ref().unwrap()[0].function.name, "read_file");
 
     // The crate encodes the IR to a real OpenAI Chat body — proves the reused half works.
-    let body = OpenAIProtocol::new("k").build_chat_request_body(&ir).unwrap();
+    let body = OpenAIProtocol::new("k")
+        .build_chat_request_body(&ir)
+        .unwrap();
     let msgs = body.get("messages").and_then(|v| v.as_array()).unwrap();
     assert_eq!(msgs[0]["role"], "system");
     assert!(body.get("tools").is_some());
@@ -72,7 +78,9 @@ fn encodes_openai_chat_response_to_anthropic() {
     assert_eq!(out["usage"]["input_tokens"], 11);
     assert_eq!(out["usage"]["output_tokens"], 7);
     let content = out["content"].as_array().unwrap();
-    assert!(content.iter().any(|b| b["type"] == "text" && b["text"] == "Sure."));
+    assert!(content
+        .iter()
+        .any(|b| b["type"] == "text" && b["text"] == "Sure."));
     let tu = content.iter().find(|b| b["type"] == "tool_use").unwrap();
     assert_eq!(tu["name"], "read_file");
     assert_eq!(tu["input"]["path"], "a.txt");

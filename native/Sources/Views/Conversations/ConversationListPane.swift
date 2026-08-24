@@ -43,6 +43,9 @@ struct ConversationListPane: View {
                 ]
             )
         }
+        // Make the rail itself a distinct accessibility container. Without `.contain`, SwiftUI
+        // propagates this identifier to every child and XCUI cannot address the 336-point column.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.list")
     }
 
@@ -56,6 +59,7 @@ struct ConversationListPane: View {
                 .font(.system(size: 22, weight: .semibold))
                 .tracking(-0.35)
                 .lineLimit(1)
+                .layoutPriority(1)
             Text("\(flatSessions.count)")
                 .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.ccCaption)
@@ -64,6 +68,7 @@ struct ConversationListPane: View {
                 .background(Color.ccForeground.opacity(0.06))
                 .clipShape(Capsule())
             Spacer(minLength: 0)
+            sortMenu
             indexingStatus
         }
         .padding(.horizontal, 16)
@@ -73,39 +78,79 @@ struct ConversationListPane: View {
         .background(WindowDragRegion())
     }
 
+    private var sortMenu: some View {
+        Menu {
+            ForEach(ConversationWorkbenchState.SortField.allCases, id: \.self) { field in
+                Button {
+                    if workbench.sortField == field {
+                        workbench.sortAscending.toggle()
+                    } else {
+                        workbench.sortField = field
+                        workbench.sortAscending = false
+                    }
+                } label: {
+                    Label(
+                        appLanguage.localized(sortTitle(field)),
+                        systemImage: workbench.sortField == field
+                            ? (workbench.sortAscending ? "arrow.up" : "arrow.down")
+                            : "circle"
+                    )
+                }
+            }
+        } label: {
+            Label(
+                appLanguage.localized(sortTitle(workbench.sortField)),
+                systemImage: workbench.sortAscending ? "arrow.up" : "arrow.down"
+            )
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(Color.ccMuted)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(appLanguage.localized("会话排序"))
+        .accessibilityIdentifier("conversation.list.sort")
+    }
+
+    private func sortTitle(_ field: ConversationWorkbenchState.SortField) -> String {
+        switch field {
+        case .updated: "更新时间"
+        case .created: "创建时间"
+        case .messages: "消息数量"
+        }
+    }
+
     @ViewBuilder private var indexingStatus: some View {
         switch store.indexingState {
         case .idle:
             if case .unavailable(let message) = store.catalogWatcherState {
                 Button { store.retryIndexing() } label: {
-                    Label(appLanguage.localized("实时更新关闭"), systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 10.5))
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 11))
                         .foregroundStyle(Color.ccRed)
-                        .lineLimit(1)
+                        .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
-                .help(appLanguage.localized(message))
+                .help("\(appLanguage.localized("实时更新关闭"))：\(appLanguage.localized(message))")
                 .accessibilityLabel(appLanguage.localized("会话实时更新状态"))
                 .accessibilityValue(appLanguage.localized(message))
                 .accessibilityIdentifier("conversation.watcher.retry")
             }
         case .scanning(let completed, let total):
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.mini)
-                Text(total > 0 ? "\(completed)/\(total)" : appLanguage.localized("正在更新…"))
-                    .lineLimit(1)
-            }
-            .font(.system(size: 10.5))
-            .foregroundStyle(Color.ccCaption)
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 18, height: 18)
+                .help(total > 0
+                    ? "\(appLanguage.localized("正在更新会话索引")) \(completed)/\(total)"
+                    : appLanguage.localized("正在更新会话索引"))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(appLanguage.localized("正在更新会话索引"))
             .accessibilityValue(total > 0 ? "\(completed)/\(total)" : "")
             .accessibilityIdentifier("conversation.indexing.progress")
         case .failed(let message):
-            Label(appLanguage.localized("更新失败"), systemImage: "exclamationmark.triangle")
-                .font(.system(size: 10.5))
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 11))
                 .foregroundStyle(Color.ccRed)
-                .lineLimit(1)
+                .frame(width: 18, height: 18)
                 .help(appLanguage.localized(message))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(appLanguage.localized("会话索引状态"))
@@ -196,13 +241,10 @@ struct ConversationListPane: View {
     }
 
     private var flatSessions: [HistorySessionMetadata] {
-        workbench.filteredProjects(store.filteredProjects, historyActive: store.historyActive)
-            .flatMap(\.sessions)
-            .sorted { lhs, rhs in
-                if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
-                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
-                return lhs.id < rhs.id
-            }
+        workbench.sorted(
+            workbench.filteredProjects(store.filteredProjects, historyActive: store.historyActive)
+                .flatMap(\.sessions)
+        )
     }
 }
 
@@ -240,6 +282,17 @@ private struct ConversationSessionRow: View {
                             .font(.system(size: 9))
                             .foregroundStyle(Color.ccCaption)
                     }
+                    if metadata.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.ccBrandStrong)
+                            .accessibilityLabel(appLanguage.localized("已置顶"))
+                    } else if metadata.starred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.ccOrange)
+                            .accessibilityLabel(appLanguage.localized("已收藏"))
+                    }
                     Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
                         .font(.system(size: 14, weight: .medium))
                         .lineLimit(1)
@@ -248,8 +301,7 @@ private struct ConversationSessionRow: View {
                 }
 
                 HStack(spacing: 6) {
-                    Image(systemName: sourceSymbol)
-                        .font(.system(size: 10.5, weight: .medium))
+                    ConversationSourceBrandIcon(source: metadata.source, size: 12)
                         .frame(width: 13)
                     Text(sourceName)
                         .lineLimit(1)
@@ -300,16 +352,6 @@ private struct ConversationSessionRow: View {
         .accessibilityIdentifier(metadata.conversationRowAccessibilityIdentifier)
     }
 
-    private var sourceSymbol: String {
-        switch metadata.source {
-        case .claude: "sparkles"
-        case .codex: "terminal"
-        case .qoder: "q.square"
-        case .grok: "bolt"
-        case .copilot: "chevron.left.forwardslash.chevron.right"
-        case .antigravity: "atom"
-        }
-    }
 }
 
 private struct ConversationListState<Actions: View>: View {

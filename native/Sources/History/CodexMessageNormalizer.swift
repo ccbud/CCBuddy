@@ -9,11 +9,30 @@ struct CodexNormalizedTranscript: Sendable {
     var version: String?
     var gitBranch: String?
     var identity: CodexIdentity
+    var firstEventUserTitle: String
+    var firstRecordTimestamp: Date?
+    var inlineMetadata: CodexInlineMetadata?
+}
+
+struct CodexInlineMetadata: Sendable {
+    var title: String?
+    var tags: [String]
+    var deleted: Bool
+}
+
+struct CodexStreamingNormalizationResult: Sendable {
+    var transcript: CodexNormalizedTranscript
+    var metrics: HistoryJSONLStreamMetrics
 }
 
 enum CodexMessageNormalizer {
-    static func normalize(_ records: [[String: HistoryValue]]) -> CodexNormalizedTranscript {
-        let lines = records.map(CodexRecord.split)
+    /// Wake's presentation budgets. The producer-owned JSONL remains untouched and is still used
+    /// for raw export and replay; only the in-memory Codex detail/index representation is clipped.
+    static let maximumMessageTextBytes = 32 * 1_024
+    static let maximumToolValueBytes = 16 * 1_024
+
+    private struct NormalizationState {
+        var lines: [CodexLine] = []
         var messages: [HistoryMessage] = []
         var totals = HistoryTotals()
         var model: String?
@@ -22,65 +41,160 @@ enum CodexMessageNormalizer {
         var gitBranch: String?
         var identity = CodexIdentity()
         var sawSessionMetadata = false
+        var firstEventUserTitle = ""
+        var firstRecordTimestamp: Date?
+        var inlineMetadata: CodexInlineMetadata?
+        let retainLines: Bool
+        let boundedPresentation: Bool
 
-        for line in lines {
-            switch line.kind {
-            case "session_meta":
-                if !sawSessionMetadata {
-                    sawSessionMetadata = true
-                    identity = CodexRecord.canonicalIdentity(line.payload)
-                }
-                if identity.rootSessionID == nil {
-                    identity.rootSessionID = line.payload["session_id"]?.stringValue
-                        ?? line.payload["id"]?.stringValue
-                }
-                cwd = cwd ?? line.payload["cwd"]?.stringValue
-                version = version ?? line.payload["cli_version"]?.stringValue
-                gitBranch = gitBranch ?? line.payload["git"]?["branch"]?.stringValue
-            case "turn_context":
-                if let value = line.payload["model"]?.stringValue { model = value }
-                cwd = cwd ?? line.payload["cwd"]?.stringValue
-            case "compacted":
-                if let text = nonempty(line.payload["message"]?.stringValue) {
-                    messages.append(message(
-                        role: "user",
-                        blocks: [.init(type: "text", text: text)],
-                        line: line
-                    ))
-                }
-            case "event_msg":
-                handleEvent(line, messages: &messages, totals: &totals)
-            case "response_item":
-                handleResponseItem(line, model: model, messages: &messages)
-            default:
-                continue
-            }
+        var transcript: CodexNormalizedTranscript {
+            CodexNormalizedTranscript(
+                lines: lines,
+                messages: messages,
+                totals: totals,
+                model: model,
+                cwd: cwd,
+                version: version,
+                gitBranch: gitBranch,
+                identity: identity,
+                firstEventUserTitle: firstEventUserTitle,
+                firstRecordTimestamp: firstRecordTimestamp,
+                inlineMetadata: inlineMetadata
+            )
         }
-        return CodexNormalizedTranscript(
-            lines: lines,
-            messages: messages,
-            totals: totals,
-            model: model,
-            cwd: cwd,
-            version: version,
-            gitBranch: gitBranch,
-            identity: identity
-        )
+    }
+
+    static func normalize(_ records: [[String: HistoryValue]]) -> CodexNormalizedTranscript {
+        var state = NormalizationState(retainLines: true, boundedPresentation: false)
+        for record in records {
+            consume(record, state: &state)
+        }
+        return state.transcript
+    }
+
+    /// Parses a rollout incrementally. The returned transcript never owns raw source records and
+    /// retains only presentation-bounded message/tool fields.
+    static func normalizeStreaming(from file: URL) throws -> CodexStreamingNormalizationResult {
+        var state = NormalizationState(retainLines: false, boundedPresentation: true)
+        let metrics = try HistoryJSONLStreamReader.scan(from: file) { record in
+            consume(record, state: &state)
+            return true
+        }
+        return CodexStreamingNormalizationResult(transcript: state.transcript, metrics: metrics)
     }
 
     static func firstEventUserTitle(_ lines: [CodexLine]) -> String {
-        for line in lines where line.kind == "event_msg"
-            && line.payload["type"]?.stringValue == "user_message" {
-            let messageText = line.payload["message"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let imageCount = (line.payload["images"]?.arrayValue?.count ?? 0)
-                + (line.payload["local_images"]?.arrayValue?.count ?? 0)
-            let labels = imageCount > 0
-                ? (1...imageCount).map { "[Image #\($0)]" }.joined(separator: " ")
-                : ""
-            let title = [labels, messageText].filter { !$0.isEmpty }.joined(separator: " ")
-            if !title.isEmpty { return String(title.prefix(90)) }
+        for line in lines {
+            let title = eventUserTitle(line)
+            if !title.isEmpty { return title }
         }
         return ""
+    }
+
+    private static func consume(
+        _ record: [String: HistoryValue],
+        state: inout NormalizationState
+    ) {
+        let line = CodexRecord.split(record)
+        if state.retainLines { state.lines.append(line) }
+        if state.firstRecordTimestamp == nil {
+            state.firstRecordTimestamp = HistoryDateParser.parse(line.timestampText)
+        }
+        if state.inlineMetadata == nil, let custom = record["__ccbud__"]?.objectValue {
+            state.inlineMetadata = inlineMetadata(
+                custom,
+                bounded: state.boundedPresentation
+            )
+        }
+        if state.firstEventUserTitle.isEmpty {
+            state.firstEventUserTitle = eventUserTitle(line)
+        }
+
+        let firstNewMessage = state.messages.count
+        switch line.kind {
+        case "session_meta":
+            if !state.sawSessionMetadata {
+                state.sawSessionMetadata = true
+                state.identity = CodexRecord.canonicalIdentity(line.payload)
+                if state.boundedPresentation {
+                    state.identity = boundedIdentity(state.identity)
+                }
+            }
+            if state.identity.rootSessionID == nil {
+                let value = line.payload["session_id"]?.stringValue
+                    ?? line.payload["id"]?.stringValue
+                state.identity.rootSessionID = state.boundedPresentation
+                    ? value.map { clipped($0, maximumUTF8Bytes: 1_024) }
+                    : value
+            }
+            if state.cwd == nil {
+                state.cwd = metadataString(
+                    line.payload["cwd"]?.stringValue,
+                    bounded: state.boundedPresentation,
+                    maximumUTF8Bytes: 4 * 1_024
+                )
+            }
+            if state.version == nil {
+                state.version = metadataString(
+                    line.payload["cli_version"]?.stringValue,
+                    bounded: state.boundedPresentation
+                )
+            }
+            if state.gitBranch == nil {
+                state.gitBranch = metadataString(
+                    line.payload["git"]?["branch"]?.stringValue,
+                    bounded: state.boundedPresentation
+                )
+            }
+        case "turn_context":
+            if let value = line.payload["model"]?.stringValue {
+                state.model = metadataString(value, bounded: state.boundedPresentation)
+            }
+            if state.cwd == nil {
+                state.cwd = metadataString(
+                    line.payload["cwd"]?.stringValue,
+                    bounded: state.boundedPresentation,
+                    maximumUTF8Bytes: 4 * 1_024
+                )
+            }
+        case "compacted":
+            if let text = nonempty(line.payload["message"]?.stringValue) {
+                state.messages.append(message(
+                    role: "user",
+                    blocks: [.init(type: "text", text: text)],
+                    line: line
+                ))
+            }
+        case "event_msg":
+            handleEvent(line, messages: &state.messages, totals: &state.totals)
+        case "response_item":
+            handleResponseItem(line, model: state.model, messages: &state.messages)
+        default:
+            break
+        }
+
+        if state.boundedPresentation, firstNewMessage < state.messages.count {
+            for index in firstNewMessage..<state.messages.count {
+                state.messages[index] = boundedMessage(state.messages[index])
+            }
+        }
+    }
+
+    private static func eventUserTitle(_ line: CodexLine) -> String {
+        guard line.kind == "event_msg",
+              line.payload["type"]?.stringValue == "user_message" else { return "" }
+        let messageText = line.payload["message"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let imageCount = min(
+            32,
+            (line.payload["images"]?.arrayValue?.count ?? 0)
+                + (line.payload["local_images"]?.arrayValue?.count ?? 0)
+        )
+        let labels = imageCount > 0
+            ? (1...imageCount).map { "[Image #\($0)]" }.joined(separator: " ")
+            : ""
+        let title = [labels, messageText].filter { !$0.isEmpty }.joined(separator: " ")
+        return title.isEmpty ? "" : String(title.prefix(90))
     }
 
     private static func handleEvent(
@@ -331,6 +445,174 @@ enum CodexMessageNormalizer {
               ) else { return nil }
         return String(text[start.upperBound..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private static func inlineMetadata(
+        _ custom: [String: HistoryValue],
+        bounded: Bool
+    ) -> CodexInlineMetadata {
+        var title = custom["title"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if title?.isEmpty == true { title = nil }
+        var tags = custom["tagList"]?.arrayValue?.compactMap {
+            $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty } ?? []
+        if bounded {
+            title = title.map { clipped($0, maximumUTF8Bytes: 512) }
+            tags = tags.prefix(64).map { clipped($0, maximumUTF8Bytes: 256) }
+        }
+        return CodexInlineMetadata(
+            title: title,
+            tags: tags,
+            deleted: custom["delete"]?.boolValue ?? false
+        )
+    }
+
+    private static func boundedIdentity(_ value: CodexIdentity) -> CodexIdentity {
+        CodexIdentity(
+            threadID: value.threadID.map { clipped($0, maximumUTF8Bytes: 1_024) },
+            rootSessionID: value.rootSessionID.map { clipped($0, maximumUTF8Bytes: 1_024) },
+            parentThreadID: value.parentThreadID.map { clipped($0, maximumUTF8Bytes: 1_024) },
+            forkedFromID: value.forkedFromID.map { clipped($0, maximumUTF8Bytes: 1_024) },
+            isSubagent: value.isSubagent,
+            agentPath: value.agentPath.map { clipped($0, maximumUTF8Bytes: 4 * 1_024) },
+            agentNickname: value.agentNickname.map { clipped($0, maximumUTF8Bytes: 512) },
+            agentRole: value.agentRole.map { clipped($0, maximumUTF8Bytes: 512) },
+            agentDepth: value.agentDepth
+        )
+    }
+
+    private static func metadataString(
+        _ value: String?,
+        bounded: Bool,
+        maximumUTF8Bytes: Int = 512
+    ) -> String? {
+        guard let value else { return nil }
+        return bounded ? clipped(value, maximumUTF8Bytes: maximumUTF8Bytes) : value
+    }
+
+    private static func boundedMessage(_ original: HistoryMessage) -> HistoryMessage {
+        var message = original
+        message.content = original.content.map(boundedBlock)
+        message.timestampText = original.timestampText.map {
+            clipped($0, maximumUTF8Bytes: 128)
+        }
+        message.modelActual = original.modelActual.map {
+            clipped($0, maximumUTF8Bytes: 512)
+        }
+        message.stopReason = original.stopReason.map {
+            clipped($0, maximumUTF8Bytes: 512)
+        }
+        return message
+    }
+
+    private static func boundedBlock(_ original: HistoryContentBlock) -> HistoryContentBlock {
+        var block = original
+        let textLimit = original.type == "text"
+            ? maximumMessageTextBytes
+            : maximumToolValueBytes
+        block.text = original.text.map { clipped($0, maximumUTF8Bytes: textLimit) }
+        block.thinking = original.thinking.map {
+            clipped($0, maximumUTF8Bytes: maximumToolValueBytes)
+        }
+        block.id = original.id.map { clipped($0, maximumUTF8Bytes: 1_024) }
+        block.name = original.name.map { clipped($0, maximumUTF8Bytes: 512) }
+        block.toolUseID = original.toolUseID.map { clipped($0, maximumUTF8Bytes: 1_024) }
+        block.input = original.input.map {
+            boundedValue($0, maximumUTF8Bytes: maximumToolValueBytes)
+        }
+        block.content = original.content.map {
+            boundedValue($0, maximumUTF8Bytes: maximumToolValueBytes)
+        }
+        block.raw = original.raw.map {
+            boundedValue($0, maximumUTF8Bytes: maximumToolValueBytes)
+        }
+        return block
+    }
+
+    private static func boundedValue(
+        _ value: HistoryValue,
+        maximumUTF8Bytes: Int
+    ) -> HistoryValue {
+        switch value {
+        case .string(let string):
+            return .string(clipped(string, maximumUTF8Bytes: maximumUTF8Bytes))
+        case .number, .bool, .null:
+            return value
+        case .object(let object):
+            guard !object.isEmpty else { return value }
+            let keys = object.keys
+                .filter { $0.utf8.count <= 256 }
+                .sorted { lhs, rhs in
+                    let left = valueKeyPriorities[lhs] ?? valueKeyPriorities.count
+                    let right = valueKeyPriorities[rhs] ?? valueKeyPriorities.count
+                    return left == right ? lhs < rhs : left < right
+                }
+            let retainedKeys = Array(keys.prefix(64))
+            let omitted = object.count - retainedKeys.count
+            let slots = retainedKeys.count + (omitted > 0 ? 1 : 0)
+            let childBudget = max(
+                64,
+                (maximumUTF8Bytes - min(1_024, maximumUTF8Bytes / 4)) / max(1, slots)
+            )
+            var projected: [String: HistoryValue] = [:]
+            for key in retainedKeys {
+                guard let child = object[key] else { continue }
+                projected[key] = boundedValue(child, maximumUTF8Bytes: childBudget)
+            }
+            if omitted > 0 {
+                projected["_ccbuddy_omitted"] = .string("\(omitted) fields")
+            }
+            return fittedContainer(.object(projected), maximumUTF8Bytes: maximumUTF8Bytes)
+        case .array(let values):
+            guard !values.isEmpty else { return value }
+            let retainedCount = min(64, values.count)
+            let omitted = values.count - retainedCount
+            let slots = retainedCount + (omitted > 0 ? 1 : 0)
+            let childBudget = max(
+                64,
+                (maximumUTF8Bytes - min(1_024, maximumUTF8Bytes / 4)) / max(1, slots)
+            )
+            var projected = values.prefix(retainedCount).map {
+                boundedValue($0, maximumUTF8Bytes: childBudget)
+            }
+            if omitted > 0 { projected.append(.string("… \(omitted) values omitted")) }
+            return fittedContainer(.array(projected), maximumUTF8Bytes: maximumUTF8Bytes)
+        }
+    }
+
+    /// Only the already-projected container is encoded here. This final check accounts for JSON
+    /// punctuation and escaping without ever serializing the producer's unbounded original value.
+    private static func fittedContainer(
+        _ value: HistoryValue,
+        maximumUTF8Bytes: Int
+    ) -> HistoryValue {
+        let encoded = value.jsonString
+        guard encoded.utf8.count > maximumUTF8Bytes else { return value }
+        return .string(clipped(encoded, maximumUTF8Bytes: maximumUTF8Bytes))
+    }
+
+    private static func clipped(_ value: String, maximumUTF8Bytes: Int) -> String {
+        guard value.utf8.count > maximumUTF8Bytes else { return value }
+        let marker = "\n… (truncated)"
+        let prefixLimit = max(0, maximumUTF8Bytes - marker.utf8.count)
+        var used = 0
+        var end = value.startIndex
+        while end < value.endIndex {
+            let next = value.index(after: end)
+            let bytes = value[end..<next].utf8.count
+            guard used + bytes <= prefixLimit else { break }
+            used += bytes
+            end = next
+        }
+        return String(value[..<end]) + marker
+    }
+
+    private static let valueKeyPriorities: [String: Int] = Dictionary(
+        uniqueKeysWithValues: [
+            "command", "cmd", "file_path", "path", "patch", "query", "code", "input",
+            "output", "content", "text", "type", "name", "id", "call_id", "status",
+        ].enumerated().map { ($0.element, $0.offset) }
+    )
 
     private static func nonempty(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }

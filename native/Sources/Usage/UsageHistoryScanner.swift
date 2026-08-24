@@ -4,16 +4,137 @@ protocol UsageHistoryScanning: Sendable {
     func scan(configuration: UsageHistoryConfiguration) -> [String: UsageHistoryDay]
 }
 
+/// Incremental JSONL reader used by the usage scanner. It never maps an entire transcript and
+/// drops a malformed/hostile line once it exceeds the configured bound, then resumes at the next
+/// newline. Real usage records are small; the generous production limit preserves those records
+/// while keeping unrelated tool output from determining the scanner's working set.
+struct UsageHistoryLineReader: Sendable {
+    static let defaultChunkBytes = 64 * 1_024
+    static let defaultMaximumLineBytes = 32 * 1_024 * 1_024
+
+    let chunkBytes: Int
+    let maximumLineBytes: Int
+
+    init(
+        chunkBytes: Int = UsageHistoryLineReader.defaultChunkBytes,
+        maximumLineBytes: Int = UsageHistoryLineReader.defaultMaximumLineBytes
+    ) {
+        self.chunkBytes = max(1, chunkBytes)
+        self.maximumLineBytes = max(1, maximumLineBytes)
+    }
+
+    /// Returns false when the caller stops iteration or the current task is cancelled.
+    @discardableResult
+    func forEachLine(in file: URL, _ body: (String) -> Bool) -> Bool {
+        guard !Task.isCancelled,
+              let handle = try? FileHandle(forReadingFrom: file) else { return !Task.isCancelled }
+        defer { try? handle.close() }
+        do {
+            return try consumeChunks(
+                next: { try handle.read(upToCount: chunkBytes) },
+                body
+            )
+        } catch {
+            // A disappearing or unreadable history file has always been treated as an empty
+            // source. Keep that behavior; the watcher will invalidate again on later changes.
+            return !Task.isCancelled
+        }
+    }
+
+    /// Qoder's permission helper necessarily returns bounded `Data`; consume it through the same
+    /// capped line path so parsing semantics stay identical to ordinary files.
+    @discardableResult
+    func forEachLine(in data: Data, _ body: (String) -> Bool) -> Bool {
+        var offset = data.startIndex
+        do {
+            return try consumeChunks(
+                next: {
+                    guard offset < data.endIndex else { return nil }
+                    let end = data.index(
+                        offset,
+                        offsetBy: min(chunkBytes, data.distance(from: offset, to: data.endIndex))
+                    )
+                    defer { offset = end }
+                    return Data(data[offset..<end])
+                },
+                body
+            )
+        } catch {
+            return !Task.isCancelled
+        }
+    }
+
+    private func consumeChunks(
+        next: () throws -> Data?,
+        _ body: (String) -> Bool
+    ) throws -> Bool {
+        var pending = Data()
+        var discardingOversizedLine = false
+
+        while !Task.isCancelled {
+            let nextChunk = try autoreleasepool(invoking: next)
+            guard let chunk = nextChunk, !chunk.isEmpty else {
+                guard !discardingOversizedLine, !pending.isEmpty else {
+                    return !Task.isCancelled
+                }
+                let shouldContinue = autoreleasepool {
+                    body(String(decoding: pending, as: UTF8.self))
+                }
+                return shouldContinue && !Task.isCancelled
+            }
+
+            var start = chunk.startIndex
+            while start < chunk.endIndex {
+                guard !Task.isCancelled else { return false }
+                let newline = chunk[start...].firstIndex(of: 0x0A)
+                let end = newline ?? chunk.endIndex
+                let segment = chunk[start..<end]
+
+                if discardingOversizedLine {
+                    if newline != nil { discardingOversizedLine = false }
+                } else if pending.isEmpty, newline != nil,
+                          segment.count <= maximumLineBytes {
+                    let shouldContinue = autoreleasepool {
+                        body(String(decoding: segment, as: UTF8.self))
+                    }
+                    guard shouldContinue else { return false }
+                } else if segment.count <= maximumLineBytes,
+                          pending.count <= maximumLineBytes - segment.count {
+                    pending.append(contentsOf: segment)
+                    if newline != nil {
+                        let shouldContinue = autoreleasepool {
+                            body(String(decoding: pending, as: UTF8.self))
+                        }
+                        guard shouldContinue else { return false }
+                        let keepCapacity = pending.count <= chunkBytes * 2
+                        pending.removeAll(keepingCapacity: keepCapacity)
+                    }
+                } else {
+                    pending.removeAll(keepingCapacity: false)
+                    discardingOversizedLine = newline == nil
+                }
+
+                guard let newline else { break }
+                start = chunk.index(after: newline)
+            }
+        }
+        return false
+    }
+}
+
 struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
     var calendar: Calendar
     var qoderReader: QoderFileReader
+    var lineReader: UsageHistoryLineReader
 
     init(
         calendar: Calendar = .current,
-        qoderReader: QoderFileReader = .shared
+        qoderReader: QoderFileReader = .shared,
+        lineReader: UsageHistoryLineReader = UsageHistoryLineReader()
     ) {
         self.calendar = calendar
         self.qoderReader = qoderReader
+        self.lineReader = lineReader
     }
 
     func scan(configuration: UsageHistoryConfiguration) -> [String: UsageHistoryDay] {
@@ -28,73 +149,93 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
             ))
         }
         qoderReader.prefetch(claudeFiles)
-        var claudeRecords: [ClaudeRecord] = []
+        var claudeDeduplicator = ClaudeDeduplicator()
         for file in claudeFiles {
             guard !Task.isCancelled else { return days }
-            forEachUsageLine(in: file) { line in
-                if let record = Self.parseClaude(line) { claudeRecords.append(record) }
+            let completed = autoreleasepool {
+                forEachUsageLine(in: file) { line in
+                    guard !Task.isCancelled else { return false }
+                    guard let record = Self.parseClaude(line) else { return true }
+                    switch claudeDeduplicator.consume(record) {
+                    case .none:
+                        break
+                    case .insert(let event):
+                        bump(event, into: &days)
+                    case .replace(let old, let new):
+                        bump(old, multiplier: -1, into: &days)
+                        bump(new, into: &days)
+                    }
+                    return true
+                }
             }
-        }
-        for record in Self.deduplicateClaude(claudeRecords) {
-            guard !Task.isCancelled else { return days }
-            bump(record.event, into: &days)
+            guard completed || !Task.isCancelled else { return days }
         }
 
-        var codexEvents: [CodexEvent] = []
+        var seenCodex = Set<CodexEventKey>()
         for root in roots {
             guard !Task.isCancelled else { return days }
-            for file in Self.codexFiles(root: root) {
-                guard !Task.isCancelled else { return days }
-                codexEvents.append(contentsOf: Self.parseCodex(file))
+            let completed = Self.forEachCodexFile(root: root) { file in
+                guard !Task.isCancelled else { return false }
+                return autoreleasepool {
+                    forEachCodexEvent(in: file) { event in
+                        guard !Task.isCancelled else { return false }
+                        let key = CodexEventKey(
+                            timestampMilliseconds: Self.timestampMilliseconds(event.timestamp),
+                            model: event.model,
+                            usage: event.usage
+                        )
+                        guard seenCodex.insert(key).inserted else { return true }
+                        bump(
+                            UsageHistoryEvent(
+                                timestamp: event.timestamp,
+                                model: event.model,
+                                input: max(0, event.usage.input - event.usage.cached),
+                                output: event.usage.output,
+                                cacheRead: event.usage.cached,
+                                cacheCreation: 0
+                            ),
+                            into: &days
+                        )
+                        return true
+                    }
+                }
             }
-        }
-        var seenCodex = Set<CodexEventKey>()
-        for event in codexEvents {
-            guard !Task.isCancelled else { return days }
-            let key = CodexEventKey(
-                timestampMilliseconds: Self.timestampMilliseconds(event.timestamp),
-                model: event.model,
-                usage: event.usage
-            )
-            guard seenCodex.insert(key).inserted else { continue }
-            bump(
-                UsageHistoryEvent(
-                    timestamp: event.timestamp,
-                    model: event.model,
-                    input: max(0, event.usage.input - event.usage.cached),
-                    output: event.usage.output,
-                    cacheRead: event.usage.cached,
-                    cacheCreation: 0
-                ),
-                into: &days
-            )
+            guard completed || !Task.isCancelled else { return days }
         }
         return days
     }
 
-    private func bump(_ event: UsageHistoryEvent, into days: inout [String: UsageHistoryDay]) {
+    private func bump(
+        _ event: UsageHistoryEvent,
+        multiplier: Int = 1,
+        into days: inout [String: UsageHistoryDay]
+    ) {
         let key = UsageHistoryQuery.dayKey(for: event.timestamp, calendar: calendar)
         var day = days[key] ?? UsageHistoryDay()
-        day.requests += 1
-        day.tokens += event.total
-        day.input += event.input
-        day.output += event.output
-        day.cacheRead += event.cacheRead
-        day.cacheCreation += event.cacheCreation
+        day.requests += multiplier
+        day.tokens += event.total * multiplier
+        day.input += event.input * multiplier
+        day.output += event.output * multiplier
+        day.cacheRead += event.cacheRead * multiplier
+        day.cacheCreation += event.cacheCreation * multiplier
         if let model = event.model {
-            day.models[model, default: 0] += event.total
+            Self.adjust(model, by: event.total * multiplier, in: &day.models)
         }
         let hour = calendar.component(.hour, from: event.timestamp)
-        day.hours[hour, default: 0] += event.total
-        days[key] = day
+        Self.adjust(hour, by: event.total * multiplier, in: &day.hours)
+        if day.requests == 0 {
+            days.removeValue(forKey: key)
+        } else {
+            days[key] = day
+        }
     }
 
-    private func forEachUsageLine(in file: URL, _ body: (String) -> Void) {
+    private func forEachUsageLine(in file: URL, _ body: (String) -> Bool) -> Bool {
         if QoderFileReader.isQoderDataPath(file) {
-            guard let data = try? qoderReader.read(file) else { return }
-            Self.forEachLossyLine(in: data, body)
+            guard let data = try? qoderReader.read(file) else { return true }
+            return lineReader.forEachLine(in: data, body)
         } else {
-            Self.forEachLossyLine(in: file, body)
+            return lineReader.forEachLine(in: file, body)
         }
     }
 }
@@ -110,6 +251,44 @@ private extension UsageHistoryScanner {
     struct ClaudeExactKey: Hashable {
         let id: String
         let requestID: String?
+    }
+
+    enum ClaudeDeduplicationChange {
+        case none
+        case insert(UsageHistoryEvent)
+        case replace(old: UsageHistoryEvent, new: UsageHistoryEvent)
+    }
+
+    struct ClaudeDeduplicator {
+        private var kept: [ClaudeRecord] = []
+        private var byExact: [ClaudeExactKey: Int] = [:]
+        private var byID: [String: Int] = [:]
+
+        mutating func consume(_ candidate: ClaudeRecord) -> ClaudeDeduplicationChange {
+            guard let id = candidate.id, !UsageHistoryScanner.isDegenerateClaudeID(id) else {
+                return .insert(candidate.event)
+            }
+            let exact = ClaudeExactKey(id: id, requestID: candidate.requestID)
+            let slot = byExact[exact] ?? byID[id].flatMap { index in
+                candidate.sidechain || kept[index].sidechain ? index : nil
+            }
+            if let slot {
+                let current = kept[slot]
+                let shouldReplace = (current.sidechain && !candidate.sidechain)
+                    || (current.sidechain == candidate.sidechain
+                        && candidate.event.total > current.event.total)
+                byExact[exact] = slot
+                guard shouldReplace else { return .none }
+                kept[slot] = candidate
+                return .replace(old: current.event, new: candidate.event)
+            }
+
+            let index = kept.count
+            byExact[exact] = index
+            if byID[id] == nil { byID[id] = index }
+            kept.append(candidate)
+            return .insert(candidate.event)
+        }
     }
 
     struct CodexUsage: Hashable, Sendable {
@@ -143,6 +322,19 @@ private extension UsageHistoryScanner {
 
     static func timestampMilliseconds(_ date: Date) -> Int64 {
         Int64((date.timeIntervalSince1970 * 1_000).rounded(.towardZero))
+    }
+
+    static func adjust<Key: Hashable>(
+        _ key: Key,
+        by delta: Int,
+        in values: inout [Key: Int]
+    ) {
+        let adjusted = (values[key] ?? 0) + delta
+        if adjusted == 0 {
+            values.removeValue(forKey: key)
+        } else {
+            values[key] = adjusted
+        }
     }
 
     static func parseObject(_ line: String) -> [String: HistoryValue]? {
@@ -194,88 +386,57 @@ private extension UsageHistoryScanner {
         )
     }
 
-    static func deduplicateClaude(_ records: [ClaudeRecord]) -> [ClaudeRecord] {
-        var kept: [ClaudeRecord] = []
-        var byExact: [ClaudeExactKey: Int] = [:]
-        var byID: [String: Int] = [:]
-
-        for candidate in records {
-            guard let id = candidate.id, !isDegenerateClaudeID(id) else {
-                kept.append(candidate)
-                continue
-            }
-            let exact = ClaudeExactKey(id: id, requestID: candidate.requestID)
-            let slot = byExact[exact] ?? byID[id].flatMap { index in
-                candidate.sidechain || kept[index].sidechain ? index : nil
-            }
-            if let slot {
-                let current = kept[slot]
-                let shouldReplace = (current.sidechain && !candidate.sidechain)
-                    || (current.sidechain == candidate.sidechain
-                        && candidate.event.total > current.event.total)
-                if shouldReplace { kept[slot] = candidate }
-                byExact[exact] = slot
-            } else {
-                let index = kept.count
-                byExact[exact] = index
-                if byID[id] == nil { byID[id] = index }
-                kept.append(candidate)
-            }
-        }
-        return kept
-    }
-
     static func isDegenerateClaudeID(_ id: String) -> Bool {
         ["msg_ccbud", "chatcmpl-ccbud", "resp_ccbud"].contains(id)
     }
 
-    static func parseCodex(_ file: URL) -> [CodexEvent] {
-        let replaySecond = isCodexSubagent(file) ? codexReplaySecond(file) : nil
+    func forEachCodexEvent(in file: URL, _ body: (CodexEvent) -> Bool) -> Bool {
+        let replaySecond = Self.isCodexSubagent(file) ? codexReplaySecond(file) : nil
         var skippingReplay = replaySecond != nil
         var currentModel: String?
         var previousTotals: CodexUsage?
-        var events: [CodexEvent] = []
 
-        forEachLossyLine(in: file) { line in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
+        return lineReader.forEachLine(in: file) { line in
+            guard !Task.isCancelled else { return false }
+            guard !line.isEmpty else { return true }
 
-            if trimmed.contains("turn_context"), let record = parseObject(trimmed),
+            if line.contains("turn_context"), let record = Self.parseObject(line),
                record["type"]?.stringValue == "turn_context" {
-                if let model = codexModel(record["payload"]?.objectValue) {
+                if let model = Self.codexModel(record["payload"]?.objectValue) {
                     currentModel = model
                 }
-                return
+                return true
             }
-            guard let tokenLine = codexTokenLine(trimmed) else { return }
+            guard let tokenLine = Self.codexTokenLine(line) else { return true }
             let timestampText = tokenLine.timestamp
             let payload = tokenLine.payload
             let info = payload["info"]?.objectValue
-            let total = info?["total_token_usage"]?.objectValue.flatMap(codexUsage)
-            let last = info?["last_token_usage"]?.objectValue.flatMap(codexUsage)
+            let total = info?["total_token_usage"]?.objectValue.flatMap(Self.codexUsage)
+            let last = info?["last_token_usage"]?.objectValue.flatMap(Self.codexUsage)
 
             if skippingReplay {
                 let second = String(timestampText.prefix(19))
                 if second == replaySecond {
                     if let total { previousTotals = total }
-                    return
+                    return true
                 }
                 skippingReplay = false
             }
 
-            let candidateUsage = last ?? total.map { subtract($0, previous: previousTotals) }
+            let candidateUsage = last ?? total.map {
+                Self.subtract($0, previous: previousTotals)
+            }
             if let total { previousTotals = total }
             guard var usage = candidateUsage,
                   usage.input + usage.cached + usage.output + usage.reasoning != 0,
-                  let timestamp = parseTimestamp(timestampText) else { return }
+                  let timestamp = Self.parseTimestamp(timestampText) else { return true }
             usage.cached = min(usage.cached, usage.input)
-            let model = codexModel(payload)
-                ?? codexModel(info)
+            let model = Self.codexModel(payload)
+                ?? Self.codexModel(info)
                 ?? currentModel
                 ?? "gpt-5"
-            events.append(CodexEvent(usage: usage, timestamp: timestamp, model: model))
+            return body(CodexEvent(usage: usage, timestamp: timestamp, model: model))
         }
-        return events
     }
 
     static func codexUsage(_ object: [String: HistoryValue]) -> CodexUsage? {
@@ -338,34 +499,41 @@ private extension UsageHistoryScanner {
         return data.range(of: Data("thread_spawn".utf8)) != nil
     }
 
-    static func codexReplaySecond(_ file: URL) -> String? {
+    func codexReplaySecond(_ file: URL) -> String? {
         var first: String?
         var result: String?
-        forEachLossyLine(in: file) { line in
-            guard result == nil, let tokenLine = codexTokenLine(line),
+        _ = lineReader.forEachLine(in: file) { line in
+            guard !Task.isCancelled else { return false }
+            guard result == nil, let tokenLine = Self.codexTokenLine(line),
                   let info = tokenLine.payload["info"]?.objectValue,
-                  info["last_token_usage"] != nil || info["total_token_usage"] != nil else { return }
+                  info["last_token_usage"] != nil || info["total_token_usage"] != nil else {
+                return true
+            }
             let second = String(tokenLine.timestamp.prefix(19))
             if let first {
                 result = first == second ? second : ""
             } else {
                 first = second
             }
+            return result == nil
         }
         return result.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    static func codexFiles(root: URL) -> [URL] {
-        var output: [URL] = []
+    static func forEachCodexFile(root: URL, _ body: (URL) -> Bool) -> Bool {
         var seenRelative = Set<String>()
         for directoryName in ["sessions", "archived_sessions"] {
+            guard !Task.isCancelled else { return false }
             let directory = root.appendingPathComponent(directoryName, isDirectory: true)
-            for file in collectJSONL(under: directory) where !isInsideGrokDirectory(file) {
+            let completed = forEachJSONL(under: directory) { file in
+                guard !isInsideGrokDirectory(file) else { return true }
                 let relative = relativePath(of: file, under: directory) ?? file.path
-                if seenRelative.insert(relative).inserted { output.append(file) }
+                guard seenRelative.insert(relative).inserted else { return true }
+                return body(file)
             }
+            guard completed else { return false }
         }
-        return output
+        return !Task.isCancelled
     }
 
     static func isInsideGrokDirectory(_ file: URL) -> Bool {
@@ -405,19 +573,31 @@ private extension UsageHistoryScanner {
         return result
     }
 
-    static func forEachLossyLine(in file: URL, _ body: (String) -> Void) {
-        guard let data = try? Data(contentsOf: file, options: [.mappedIfSafe]) else { return }
-        forEachLossyLine(in: data, body)
-    }
-
-    static func forEachLossyLine(in data: Data, _ body: (String) -> Void) {
-        var start = data.startIndex
-        while start < data.endIndex, !Task.isCancelled {
-            let newline = data[start...].firstIndex(of: 0x0A) ?? data.endIndex
-            body(String(decoding: data[start..<newline], as: UTF8.self))
-            if newline == data.endIndex { break }
-            start = data.index(after: newline)
+    static func forEachJSONL(
+        under directory: URL,
+        depth: Int = 0,
+        _ body: (URL) -> Bool
+    ) -> Bool {
+        guard depth <= 8, !Task.isCancelled else { return !Task.isCancelled }
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: []
+        )) ?? []
+        for entry in entries.sorted(by: { $0.path < $1.path }) {
+            guard !Task.isCancelled else { return false }
+            guard let values = try? entry.resourceValues(forKeys: keys),
+                  values.isSymbolicLink != true else { continue }
+            if values.isDirectory == true {
+                guard forEachJSONL(under: entry, depth: depth + 1, body) else { return false }
+            } else if values.isRegularFile == true,
+                      entry.pathExtension.lowercased() == "jsonl",
+                      !body(entry.standardizedFileURL) {
+                return false
+            }
         }
+        return !Task.isCancelled
     }
 
     static func nonempty(_ value: String?) -> String? {

@@ -1,8 +1,52 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import CCBuddy
 
 final class ConversationIndexScannerTests: XCTestCase {
+    func testNewestFirstReadsEachPrimaryStampExactlyOnce() throws {
+        let environment = try makeEnvironment("scanner-order-stamps")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let alpha = try makeCandidate(
+            environment,
+            name: "alpha.jsonl",
+            format: .claude,
+            modifiedAt: .distantPast
+        )
+        let beta = try makeCandidate(
+            environment,
+            name: "beta.jsonl",
+            format: .codex,
+            modifiedAt: .distantPast
+        )
+        let newest = try makeCandidate(
+            environment,
+            name: "newest.jsonl",
+            format: .grok,
+            modifiedAt: .distantPast
+        )
+        let stamps = [
+            alpha.file.standardizedFileURL.path: Int64(10),
+            beta.file.standardizedFileURL.path: Int64(10),
+            newest.file.standardizedFileURL.path: Int64(20),
+        ]
+        var reads: [String: Int] = [:]
+
+        let ordered = ConversationIndexScanner.newestFirst(
+            [beta, newest, alpha],
+            primaryStamp: { candidate in
+                let path = candidate.file.standardizedFileURL.path
+                reads[path, default: 0] += 1
+                return stamps[path] ?? .min
+            }
+        )
+
+        XCTAssertEqual(ordered.map { $0.file.lastPathComponent }, [
+            "newest.jsonl", "alpha.jsonl", "beta.jsonl",
+        ])
+        XCTAssertEqual(reads, Dictionary(uniqueKeysWithValues: stamps.keys.map { ($0, 1) }))
+    }
+
     func testFullScanPrefetchesOnceNewestFirstAndComparesEveryDependency() throws {
         let environment = try makeEnvironment("scanner-full")
         defer { try? FileManager.default.removeItem(at: environment.root) }
@@ -232,6 +276,222 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertEqual(try database.documents(for: candidate.file).count, 1)
     }
 
+    func testCorruptWinnerFallsBackAndReconcilesQuickAndDuplicateRows() throws {
+        let environment = try makeEnvironment("scanner-copy-fallback")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let winner = try makeCandidate(
+            environment,
+            name: "winner.jsonl",
+            format: .pi,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let fallback = try makeCandidate(
+            environment,
+            name: "fallback.jsonl",
+            format: .pi,
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let registry = ScannerTestRegistry(
+            candidates: [winner],
+            fallbackCandidatesByWinnerPath: [winner.file.path: [fallback]]
+        )
+        let loader = ScannerTestLoader(
+            configuration: environment.configuration,
+            registry: registry,
+            providesQuickMetadata: true
+        )
+        loader.failForDependencyChanges(path: winner.file.path, count: 2)
+        let database = try ConversationIndexDatabase(file: environment.database)
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: database,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+
+        let result = try scanner.scanAll()
+
+        XCTAssertEqual(result.metadataPublished, 1)
+        XCTAssertEqual(result.parsed, 1)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertEqual(result.removed, 1)
+        XCTAssertEqual(loader.loadPaths, [
+            winner.file.path,
+            winner.file.path,
+            fallback.file.path,
+        ])
+        XCTAssertNil(try database.entry(for: winner.file))
+        XCTAssertNotNil(try database.entry(for: fallback.file))
+        XCTAssertEqual(
+            try database.listEntries(deleted: nil, limit: .max).map(\.sourcePath),
+            [fallback.file.standardizedFileURL.path]
+        )
+    }
+
+    func testFailedReplicaSetRetainsPreviouslyIndexedLoserWarmRow() throws {
+        let environment = try makeEnvironment("scanner-copy-all-fail")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let previousRoot = environment.root.appendingPathComponent(
+            "previous-location",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: previousRoot, withIntermediateDirectories: true)
+        let configuration = HistoryConfiguration(
+            historyDirs: [environment.historyRoot.path, previousRoot.path],
+            homeDirectory: environment.root,
+            importsRoot: environment.root.appendingPathComponent("app/imports")
+        )
+        let directories = HistoryPathResolver(configuration: configuration)
+            .directories(activeOnly: false)
+        let winnerDirectory = try XCTUnwrap(
+            directories.first { $0.id == environment.historyRoot.path }
+        )
+        let previousDirectory = try XCTUnwrap(
+            directories.first { $0.id == previousRoot.path }
+        )
+        func makeReplica(
+            in directory: HistoryDirectory,
+            name: String,
+            modifiedAt: Date
+        ) throws -> HistoryFileCandidate {
+            let project = directory.projectsURL.appendingPathComponent("fixture", isDirectory: true)
+            try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+            let file = project.appendingPathComponent(name)
+            try Data(name.utf8).write(to: file)
+            try FileManager.default.setAttributes(
+                [.modificationDate: modifiedAt],
+                ofItemAtPath: file.path
+            )
+            return HistoryFileCandidate(
+                file: file,
+                projectDirectoryName: "fixture",
+                directory: directory,
+                formatHint: .pi
+            )
+        }
+        let winner = try makeReplica(
+            in: winnerDirectory,
+            name: "new-winner.jsonl",
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let previousLoser = try makeReplica(
+            in: previousDirectory,
+            name: "previous-loser.jsonl",
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let registry = ScannerTestRegistry(
+            candidates: [winner],
+            fallbackCandidatesByWinnerPath: [winner.file.path: [previousLoser]]
+        )
+        let loader = ScannerTestLoader(
+            configuration: configuration,
+            registry: registry,
+            providesQuickMetadata: true
+        )
+        loader.failForDependencyChanges(path: winner.file.path, count: 2)
+        loader.failForDependencyChanges(path: previousLoser.file.path, count: 2)
+        let database = try ConversationIndexDatabase(file: environment.database)
+        try database.replace(indexedSession(
+            file: previousLoser.file,
+            scope: previousDirectory.id
+        ))
+        let scanner = ConversationIndexScanner(
+            configuration: configuration,
+            catalog: database,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+
+        let result = try scanner.scanAll()
+
+        XCTAssertEqual(result.parsed, 0)
+        XCTAssertEqual(result.failed, 1)
+        XCTAssertEqual(result.removed, 1)
+        XCTAssertEqual(loader.loadPaths, [
+            winner.file.path,
+            winner.file.path,
+            previousLoser.file.path,
+            previousLoser.file.path,
+        ])
+        let retained = try XCTUnwrap(database.entry(for: previousLoser.file))
+        XCTAssertEqual(retained.fingerprint.dependencyFingerprint, "fixture")
+        XCTAssertEqual(try database.documents(for: previousLoser.file).map(\.text), ["fixture"])
+        XCTAssertNil(try database.entry(for: winner.file))
+        XCTAssertEqual(
+            try database.listEntries(deleted: nil, limit: .max).map(\.sourcePath),
+            [previousLoser.file.standardizedFileURL.path]
+        )
+        let repository = IndexedHistoryRepository(
+            configuration: configuration,
+            database: database
+        )
+        XCTAssertEqual(
+            try repository.listSessions().map { $0.file.standardizedFileURL.path },
+            [previousLoser.file.standardizedFileURL.path]
+        )
+    }
+
+    func testCopyWinnerChangeCarriesNewestUserMetadataAcrossReplicaPaths() throws {
+        let environment = try makeEnvironment("scanner-copy-user-metadata")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let winner = try makeCandidate(
+            environment,
+            name: "winner.jsonl",
+            format: .pi,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let previousWinner = try makeCandidate(
+            environment,
+            name: "previous-winner.jsonl",
+            format: .pi,
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let registry = ScannerTestRegistry(
+            candidates: [winner],
+            fallbackCandidatesByWinnerPath: [winner.file.path: [previousWinner]]
+        )
+        let loader = ScannerTestLoader(
+            configuration: environment.configuration,
+            registry: registry
+        )
+        let database = try ConversationIndexDatabase(file: environment.database)
+        try database.updateUserMetadata(
+            for: previousWinner.file,
+            patch: .init(
+                title: "Logical title",
+                tags: ["keep"],
+                deleted: true,
+                starred: true,
+                pinned: true
+            )
+        )
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: database,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+
+        let result = try scanner.scanAll()
+
+        XCTAssertGreaterThanOrEqual(result.metadataPublished, 1)
+        let copied = try database.userMetadata(for: winner.file)
+        XCTAssertEqual(copied.title, "Logical title")
+        XCTAssertEqual(copied.tags, ["keep"])
+        XCTAssertEqual(copied.deleted, true)
+        XCTAssertTrue(copied.starred)
+        XCTAssertTrue(copied.pinned)
+        let indexed = try XCTUnwrap(database.entry(for: winner.file))
+        XCTAssertEqual(indexed.metadata.title, "Logical title")
+        XCTAssertEqual(indexed.metadata.tags, ["keep"])
+        XCTAssertTrue(indexed.metadata.deleted)
+        XCTAssertTrue(indexed.metadata.starred)
+        XCTAssertTrue(indexed.metadata.pinned)
+    }
+
     func testReconcileRetainsRowsForMissingBaseOrProducerRoot() throws {
         let root = try HistoryTestSupport.temporaryDirectory("scanner-reconcile")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -279,6 +539,221 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertNotNil(try database.entry(for: missingProducerFile))
         XCTAssertNotNil(try database.entry(for: missingBaseFile))
         XCTAssertNil(try database.entry(for: removableFile))
+    }
+
+    func testReconcileRetainsOmittedPhysicalPrimaryUntilItIsActuallyDeleted() throws {
+        let environment = try makeEnvironment("scanner-reconcile-omitted-primary")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let candidate = try makeCandidate(
+            environment,
+            name: "temporarily-unreadable.jsonl",
+            format: .claude,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let database = try ConversationIndexDatabase(file: environment.database)
+        try database.replace(indexedSession(
+            file: candidate.file,
+            scope: environment.directory.id
+        ))
+        let registry = ScannerTestRegistry(candidates: [])
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: database,
+            loader: ScannerTestLoader(
+                configuration: environment.configuration,
+                registry: registry
+            ),
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability()
+        )
+
+        let transient = try scanner.scanAll()
+
+        XCTAssertEqual(transient.removed, 0)
+        XCTAssertNotNil(try database.entry(for: candidate.file))
+
+        try FileManager.default.removeItem(at: candidate.file)
+        let deleted = try scanner.scanAll()
+
+        XCTAssertEqual(deleted.removed, 1)
+        XCTAssertNil(try database.entry(for: candidate.file))
+    }
+
+    func testCanonicalSQLiteBusyDiscoveryRetainsRowsThenAuthoritativeEmptyRemovesThem() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("scanner-sqlite-discovery")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let producerDatabase = root.appendingPathComponent(".copilot/session-store.db")
+        try createSQLiteDatabase(at: producerDatabase, statements: [
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, cwd TEXT, branch TEXT, summary TEXT,
+                created_at TEXT, updated_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY, session_id TEXT, turn_index INTEGER,
+                user_message TEXT, assistant_response TEXT, timestamp TEXT
+            )
+            """,
+            "INSERT INTO sessions VALUES ('busy', '/tmp', NULL, 'Busy', NULL, NULL)",
+            "INSERT INTO turns VALUES (1, 'busy', 0, 'hello', 'world', NULL)",
+        ])
+        let configuration = HistoryConfiguration(
+            historyDirs: [],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let registry = ConversationSourceAdapterRegistry()
+        let candidate = try XCTUnwrap(
+            registry.discoverCandidates(configuration: configuration, activeOnly: false)
+                .first(where: { $0.formatHint == .copilot })
+        )
+        let index = try ConversationIndexDatabase(
+            file: root.appendingPathComponent("app/index.sqlite")
+        )
+        try index.replace(indexedSession(file: candidate.file, scope: candidate.directory.id))
+
+        var lockedDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(producerDatabase.path, &lockedDatabase), SQLITE_OK)
+        let locked = try XCTUnwrap(lockedDatabase)
+        defer { sqlite3_close(locked) }
+        try executeSQLite(locked, "PRAGMA journal_mode=DELETE")
+        try executeSQLite(locked, "BEGIN EXCLUSIVE")
+
+        let scanner = ConversationIndexScanner(
+            configuration: configuration,
+            database: index,
+            registry: registry
+        )
+        let transient = try scanner.scanAll()
+
+        XCTAssertEqual(transient.discovered, 0)
+        XCTAssertEqual(transient.removed, 0)
+        XCTAssertNotNil(try index.entry(for: candidate.file))
+
+        try executeSQLite(locked, "ROLLBACK")
+        try executeSQLite(locked, "DELETE FROM turns")
+        try executeSQLite(locked, "DELETE FROM sessions")
+        let empty = try scanner.scanAll()
+
+        XCTAssertEqual(empty.discovered, 0)
+        XCTAssertEqual(empty.removed, 1)
+        XCTAssertNil(try index.entry(for: candidate.file))
+    }
+
+    func testCanonicalSQLiteStableDatabaseDeletionRemovesVirtualRows() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("scanner-sqlite-deletion")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let producerDatabase = root.appendingPathComponent(".copilot/session-store.db")
+        try createSQLiteDatabase(at: producerDatabase, statements: [
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, cwd TEXT, branch TEXT, summary TEXT,
+                created_at TEXT, updated_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY, session_id TEXT, turn_index INTEGER,
+                user_message TEXT, assistant_response TEXT, timestamp TEXT
+            )
+            """,
+            "INSERT INTO sessions VALUES ('deleted-db', '/tmp', NULL, 'Deleted', NULL, NULL)",
+            "INSERT INTO turns VALUES (1, 'deleted-db', 0, 'hello', 'world', NULL)",
+        ])
+        let configuration = HistoryConfiguration(
+            historyDirs: [],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+        let registry = ConversationSourceAdapterRegistry()
+        let candidate = try XCTUnwrap(
+            registry.discoverCandidates(configuration: configuration, activeOnly: false)
+                .first(where: { $0.formatHint == .copilot })
+        )
+        let index = try ConversationIndexDatabase(
+            file: root.appendingPathComponent("app/index.sqlite")
+        )
+        try index.replace(indexedSession(file: candidate.file, scope: candidate.directory.id))
+        try FileManager.default.removeItem(at: producerDatabase)
+
+        let scanner = ConversationIndexScanner(
+            configuration: configuration,
+            database: index,
+            registry: registry
+        )
+        let result = try scanner.scanAll()
+
+        XCTAssertEqual(result.discovered, 0)
+        XCTAssertEqual(result.removed, 1)
+        XCTAssertNil(try index.entry(for: candidate.file))
+    }
+
+    func testCustomSQLiteLocationsReconcileDeletedVirtualRowsForEveryProducer() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("scanner-custom-sqlite-deletion")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for source in [HistorySource.copilot, .opencode, .antigravity] {
+            let fixture = try makeCustomSQLiteFixture(source: source, root: root)
+            let layout = ConversationSessionLocationLayout.custom(
+                source: source,
+                selected: fixture.locationRoot
+            )
+            let configuration = HistoryConfiguration(
+                historyDirs: [],
+                homeDirectory: root.appendingPathComponent("home", isDirectory: true),
+                importsRoot: root.appendingPathComponent("app-\(source.rawValue)/imports"),
+                sessionLocationOverrides: .init(
+                    custom: [.init(source: source, path: fixture.locationRoot.path)],
+                    removedDefaults: [source]
+                )
+            )
+            let registry = ConversationSourceAdapterRegistry()
+            let candidate = try XCTUnwrap(
+                registry.discoverCandidates(configuration: configuration, activeOnly: false)
+                    .first(where: {
+                        $0.nativeID == fixture.nativeID && $0.directory.id == layout.scopeID
+                    }),
+                "Expected the custom \(source.rawValue) SQLite session to be discovered"
+            )
+            let index = try ConversationIndexDatabase(
+                file: root.appendingPathComponent("index-\(source.rawValue).sqlite")
+            )
+            try index.replace(indexedSession(file: candidate.file, scope: layout.scopeID))
+            try createSQLiteDatabase(at: fixture.database, statements: fixture.deleteStatements)
+
+            let scanner = ConversationIndexScanner(
+                configuration: configuration,
+                database: index,
+                registry: registry
+            )
+            let result = try scanner.scanAll()
+
+            XCTAssertEqual(result.removed, 1, source.rawValue)
+            XCTAssertNil(try index.entry(for: candidate.file), source.rawValue)
+        }
+    }
+
+    func testCanonicalDirectoriesDoNotInvokeCandidateDiscovery() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("scanner-static-canonical-scope")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let probe = ScannerDiscoveryInvocationProbe()
+        let adapter = ScannerFlakyCanonicalAdapter(probe: probe)
+        let registry = ConversationSourceAdapterRegistry(adapters: [adapter])
+        let configuration = HistoryConfiguration(
+            historyDirs: [],
+            homeDirectory: root,
+            importsRoot: root.appendingPathComponent("app/imports")
+        )
+
+        let directories = registry.discoveryDirectories(configuration: configuration)
+
+        XCTAssertEqual(probe.count, 0)
+        XCTAssertEqual(directories.map(\.id), ["__imported__", "__wake_dsh__"])
+
+        _ = registry.discover(configuration: configuration, activeOnly: false)
+        XCTAssertEqual(probe.count, 1, "One discovery pass must call an adapter exactly once")
     }
 
     func testFullScanPurgesRowsFromScopesRemovedFromConfiguration() throws {
@@ -709,7 +1184,10 @@ final class ConversationIndexScannerTests: XCTestCase {
         let coordinator = ConversationCatalogCoordinator(
             configuration: environment.configuration,
             database: database,
-            scanner: scanner
+            scanner: scanner,
+            // This test isolates reattachment ordering within one scan. A live FSEvents stream
+            // may legitimately enqueue a second started/finished scan for the temporary fixture.
+            watcherStarter: { _ in false }
         )
         let initial = CatalogEventProbe()
         coordinator.start { event in initial.append(event) }
@@ -1006,6 +1484,118 @@ final class ConversationIndexScannerTests: XCTestCase {
         return probe.events.contains(where: predicate)
     }
 
+    private func createSQLiteDatabase(at file: URL, statements: [String]) throws {
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(file.path, &database), SQLITE_OK)
+        let opened = try XCTUnwrap(database)
+        defer { sqlite3_close(opened) }
+        for statement in statements { try executeSQLite(opened, statement) }
+    }
+
+    private func makeCustomSQLiteFixture(
+        source: HistorySource,
+        root: URL
+    ) throws -> (
+        locationRoot: URL,
+        database: URL,
+        nativeID: String,
+        deleteStatements: [String]
+    ) {
+        let locationRoot = root.appendingPathComponent("custom-\(source.rawValue)", isDirectory: true)
+        switch source {
+        case .copilot:
+            let database = locationRoot.appendingPathComponent("session-store.db")
+            try createSQLiteDatabase(at: database, statements: [
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, cwd TEXT, branch TEXT, summary TEXT,
+                    created_at TEXT, updated_at TEXT
+                )
+                """,
+                """
+                CREATE TABLE turns (
+                    id INTEGER PRIMARY KEY, session_id TEXT, turn_index INTEGER,
+                    user_message TEXT, assistant_response TEXT, timestamp TEXT
+                )
+                """,
+                "INSERT INTO sessions VALUES ('custom-copilot', '/tmp', NULL, 'Custom', NULL, NULL)",
+                "INSERT INTO turns VALUES (1, 'custom-copilot', 0, 'hello', 'world', NULL)",
+            ])
+            return (locationRoot, database, "custom-copilot", [
+                "DELETE FROM turns", "DELETE FROM sessions",
+            ])
+
+        case .opencode:
+            let database = locationRoot.appendingPathComponent("opencode.db")
+            try createSQLiteDatabase(at: database, statements: [
+                """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+                    time_created INTEGER, time_updated INTEGER
+                )
+                """,
+                """
+                CREATE TABLE part (
+                    id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, data TEXT
+                )
+                """,
+                "INSERT INTO session VALUES ('custom-opencode', NULL, '/tmp', 'Custom', 1, 2)",
+                "INSERT INTO part VALUES ('part-1', 'custom-opencode', 'message-1', '{\"type\":\"text\",\"text\":\"hello\"}')",
+            ])
+            return (locationRoot, database, "custom-opencode", [
+                "DELETE FROM part", "DELETE FROM session",
+            ])
+
+        case .antigravity:
+            let database = locationRoot.appendingPathComponent("conversation_summaries.db")
+            try createSQLiteDatabase(at: database, statements: [
+                """
+                CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '',
+                    preview TEXT NOT NULL DEFAULT '', step_count INTEGER NOT NULL DEFAULT 0,
+                    last_modified_time TEXT NOT NULL, workspace_uris TEXT NOT NULL DEFAULT '[]',
+                    parent_conversation_id TEXT NOT NULL DEFAULT '',
+                    nesting_depth INTEGER NOT NULL DEFAULT 0
+                )
+                """,
+                """
+                INSERT INTO conversation_summaries VALUES (
+                    'custom-antigravity', 'Custom', 'Preview', 1,
+                    '2026-08-25 00:00:00+00:00', '[]', '', 0
+                )
+                """,
+            ])
+            return (locationRoot, database, "custom-antigravity", [
+                "DELETE FROM conversation_summaries",
+            ])
+
+        default:
+            throw NSError(
+                domain: "ConversationIndexScannerTests.CustomSQLite",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Unsupported source \(source.rawValue)"]
+            )
+        }
+    }
+
+    private func executeSQLite(_ database: OpaquePointer, _ sql: String) throws {
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let status = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        let message = errorMessage.map { String(cString: $0) } ?? "SQLite status \(status)"
+        if let errorMessage { sqlite3_free(errorMessage) }
+        guard status == SQLITE_OK else {
+            throw NSError(
+                domain: "ConversationIndexScannerTests.SQLite",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+    }
+
     private struct Environment {
         var root: URL
         var historyRoot: URL
@@ -1080,10 +1670,53 @@ final class ConversationIndexScannerTests: XCTestCase {
     }
 }
 
+private final class ScannerDiscoveryInvocationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func record() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
+    }
+}
+
+private struct ScannerFlakyCanonicalAdapter: ConversationSourceAdapter {
+    let source = HistorySource.dsh
+    let format = HistoryTranscriptFormat.dsh
+    let probe: ScannerDiscoveryInvocationProbe
+
+    func discover(
+        configuration: HistoryConfiguration,
+        activeOnly: Bool
+    ) -> [HistoryFileCandidate] {
+        probe.record()
+        return []
+    }
+
+    func dependencies(
+        for candidate: HistoryFileCandidate,
+        configuration: HistoryConfiguration
+    ) -> [ConversationSourceDependency] {
+        [.init(file: candidate.file, role: .primaryTranscript)]
+    }
+
+    func parse(_ input: ConversationSourceParseInput) throws -> HistorySession {
+        throw HistoryError.unsupportedTranscript(input.candidate.file)
+    }
+}
+
 private final class ScannerTestRegistry: ConversationIndexSourceRegistering, @unchecked Sendable {
     private let lock = NSLock()
     private var candidateStorage: [HistoryFileCandidate]
     private var dependencyStorage: [String: [ConversationSourceDependency]]
+    private var fallbackCandidateStorage: [String: [HistoryFileCandidate]]
     private var impactCandidates: [HistoryFileCandidate]?
     private var impactRequiresDiscovery = false
     private var impactRequiresProjectionRefresh = false
@@ -1091,10 +1724,12 @@ private final class ScannerTestRegistry: ConversationIndexSourceRegistering, @un
 
     init(
         candidates: [HistoryFileCandidate],
-        dependencies: [String: [ConversationSourceDependency]] = [:]
+        dependencies: [String: [ConversationSourceDependency]] = [:],
+        fallbackCandidatesByWinnerPath: [String: [HistoryFileCandidate]] = [:]
     ) {
         candidateStorage = candidates
         dependencyStorage = dependencies
+        fallbackCandidateStorage = fallbackCandidatesByWinnerPath
     }
 
     var eventImpactCalls: Int {
@@ -1144,6 +1779,23 @@ private final class ScannerTestRegistry: ConversationIndexSourceRegistering, @un
         return candidateStorage
     }
 
+    func discover(
+        configuration: HistoryConfiguration,
+        activeOnly: Bool
+    ) -> ConversationSourceDiscovery {
+        lock.lock()
+        let candidates = candidateStorage
+        let fallbacks = fallbackCandidateStorage
+        lock.unlock()
+        return ConversationSourceDiscovery(
+            candidates: candidates,
+            completeScopeIDs: Set(
+                discoveryDirectories(configuration: configuration).map(\.id)
+            ),
+            fallbackCandidatesByWinnerPath: fallbacks
+        )
+    }
+
     func eventImpact(
         _ eventFiles: [URL],
         knownManifests: [ConversationDependencyManifest],
@@ -1170,7 +1822,15 @@ private final class ScannerTestRegistry: ConversationIndexSourceRegistering, @un
         case .qoder: .qoder
         case .grok: .grok
         case .copilot: .copilot
+        case .cursor: .cursor
+        case .opencode: .opencode
+        case .kiro: .kiro
+        case .gemini: .gemini
+        case .pi: .pi
+        case .omp: .omp
+        case .kimi: .kimi
         case .antigravity: .antigravity
+        case .dsh: .dsh
         }
     }
 }

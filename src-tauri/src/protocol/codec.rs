@@ -6,8 +6,8 @@ use super::signatures::{
     ensure_chat_tool_call_reasoning_content, normalize_openai_request_thought_signatures,
     normalize_openai_response_thought_signatures,
 };
-use super::{anthropic, openai_chat_client, openai_responses, stream};
 use super::Wire;
+use super::{anthropic, openai_chat_client, openai_responses, stream};
 use llm_connector::core::Protocol;
 use llm_connector::protocols::adapters::anthropic::AnthropicProtocol;
 use llm_connector::protocols::adapters::openai::OpenAIProtocol;
@@ -50,7 +50,10 @@ pub fn encode_upstream_request(
             }
             // GLM's OpenAI-compatible coding endpoint uses its native `thinking` switch rather
             // than the OpenAI `reasoning_effort` field emitted by the generic connector.
-            if lower_model.contains("glm") || lower_model.contains("zhipu") || lower_model.contains("z-ai") {
+            if lower_model.contains("glm")
+                || lower_model.contains("zhipu")
+                || lower_model.contains("z-ai")
+            {
                 if let Some(object) = body.as_object_mut() {
                     object.remove("reasoning_effort");
                 }
@@ -61,7 +64,11 @@ pub fn encode_upstream_request(
             ensure_chat_tool_call_reasoning_content(&mut body);
             Ok(body)
         }
-        Wire::OpenAiResponses => Ok(openai_responses::encode_request(&ir, outgoing_model, stream)),
+        Wire::OpenAiResponses => Ok(openai_responses::encode_request(
+            &ir,
+            outgoing_model,
+            stream,
+        )),
         // Reverse direction: an OpenAI/Codex client → an Anthropic upstream. The crate encodes the
         // IR into an Anthropic Messages request (tool_calls→tool_use blocks, etc.). Anthropic
         // requires max_tokens; OpenAI-family clients (Codex) usually omit it and the crate's
@@ -88,15 +95,23 @@ pub fn decode_upstream_response(provider: Wire, text: &str) -> Result<ChatRespon
                 }
                 Err(_) => text.to_string(),
             };
-            OpenAIProtocol::new("").parse_response(&normalized).map_err(|e| e.to_string())
+            OpenAIProtocol::new("")
+                .parse_response(&normalized)
+                .map_err(|e| e.to_string())
         }
         Wire::OpenAiResponses => openai_responses::decode_response(text),
-        Wire::Anthropic => AnthropicProtocol::new("").parse_response(text).map_err(|e| e.to_string()),
+        Wire::Anthropic => AnthropicProtocol::new("")
+            .parse_response(text)
+            .map_err(|e| e.to_string()),
     }
 }
 
 /// Encode the IR response back to the client's wire format as a buffered JSON body.
-pub fn encode_client_response(client: Wire, ir: &ChatResponse, client_model: &str) -> Result<Value, String> {
+pub fn encode_client_response(
+    client: Wire,
+    ir: &ChatResponse,
+    client_model: &str,
+) -> Result<Value, String> {
     match client {
         Wire::Anthropic => Ok(anthropic::encode_response(ir, client_model)),
         Wire::OpenAiChat => Ok(openai_chat_client::encode_response(ir, client_model)),
@@ -114,7 +129,11 @@ pub fn can_transcode_stream(provider: Wire, client: Wire) -> bool {
 
 /// Encode the IR response to the client's wire format as a full SSE stream body (used when the
 /// client asked to stream but we translated the upstream buffered — synthesize the event sequence).
-pub fn encode_client_response_sse(client: Wire, ir: &ChatResponse, client_model: &str) -> Result<String, String> {
+pub fn encode_client_response_sse(
+    client: Wire,
+    ir: &ChatResponse,
+    client_model: &str,
+) -> Result<String, String> {
     match client {
         Wire::Anthropic => Ok(anthropic::encode_response_sse(ir, client_model)),
         Wire::OpenAiChat => Ok(openai_chat_client::encode_response_sse(ir, client_model)),

@@ -35,7 +35,7 @@ struct GatewaySettingsPane: View {
     var body: some View {
         VStack(spacing: 28) {
             SettingsCard("网关") {
-                Text("本机 Bifrost 网关服务：接入的 CLI 都通过它转发请求。")
+                Text("本机 CC Buddy 网关服务：接入的 CLI 都通过它转发请求。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.ccCaption)
 
@@ -91,8 +91,21 @@ struct GatewaySettingsPane: View {
 
             SettingsCard("高级") {
                 SettingsToggleRow(
+                    "网关故障转移",
+                    detail: "当前服务不可用时，按顺序尝试备用服务。重试次数是整条队列的总预算。",
+                    isOn: Binding(
+                        get: { model.config.gatewayFailover.enabled },
+                        set: { enabled in Task { await model.setGatewayFailoverEnabled(enabled) } }
+                    ),
+                    enabled: model.config.providers.count > 1 && !model.cliRecoveryRequired
+                )
+                if model.config.gatewayFailover.enabled {
+                    failoverQueue
+                    SettingsDivider()
+                }
+                SettingsToggleRow(
                     "429 自动重试",
-                    detail: "供应商限流时由 Bifrost 重试策略处理。",
+                    detail: "供应商限流时由网关重试策略处理。",
                     isOn: Binding(
                         get: { model.config.retry429.enabled },
                         set: { enabled in Task { await model.setRetry429Enabled(enabled) } }
@@ -113,6 +126,88 @@ struct GatewaySettingsPane: View {
         }
         .onAppear { portText = String(model.config.port) }
         .onChange(of: model.config.port) { portText = String($0) }
+    }
+
+    private var failoverQueue: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("故障转移顺序")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.ccCaption)
+
+            ForEach(Array(queuedFailoverProviders.enumerated()), id: \.element.id) { index, provider in
+                HStack(spacing: 8) {
+                    Text(verbatim: "\(index + 1)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.ccMuted)
+                        .frame(width: 18)
+                    Text(provider.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    if provider.id == model.config.activeProviderId {
+                        Text("当前")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(Color.ccBrandStrong)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await model.moveGatewayFailoverProvider(provider.id, by: -1) }
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == 0 || model.cliRecoveryRequired)
+                    .accessibilityLabel("上移备用服务")
+                    Button {
+                        Task { await model.moveGatewayFailoverProvider(provider.id, by: 1) }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(
+                        index >= queuedFailoverProviders.count - 1 || model.cliRecoveryRequired
+                    )
+                    .accessibilityLabel("下移备用服务")
+                    Button {
+                        Task { await model.setGatewayFailoverProvider(provider.id, enabled: false) }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(
+                        (model.config.gatewayFailover.enabled && queuedFailoverProviders.count == 1)
+                            || model.cliRecoveryRequired
+                    )
+                    .accessibilityLabel("移出故障转移队列")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.ccInput)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+            }
+
+            if !unqueuedFailoverProviders.isEmpty {
+                Menu("添加备用服务") {
+                    ForEach(unqueuedFailoverProviders) { provider in
+                        Button(provider.name) {
+                            Task { await model.setGatewayFailoverProvider(provider.id, enabled: true) }
+                        }
+                    }
+                }
+                .disabled(model.cliRecoveryRequired)
+            }
+        }
+    }
+
+    private var queuedFailoverProviders: [Provider] {
+        model.config.gatewayFailover.providerIds.compactMap { id in
+            model.config.providers.first(where: { $0.id == id })
+        }
+    }
+
+    private var unqueuedFailoverProviders: [Provider] {
+        let queued = Set(model.config.gatewayFailover.providerIds)
+        return model.config.providers.filter { !queued.contains($0.id) }
     }
 
     private var endpointRow: some View {
@@ -191,7 +286,7 @@ struct GatewaySettingsPane: View {
     private var exportText: String {
         let token = model.config.requireToken && !model.config.gatewayToken.isEmpty
             ? model.config.gatewayToken : "ccbud-local"
-        return "export ANTHROPIC_BASE_URL=http://localhost:\(model.config.port)/anthropic\n"
+        return "export ANTHROPIC_BASE_URL=http://localhost:\(model.config.port)\n"
             + "export ANTHROPIC_AUTH_TOKEN=\(token)"
     }
 
