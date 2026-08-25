@@ -11,12 +11,21 @@ struct ConversationCustomMetadata: Sendable {
     /// Wake's star. The index has carried a `starred` column since the catalog was introduced, but
     /// nothing ever read or wrote it, so the library had no way to keep a session close at hand.
     var starred: Bool
+    /// Wake's pin: keeps a session at the top of the stream regardless of when it last ran.
+    var pinned: Bool
 
-    init(title: String? = nil, tags: [String] = [], deleted: Bool = false, starred: Bool = false) {
+    init(
+        title: String? = nil,
+        tags: [String] = [],
+        deleted: Bool = false,
+        starred: Bool = false,
+        pinned: Bool = false
+    ) {
         self.title = title
         self.tags = tags
         self.deleted = deleted
         self.starred = starred
+        self.pinned = pinned
     }
 }
 
@@ -55,7 +64,8 @@ enum ForeignHistorySupport {
             title: rawTitle?.isEmpty == false ? rawTitle : nil,
             tags: tags,
             deleted: custom["delete"]?.boolValue ?? false,
-            starred: custom["starred"]?.boolValue ?? false
+            starred: custom["starred"]?.boolValue ?? false,
+            pinned: custom["pinned"]?.boolValue ?? false
         )
     }
 

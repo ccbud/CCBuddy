@@ -204,6 +204,8 @@ struct ConversationListPane: View {
         workbench.filteredProjects(store.filteredProjects, historyActive: store.historyActive)
             .flatMap(\.sessions)
             .sorted { lhs, rhs in
+                // Pinned sessions hold the top of the stream; everything else is by recency.
+                if lhs.pinned != rhs.pinned { return lhs.pinned }
                 if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
                 if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
                 return lhs.id < rhs.id
@@ -251,6 +253,12 @@ private struct ConversationSessionRow: View {
                         .font(.ccBody(.medium))
                         .lineLimit(1)
                         .help(metadata.title)
+                    if metadata.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: Typography.label))
+                            .foregroundStyle(Theme.accentText)
+                            .accessibilityLabel(appLanguage.localized("已置顶"))
+                    }
                     if metadata.starred {
                         Image(systemName: "star.fill")
                             .font(.system(size: Typography.label))

@@ -76,6 +76,32 @@ final class ConversationMutationServiceTests: XCTestCase {
         XCTAssertEqual(custom["starred"] as? Bool, true)
     }
 
+    /// Star and pin are independent facts about the same session. A patch names only the fields it
+    /// carries, so setting one must leave the other alone.
+    func testStarAndPinAreIndependent() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeSession(name: "star-pin", text: Self.claudeJSONL(id: "sp"))
+        let metadata = fixture.metadata(file: file)
+
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: true))
+        try fixture.service.updateMetadata(for: metadata, patch: .init(pinned: true))
+        var custom = try XCTUnwrap(firstJSONObject(file)["__ccbud__"] as? [String: Any])
+        XCTAssertEqual(custom["starred"] as? Bool, true)
+        XCTAssertEqual(custom["pinned"] as? Bool, true)
+
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: false))
+        custom = try XCTUnwrap(firstJSONObject(file)["__ccbud__"] as? [String: Any])
+        XCTAssertNil(custom["starred"])
+        XCTAssertEqual(custom["pinned"] as? Bool, true, "unstarring must not also unpin")
+
+        let parsed = HistoryParsingSupport.customMetadata([
+            ["__ccbud__": .object(["pinned": .bool(true)])],
+        ])
+        XCTAssertTrue(parsed.pinned)
+        XCTAssertFalse(parsed.starred)
+    }
+
     func testEditDetectsConcurrentReplacement() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

@@ -437,6 +437,7 @@
 "请在设置中确认会话数据目录" = "Check the session data directories in Settings";
 "取消" = "Cancel";
 "取消收藏" = "Unstar session";
+"取消置顶" = "Unpin session";
 "全部" = "All";
 "全部会话" = "All sessions";
 "确定删除插件「{name}」？将停用它、移除对应服务，并删除其安装目录。" = "Delete plugin “{name}”? This disables it, removes its service, and deletes its install directory.";
@@ -660,6 +661,7 @@
 "已切换备用服务" = "Switched to a fallback service";
 "已取消" = "Cancelled";
 "已取消收藏" = "Session unstarred";
+"已取消置顶" = "Session unpinned";
 "已是最新版本 · {date}" = "Up to date · {date}";
 "已是最新版本。" = "You’re on the latest version.";
 "已收藏" = "Starred";
@@ -676,6 +678,8 @@
 "已在 Finder 中显示" = "Revealed in Finder";
 "已展开" = "expanded";
 "已折叠" = "collapsed";
+"已置顶" = "Pinned";
+"已置顶会话" = "Session pinned";
 "已中断" = "Aborted";
 "已转发 {n} 次" = "Forwarded {n} times";
 "已转换" = "Translated";
@@ -781,6 +785,7 @@
 "正在重启…" = "Restarting…";
 "直连" = "Direct";
 "直通" = "Pass-through";
+"置顶会话" = "Pin session";
 "重建索引" = "Rebuild index";
 "重命名" = "Rename";
 "重启以更新？" = "Restart to update?";

@@ -214,7 +214,8 @@ enum HistoryParsingSupport {
             title: title?.isEmpty == false ? title : nil,
             tags: tags,
             deleted: custom["delete"]?.boolValue ?? false,
-            starred: custom["starred"]?.boolValue ?? false
+            starred: custom["starred"]?.boolValue ?? false,
+            pinned: custom["pinned"]?.boolValue ?? false
         )
     }
 

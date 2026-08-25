@@ -367,6 +367,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
             imported: candidate.directory.id == "__imported__",
             deleted: custom.deleted,
             starred: custom.starred,
+            pinned: custom.pinned,
             createdAt: state.createdAt ?? facts.createdAt,
             lastActivity: state.updatedAt ?? facts.modifiedAt,
             sizeBytes: facts.sizeBytes
@@ -417,6 +418,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
             imported: false,
             deleted: custom.deleted,
             starred: custom.starred,
+            pinned: custom.pinned,
             createdAt: facts.createdAt,
             lastActivity: facts.modifiedAt,
             sizeBytes: facts.sizeBytes

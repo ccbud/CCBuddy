@@ -7,17 +7,20 @@ struct ConversationMetadataPatch: Equatable, Sendable {
     var tags: [String]?
     var deleted: Bool?
     var starred: Bool?
+    var pinned: Bool?
 
     init(
         title: String? = nil,
         tags: [String]? = nil,
         deleted: Bool? = nil,
-        starred: Bool? = nil
+        starred: Bool? = nil,
+        pinned: Bool? = nil
     ) {
         self.title = title
         self.tags = tags
         self.deleted = deleted
         self.starred = starred
+        self.pinned = pinned
     }
 }
 
@@ -433,6 +436,10 @@ struct ConversationMutationService: @unchecked Sendable {
         if let starred = patch.starred {
             if starred { custom["starred"] = true }
             else { custom.removeValue(forKey: "starred") }
+        }
+        if let pinned = patch.pinned {
+            if pinned { custom["pinned"] = true }
+            else { custom.removeValue(forKey: "pinned") }
         }
     }
 

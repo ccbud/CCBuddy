@@ -138,6 +138,8 @@ struct HistorySessionMetadata: Codable, Equatable, Identifiable, Sendable {
     /// Kept close at hand by the user. Persisted with the rest of CC Buddy's own metadata, never in
     /// the agent's transcript.
     var starred: Bool = false
+    /// Held at the top of the stream regardless of when it last ran.
+    var pinned: Bool = false
     var createdAt: Date
     var lastActivity: Date
     var sizeBytes: UInt64

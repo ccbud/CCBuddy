@@ -103,6 +103,7 @@ enum GrokHistoryParser {
             imported: false,
             deleted: custom.deleted,
             starred: custom.starred,
+            pinned: custom.pinned,
             createdAt: createdAt,
             lastActivity: context.facts.modifiedAt,
             sizeBytes: context.facts.sizeBytes,

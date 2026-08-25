@@ -57,6 +57,7 @@ enum AntigravityHistoryParser {
             imported: false,
             deleted: custom.deleted,
             starred: custom.starred,
+            pinned: custom.pinned,
             createdAt: normalized.firstStepTimestamp ?? facts.createdAt,
             lastActivity: walAwareModifiedAt(candidate.file, fallback: facts.modifiedAt),
             sizeBytes: facts.sizeBytes,

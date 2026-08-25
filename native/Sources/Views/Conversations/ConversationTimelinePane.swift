@@ -332,6 +332,20 @@ struct ConversationTimelinePane: View {
                 .help(appLanguage.localized(metadata.starred ? "取消收藏" : "收藏会话"))
                 .accessibilityLabel(appLanguage.localized(metadata.starred ? "取消收藏" : "收藏会话"))
                 .accessibilityIdentifier("conversation.action.star")
+
+                Button {
+                    Task { await store.togglePinSelected() }
+                } label: {
+                    Image(systemName: metadata.pinned ? "pin.fill" : "pin")
+                }
+                .buttonStyle(CCIconButtonStyle(
+                    size: 27,
+                    symbolSize: Typography.caption,
+                    tint: metadata.pinned ? Theme.accentText : Theme.mutedForeground
+                ))
+                .help(appLanguage.localized(metadata.pinned ? "取消置顶" : "置顶会话"))
+                .accessibilityLabel(appLanguage.localized(metadata.pinned ? "取消置顶" : "置顶会话"))
+                .accessibilityIdentifier("conversation.action.pin")
             }
 
             toolbarButton("sidebar.right", label: "会话概览", identifier: "conversation.action.overview") {

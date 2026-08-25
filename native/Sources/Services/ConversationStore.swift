@@ -1120,6 +1120,31 @@ final class ConversationStore: ObservableObject {
         }
     }
 
+    /// Holds the selected session at the top of the stream.
+    func togglePinSelected() async {
+        guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let file = metadata.file
+        let pinned = !metadata.pinned
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                try mutationService.updateMetadata(for: metadata, patch: .init(pinned: pinned))
+                try Task.checkCancellation()
+            }.value
+            await synchronizeIndex(files: [file])
+            await reloadAndReselect(file)
+            actionMessage = pinned ? "已置顶会话" : "已取消置顶"
+            actionIsError = false
+        } catch is CancellationError {
+            return
+        } catch {
+            actionMessage = "更新失败：\(error.localizedDescription)"
+            actionIsError = true
+        }
+    }
+
     func softDeleteSelected() async {
         guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
         isMutating = true

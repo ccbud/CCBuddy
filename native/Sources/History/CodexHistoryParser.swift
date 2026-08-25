@@ -50,6 +50,7 @@ enum CodexHistoryParser {
             imported: context.candidate.directory.id == "__imported__",
             deleted: custom.deleted,
             starred: custom.starred,
+            pinned: custom.pinned,
             createdAt: context.facts.createdAt,
             lastActivity: context.facts.modifiedAt,
             sizeBytes: context.facts.sizeBytes,

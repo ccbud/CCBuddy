@@ -195,10 +195,10 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 final class ConversationIndexDatabase: @unchecked Sendable {
     /// Version 2 preserves the warm derived index while adding bounded deferred-maintenance
     /// markers. Version 1 could retain gigabytes of obsolete FTS segments after replacement.
-    /// Version 3 adds `starred` to the encoded session metadata. Synthesized `Decodable` does not
+    /// Version 3 adds `starred` and `pinned` to the encoded session metadata. Synthesized `Decodable` does not
     /// fall back to a property's default value for a missing key, so blobs written by version 2
     /// would fail to decode; the catalog is disposable and is simply rebuilt instead.
-    static let schemaVersion: Int32 = 3
+    static let schemaVersion: Int32 = 4
 
     let file: URL
 
