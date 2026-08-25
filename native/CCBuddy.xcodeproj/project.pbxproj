@@ -112,6 +112,7 @@
 		857402328893292B8F171029 /* IndexedHistoryRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B80E4A2B47B43DB7BD3C3A4 /* IndexedHistoryRepository.swift */; };
 		8583B87F29BCF06D6989005F /* IndexedHistoryRepositoryParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71F43696711244120C8C7FD4 /* IndexedHistoryRepositoryParityTests.swift */; };
 		87D073F0BAB8F6D027349CEC /* BifrostLogDecoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27D78BB78347F345A69159DF /* BifrostLogDecoding.swift */; };
+		88B66B021F590F53858817A6 /* ConversationSearchPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = F934BB66CB8E519A79EFEB05 /* ConversationSearchPalette.swift */; };
 		88CD229DA81D507ACD474399 /* ForeignHistorySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30F1AC9D7ADC38C591192D1E /* ForeignHistorySupport.swift */; };
 		89EBFAFDC4B32C33DC13EC71 /* HistoryValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE92E69A72EBC409E00EDEC /* HistoryValue.swift */; };
 		8A0FB40EDEDA05C385B0FC31 /* PluginControlPlaneClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5187576BD647A050B66B775 /* PluginControlPlaneClientTests.swift */; };
@@ -460,6 +461,7 @@
 		F630DAC1C354055489498DB1 /* grok.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = grok.png; sourceTree = "<group>"; };
 		F6778F4EAF7E04696243FFBF /* google-ai-studio.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "google-ai-studio.png"; sourceTree = "<group>"; };
 		F8D25BE5AD3BC5DDF1BD8061 /* ConfigRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigRepository.swift; sourceTree = "<group>"; };
+		F934BB66CB8E519A79EFEB05 /* ConversationSearchPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSearchPalette.swift; sourceTree = "<group>"; };
 		F94A74AEF1978CEF37783CE4 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
 		FB3C79387F26509C72739F80 /* HistoryDirectoryDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDirectoryDiscoveryTests.swift; sourceTree = "<group>"; };
 		FC57C199D634D17BDB5EA6B5 /* claude-code.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "claude-code.png"; sourceTree = "<group>"; };
@@ -667,6 +669,7 @@
 				C771C9D53B365956839BD1D7 /* ConversationListPane.swift */,
 				1587054CDF99625CCC80A719 /* ConversationMessageView.swift */,
 				02EC42E1CB8A8F320C67C52E /* ConversationOverviewPane.swift */,
+				F934BB66CB8E519A79EFEB05 /* ConversationSearchPalette.swift */,
 				72E40A86EFE896E9C36FBBF7 /* ConversationSupport.swift */,
 				D133579F92C39B629C724885 /* ConversationsView.swift */,
 				214B940925E6C4911EDD0E55 /* ConversationTimelinePane.swift */,
@@ -1140,6 +1143,7 @@
 				5F8544743D54D9FD96FFE994 /* ConversationOverviewPane.swift in Sources */,
 				62D50ED39331D543D433CF98 /* ConversationReplay.swift in Sources */,
 				5A51A83F9E91BD02524C94AC /* ConversationResumeService.swift in Sources */,
+				88B66B021F590F53858817A6 /* ConversationSearchPalette.swift in Sources */,
 				7087DC99C00ECE911B8A2956 /* ConversationSourceAdapter.swift in Sources */,
 				8A277D04B453FF0D9011060E /* ConversationStore.swift in Sources */,
 				9E8C427A38E8A9FCA8033708 /* ConversationSupport.swift in Sources */,

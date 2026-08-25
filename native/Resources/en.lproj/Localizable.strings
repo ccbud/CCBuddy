@@ -260,6 +260,7 @@
 "唤起 ChatGPT 失败，请重试" = "Couldn’t open the ChatGPT app — try again";
 "唤起 Skill" = "Invoked skill";
 "唤起失败，请重试" = "Couldn’t open Claude Desktop — try again";
+"换个说法，或删掉几个词再试。" = "Try different wording, or drop a word or two.";
 "恢复" = "Restore";
 "恢复 Claude Code 配置失败：{msg}" = "Failed to restore Claude Code config: {msg}";
 "恢复抽屉宽度" = "Restore drawer width";
@@ -488,6 +489,7 @@
 "输出 {value}" = "Output {value}";
 "输入" = "Input";
 "输入 {value}" = "Input {value}";
+"输入几个词，跨全部代理和项目查找。" = "Type a few words to look across every agent and project.";
 "数据" = "Data";
 "数据来自 ~/.claude/projects · 活跃会话实时跟随" = "Data from ~/.claude/projects · active sessions update live";
 "数据来自已配置的本地会话目录 · 活跃会话实时跟随" = "Data comes from configured local session directories · Active sessions update live";
@@ -498,9 +500,11 @@
 "思考" = "Thinking";
 "松开以导入 JSONL / ZIP" = "Drop to import JSONL / ZIP";
 "松开以导入对话记录" = "Drop to import conversation(s)";
+"搜索范围：全部会话" = "Searching all sessions";
 "搜索服务商…" = "Search services…";
 "搜索会话" = "Search sessions";
 "搜索内容…" = "Search body…";
+"搜索全部会话" = "Search all sessions";
 "搜索项目 / 会话 / 内容…" = "Search projects / sessions / content…";
 "搜索消息…" = "Search messages…";
 "搜索正文…" = "Search body…";

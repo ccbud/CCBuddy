@@ -9,6 +9,7 @@ import SwiftUI
 struct AppShellView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var conversationWorkbench = ConversationWorkbenchState()
+    @State private var searchPaletteVisible = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -24,6 +25,21 @@ struct AppShellView: View {
         .tint(Theme.accent)
         // Shortcuts are declared as scene commands (see CCBuddyApp) so they also appear in the menu
         // bar; a zero-sized hidden Button is not a dependable place to register one.
+        .overlay {
+            if searchPaletteVisible {
+                ConversationSearchPalette(store: model.conversationStore) {
+                    searchPaletteVisible = false
+                }
+                .transition(.opacity)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccbudFocusSearch)) { _ in
+            // Full-text search is a library-level command, so it also carries you back to the
+            // library rather than searching invisibly from the gateway pages.
+            model.selected = .conversations
+            conversationWorkbench.showAll()
+            searchPaletteVisible = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudRefreshCatalog)) { _ in
             model.conversationStore.retryIndexing()
         }

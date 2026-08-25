@@ -23,7 +23,7 @@ struct SidebarView: View {
             wordmark
                 .padding(.bottom, Space.md)
 
-            SidebarSearchField(store: model.conversationStore)
+            SidebarSearchRow(store: model.conversationStore)
                 .padding(.horizontal, Space.xs)
                 .padding(.bottom, Space.md)
 
@@ -209,61 +209,69 @@ private struct SidebarGroupHead: View {
 
 // MARK: - Search
 
-/// The rail owns the single full-text entry point. It must not overflow: the field is elastic and
-/// the badge is pinned, because a bare text child locks its own minimum width and would push the
-/// shortcut badge past the rail's edge.
-private struct SidebarSearchField: View {
+/// The rail owns the single full-text entry point.
+///
+/// It is a row that opens the ⌘K panel, not an inline field: an inline field here searched the
+/// whole library from a control that looked like it filtered the column next to it, and once the
+/// panel existed the two were two ways to do the same thing. When a query is active the row shows
+/// it, which is what explains why the stream is filtered.
+///
+/// The row must not overflow: the label is elastic and the badge is pinned, because a bare text
+/// child locks its own minimum width and would push the shortcut past the rail's edge.
+private struct SidebarSearchRow: View {
     @ObservedObject var store: ConversationStore
     @Environment(\.appLanguage) private var appLanguage
-    @FocusState private var focused: Bool
+
+    @State private var hovering = false
+
+    private var query: String {
+        store.listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         HStack(spacing: Space.xs + 2) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: Typography.caption, weight: .medium))
-                .foregroundStyle(Theme.mutedForeground)
-                .frame(width: 14)
-
-            TextField(
-                appLanguage.localized("搜索会话"),
-                text: Binding(
-                    get: { store.listQuery },
-                    set: { store.updateListQuery($0) }
-                )
-            )
-            .textFieldStyle(.plain)
-            .font(.ccCaption())
-            .focused($focused)
-            .frame(maxWidth: .infinity)
-            .layoutPriority(1)
+            Button {
+                NotificationCenter.default.post(name: .ccbudFocusSearch, object: nil)
+            } label: {
+                HStack(spacing: Space.xs + 2) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: Typography.caption, weight: .medium))
+                        .foregroundStyle(Theme.mutedForeground)
+                        .frame(width: 14)
+                        .fixedSize()
+                    Text(query.isEmpty ? appLanguage.localized("搜索会话") : query)
+                        .font(.ccCaption())
+                        .foregroundStyle(query.isEmpty ? Theme.mutedForeground : Theme.foreground)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if query.isEmpty {
+                        CCKeyBadge(keys: "⌘K")
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             .accessibilityIdentifier("conversation.list.search")
 
-            if store.listQuery.isEmpty {
-                CCKeyBadge(keys: "⌘K")
-            } else {
+            if !query.isEmpty {
                 Button { store.updateListQuery("") } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: Typography.caption))
                         .foregroundStyle(Theme.mutedForeground)
                 }
                 .buttonStyle(.plain)
+                .fixedSize()
                 .accessibilityLabel(appLanguage.localized("清空搜索"))
                 .accessibilityIdentifier("conversation.list.search.clear")
             }
         }
         .padding(.horizontal, Space.sm)
         .frame(height: Metrics.rowHeight)
-        .background(Theme.fill)
+        .background(hovering ? Theme.hover : Theme.fill)
         .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
-        .overlay {
-            if focused {
-                RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
-                    .strokeBorder(Theme.accent, lineWidth: 1.5)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .ccbudFocusSearch)) { _ in
-            focused = true
-        }
+        .onHover { hovering = $0 }
+        .help(appLanguage.localized("搜索全部会话"))
     }
 }
 
