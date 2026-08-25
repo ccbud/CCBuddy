@@ -306,7 +306,13 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(redactedCapture.contains("••••••（已隐藏）"))
         XCTAssertFalse(redactedCapture.contains("ui-secret-token"))
 
-        app.buttons["monitor.detail.privacy"].click()
+        let privacy = app.buttons["monitor.detail.privacy"]
+        privacy.click()
+        let privacyRevealed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "隐藏敏感值"),
+            object: privacy
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [privacyRevealed], timeout: 2), .completed)
         clearClipboardCapture()
         app.buttons["monitor.detail.copy"].click()
         XCTAssertEqual(
