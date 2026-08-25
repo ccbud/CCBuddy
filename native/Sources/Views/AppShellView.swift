@@ -23,12 +23,10 @@ struct AppShellView: View {
         .background(Theme.background.ignoresSafeArea())
         .foregroundStyle(Theme.foreground)
         .tint(Theme.accent)
-        // Shortcuts are declared as scene commands (see CCBuddyApp) so they also appear in the menu
-        // bar; a zero-sized hidden Button is not a dependable place to register one.
         .overlay {
             if searchPaletteVisible {
                 ConversationSearchPalette(store: model.conversationStore) {
-                    searchPaletteVisible = false
+                    withAnimation(.easeOut(duration: 0.12)) { searchPaletteVisible = false }
                 }
                 .transition(.opacity)
             }
@@ -38,12 +36,17 @@ struct AppShellView: View {
             // rather than searching invisibly from the gateway pages, and it widens the scope to
             // the whole library — the panel's footer promises exactly that, and searching only the
             // agent or location you happened to be browsing would make the promise false.
+            // Pressing the shortcut again dismisses the panel, the way every command palette does.
+            guard !searchPaletteVisible else {
+                withAnimation(.easeOut(duration: 0.12)) { searchPaletteVisible = false }
+                return
+            }
             model.selected = .conversations
             conversationWorkbench.showAll()
             if model.conversationStore.historyActive != "all" {
                 Task { await model.setHistoryActive("all") }
             }
-            searchPaletteVisible = true
+            withAnimation(.easeOut(duration: 0.12)) { searchPaletteVisible = true }
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudRefreshCatalog)) { _ in
             model.conversationStore.retryIndexing()

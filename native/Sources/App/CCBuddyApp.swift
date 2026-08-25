@@ -20,6 +20,9 @@ struct CCBuddyApp: App {
         .defaultSize(width: 1180, height: 760)
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
+        // Shortcuts are declared here rather than on a hidden zero-sized Button: a scene command is
+        // the dependable place to register one, and it also puts the shortcut in the menu bar where
+        // it can be discovered.
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(replacing: .appSettings) {
