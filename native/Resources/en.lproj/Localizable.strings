@@ -119,6 +119,7 @@
 "成功率" = "Success rate";
 "成功率 —" = "Success —";
 "成功率 {pct}%" = "Success {pct}%";
+"成功率 {rate}" = "{rate} success";
 "处理中" = "Processing";
 "此操作没有可填写的字段。" = "This action has no fields to fill in.";
 "从 Git 安装失败：{detail}" = "Installation from Git failed: {detail}";
@@ -275,9 +276,11 @@
 "会话不是普通 JSONL 文件：{path}" = "Session is not a regular JSONL file: {path}";
 "会话操作" = "Session actions";
 "会话范围：{scope}" = "Session scope: {scope}";
+"会话概览" = "Session overview";
 "会话路径不在已配置目录内：{path}" = "Session path is outside the configured directories: {path}";
 "会话没有可显示的消息" = "This session has no messages to display";
 "会话时间线" = "Conversation timeline";
+"会话实时更新状态" = "Live session updates";
 "会话索引" = "Session index";
 "会话索引失败：{error}" = "Conversation indexing failed: {error}";
 "会话索引已更新" = "Conversation index updated";
@@ -318,11 +321,12 @@
 "接入网关后，转发记录将实时显示" = "Forwarded records appear here in real time once connected";
 "接入中…" = "Connecting…";
 "结果" = "Result";
+"截断预览" = "Truncated preview";
 "界面不会从其他字段猜测或拼装内容" = "The interface does not infer or assemble content from other fields";
 "今日" = "Today";
 "仅使用真实终态" = "Terminal results only";
 "仅图标" = "Icon only";
-"仅显示前 {shown} / 共 {total}（已截断）" = "Showing first {shown} / {total} total (truncated)";
+"仅显示前 {shown} / 共 {total}（已截断）" = "Showing the first {shown} of {total} (truncated)";
 "仅支持 macOS" = "Only available on macOS";
 "仅支持导入 JSONL 或 ZIP" = "Only JSONL or ZIP files can be imported";
 "近 30 天" = "Last 30 days";
@@ -399,6 +403,7 @@
 "切换备用服务失败：{detail}" = "Failed to switch fallback service: {detail}";
 "切换到 {name}？" = "Switch to {name}?";
 "切换到“{name}”？" = "Switch to “{name}”?";
+"切换到{name}" = "Switch to {name}";
 "切换到浅色模式" = "Switch to light mode";
 "切换到深色模式" = "Switch to dark mode";
 "切换网关端口失败 · {error}" = "Could not change the gateway port · {error}";
@@ -475,6 +480,7 @@
 "生成" = "Generate";
 "失败 {count}" = "Failed {count}";
 "时间" = "Time";
+"实时更新关闭" = "Live updates off";
 "使用中" = "Active";
 "收藏" = "Starred";
 "收藏会话" = "Star session";
@@ -542,6 +548,7 @@
 "网关启动失败" = "Gateway failed to start";
 "网关启动中" = "Gateway starting";
 "网关日志" = "Gateway log";
+"网关日志，{state}" = "Gateway log, {state}";
 "网关生命周期日志" = "Gateway lifecycle log";
 "网关生命周期日志，{expandedState}" = "Gateway lifecycle log, {expandedState}";
 "网关未启动" = "Gateway stopped";
@@ -824,7 +831,7 @@
 "最后更新" = "Last updated";
 "最近 —" = "Last —";
 "最近 {count} 条 · 每 10 秒自动刷新" = "Latest {count} · Refreshes every 10 seconds";
-"最近 {time}" = "Last {time}";
+"最近 {time}" = "Latest {time}";
 "最新版本" = "Latest version";
 "最长" = "Longest";
 "Agent" = "Agent";
@@ -843,6 +850,7 @@
 "Bifrost 返回客户端前的规范化响应" = "Normalized response before Bifrost returns it to the client";
 "Bifrost 返回了无效的 HTTP 响应" = "Bifrost returned an invalid HTTP response";
 "Bifrost 服务不可用" = "Bifrost service unavailable";
+"Bifrost 仅提供截断预览（原始总大小未知）" = "Bifrost only kept a truncated preview (original size unknown)";
 "Bifrost 启动健康检查超时" = "Bifrost startup health check timed out";
 "Bifrost 启动失败 · {error}" = "Bifrost failed to start · {error}";
 "Bifrost 请求日志不会被冒充为进程启动、停止或异常日志" = "Bifrost request logs are not presented as process start, stop, or error logs";

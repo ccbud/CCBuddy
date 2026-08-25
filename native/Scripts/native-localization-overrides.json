@@ -3624,5 +3624,75 @@
     "ko": "검색 범위: 모든 세션",
     "zh-Hans": "搜索范围：全部会话",
     "zh-Hant": "搜尋範圍：全部工作階段"
+  },
+  "实时更新关闭": {
+    "en": "Live updates off",
+    "ja": "ライブ更新オフ",
+    "ko": "실시간 업데이트 꺼짐",
+    "zh-Hans": "实时更新关闭",
+    "zh-Hant": "即時更新關閉"
+  },
+  "会话实时更新状态": {
+    "en": "Live session updates",
+    "ja": "セッションのライブ更新状態",
+    "ko": "세션 실시간 업데이트 상태",
+    "zh-Hans": "会话实时更新状态",
+    "zh-Hant": "工作階段即時更新狀態"
+  },
+  "会话概览": {
+    "en": "Session overview",
+    "ja": "セッション概要",
+    "ko": "세션 개요",
+    "zh-Hans": "会话概览",
+    "zh-Hant": "工作階段概覽"
+  },
+  "截断预览": {
+    "en": "Truncated preview",
+    "ja": "切り詰めプレビュー",
+    "ko": "잘린 미리보기",
+    "zh-Hans": "截断预览",
+    "zh-Hant": "截斷預覽"
+  },
+  "仅显示前 {shown} / 共 {total}（已截断）": {
+    "en": "Showing the first {shown} of {total} (truncated)",
+    "ja": "全 {total} のうち先頭 {shown} を表示（切り詰め）",
+    "ko": "전체 {total} 중 앞부분 {shown}만 표시 (잘림)",
+    "zh-Hans": "仅显示前 {shown} / 共 {total}（已截断）",
+    "zh-Hant": "僅顯示前 {shown} / 共 {total}（已截斷）"
+  },
+  "Bifrost 仅提供截断预览（原始总大小未知）": {
+    "en": "Bifrost only kept a truncated preview (original size unknown)",
+    "ja": "Bifrost は切り詰めプレビューのみ保持しています（元のサイズは不明）",
+    "ko": "Bifrost가 잘린 미리보기만 보관했습니다 (원본 크기 불명)",
+    "zh-Hans": "Bifrost 仅提供截断预览（原始总大小未知）",
+    "zh-Hant": "Bifrost 僅提供截斷預覽（原始總大小未知）"
+  },
+  "网关日志，{state}": {
+    "en": "Gateway log, {state}",
+    "ja": "ゲートウェイログ、{state}",
+    "ko": "게이트웨이 로그, {state}",
+    "zh-Hans": "网关日志，{state}",
+    "zh-Hant": "閘道日誌，{state}"
+  },
+  "成功率 {rate}": {
+    "en": "{rate} success",
+    "ja": "成功率 {rate}",
+    "ko": "성공률 {rate}",
+    "zh-Hans": "成功率 {rate}",
+    "zh-Hant": "成功率 {rate}"
+  },
+  "最近 {time}": {
+    "en": "Latest {time}",
+    "ja": "最新 {time}",
+    "ko": "최근 {time}",
+    "zh-Hans": "最近 {time}",
+    "zh-Hant": "最近 {time}"
+  },
+  "切换到{name}": {
+    "en": "Switch to {name}",
+    "ja": "{name} に切り替え",
+    "ko": "{name}(으)로 전환",
+    "zh-Hans": "切换到{name}",
+    "zh-Hant": "切換到 {name}"
   }
 }
