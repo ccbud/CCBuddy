@@ -42,7 +42,7 @@ struct LocationsSettingsPane: View {
             }
             .panelSurface(bordered: true)
 
-            Text(appLanguage.localized("CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。"))
+            Text(appLanguage.localized("CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。停用某个位置会保留它的配置与已建索引，重新启用即可增量扫回。"))
                 .font(.ccCaption())
                 .foregroundStyle(Theme.mutedForeground)
         }
@@ -59,6 +59,7 @@ struct LocationsSettingsPane: View {
         let statistic = statistics[directory]
         let exists = statistic?.exists ?? FileManager.default.fileExists(atPath: Self.expanded(directory))
         let protected = directory == Self.protectedDirectory
+        let enabled = model.config.isHistoryDirectoryEnabled(directory)
 
         return HStack(spacing: Space.md) {
             Image(systemName: exists ? "folder" : "folder.badge.questionmark")
@@ -72,14 +73,23 @@ struct LocationsSettingsPane: View {
                     .foregroundStyle(exists ? Theme.foreground : Theme.mutedForeground)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(exists
-                    ? appLanguage.localized("\(statistic?.sessionCount ?? 0) 个会话")
-                    : appLanguage.localized("目录不存在"))
+                Text(subtitle(exists: exists, enabled: enabled, statistic: statistic))
                     .font(.ccLabel())
                     .foregroundStyle(Theme.mutedForeground)
             }
 
             Spacer(minLength: Space.sm)
+
+            Toggle("", isOn: Binding(
+                get: { enabled },
+                set: { value in Task { await model.setHistoryDirectoryEnabled(directory, value) } }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help(appLanguage.localized(enabled ? "停止扫描这个位置" : "重新扫描这个位置"))
+            .accessibilityLabel(appLanguage.localized("启用会话位置"))
+            .accessibilityIdentifier("settings.locations.toggle.\(SidebarIdentifier.stable(directory))")
 
             Menu {
                 Button(appLanguage.localized("在访达中显示")) { reveal(directory) }
@@ -110,8 +120,19 @@ struct LocationsSettingsPane: View {
         .overlay(alignment: .bottom) {
             if !isLast { Rectangle().fill(Theme.separator).frame(height: 1) }
         }
-        .opacity(exists ? 1 : 0.66)
+        // A switched-off row recedes as a whole rather than repeating "Disabled" as a badge.
+        .opacity(exists && enabled ? 1 : 0.55)
         .accessibilityIdentifier("settings.locations.row.\(SidebarIdentifier.stable(directory))")
+    }
+
+    private func subtitle(
+        exists: Bool,
+        enabled: Bool,
+        statistic: HistoryDirectoryStatistic?
+    ) -> String {
+        guard exists else { return appLanguage.localized("目录不存在") }
+        let count = appLanguage.localized("\(statistic?.sessionCount ?? 0) 个会话")
+        return enabled ? count : "\(count) · \(appLanguage.localized("已停用"))"
     }
 
     private func reveal(_ directory: String) {

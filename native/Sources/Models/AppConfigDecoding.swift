@@ -3,7 +3,8 @@ import Foundation
 extension AppConfig {
     enum CodingKeys: String, CodingKey {
         case port, activeProviderId, requireToken, gatewayToken, gatewayEnabled, openAtLogin
-        case claudeBackup, codexBackup, trayUsage, language, convFontPx, historyDirs, historyActive, connectTargets
+        case claudeBackup, codexBackup, trayUsage, language, convFontPx, historyDirs, historyActive
+        case disabledHistoryDirs, connectTargets
         case retry429, gatewayFailover, insecureSkipVerify, autoUpdate, providers
     }
 
@@ -22,6 +23,7 @@ extension AppConfig {
         convFontPx = try c.decodeIfPresent(Int.self, forKey: .convFontPx)
         historyDirs = try c.decodeIfPresent([String].self, forKey: .historyDirs) ?? ["~/.claude"]
         historyActive = try c.decodeIfPresent(String.self, forKey: .historyActive) ?? "all"
+        disabledHistoryDirs = try c.decodeIfPresent([String].self, forKey: .disabledHistoryDirs) ?? []
         connectTargets = try c.decodeIfPresent([String].self, forKey: .connectTargets) ?? []
         retry429 = c.decodeRetry429()
         gatewayFailover = try c.decodeIfPresent(
@@ -54,6 +56,7 @@ extension AppConfig {
         try c.encode(convFontPx, forKey: .convFontPx)
         try c.encode(historyDirs, forKey: .historyDirs)
         try c.encode(historyActive, forKey: .historyActive)
+        try c.encode(disabledHistoryDirs, forKey: .disabledHistoryDirs)
         try c.encode(connectTargets, forKey: .connectTargets)
         try c.encode(retry429, forKey: .retry429)
         try c.encode(gatewayFailover, forKey: .gatewayFailover)
@@ -156,7 +159,7 @@ private extension AppConfig.CodingKeys {
         [
             .port, .activeProviderId, .requireToken, .gatewayToken, .gatewayEnabled,
             .openAtLogin, .claudeBackup, .codexBackup, .trayUsage, .language, .convFontPx,
-            .historyDirs, .historyActive, .connectTargets, .retry429,
+            .historyDirs, .historyActive, .disabledHistoryDirs, .connectTargets, .retry429,
             .gatewayFailover, .insecureSkipVerify, .autoUpdate, .providers,
         ]
     }

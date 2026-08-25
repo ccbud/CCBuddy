@@ -598,7 +598,7 @@ final class AppModel: ObservableObject {
     /// Usage surfaces intentionally stay global even when the Conversations page selects one
     /// source. This matches the legacy command, popover, hero, and tray-title contract.
     var usageHistoryConfiguration: UsageHistoryConfiguration {
-        UsageHistoryConfiguration(historyDirs: config.historyDirs, active: "all")
+        UsageHistoryConfiguration(historyDirs: config.enabledHistoryDirs, active: "all")
     }
 
     func usageHistorySummary(for range: UsageRange) -> UsageHistorySummary? {
@@ -1213,7 +1213,7 @@ final class AppModel: ObservableObject {
         await withConfigMutation {
             guard !isShuttingDown else { return }
             let allowed = scope == "all" || scope == "__imported__" || scope == "__trash__"
-                || config.historyDirs.contains(scope)
+                || config.enabledHistoryDirs.contains(scope)
             guard allowed, config.historyActive != scope else { return }
             var next = config
             next.historyActive = scope
@@ -1369,12 +1369,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Switching a location off keeps its configuration and its catalog rows; the scanner, the
+    /// watcher, the session list and search simply stop seeing it, and switching it back on picks
+    /// up incrementally instead of rebuilding.
+    func setHistoryDirectoryEnabled(_ path: String, _ enabled: Bool) async {
+        guard !isShuttingDown else { return }
+        await withConfigMutation {
+            guard !isShuttingDown, config.historyDirs.contains(path) else { return }
+            var next = config
+            if enabled {
+                next.disabledHistoryDirs.removeAll { $0 == path }
+            } else if !next.disabledHistoryDirs.contains(path) {
+                next.disabledHistoryDirs.append(path)
+            } else {
+                return
+            }
+            // The active scope may be the location that just went away.
+            if !enabled, next.historyActive == path { next.historyActive = "all" }
+            guard persistConfigLocked(next) else { return }
+            conversationStore.configure(config: config, importsRoot: importsRoot)
+            configureUsageHistoryWatcher()
+            scheduleUsageHistoryRefresh(invalidate: true, delayNanoseconds: 0)
+        }
+    }
+
     func removeHistoryDirectory(_ path: String) async {
         guard path != "~/.claude", !isShuttingDown else { return }
         await withConfigMutation {
             guard !isShuttingDown else { return }
             var next = config
             next.historyDirs.removeAll { $0 == path }
+            next.disabledHistoryDirs.removeAll { $0 == path }
             guard persistConfigLocked(next) else { return }
             conversationStore.configure(config: config, importsRoot: importsRoot)
             configureUsageHistoryWatcher()

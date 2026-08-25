@@ -389,6 +389,7 @@
 "启动中…" = "Starting…";
 "启用" = "Enable";
 "启用插件失败：{detail}" = "Failed to enable plugin: {detail}";
+"启用会话位置" = "Enable session location";
 "前往完整下载" = "Open full download";
 "前往下载页" = "Open download page";
 "切换" = "Switch";
@@ -522,6 +523,7 @@
 "停用" = "Disable";
 "停用插件失败：{detail}" = "Failed to disable plugin: {detail}";
 "停止服务" = "Stop service";
+"停止扫描这个位置" = "Stop scanning this location";
 "图片" = "Image";
 "退出" = "Quit";
 "退出 CC Buddy" = "Quit CC Buddy";
@@ -664,7 +666,7 @@
 "已收藏会话" = "Session starred";
 "已收录会话" = "Indexed sessions";
 "已添加插件：{id}" = "Plugin added: {id}";
-"已停用" = "Disabled";
+"已停用" = "Off";
 "已停止" = "Stopped";
 "已停止没有可用服务商的网关" = "Gateway stopped because no provider is available";
 "已下载新版本，将在下次启动时生效。" = "A new version was downloaded and will apply on next launch.";
@@ -784,6 +786,7 @@
 "重启以更新？" = "Restart to update?";
 "重试" = "Retry";
 "重新检查" = "Check Again";
+"重新扫描这个位置" = "Scan this location again";
 "重置" = "Reset";
 "主" = "Main";
 "主 {model}" = "Main {model}";
@@ -857,6 +860,7 @@
 "CC Buddy 将重新启动以应用已下载的更新。" = "CC Buddy will relaunch to apply the downloaded update.";
 "CC Buddy 用量" = "CC Buddy Usage";
 "CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。" = "CC Buddy only reads these directories; it never modifies the original session files your CLIs write.";
+"CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。停用某个位置会保留它的配置与已建索引，重新启用即可增量扫回。" = "CC Buddy only reads these directories; it never modifies the original session files your CLIs write. Switching a location off keeps its configuration and its index, so switching it back on picks up incrementally.";
 "ChatGPT 分析" = "Analyze in ChatGPT";
 "Claude 分析" = "Analyze in Claude";
 "Claude 配置：" = "Claude config: ";

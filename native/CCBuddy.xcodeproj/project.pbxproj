@@ -18,6 +18,7 @@
 		07D32A4555CCB5EFCECCD0F8 /* valid-plugin.json in Resources */ = {isa = PBXBuildFile; fileRef = 4C147226666B366D21D68FEC /* valid-plugin.json */; };
 		098696F7CF49006E2AB3EF8D /* ProvidersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E351EB3332316BC4119C10 /* ProvidersView.swift */; };
 		0A108D6974FC24F74EFDB5DD /* CLIConnectionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F438077993F7B9F080464A8A /* CLIConnectionManagerTests.swift */; };
+		0B27889980B2D8844BC2F144 /* HistoryLocationToggleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9485C01F22D71D5F4E10FD56 /* HistoryLocationToggleTests.swift */; };
 		0B73884DF3DAEB3FE4A3FC53 /* MonitorSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 326D3888C64242B02A6EDEF8 /* MonitorSupport.swift */; };
 		0B8740B616E109F4FCC06EA6 /* QoderFileReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E28CABED9A7C32777A8F95E5 /* QoderFileReader.swift */; };
 		0C12F15F717200409A20E8F6 /* HistoryRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D191884E015AB1C41EDADED7 /* HistoryRepositoryTests.swift */; };
@@ -373,6 +374,7 @@
 		8E4B26476CD05E486CE0DD36 /* CCBuddyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CCBuddyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		91BC1C53D3379AA6B7F28F97 /* UpdateInstallation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateInstallation.swift; sourceTree = "<group>"; };
 		91DF39EB3A3F102BFA028424 /* ProviderProbeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderProbeService.swift; sourceTree = "<group>"; };
+		9485C01F22D71D5F4E10FD56 /* HistoryLocationToggleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryLocationToggleTests.swift; sourceTree = "<group>"; };
 		9927E570FD6A26AF6F5A5232 /* UsageHistoryAggregationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryAggregationTests.swift; sourceTree = "<group>"; };
 		997BEDEC5B5F5402FDE91375 /* PluginViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginViewState.swift; sourceTree = "<group>"; };
 		99B4B62950722437EBA06AC2 /* HistorySubagents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistorySubagents.swift; sourceTree = "<group>"; };
@@ -829,6 +831,7 @@
 				1C6331BD246BB06F57E7199F /* ForeignHistoryParserTests.swift */,
 				3E420832A1781B39297AD612 /* HistoryAdvancedTests.swift */,
 				FB3C79387F26509C72739F80 /* HistoryDirectoryDiscoveryTests.swift */,
+				9485C01F22D71D5F4E10FD56 /* HistoryLocationToggleTests.swift */,
 				1448B0A30CA3A3420A1E6C09 /* HistoryPathResolverTests.swift */,
 				D191884E015AB1C41EDADED7 /* HistoryRepositoryTests.swift */,
 				A9E96FB1F83C90B64C0B4580 /* HistorySessionLoaderTests.swift */,
@@ -1251,6 +1254,7 @@
 				91BE317F9AE916C7612CF63E /* ForeignHistoryParserTests.swift in Sources */,
 				139B2014D80FBF68A0EEAF4E /* HistoryAdvancedTests.swift in Sources */,
 				E7E0D2A00F472BBFBB7010F9 /* HistoryDirectoryDiscoveryTests.swift in Sources */,
+				0B27889980B2D8844BC2F144 /* HistoryLocationToggleTests.swift in Sources */,
 				343B84853477298BABAFE3DC /* HistoryPathResolverTests.swift in Sources */,
 				0C12F15F717200409A20E8F6 /* HistoryRepositoryTests.swift in Sources */,
 				B1EE848DF6AE1E4E68268DB6 /* HistorySessionLoaderTests.swift in Sources */,

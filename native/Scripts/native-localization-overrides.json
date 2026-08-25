@@ -3526,5 +3526,40 @@
     "ko": "서드파티 릴레이",
     "zh-Hans": "第三方中转",
     "zh-Hant": "第三方中轉"
+  },
+  "已停用": {
+    "en": "Off",
+    "ja": "オフ",
+    "ko": "꺼짐",
+    "zh-Hans": "已停用",
+    "zh-Hant": "已停用"
+  },
+  "启用会话位置": {
+    "en": "Enable session location",
+    "ja": "セッションの場所を有効にする",
+    "ko": "세션 위치 사용",
+    "zh-Hans": "启用会话位置",
+    "zh-Hant": "啟用工作階段位置"
+  },
+  "停止扫描这个位置": {
+    "en": "Stop scanning this location",
+    "ja": "この場所のスキャンを停止",
+    "ko": "이 위치 검색 중지",
+    "zh-Hans": "停止扫描这个位置",
+    "zh-Hant": "停止掃描這個位置"
+  },
+  "重新扫描这个位置": {
+    "en": "Scan this location again",
+    "ja": "この場所を再スキャン",
+    "ko": "이 위치를 다시 검색",
+    "zh-Hans": "重新扫描这个位置",
+    "zh-Hant": "重新掃描這個位置"
+  },
+  "CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。停用某个位置会保留它的配置与已建索引，重新启用即可增量扫回。": {
+    "en": "CC Buddy only reads these directories; it never modifies the original session files your CLIs write. Switching a location off keeps its configuration and its index, so switching it back on picks up incrementally.",
+    "ja": "CC Buddy はこれらのディレクトリを読み取るだけで、各 CLI が書き込んだ元のセッションファイルは変更しません。場所をオフにしても設定とインデックスは保持されるため、再びオンにすると差分だけ取り込みます。",
+    "ko": "CC Buddy는 이 디렉터리를 읽기만 하며 각 CLI가 기록한 원본 세션 파일을 수정하지 않습니다. 위치를 꺼도 설정과 인덱스는 유지되므로 다시 켜면 증분만 반영됩니다.",
+    "zh-Hans": "CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。停用某个位置会保留它的配置与已建索引，重新启用即可增量扫回。",
+    "zh-Hant": "CC Buddy 只讀取這些目錄，不會修改各 CLI 寫下的原始工作階段檔案。停用某個位置會保留它的設定與已建索引，重新啟用即可增量掃回。"
   }
 }

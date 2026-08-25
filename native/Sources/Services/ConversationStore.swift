@@ -704,9 +704,9 @@ final class ConversationStore: ObservableObject {
     }
 
     func configure(config: AppConfig, importsRoot: URL? = nil) {
-        configuredHistoryDirectories = config.historyDirs
+        configuredHistoryDirectories = config.enabledHistoryDirs
         let mutationConfiguration = ConversationMutationConfiguration(
-            historyDirs: config.historyDirs,
+            historyDirs: config.enabledHistoryDirs,
             importsRoot: importsRoot
         )
         let signature = Self.signature(
@@ -1443,7 +1443,7 @@ final class ConversationStore: ObservableObject {
 
     private static func signature(for config: AppConfig, importsRoot: URL) -> String {
         IndexedHistoryRepository.topologySignature(
-            historyDirs: config.historyDirs,
+            historyDirs: config.enabledHistoryDirs,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
             importsRoot: importsRoot
         )

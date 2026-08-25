@@ -35,6 +35,9 @@ struct AppConfig: Codable, Equatable {
     var convFontPx: Int?
     var historyDirs = ["~/.claude"]
     var historyActive = "all"
+    /// Locations the user switched off. They stay configured — and keep their catalog rows, so
+    /// switching one back on is instant — but are not scanned, watched, listed or searched.
+    var disabledHistoryDirs: [String] = []
     var connectTargets: [String] = []
     var retry429 = Retry429()
     var gatewayFailover = GatewayFailover()
@@ -58,6 +61,17 @@ struct AppConfig: Codable, Equatable {
     }
 
     var gatewayPrimaryProvider: Provider? { gatewayProviders.first }
+
+    /// The locations actually in play. Every consumer that scans, watches or lists sessions uses
+    /// this; only the Locations pane wants the full configured list.
+    var enabledHistoryDirs: [String] {
+        let disabled = Set(disabledHistoryDirs)
+        return historyDirs.filter { !disabled.contains($0) }
+    }
+
+    func isHistoryDirectoryEnabled(_ path: String) -> Bool {
+        !disabledHistoryDirs.contains(path)
+    }
 
     mutating func normalize() {
         port = (1...65535).contains(port) ? port : 8788
@@ -91,6 +105,7 @@ struct AppConfig: Codable, Equatable {
            let activeProviderId {
             gatewayFailover.providerIds = [activeProviderId]
         }
+        var normalizedDisabled: [String] = []
         var normalizedDirectories: [String] = []
         for rawDirectory in ["~/.claude"] + historyDirs {
             var directory = rawDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -105,6 +120,17 @@ struct AppConfig: Codable, Equatable {
             }
         }
         historyDirs = normalizedDirectories
+        // A disabled entry for a location that no longer exists is meaningless, and a duplicate
+        // would let the same path be switched off twice.
+        var seenDisabled = Set<String>()
+        for raw in disabledHistoryDirs {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard normalizedDirectories.contains(value), seenDisabled.insert(value).inserted else {
+                continue
+            }
+            normalizedDisabled.append(value)
+        }
+        disabledHistoryDirs = normalizedDisabled
         if historyActive != "all" && historyActive != "__imported__"
             && historyActive != "__trash__" && historyActive != "__codex__"
             && !historyDirs.contains(historyActive) {
