@@ -34,10 +34,15 @@ struct AppShellView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudFocusSearch)) { _ in
-            // Full-text search is a library-level command, so it also carries you back to the
-            // library rather than searching invisibly from the gateway pages.
+            // Full-text search is a library-level command, so it carries you back to the library
+            // rather than searching invisibly from the gateway pages, and it widens the scope to
+            // the whole library — the panel's footer promises exactly that, and searching only the
+            // agent or location you happened to be browsing would make the promise false.
             model.selected = .conversations
             conversationWorkbench.showAll()
+            if model.conversationStore.historyActive != "all" {
+                Task { await model.setHistoryActive("all") }
+            }
             searchPaletteVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudRefreshCatalog)) { _ in
