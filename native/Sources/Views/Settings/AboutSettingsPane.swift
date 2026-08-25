@@ -33,6 +33,57 @@ struct AboutSettingsPane: View {
     @Environment(\.appLanguage) private var appLanguage
 
     var body: some View {
+        VStack(alignment: .leading, spacing: Space.xl) {
+            identity
+            updates
+        }
+    }
+
+    /// Wake's About order: product mark, name, version, tagline, project link, a short rule, then
+    /// the license and the author. A page titled "About" that only offered an update button never
+    /// actually said what the application is.
+    private var identity: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(alignment: .center, spacing: Space.lg) {
+                AppLogo().frame(width: 56, height: 56)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: "CC Buddy")
+                        .font(.system(size: Typography.display, weight: .medium))
+                    Text(verbatim: runningVersion)
+                        .font(.ccMono(Typography.caption))
+                        .foregroundStyle(Theme.mutedForeground)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("about.identity.version")
+                }
+                Spacer(minLength: 0)
+            }
+
+            Text(appLanguage.localized("管理并复盘本机 Coding Agent CLI 的会话，附带一个本地模型网关。"))
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("github.com/ccbud/ccbud") { open("https://github.com/ccbud/ccbud") }
+                .buttonStyle(.link)
+                .font(.ccCaption())
+                .accessibilityIdentifier("about.identity.repository")
+
+            Rectangle()
+                .fill(Theme.separator)
+                .frame(width: 120, height: 1)
+                .padding(.vertical, Space.xs)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: "© 2026 loadchange · GPL-3.0")
+                Text(appLanguage.localized("会话与网关数据只保存在本机。"))
+            }
+            .font(.ccLabel())
+            .foregroundStyle(Theme.mutedForeground)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var updates: some View {
         SettingsCard("检查更新") {
             HStack(spacing: 36) {
                 versionColumn(
@@ -110,7 +161,7 @@ struct AboutSettingsPane: View {
                 Button("发布记录") { open("https://github.com/ccbud/ccbud/releases") }
                     .buttonStyle(.link)
             }
-            .font(.system(size: 12))
+            .font(.ccCaption())
         }
     }
 

@@ -3680,5 +3680,19 @@
     "ko": "{name}(으)로 전환",
     "zh-Hans": "切换到{name}",
     "zh-Hant": "切換到 {name}"
+  },
+  "管理并复盘本机 Coding Agent CLI 的会话，附带一个本地模型网关。": {
+    "en": "Manage and review the Coding Agent CLI sessions on this Mac, with a local model gateway alongside.",
+    "ja": "この Mac にある Coding Agent CLI のセッションを管理・振り返り、あわせてローカルのモデルゲートウェイを提供します。",
+    "ko": "이 Mac의 Coding Agent CLI 세션을 관리하고 되짚어 보며, 로컬 모델 게이트웨이도 함께 제공합니다.",
+    "zh-Hans": "管理并复盘本机 Coding Agent CLI 的会话，附带一个本地模型网关。",
+    "zh-Hant": "管理並複盤本機 Coding Agent CLI 的工作階段，附帶一個本機模型閘道。"
+  },
+  "会话与网关数据只保存在本机。": {
+    "en": "Session and gateway data never leaves this Mac.",
+    "ja": "セッションとゲートウェイのデータはこの Mac から出ません。",
+    "ko": "세션과 게이트웨이 데이터는 이 Mac을 벗어나지 않습니다.",
+    "zh-Hans": "会话与网关数据只保存在本机。",
+    "zh-Hant": "工作階段與閘道資料只保存在本機。"
   }
 }

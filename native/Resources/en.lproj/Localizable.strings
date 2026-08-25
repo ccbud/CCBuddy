@@ -249,6 +249,7 @@
 "关闭详情" = "Close details";
 "关于与更新" = "About & Updates";
 "官方" = "Official";
+"管理并复盘本机 Coding Agent CLI 的会话，附带一个本地模型网关。" = "Manage and review the Coding Agent CLI sessions on this Mac, with a local model gateway alongside.";
 "规范化 JSON" = "Normalized JSON";
 "好" = "OK";
 "耗时" = "Latency";
@@ -290,6 +291,7 @@
 "会话已恢复" = "Conversation restored";
 "会话已移入回收站" = "Conversation moved to Trash";
 "会话已永久删除" = "Conversation permanently deleted";
+"会话与网关数据只保存在本机。" = "Session and gateway data never leaves this Mac.";
 "会话与用量统计的数据来源 —— 每个工作目录都会同时扫描 Claude Code 会话（projects/）与 Codex 会话（sessions/）。~/.claude 始终保留，检测到 Codex 时会自动加入 ~/.codex；若用 CLAUDE_CONFIG_DIR / CODEX_HOME 等指定了其他位置，在此添加，可在「会话」页切换查看。" = "Data source for sessions and usage — each work dir is scanned for Claude Code sessions (projects/) and Codex sessions (sessions/). ~/.claude is always included and ~/.codex is added automatically when Codex is installed; add other locations (e.g. CLAUDE_CONFIG_DIR / CODEX_HOME) here and switch in Sessions.";
 "会话与用量统计的数据来源。默认 ~/.claude；使用自定义 Claude 配置目录时可在这里添加。" = "Data sources for sessions and usage statistics. The default is ~/.claude; add custom Claude configuration directories here.";
 "会话正文将以这个大小显示 — 这是一段用于预览的示例文字。" = "Message text will render at this size — The quick brown fox jumps over the lazy dog.";
