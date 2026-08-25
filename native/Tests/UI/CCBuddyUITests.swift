@@ -326,16 +326,18 @@ final class CCBuddyUITests: XCTestCase {
             predicate: NSPredicate(format: "label == %@", "隐藏敏感值"),
             object: privacy
         )
-        let rawCopyEnabled = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == %@", "复制原文"),
-            object: copy
-        )
-        XCTAssertEqual(
-            XCTWaiter.wait(for: [privacyRevealed, rawCopyEnabled], timeout: 2),
-            .completed
-        )
+        XCTAssertEqual(XCTWaiter.wait(for: [privacyRevealed], timeout: 2), .completed)
         clearClipboardCapture()
-        copy.click()
+        let rawCopy = app.buttons["monitor.detail.copy"]
+        let rawCopyReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label == %@ AND enabled == true AND hittable == true",
+                "复制原文"
+            ),
+            object: rawCopy
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [rawCopyReady], timeout: 2), .completed)
+        rawCopy.click()
         XCTAssertEqual(
             waitForClipboardCapture(),
             #"{"body":{"model":"upstream-model","prompt":"Needle secret"},"headers":{"authorization":"Bearer ui-secret-token"},"truncated":false}"#

@@ -57,57 +57,65 @@ struct MonitorDetailDrawer: View {
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("请求详情")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.ccForeground)
-                if let id = store.detailRequestID {
-                    Text(id)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+        VStack(spacing: 8) {
+            HStack(spacing: 9) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("请求详情")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.ccForeground)
+                    if let id = store.detailRequestID {
+                        Text(id)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(Color.ccCaption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if let record = headerRecord {
+                    Text(headerStatus(for: record))
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(record.status.monitorColor)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(record.status.monitorBackground)
+                        .clipShape(Capsule())
                 }
             }
 
-            Spacer(minLength: 8)
+            // Keep interactive controls below the full-size title-bar inset. macOS AX can clamp
+            // first-row frames into the drag surface even though their pixels render beneath it.
+            HStack(spacing: 9) {
+                Spacer(minLength: 0)
 
-            if let record = headerRecord {
-                Text(headerStatus(for: record))
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(record.status.monitorColor)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(record.status.monitorBackground)
-                    .clipShape(Capsule())
+                headerButton(
+                    symbol: revealsSensitiveData ? "eye" : "eye.slash",
+                    help: revealsSensitiveData ? "隐藏敏感值" : "显示未经脱敏的原文",
+                    identifier: "monitor.detail.privacy"
+                ) {
+                    revealsSensitiveData.toggle()
+                }
+
+                headerButton(
+                    symbol: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                    help: expanded ? "恢复抽屉宽度" : "展开详情",
+                    identifier: "monitor.detail.expand",
+                    action: toggleExpanded
+                )
+
+                headerButton(
+                    symbol: "xmark",
+                    help: "关闭详情",
+                    identifier: "monitor.detail.close",
+                    keyEquivalent: "\u{1B}",
+                    action: close
+                )
             }
-
-            headerButton(
-                symbol: revealsSensitiveData ? "eye" : "eye.slash",
-                help: revealsSensitiveData ? "隐藏敏感值" : "显示未经脱敏的原文",
-                identifier: "monitor.detail.privacy"
-            ) {
-                revealsSensitiveData.toggle()
-            }
-
-            headerButton(
-                symbol: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                help: expanded ? "恢复抽屉宽度" : "展开详情",
-                identifier: "monitor.detail.expand",
-                action: toggleExpanded
-            )
-
-            headerButton(
-                symbol: "xmark",
-                help: "关闭详情",
-                identifier: "monitor.detail.close",
-                keyEquivalent: "\u{1B}",
-                action: close
-            )
         }
         .padding(.horizontal, 17)
-        .padding(.vertical, 14)
+        .padding(.vertical, 10)
     }
 
     private func headerButton(
@@ -340,6 +348,7 @@ struct MonitorDetailDrawer: View {
         }
         .buttonStyle(MonitorPressableButtonStyle())
         .help("复制当前标签的原始正文")
+        .accessibilityLabel(copyLabel(for: payload))
         .accessibilityIdentifier("monitor.detail.copy")
     }
 
