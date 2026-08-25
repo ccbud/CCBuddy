@@ -213,7 +213,9 @@ struct ConversationListPane: View {
     }
 }
 
-private struct ConversationSessionRow: View {
+/// Internal rather than private so the off-screen proof sheets can render it: this row is the most
+/// repeated element in the application, and it is worth being able to look at without a GUI session.
+struct ConversationSessionRow: View {
     @Environment(\.appLanguage) private var appLanguage
 
     let metadata: HistorySessionMetadata
@@ -245,9 +247,13 @@ private struct ConversationSessionRow: View {
                             .accessibilityLabel("活跃会话")
                     }
                     if metadata.isSubagent {
+                        // Once, at the head of the title: the row already carries the relationship
+                        // there, and repeating it in the metadata line said nothing new.
                         Image(systemName: "arrow.turn.down.right")
                             .font(.system(size: 9))
                             .foregroundStyle(Theme.mutedForeground)
+                            .accessibilityLabel(appLanguage.localized("子代理"))
+                            .help(appLanguage.localized("子代理"))
                     }
                     Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
                         .font(.ccBody(.medium))
@@ -279,10 +285,6 @@ private struct ConversationSessionRow: View {
                             .padding(.vertical, 1)
                             .background(Theme.fill)
                             .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
-                    }
-                    if metadata.isSubagent {
-                        Image(systemName: "arrow.turn.down.right")
-                            .help(appLanguage.localized("子代理"))
                     }
                     if metadata.imported {
                         Image(systemName: "square.and.arrow.down")

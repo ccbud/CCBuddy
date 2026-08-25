@@ -68,9 +68,82 @@ final class DesignProofSheetTests: XCTestCase {
         try render("rail", RailProofSheet())
     }
 
+    func testRenderSessionRowSheet() throws {
+        try render("session-rows", SessionRowProofSheet())
+    }
 }
 
 // MARK: - Sheets
+
+/// The session stream row in the states it actually appears in.
+private struct SessionRowProofSheet: View {
+    private static func metadata(
+        _ id: String,
+        _ title: String,
+        _ source: HistorySource,
+        _ project: String,
+        starred: Bool = false,
+        pinned: Bool = false,
+        subagent: Bool = false
+    ) -> HistorySessionMetadata {
+        var value = HistorySessionMetadata(
+            id: id,
+            file: URL(fileURLWithPath: "/tmp/proof/\(id).jsonl"),
+            source: source,
+            dirID: "all",
+            dirLabel: "all",
+            sessionID: id,
+            cwd: "/tmp/\(project)",
+            project: project,
+            title: title,
+            autoTitle: title,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastActivity: Date(timeIntervalSince1970: 1_800_000_000),
+            sizeBytes: 4_096,
+            messageCount: 42
+        )
+        value.starred = starred
+        value.pinned = pinned
+        value.isSubagent = subagent
+        return value
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ConversationSessionRow(
+                metadata: Self.metadata("a", "把会话索引限制从 600 提到全量", .codex, "ccg", pinned: true),
+                selected: false, hit: nil, searchQuery: ""
+            ) {}
+            ConversationSessionRow(
+                metadata: Self.metadata("b", "重画侧栏：一套导航模型", .claude, "ccg", starred: true),
+                selected: true, hit: nil, searchQuery: ""
+            ) {}
+            ConversationSessionRow(
+                metadata: Self.metadata("c", "Gauss the 2nd · audit_conversation_memory", .codex, "ccg", subagent: true),
+                selected: false, hit: nil, searchQuery: ""
+            ) {}
+            ConversationSessionRow(
+                metadata: Self.metadata("d", "索引空闲页从不回收的原因", .grok, "cherry-studio-lite"),
+                selected: false,
+                hit: HistorySearchHit(
+                    sessionID: "d",
+                    file: URL(fileURLWithPath: "/tmp/proof/d.jsonl"),
+                    source: .grok,
+                    snippet: "…auto_vacuum 在已有数据库上是 no-op，incremental_vacuum 因此空转…",
+                    count: 3
+                ),
+                searchQuery: "vacuum"
+            ) {}
+            ConversationSessionRow(
+                metadata: Self.metadata("e", "无标题", .antigravity, ""),
+                selected: false, hit: nil, searchQuery: ""
+            ) {}
+        }
+        .padding(Space.sm)
+        .frame(width: Metrics.streamWidth)
+        .background(Theme.list)
+    }
+}
 
 private struct SwatchRow: View {
     let name: String
