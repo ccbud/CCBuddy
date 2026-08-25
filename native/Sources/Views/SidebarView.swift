@@ -197,7 +197,7 @@ private struct ConversationLibraryNavigation: View {
 
             VStack(spacing: 2) {
                 libraryRow(
-                    symbol: "square.stack.3d.up",
+                    icon: .layers,
                     title: appLanguage.localized("全部会话"),
                     count: totalSessionCount,
                     selected: store.historyActive == "all"
@@ -209,7 +209,7 @@ private struct ConversationLibraryNavigation: View {
                 }
 
                 libraryRow(
-                    symbol: "star",
+                    icon: .star,
                     title: appLanguage.localized("已收藏"),
                     count: starredSessionCount,
                     selected: store.historyActive == "all"
@@ -222,7 +222,7 @@ private struct ConversationLibraryNavigation: View {
 
                 if store.scopeSnapshot.importedCount > 0 || store.historyActive == "__imported__" {
                     libraryRow(
-                        symbol: "square.and.arrow.down",
+                        icon: .inbox,
                         title: appLanguage.localized("已导入"),
                         count: store.scopeSnapshot.importedCount,
                         selected: store.historyActive == "__imported__",
@@ -235,7 +235,7 @@ private struct ConversationLibraryNavigation: View {
 
                 if store.scopeSnapshot.trashCount > 0 || store.historyActive == "__trash__" {
                     libraryRow(
-                        symbol: "trash",
+                        icon: .trash,
                         title: appLanguage.localized("回收站"),
                         count: store.scopeSnapshot.trashCount,
                         selected: store.historyActive == "__trash__",
@@ -260,7 +260,6 @@ private struct ConversationLibraryNavigation: View {
                     if workbench.agentsExpanded {
                         ForEach(agentCounts, id: \.source.rawValue) { item in
                             libraryRow(
-                                symbol: ConversationPresentation.sourceSymbol(item.source),
                                 source: item.source,
                                 title: ConversationPresentation.sourceName(rawValue: item.source.rawValue),
                                 count: item.count,
@@ -284,7 +283,7 @@ private struct ConversationLibraryNavigation: View {
                     if workbench.projectsExpanded {
                         ForEach(store.projects) { project in
                             libraryRow(
-                                symbol: "folder",
+                                icon: .folder,
                                 title: project.name,
                                 count: project.sessions.count,
                                 selected: store.historyActive == "all"
@@ -327,8 +326,7 @@ private struct ConversationLibraryNavigation: View {
     private var searchToolbar: some View {
         HStack(spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11, weight: .medium))
+                ConversationWorkbenchIcon(.search, size: 12)
                     .foregroundStyle(Color.ccCaption)
                 TextField(
                     "搜索项目 / 会话 / 内容…",
@@ -343,8 +341,7 @@ private struct ConversationLibraryNavigation: View {
                 .accessibilityIdentifier("conversation.list.search")
                 if !store.listQuery.isEmpty {
                     Button { store.updateListQuery("") } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
+                        ConversationWorkbenchIcon(.circleX, size: 12)
                             .foregroundStyle(Color.ccCaption)
                     }
                     .buttonStyle(.plain)
@@ -375,7 +372,7 @@ private struct ConversationLibraryNavigation: View {
                 .accessibilityIdentifier("conversation.import.progress")
             } else {
                 libraryToolButton(
-                    symbol: "plus",
+                    icon: .plus,
                     label: "导入 JSONL 或 ZIP",
                     identifier: "conversation.import"
                 ) {
@@ -395,8 +392,7 @@ private struct ConversationLibraryNavigation: View {
             Button {
                 showingSessionLocations = true
             } label: {
-                Image(systemName: "externaldrive")
-                    .font(.system(size: 11.5, weight: .semibold))
+                ConversationWorkbenchIcon(.hardDrive, size: 14)
                     .frame(width: 30, height: 30)
                     .foregroundStyle(
                         hoveringSessionLocations && !sessionLocationsBusy
@@ -425,8 +421,7 @@ private struct ConversationLibraryNavigation: View {
                     if store.indexingState.isScanning {
                         ProgressView().controlSize(.mini)
                     } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11.5, weight: .semibold))
+                        ConversationWorkbenchIcon(.refreshCW, size: 13)
                     }
                 }
                 .frame(width: 30, height: 30)
@@ -461,7 +456,7 @@ private struct ConversationLibraryNavigation: View {
     }
 
     private func libraryToolButton(
-        symbol: String,
+        icon: ConversationWorkbenchIconName,
         label: String,
         identifier: String,
         action: @escaping () -> Void
@@ -471,7 +466,7 @@ private struct ConversationLibraryNavigation: View {
                 if identifier == "conversation.library.refresh", store.indexingState.isScanning {
                     ProgressView().controlSize(.mini)
                 } else {
-                    Image(systemName: symbol).font(.system(size: 11.5, weight: .semibold))
+                    ConversationWorkbenchIcon(icon, size: 14)
                 }
             }
             .frame(width: 30, height: 30)
@@ -494,8 +489,7 @@ private struct ConversationLibraryNavigation: View {
             HStack(spacing: 7) {
                 Text(title).font(.system(size: 13, weight: .regular))
                 Spacer(minLength: 0)
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
+                ConversationWorkbenchIcon(expanded ? .chevronDown : .chevronRight, size: 11)
             }
             .foregroundStyle(Color.ccMuted)
             .padding(.horizontal, 9)
@@ -506,7 +500,7 @@ private struct ConversationLibraryNavigation: View {
     }
 
     private func libraryRow(
-        symbol: String,
+        icon: ConversationWorkbenchIconName? = nil,
         source: HistorySource? = nil,
         title: String,
         count: Int?,
@@ -521,9 +515,8 @@ private struct ConversationLibraryNavigation: View {
                 if let source {
                     ConversationSourceBrandIcon(source: source, size: sublevel ? 14 : 16)
                         .frame(width: 18)
-                } else {
-                    Image(systemName: symbol)
-                        .font(.system(size: sublevel ? 11.5 : 13, weight: .medium))
+                } else if let icon {
+                    ConversationWorkbenchIcon(icon, size: sublevel ? 12 : 14)
                         .frame(width: 18)
                 }
                 Text(title).lineLimit(1).truncationMode(.middle)

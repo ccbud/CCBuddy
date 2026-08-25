@@ -1207,6 +1207,7 @@ final class AppModel: ObservableObject {
                 }
                 next.gatewayFailover.enabled = enabled
             },
+            refreshManagedCLIConnections: true,
             progressMessage: "正在重启网关 · \(setting)",
             successMessage: setting,
             failurePrefix: "更新网关故障转移设置失败"
@@ -1226,6 +1227,7 @@ final class AppModel: ObservableObject {
                 next.gatewayFailover.providerIds.removeAll { $0 == id }
                 if enabled { next.gatewayFailover.providerIds.append(id) }
             },
+            refreshManagedCLIConnections: true,
             progressMessage: "正在更新故障转移顺序并重启网关",
             successMessage: "网关故障转移顺序已更新",
             failurePrefix: "更新网关故障转移顺序失败"
@@ -1245,6 +1247,7 @@ final class AppModel: ObservableObject {
                 let providerID = next.gatewayFailover.providerIds.remove(at: source)
                 next.gatewayFailover.providerIds.insert(providerID, at: destination)
             },
+            refreshManagedCLIConnections: true,
             progressMessage: "正在更新故障转移顺序并重启网关",
             successMessage: "网关故障转移顺序已更新",
             failurePrefix: "更新网关故障转移顺序失败"
@@ -1661,6 +1664,7 @@ final class AppModel: ObservableObject {
     ) async {
         await applyGatewayConfiguration(
             mutating: mutation,
+            refreshManagedCLIConnections: true,
             disableWhenProviderless: true,
             progressMessage: "正在应用服务商配置并重启网关",
             successMessage: "服务商配置已更新",
@@ -1790,28 +1794,25 @@ final class AppModel: ObservableObject {
         // provider array derived before the gate would overwrite that newer edit when it commits.
         let pluginSnapshot = plugins
 
-        if restartRunningGateway {
-            await applyGatewayConfiguration(
-                mutating: { candidate in
-                    self.reconcilePluginProviders(in: &candidate, pluginSnapshot: pluginSnapshot)
-                },
-                disableWhenProviderless: true,
-                configurationIsCurrent: { [self] in
-                    refreshGeneration == pluginRefreshGeneration
-                },
-                progressMessage: "正在应用插件服务配置并重启网关",
-                successMessage: "插件服务配置已更新",
-                failurePrefix: "保存插件服务失败"
-            )
-        } else {
-            await withConfigMutation {
-                guard !isShuttingDown,
-                      refreshGeneration == pluginRefreshGeneration else { return }
-                var candidate = config
+        // The startup path reaches this while the gateway is stopped, but managed CLI files are
+        // already connected. A plugin can change the effective wire route (for example Anthropic
+        // to native Responses), so reconcile the app config and those files in the same rollback-
+        // safe transaction even when there is no running generation to restart.
+        await applyGatewayConfiguration(
+            mutating: { candidate in
                 self.reconcilePluginProviders(in: &candidate, pluginSnapshot: pluginSnapshot)
-                if candidate != config { persistConfigLocked(candidate) }
-            }
-        }
+            },
+            refreshManagedCLIConnections: true,
+            disableWhenProviderless: true,
+            configurationIsCurrent: { [self] in
+                refreshGeneration == pluginRefreshGeneration
+            },
+            progressMessage: restartRunningGateway
+                ? "正在应用插件服务配置并重启网关"
+                : "正在同步插件服务配置",
+            successMessage: "插件服务配置已更新",
+            failurePrefix: "保存插件服务失败"
+        )
     }
 
     private func reconcilePluginProviders(
@@ -1898,6 +1899,7 @@ final class AppModel: ObservableObject {
         guard config.activeProviderId != nextID else { return }
         await applyGatewayConfiguration(
             mutating: { $0.activeProviderId = nextID },
+            refreshManagedCLIConnections: true,
             disableWhenProviderless: true,
             progressMessage: "正在切换备用服务并重启网关",
             successMessage: nextID == nil ? "已停止没有可用服务商的网关" : "已切换备用服务",

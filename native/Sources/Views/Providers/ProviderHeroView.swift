@@ -121,8 +121,7 @@ struct ProviderHeroView: View {
 
     private func copyEndpoint() {
         let endpoint = "http://localhost:\(model.gatewayState.runningPort ?? model.config.port)"
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(endpoint, forType: .string)
+        AppClipboard.write(endpoint)
         copiedEndpoint = true
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_400_000_000)

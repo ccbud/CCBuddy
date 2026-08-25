@@ -91,6 +91,7 @@ final class CLIConnectionManagerTests: XCTestCase {
         model = "gpt-5" # keep this exact comment
         model_provider = "openai"
         approval_policy = "on-request"
+        web_search = "enabled" # keep the user's search preference
 
         [model_providers.other]
         name = "Other"
@@ -110,6 +111,7 @@ final class CLIConnectionManagerTests: XCTestCase {
         XCTAssertTrue(connected.contains("base_url = \"http://localhost:8788/v1\""))
         XCTAssertTrue(connected.contains("wire_api = \"responses\""))
         XCTAssertTrue(connected.contains("supports_websockets = false"))
+        XCTAssertTrue(connected.contains("web_search = \"disabled\""))
         XCTAssertTrue(manager.isCodexConnected(port: 8788))
 
         config.port = 9988
@@ -121,12 +123,189 @@ final class CLIConnectionManagerTests: XCTestCase {
         let restored = try String(contentsOf: codexURL, encoding: .utf8)
         XCTAssertTrue(restored.contains("model = \"gpt-5\" # keep this exact comment"))
         XCTAssertTrue(restored.contains("model_provider = \"openai\""))
+        XCTAssertTrue(restored.contains("web_search = \"enabled\" # keep the user's search preference"))
         XCTAssertFalse(restored.contains("model_reasoning_effort"))
         XCTAssertTrue(restored.contains("[model_providers.other]"))
         XCTAssertTrue(restored.contains("name = \"User-owned prior block\""))
         XCTAssertTrue(restored.contains("base_url = \"https://prior.example/v1\""))
         XCTAssertTrue(config.codexBackup.isNull)
         XCTAssertFalse(config.connectTargets.contains("codex"))
+    }
+
+    func testCodexWebSearchProfileRestoresOnlyTheManagedAnthropicSentinel() throws {
+        try FileManager.default.createDirectory(
+            at: codexURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let original = "web_search = \"enabled\" # user-owned\n"
+        try Data(original.utf8).write(to: codexURL)
+
+        var config = try manager.connectCodex(config: .fixture)
+        var document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(document.topLevelString(for: "web_search"), "disabled")
+
+        config.providers[0].protocol = .openAIResponses
+        config = try manager.connectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(
+            document.rawTopLevelAssignment(for: "web_search"),
+            "web_search = \"enabled\" # user-owned"
+        )
+
+        config.providers[0].protocol = .anthropic
+        config = try manager.connectCodex(config: config)
+        var source = try String(contentsOf: codexURL, encoding: .utf8)
+        source = source.replacingOccurrences(
+            of: "web_search = \"disabled\"",
+            with: "web_search = \"enabled-after-connect\""
+        )
+        try Data(source.utf8).write(to: codexURL)
+        config.providers[0].protocol = .openAIResponses
+        config = try manager.connectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(document.topLevelString(for: "web_search"), "enabled-after-connect")
+
+        config = try manager.disconnectCodex(config: config)
+        XCTAssertEqual(try String(contentsOf: codexURL, encoding: .utf8), original)
+        XCTAssertTrue(config.codexBackup.isNull)
+    }
+
+    func testCodexWebSearchProfileUsesTheEffectiveFailoverRoutes() throws {
+        var config = AppConfig.fixture
+        config.providers.append(contentsOf: [
+            Provider(
+                id: "responses", name: "Responses",
+                baseUrl: "https://responses.example/v1", protocol: .openAIResponses
+            ),
+            Provider(
+                id: "chat", name: "Chat",
+                baseUrl: "https://chat.example/v1", protocol: .openAIChat
+            ),
+        ])
+        config.gatewayFailover = .init(
+            enabled: true,
+            providerIds: [config.providers[0].id, "responses"]
+        )
+
+        config = try manager.connectCodex(config: config)
+        var document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertNil(document.topLevelString(for: "web_search"))
+
+        config.gatewayFailover.providerIds = ["responses", config.providers[0].id]
+        config = try manager.connectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertNil(document.topLevelString(for: "web_search"))
+
+        config.gatewayFailover.providerIds = [config.providers[0].id, "chat"]
+        config = try manager.connectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(document.topLevelString(for: "web_search"), "disabled")
+
+        config.gatewayFailover.enabled = false
+        config.activeProviderId = "responses"
+        config = try manager.connectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertNil(document.topLevelString(for: "web_search"))
+
+        config.activeProviderId = "chat"
+        _ = try manager.connectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(document.topLevelString(for: "web_search"), "disabled")
+    }
+
+    func testCodexLegacyBackupCapturesUserWebSearchBeforeInjectingSentinel() throws {
+        try FileManager.default.createDirectory(
+            at: codexURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("web_search = \"enabled\" # legacy user value\n".utf8).write(to: codexURL)
+        var config = AppConfig.fixture
+        config.connectTargets = [CLIConnectionManager.codexTarget]
+        config.codexBackup = .object([
+            "model": .null,
+            "model_raw": .null,
+            "model_provider": .null,
+            "model_provider_raw": .null,
+            "model_reasoning_effort": .null,
+            "model_reasoning_effort_raw": .null,
+            "provider_block_raw": .null,
+        ])
+
+        config = try manager.connectCodex(config: config)
+        let migratedBackup = try XCTUnwrap(config.codexBackup.objectValue)
+        XCTAssertEqual(migratedBackup["web_search"], .string("enabled"))
+        XCTAssertEqual(
+            migratedBackup["web_search_raw"],
+            .string("web_search = \"enabled\" # legacy user value")
+        )
+        var document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(document.topLevelString(for: "web_search"), "disabled")
+
+        config = try manager.disconnectCodex(config: config)
+        document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(
+            document.rawTopLevelAssignment(for: "web_search"),
+            "web_search = \"enabled\" # legacy user value"
+        )
+        XCTAssertTrue(config.codexBackup.isNull)
+    }
+
+    func testCodexDirectDisconnectWithLegacyBackupPreservesLiveUserWebSearch() throws {
+        try FileManager.default.createDirectory(
+            at: codexURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let source = """
+        web_search = "enabled" # user-owned before upgrade
+        model_provider = "ccbud"
+
+        [model_providers.ccbud]
+        name = "CC Buddy"
+        base_url = "http://localhost:8788/v1"
+        wire_api = "responses"
+        """ + "\n"
+        try Data(source.utf8).write(to: codexURL)
+        var config = AppConfig.fixture
+        config.connectTargets = [CLIConnectionManager.codexTarget]
+        config.codexBackup = .object([
+            "model": .null,
+            "model_raw": .null,
+            "model_provider": .string("openai"),
+            "model_provider_raw": .string("model_provider = \"openai\""),
+            "model_reasoning_effort": .null,
+            "model_reasoning_effort_raw": .null,
+            "provider_block_raw": .null,
+        ])
+
+        config = try manager.disconnectCodex(config: config)
+
+        let document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(
+            document.rawTopLevelAssignment(for: "web_search"),
+            "web_search = \"enabled\" # user-owned before upgrade"
+        )
+        XCTAssertEqual(document.topLevelString(for: "model_provider"), "openai")
+        XCTAssertNil(document.rawProviderBlock())
+        XCTAssertTrue(config.codexBackup.isNull)
+    }
+
+    func testCodexWebSearchProfileFailsClosedWithoutTrappingOnDuplicateProviderIDs() throws {
+        var config = AppConfig.fixture
+        config.providers.append(Provider(
+            id: config.providers[0].id,
+            name: "Duplicate",
+            baseUrl: "https://responses.example/v1",
+            protocol: .openAIResponses
+        ))
+        config.gatewayFailover = .init(
+            enabled: true,
+            providerIds: [config.providers[0].id]
+        )
+
+        _ = try manager.connectCodex(config: config)
+
+        let document = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(document.topLevelString(for: "web_search"), "disabled")
     }
 
     func testCodexConnectCreatesAndDisconnectCleansFreshConfiguration() throws {

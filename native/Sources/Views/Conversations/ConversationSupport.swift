@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -146,8 +147,12 @@ struct ConversationSourceBrandIcon: View {
             if let resource = ConversationPresentation.sourceBrandResource(
                 source,
                 dark: colorScheme == .dark
+            ), let image = ConversationResourceImageLoader.image(
+                named: resource,
+                withExtension: "png",
+                isTemplate: false
             ) {
-                Image(resource, bundle: .main)
+                Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
@@ -161,6 +166,102 @@ struct ConversationSourceBrandIcon: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+/// Wake's exact session-workbench Lucide assets. Keep the raw values aligned with the original
+/// SVG filenames so upstream icon updates can be verified byte-for-byte instead of approximated
+/// with a neighboring SF Symbol. Producer brands remain separate because they must retain color.
+enum ConversationWorkbenchIconName: String, CaseIterable, Sendable {
+    case arrowUpDown = "arrow-up-down"
+    case check
+    case chevronDown = "chevron-down"
+    case chevronRight = "chevron-right"
+    case circleX = "circle-x"
+    case copy
+    case download
+    case fileText = "file-text"
+    case folder
+    case gitBranch = "git-branch"
+    case hardDrive = "hard-drive"
+    case inbox
+    case layers
+    case loader
+    case loaderCircle = "loader-circle"
+    case messageSquare = "message-square"
+    case moreHorizontal = "more-horizontal"
+    case pinFilled = "pin-filled"
+    case pin
+    case plus
+    case refreshCW = "refresh-cw"
+    case search
+    case starFilled = "star-filled"
+    case star
+    case terminal
+    case trash = "trash-2"
+    case x
+}
+
+@MainActor
+enum ConversationResourceImageLoader {
+    private static let cache = NSCache<NSString, NSImage>()
+
+    static func image(
+        named name: String,
+        withExtension fileExtension: String,
+        bundle: Bundle = .main,
+        isTemplate: Bool
+    ) -> NSImage? {
+        guard let url = bundle.url(forResource: name, withExtension: fileExtension) else {
+            return nil
+        }
+        let cacheKey = "\(url.standardizedFileURL.path)#template=\(isTemplate)" as NSString
+        if let cached = cache.object(forKey: cacheKey) {
+            return cached
+        }
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        image.isTemplate = isTemplate
+        cache.setObject(image, forKey: cacheKey)
+        return image
+    }
+
+    static func workbenchIcon(
+        named name: ConversationWorkbenchIconName,
+        bundle: Bundle = .main
+    ) -> NSImage? {
+        image(
+            named: name.rawValue,
+            withExtension: "svg",
+            bundle: bundle,
+            isTemplate: true
+        )
+    }
+}
+
+struct ConversationWorkbenchIcon: View {
+    let name: ConversationWorkbenchIconName
+    var size: CGFloat = 14
+
+    init(_ name: ConversationWorkbenchIconName, size: CGFloat = 14) {
+        self.name = name
+        self.size = size
+    }
+
+    var body: some View {
+        Group {
+            if let image = ConversationResourceImageLoader.workbenchIcon(named: name) {
+                Image(nsImage: image)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                // A missing/corrupt bundle resource must not leave an invisible button target.
+                Image(systemName: "questionmark.square.dashed")
+                    .resizable()
+                    .scaledToFit()
+            }
+        }
+        .frame(width: size, height: size)
     }
 }
 

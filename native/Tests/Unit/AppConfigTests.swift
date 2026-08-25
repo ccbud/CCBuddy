@@ -447,6 +447,175 @@ private enum AppConfigMigrationFixtures {
 
 @MainActor
 final class AppModelTests: XCTestCase {
+    func testProviderAndFailoverChangesRefreshManagedCodexWebSearchProfile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ccbud-codex-route-profile-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let repository = ConfigRepository(configURL: root.appendingPathComponent("config.json"))
+        let codexURL = root.appendingPathComponent("codex/config.toml")
+        let environment = [
+            "HOME": root.path,
+            "CCBUD_CODEX_CONFIG": codexURL.path,
+            "XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration",
+        ]
+        var initial = AppConfig.fixture
+        initial.gatewayEnabled = false
+        initial.providers = [
+            Provider(
+                id: "responses", name: "Responses",
+                baseUrl: "https://responses.example/v1", protocol: .openAIResponses
+            ),
+            Provider(
+                id: "anthropic", name: "Anthropic",
+                baseUrl: "https://anthropic.example/v1", protocol: .anthropic
+            ),
+        ]
+        initial.activeProviderId = "responses"
+        initial = try CLIConnectionManager(
+            repository: repository,
+            environment: environment
+        ).connectCodex(config: initial)
+        let model = AppModel(
+            repository: repository,
+            supervisor: GatewaySupervisor(environment: ["CCBUD_HOME": root.path]),
+            environment: environment
+        )
+        addTeardownBlock {
+            await model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+        func webSearchValue() throws -> String? {
+            let source = try String(contentsOf: codexURL, encoding: .utf8)
+            return CodexConfigDocument(source).topLevelString(for: "web_search")
+        }
+
+        XCTAssertNil(try webSearchValue())
+        await model.setActiveProvider("anthropic")
+        XCTAssertEqual(try webSearchValue(), "disabled")
+        await model.setActiveProvider("responses")
+        XCTAssertNil(try webSearchValue())
+
+        await model.setGatewayFailoverEnabled(true)
+        XCTAssertNil(try webSearchValue())
+        await model.setGatewayFailoverProvider("anthropic", enabled: true)
+        XCTAssertNil(try webSearchValue(), "A mixed queue can skip to its Responses route")
+        await model.setGatewayFailoverProvider("responses", enabled: false)
+        XCTAssertEqual(try webSearchValue(), "disabled")
+    }
+
+    func testStoppedPluginReconciliationRefreshesManagedCodexRouteTransactionally() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ccbud-stopped-plugin-codex-route-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let repository = ConfigRepository(configURL: root.appendingPathComponent("config.json"))
+        let codexURL = root.appendingPathComponent("codex/config.toml")
+        let environment = [
+            "HOME": root.path,
+            "CCBUD_HOME": root.appendingPathComponent("home").path,
+            "CCBUD_CODEX_CONFIG": codexURL.path,
+            "XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration",
+        ]
+        try FileManager.default.createDirectory(
+            at: codexURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"web_search = "live" # preserve user spelling"#.utf8).write(to: codexURL)
+
+        var initial = AppConfig.fixture
+        initial.gatewayEnabled = true
+        initial.providers = [Provider(
+            id: "plugin:alpha",
+            name: "Alpha",
+            baseUrl: "http://127.0.0.1:31111/v1",
+            defaultModel: "primary",
+            smallFastModel: "light",
+            protocol: .anthropic,
+            backend: .plugin,
+            pluginId: "alpha"
+        )]
+        initial.activeProviderId = "plugin:alpha"
+        initial = try CLIConnectionManager(
+            repository: repository,
+            environment: environment
+        ).connectCodex(config: initial)
+        XCTAssertEqual(
+            CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+                .topLevelString(for: "web_search"),
+            "disabled"
+        )
+
+        let plugin = PluginCatalogItem(
+            id: "alpha",
+            name: "Alpha",
+            version: "1.0.0",
+            protocolName: "openai-responses",
+            lifecycle: .running,
+            provider: .init(
+                id: "plugin:alpha",
+                pluginID: "alpha",
+                name: "Alpha",
+                baseURL: URL(string: "http://127.0.0.1:31111/v1")!,
+                protocolName: "openai-responses",
+                defaultModel: "primary",
+                smallFastModel: "light"
+            )
+        )
+        let pluginManager = AppModelTestPluginManager(items: [plugin])
+        var failNextCodexWrite = true
+        let connectionManager = CLIConnectionManager(
+            repository: repository,
+            environment: environment,
+            fileWriter: { data, url, fileManager in
+                if failNextCodexWrite,
+                   url.standardizedFileURL == codexURL.standardizedFileURL {
+                    failNextCodexWrite = false
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try SecureAtomicFile.write(data, to: url, fileManager: fileManager)
+            }
+        )
+        let model = AppModel(
+            repository: repository,
+            supervisor: GatewaySupervisor(environment: environment),
+            connectionManager: connectionManager,
+            environment: environment,
+            pluginManager: pluginManager
+        )
+        addTeardownBlock {
+            await model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        await model.startApplicationServices(allowGatewayStartup: false)
+
+        XCTAssertEqual(model.config, initial)
+        XCTAssertEqual(try repository.load(), initial)
+        XCTAssertEqual(model.gatewayState, .stopped)
+        XCTAssertNotNil(model.lastError)
+        XCTAssertEqual(
+            CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+                .topLevelString(for: "web_search"),
+            "disabled"
+        )
+        XCTAssertTrue(try connectionManager.pendingRecoveryJournalDirectories().isEmpty)
+
+        await model.startApplicationServices(allowGatewayStartup: false)
+
+        XCTAssertEqual(model.config.activeProvider?.protocol, .openAIResponses)
+        XCTAssertEqual(try repository.load(), model.config)
+        XCTAssertEqual(model.gatewayState, .stopped)
+        XCTAssertNil(model.lastError)
+        let restored = CodexConfigDocument(try String(contentsOf: codexURL, encoding: .utf8))
+        XCTAssertEqual(restored.topLevelString(for: "web_search"), "live")
+        XCTAssertEqual(
+            restored.rawTopLevelAssignment(for: "web_search"),
+            #"web_search = "live" # preserve user spelling"#
+        )
+        XCTAssertTrue(try connectionManager.pendingRecoveryJournalDirectories().isEmpty)
+    }
+
     func testSelectingProviderDoesNotChangeEnabledFailoverQueueOrder() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "ccbud-failover-active-\(UUID().uuidString)",

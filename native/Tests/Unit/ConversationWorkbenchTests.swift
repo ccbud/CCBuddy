@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import CCBuddy
 
@@ -64,6 +66,95 @@ final class ConversationWorkbenchTests: XCTestCase {
             ConversationPresentation.sourceBrandResource(.grok, dark: false),
             "session-brand-grok-light"
         )
+    }
+
+    func testWakeConversationIconManifestIsCompleteAndBundled() {
+        let expected = [
+            "arrow-up-down", "check", "chevron-down", "chevron-right", "circle-x",
+            "copy", "download", "file-text", "folder", "git-branch", "hard-drive",
+            "inbox", "layers", "loader", "loader-circle", "message-square",
+            "more-horizontal", "pin-filled", "pin", "plus", "refresh-cw", "search",
+            "star-filled", "star", "terminal", "trash-2", "x",
+        ]
+        XCTAssertEqual(
+            Set(ConversationWorkbenchIconName.allCases.map(\.rawValue)),
+            Set(expected)
+        )
+        for name in expected {
+            XCTAssertNotNil(
+                Bundle.main.url(forResource: name, withExtension: "svg"),
+                name
+            )
+        }
+    }
+
+    func testWakeConversationSVGsRenderAsTintedTemplatePixels() throws {
+        for icon in [
+            ConversationWorkbenchIconName.star,
+            .pin,
+            .messageSquare,
+        ] {
+            let source = try XCTUnwrap(
+                ConversationResourceImageLoader.workbenchIcon(named: icon),
+                "Unable to load \(icon.rawValue).svg through the runtime SVG loader"
+            )
+            XCTAssertTrue(source.isTemplate, icon.rawValue)
+            XCTAssertTrue(
+                source === ConversationResourceImageLoader.workbenchIcon(named: icon),
+                "\(icon.rawValue) should reuse its cached NSImage"
+            )
+
+            let bitmap = try rasterized(
+                ConversationWorkbenchIcon(icon, size: 24)
+                    .foregroundStyle(Color(red: 0.08, green: 0.86, blue: 0.22))
+                    .frame(width: 32, height: 32)
+            )
+            let counts = pixelCounts(in: bitmap)
+
+            XCTAssertGreaterThan(counts.visible, 20, "\(icon.rawValue) rendered no visible pixels")
+            XCTAssertGreaterThan(counts.green, 20, "\(icon.rawValue) did not honor template tint")
+        }
+    }
+
+    func testWakeBrandPNGsRenderVisiblePixelsThroughRuntimeLoader() throws {
+        var renderedResources = Set<String>()
+        for scheme in [ColorScheme.light, .dark] {
+            for source in ConversationPresentation.sourceOrder {
+                guard let resource = ConversationPresentation.sourceBrandResource(
+                    source,
+                    dark: scheme == .dark
+                ), renderedResources.insert(resource).inserted else { continue }
+                let image = try XCTUnwrap(
+                    ConversationResourceImageLoader.image(
+                        named: resource,
+                        withExtension: "png",
+                        isTemplate: false
+                    ),
+                    "Unable to load \(resource).png through the runtime image loader"
+                )
+                XCTAssertFalse(image.isTemplate, resource)
+                XCTAssertTrue(
+                    image === ConversationResourceImageLoader.image(
+                        named: resource,
+                        withExtension: "png",
+                        isTemplate: false
+                    ),
+                    "\(resource) should reuse its cached NSImage"
+                )
+
+                let bitmap = try rasterized(
+                    ConversationSourceBrandIcon(source: source, size: 24)
+                        .environment(\.colorScheme, scheme)
+                        .frame(width: 32, height: 32)
+                )
+                XCTAssertGreaterThan(
+                    pixelCounts(in: bitmap).visible,
+                    20,
+                    "\(resource).png rendered no visible pixels"
+                )
+            }
+        }
+        XCTAssertEqual(renderedResources.count, 19)
     }
 
     func testMissingAgentAndProjectSelectionsReturnToAllSessions() {
@@ -231,6 +322,30 @@ final class ConversationWorkbenchTests: XCTestCase {
                 ConversationVisibleText.maximumTimelineToolValueBytes
             )
         }
+    }
+
+    private func rasterized<Content: View>(_ content: Content) throws -> NSBitmapImageRep {
+        let renderer = ImageRenderer(content: content)
+        renderer.proposedSize = ProposedViewSize(width: 32, height: 32)
+        renderer.scale = 4
+        return NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+    }
+
+    private func pixelCounts(in bitmap: NSBitmapImageRep) -> (visible: Int, green: Int) {
+        var visiblePixels = 0
+        var greenPixels = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                      color.alphaComponent > 0.05 else { continue }
+                visiblePixels += 1
+                if color.greenComponent > color.redComponent + 0.15,
+                   color.greenComponent > color.blueComponent + 0.15 {
+                    greenPixels += 1
+                }
+            }
+        }
+        return (visiblePixels, greenPixels)
     }
 
     private func project(_ name: String, sessions: [HistorySessionMetadata]) -> HistoryProject {

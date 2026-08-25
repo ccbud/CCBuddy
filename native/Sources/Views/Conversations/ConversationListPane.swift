@@ -98,10 +98,10 @@ struct ConversationListPane: View {
                 }
             }
         } label: {
-            Label(
-                appLanguage.localized(sortTitle(workbench.sortField)),
-                systemImage: workbench.sortAscending ? "arrow.up" : "arrow.down"
-            )
+            HStack(spacing: 5) {
+                ConversationWorkbenchIcon(.arrowUpDown, size: 13)
+                Text(appLanguage.localized(sortTitle(workbench.sortField)))
+            }
             .font(.system(size: 11.5, weight: .medium))
             .foregroundStyle(Color.ccMuted)
         }
@@ -178,6 +178,7 @@ struct ConversationListPane: View {
             if flatSessions.isEmpty {
                 ConversationListState(
                     symbol: store.listQuery.isEmpty ? "bubble.left.and.text.bubble.right" : "magnifyingglass",
+                    workbenchIcon: store.listQuery.isEmpty ? .inbox : .search,
                     title: emptyTitle,
                     subtitle: emptySubtitle,
                     showsProgress: store.isSearchingContent
@@ -283,13 +284,11 @@ private struct ConversationSessionRow: View {
                             .foregroundStyle(Color.ccCaption)
                     }
                     if metadata.pinned {
-                        Image(systemName: "pin.fill")
-                            .font(.system(size: 9))
+                        ConversationWorkbenchIcon(.pinFilled, size: 10)
                             .foregroundStyle(Color.ccBrandStrong)
                             .accessibilityLabel(appLanguage.localized("已置顶"))
                     } else if metadata.starred {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 9))
+                        ConversationWorkbenchIcon(.starFilled, size: 10)
                             .foregroundStyle(Color.ccOrange)
                             .accessibilityLabel(appLanguage.localized("已收藏"))
                     }
@@ -318,11 +317,11 @@ private struct ConversationSessionRow: View {
                             .help(appLanguage.localized("子代理"))
                     }
                     if metadata.imported {
-                        Image(systemName: "square.and.arrow.down")
+                        ConversationWorkbenchIcon(.inbox, size: 11)
                             .foregroundStyle(Color.ccBrandStrong)
                     }
                     if metadata.deleted {
-                        Image(systemName: "trash")
+                        ConversationWorkbenchIcon(.trash, size: 11)
                             .foregroundStyle(Color.ccRed)
                     }
                     Spacer(minLength: 0)
@@ -358,6 +357,7 @@ private struct ConversationListState<Actions: View>: View {
     @Environment(\.appLanguage) private var appLanguage
 
     let symbol: String
+    var workbenchIcon: ConversationWorkbenchIconName?
     let title: String
     var subtitle: String?
     var showsProgress: Bool
@@ -365,12 +365,14 @@ private struct ConversationListState<Actions: View>: View {
 
     init(
         symbol: String,
+        workbenchIcon: ConversationWorkbenchIconName? = nil,
         title: String,
         subtitle: String? = nil,
         showsProgress: Bool = false,
         @ViewBuilder actions: () -> Actions
     ) {
         self.symbol = symbol
+        self.workbenchIcon = workbenchIcon
         self.title = title
         self.subtitle = subtitle
         self.showsProgress = showsProgress
@@ -384,7 +386,11 @@ private struct ConversationListState<Actions: View>: View {
             } else {
                 ZStack {
                     Circle().fill(Color.ccForeground.opacity(0.055))
-                    Image(systemName: symbol).font(.system(size: 20, weight: .light))
+                    if let workbenchIcon {
+                        ConversationWorkbenchIcon(workbenchIcon, size: 24)
+                    } else {
+                        Image(systemName: symbol).font(.system(size: 20, weight: .light))
+                    }
                 }
                 .frame(width: 48, height: 48)
             }
@@ -407,8 +413,20 @@ private struct ConversationListState<Actions: View>: View {
 }
 
 private extension ConversationListState where Actions == EmptyView {
-    init(symbol: String, title: String, subtitle: String? = nil, showsProgress: Bool = false) {
-        self.init(symbol: symbol, title: title, subtitle: subtitle, showsProgress: showsProgress) {
+    init(
+        symbol: String,
+        workbenchIcon: ConversationWorkbenchIconName? = nil,
+        title: String,
+        subtitle: String? = nil,
+        showsProgress: Bool = false
+    ) {
+        self.init(
+            symbol: symbol,
+            workbenchIcon: workbenchIcon,
+            title: title,
+            subtitle: subtitle,
+            showsProgress: showsProgress
+        ) {
             EmptyView()
         }
     }

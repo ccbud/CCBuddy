@@ -604,10 +604,14 @@ async fn prepare_request(
     // tools without losing call/result pairing, citations, and server-tool usage. Ask the
     // upstream for a terminal response and synthesize the requested Anthropic SSE after the
     // dedicated hosted-search bridge has preserved those semantics.
+    let signed_anthropic_reasoning =
+        client_wire == Some(Wire::OpenAiResponses) && provider_wire == Wire::Anthropic;
     let upstream_stream = wanted_stream
         && hosted_web_search.is_none()
         && client_wire.is_some_and(|client| {
-            !cross_wire || protocol::can_transcode_stream(provider_wire, client)
+            !cross_wire
+                || signed_anthropic_reasoning
+                || protocol::can_transcode_stream(provider_wire, client)
         });
     let mut tool_context = protocol::openai_responses::CodexToolContext::default();
     let body = match (client_wire, client_json.as_mut()) {
@@ -636,6 +640,10 @@ async fn prepare_request(
             if let Some(bridge) = hosted_web_search.as_ref() {
                 bridge
                     .apply_to_responses_request(body, &mut encoded)
+                    .map_err(PreparationFailure::client_protocol)?;
+            }
+            if signed_anthropic_reasoning {
+                crate::anthropic_reasoning::patch_anthropic_request(body, &mut encoded)
                     .map_err(PreparationFailure::client_protocol)?;
             }
             serde_json::to_vec(&encoded)
@@ -887,13 +895,26 @@ async fn finish_response(
     if response.is_sse() && prepared.wanted_stream {
         if cross_wire {
             let client = prepared.client_wire.expect("cross-wire client");
-            let transcoder = protocol::stream::Transcoder::new_with_context(
-                prepared.provider_wire,
-                client,
-                &prepared.client_model,
-                prepared.tool_context.clone(),
-            )
-            .ok_or_else(|| GatewayError::Protocol("stream pair is not supported".into()))?;
+            let transcoder = if client == Wire::OpenAiResponses
+                && prepared.provider_wire == Wire::Anthropic
+            {
+                GatewayStreamTranscoder::SignedAnthropic(
+                    crate::anthropic_reasoning::SignedAnthropicToResponsesStream::new(
+                        &prepared.client_model,
+                        prepared.tool_context.clone(),
+                    ),
+                )
+            } else {
+                GatewayStreamTranscoder::Generic(
+                    protocol::stream::Transcoder::new_with_context(
+                        prepared.provider_wire,
+                        client,
+                        &prepared.client_model,
+                        prepared.tool_context.clone(),
+                    )
+                    .ok_or_else(|| GatewayError::Protocol("stream pair is not supported".into()))?,
+                )
+            };
             return Ok(transcoded_stream_response(
                 state,
                 monitor_id,
@@ -1008,9 +1029,17 @@ async fn finish_response(
     }
     let text = std::str::from_utf8(&upstream_body)
         .map_err(|error| GatewayError::Protocol(error.to_string()))?;
+    let signed_anthropic_reasoning =
+        client_wire == Wire::OpenAiResponses && prepared.provider_wire == Wire::Anthropic;
+    let anthropic_source = signed_anthropic_reasoning
+        .then(|| {
+            serde_json::from_str::<Value>(text)
+                .map_err(|error| GatewayError::Protocol(format!("Anthropic parse: {error}")))
+        })
+        .transpose()?;
     let decoded = protocol::decode_upstream_response(prepared.provider_wire, text)
         .map_err(GatewayError::Protocol)?;
-    let encoded = if client_wire == Wire::OpenAiResponses {
+    let mut encoded = if client_wire == Wire::OpenAiResponses {
         protocol::openai_responses::encode_response_with_context(
             &decoded,
             &prepared.client_model,
@@ -1020,6 +1049,10 @@ async fn finish_response(
         protocol::encode_client_response(client_wire, &decoded, &prepared.client_model)
             .map_err(GatewayError::Protocol)?
     };
+    if let Some(source) = anthropic_source.as_ref() {
+        crate::anthropic_reasoning::patch_responses_response(source, &mut encoded)
+            .map_err(GatewayError::Protocol)?;
+    }
     if client_wire == Wire::OpenAiResponses {
         if let Some(request) = prepared.history_request.as_ref() {
             state
@@ -1036,7 +1069,11 @@ async fn finish_response(
     }
     let (client_body, content_type) = if prepared.wanted_stream {
         (
-            if client_wire == Wire::OpenAiResponses {
+            if signed_anthropic_reasoning {
+                crate::anthropic_reasoning::responses_json_to_sse(&encoded)
+                    .map_err(GatewayError::Protocol)?
+                    .into_bytes()
+            } else if client_wire == Wire::OpenAiResponses {
                 protocol::openai_responses::encode_response_sse_with_context(
                     &decoded,
                     &prepared.client_model,
@@ -1087,6 +1124,34 @@ async fn finish_response(
         client_headers,
         Body::from(client_body),
     ))
+}
+
+enum GatewayStreamTranscoder {
+    Generic(protocol::stream::Transcoder),
+    SignedAnthropic(crate::anthropic_reasoning::SignedAnthropicToResponsesStream),
+}
+
+impl GatewayStreamTranscoder {
+    fn push(&mut self, line: &str) -> String {
+        match self {
+            Self::Generic(transcoder) => transcoder.push(line),
+            Self::SignedAnthropic(transcoder) => transcoder.push(line),
+        }
+    }
+
+    fn finish(&mut self) -> String {
+        match self {
+            Self::Generic(transcoder) => transcoder.finish(),
+            Self::SignedAnthropic(transcoder) => transcoder.finish(),
+        }
+    }
+
+    fn fail(&mut self, message: &str) -> String {
+        match self {
+            Self::Generic(transcoder) => transcoder.fail(message),
+            Self::SignedAnthropic(transcoder) => transcoder.fail(message),
+        }
+    }
 }
 
 fn encode_hosted_web_search_response(
@@ -1299,7 +1364,7 @@ fn transcoded_stream_response(
     prepared: PreparedRequest,
     upstream_headers: HeaderMap,
     response: UpstreamResponse,
-    mut transcoder: protocol::stream::Transcoder,
+    mut transcoder: GatewayStreamTranscoder,
 ) -> Response {
     let status = response.status();
     let mut client_headers = filtered_response_headers(&upstream_headers, true);

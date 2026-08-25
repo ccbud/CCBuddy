@@ -82,8 +82,7 @@ struct ConversationSessionLocationsView: View {
             }
 
             Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10.5, weight: .semibold))
+                ConversationWorkbenchIcon(.x, size: 12)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
@@ -105,8 +104,7 @@ struct ConversationSessionLocationsView: View {
                 if store.isUpdatingSessionLocations {
                     ProgressView().controlSize(.small)
                 } else {
-                    Image(systemName: "externaldrive")
-                        .font(.system(size: 22, weight: .light))
+                    ConversationWorkbenchIcon(.hardDrive, size: 24)
                         .foregroundStyle(Color.ccCaption)
                 }
                 Text(appLanguage.localized(
@@ -141,7 +139,11 @@ struct ConversationSessionLocationsView: View {
             Button {
                 editorTarget = .add
             } label: {
-                Label(appLanguage.localized("添加位置"), systemImage: "plus")
+                Label {
+                    Text(appLanguage.localized("添加位置"))
+                } icon: {
+                    ConversationWorkbenchIcon(.plus, size: 13)
+                }
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 10)
                     .frame(height: 26)
@@ -156,7 +158,11 @@ struct ConversationSessionLocationsView: View {
                 Button {
                     Task { await store.restoreDefaultSessionLocations() }
                 } label: {
-                    Text(appLanguage.localized("恢复默认位置"))
+                    Label {
+                        Text(appLanguage.localized("恢复默认位置"))
+                    } icon: {
+                        ConversationWorkbenchIcon(.refreshCW, size: 13)
+                    }
                         .font(.system(size: 12, weight: .medium))
                         .padding(.horizontal, 10)
                         .frame(height: 26)
@@ -365,8 +371,7 @@ private struct ConversationSessionLocationEditor: View {
                     .accessibilityIdentifier("conversation.locations.editor.path")
 
                     Button(action: chooseDirectory) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 12, weight: .medium))
+                        ConversationWorkbenchIcon(.folder, size: 13)
                             .frame(width: 26, height: 22)
                     }
                     .buttonStyle(.bordered)
@@ -390,7 +395,11 @@ private struct ConversationSessionLocationEditor: View {
                         Button {
                             removeLocation(row)
                         } label: {
-                            Label(appLanguage.localized("移除"), systemImage: "trash")
+                            Label {
+                                Text(appLanguage.localized("移除"))
+                            } icon: {
+                                ConversationWorkbenchIcon(.trash, size: 13)
+                            }
                                 .font(.system(size: 12, weight: .medium))
                                 .padding(.horizontal, 8)
                                 .frame(height: 30)
@@ -405,7 +414,11 @@ private struct ConversationSessionLocationEditor: View {
                             Button {
                                 NSWorkspace.shared.activateFileViewerSelecting([revealURL])
                             } label: {
-                                Label(appLanguage.localized("在 Finder 中显示"), systemImage: "folder")
+                                Label {
+                                    Text(appLanguage.localized("在 Finder 中显示"))
+                                } icon: {
+                                    ConversationWorkbenchIcon(.folder, size: 13)
+                                }
                                     .font(.system(size: 12, weight: .medium))
                                     .padding(.horizontal, 8)
                                     .frame(height: 30)

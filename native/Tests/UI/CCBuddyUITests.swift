@@ -43,6 +43,10 @@ final class CCBuddyUITests: XCTestCase {
         app.groups["app.shell"]
     }
 
+    private var clipboardCaptureURL: URL {
+        isolatedHome.appendingPathComponent(".ccbud-ui-test-clipboard", isDirectory: false)
+    }
+
     func testMainNavigationAndProviderEditor() {
         XCTAssertTrue(appShell.waitForExistence(timeout: 5))
         XCTAssertTrue(app.otherElements["providers.hero"].exists)
@@ -235,40 +239,33 @@ final class CCBuddyUITests: XCTestCase {
         app.activate()
 
         XCTAssertTrue(appShell.waitForExistence(timeout: 5))
-        let pasteboard = NSPasteboard.general
-        let originalItems = snapshotPasteboard(pasteboard)
-        defer { restorePasteboard(originalItems, to: pasteboard) }
-
-        pasteboard.clearContents()
+        clearClipboardCapture()
         let providerEndpoint = app.buttons["providers.endpoint"]
         XCTAssertTrue(providerEndpoint.waitForExistence(timeout: 2))
         providerEndpoint.click()
-        XCTAssertTrue(waitForPasteboard { $0 == "http://localhost:8788" })
+        XCTAssertEqual(waitForClipboardCapture(), "http://localhost:8788")
 
         app.buttons["sidebar.settings"].click()
         XCTAssertTrue(app.otherElements["settings.pane.gateway"].waitForExistence(timeout: 2))
 
-        pasteboard.clearContents()
+        clearClipboardCapture()
         let endpointCopy = app.buttons["settings.gateway.endpoint.copy"]
         XCTAssertTrue(endpointCopy.waitForExistence(timeout: 2))
         endpointCopy.click()
-        XCTAssertTrue(waitForPasteboard { $0 == "http://localhost:8788" })
+        XCTAssertEqual(waitForClipboardCapture(), "http://localhost:8788")
 
-        pasteboard.clearContents()
+        clearClipboardCapture()
         let exportsCopy = app.buttons["settings.gateway.exports.copy"]
         XCTAssertTrue(exportsCopy.waitForExistence(timeout: 2))
         exportsCopy.click()
-        XCTAssertTrue(waitForPasteboard {
-            $0 == "export ANTHROPIC_BASE_URL=http://localhost:8788\n"
+        XCTAssertEqual(
+            waitForClipboardCapture(),
+            "export ANTHROPIC_BASE_URL=http://localhost:8788\n"
                 + "export ANTHROPIC_AUTH_TOKEN=ccbud-local"
-        })
+        )
     }
 
     func testMonitorInspectorTabsRawCopySearchPrivacyAndExpand() {
-        let pasteboard = NSPasteboard.general
-        let originalItems = snapshotPasteboard(pasteboard)
-        defer { restorePasteboard(originalItems, to: pasteboard) }
-
         // Window restoration can remember the app's menu-bar-only state. Reopening is the same
         // user path as clicking the dock icon and asks AppDelegate to present the main window.
         app.activate()
@@ -301,18 +298,21 @@ final class CCBuddyUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [countUpdated], timeout: 2), .completed)
 
-        pasteboard.clearContents()
+        clearClipboardCapture()
         app.buttons["monitor.detail.copy"].click()
-        XCTAssertTrue(waitForPasteboard { value in
-            value.contains("••••••（已隐藏）") && !value.contains("ui-secret-token")
-        })
+        guard let redactedCapture = waitForClipboardCapture() else {
+            return XCTFail("The app did not record the redacted clipboard value")
+        }
+        XCTAssertTrue(redactedCapture.contains("••••••（已隐藏）"))
+        XCTAssertFalse(redactedCapture.contains("ui-secret-token"))
 
         app.buttons["monitor.detail.privacy"].click()
-        pasteboard.clearContents()
+        clearClipboardCapture()
         app.buttons["monitor.detail.copy"].click()
-        XCTAssertTrue(waitForPasteboard { value in
-            value == #"{"body":{"model":"upstream-model","prompt":"Needle secret"},"headers":{"authorization":"Bearer ui-secret-token"},"truncated":false}"#
-        })
+        XCTAssertEqual(
+            waitForClipboardCapture(),
+            #"{"body":{"model":"upstream-model","prompt":"Needle secret"},"headers":{"authorization":"Bearer ui-secret-token"},"truncated":false}"#
+        )
 
         let expand = app.buttons["monitor.detail.expand"]
         XCTAssertTrue(expand.exists)
@@ -631,49 +631,20 @@ final class CCBuddyUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    private func waitForPasteboard(
-        timeout: TimeInterval = 2,
-        predicate: (String) -> Bool
-    ) -> Bool {
+    private func clearClipboardCapture() {
+        try? FileManager.default.removeItem(at: clipboardCaptureURL)
+    }
+
+    private func waitForClipboardCapture(timeout: TimeInterval = 2) -> String? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if let value = NSPasteboard.general.string(forType: .string), predicate(value) {
-                return true
+            if let data = try? Data(contentsOf: clipboardCaptureURL),
+               let value = String(data: data, encoding: .utf8) {
+                return value
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         } while Date() < deadline
-        return false
-    }
-
-    private struct PasteboardEntry {
-        let type: NSPasteboard.PasteboardType
-        let data: Data
-    }
-
-    private typealias PasteboardSnapshot = [[PasteboardEntry]]
-
-    private func snapshotPasteboard(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
-        (pasteboard.pasteboardItems ?? []).map { item in
-            item.types.compactMap { type in
-                item.data(forType: type).map { PasteboardEntry(type: type, data: Data($0)) }
-            }
-        }
-    }
-
-    private func restorePasteboard(
-        _ snapshot: PasteboardSnapshot,
-        to pasteboard: NSPasteboard
-    ) {
-        pasteboard.clearContents()
-        let items = snapshot.compactMap { entries -> NSPasteboardItem? in
-            guard !entries.isEmpty else { return nil }
-            let item = NSPasteboardItem()
-            for entry in entries {
-                item.setData(Data(entry.data), forType: entry.type)
-            }
-            return item
-        }
-        if !items.isEmpty { pasteboard.writeObjects(items) }
+        return nil
     }
 
     private func keepScreenshot(named name: String, of element: XCUIElement) {
@@ -715,7 +686,10 @@ final class CCBuddyUITests: XCTestCase {
                 bitmap.pixelsHigh - 1,
                 max(0, Int((sample.point.y * yScale).rounded(.down)))
             )
-            let pixelY = bitmap.pixelsHigh - 1 - topPixelY
+            // PNG-backed NSBitmapImageRep exposes the decoded raster top-down: y = 0 is the
+            // screenshot's top row. Flipping this coordinate samples the bottom transcript card
+            // and can falsely report a transparent or mismatched integrated title surface.
+            let pixelY = topPixelY
             guard let color = bitmap.colorAt(x: pixelX, y: pixelY),
                   let sRGB = color.usingColorSpace(.sRGB) else {
                 XCTFail("Could not read the \(sample.name) top-surface pixel")

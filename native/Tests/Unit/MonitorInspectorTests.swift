@@ -1,8 +1,76 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import CCBuddy
 
 final class MonitorInspectorTests: XCTestCase {
+    func testAppClipboardWritesPasteboardAndMirrorsExactValueOnlyForUITests() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("app-clipboard")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let capture = root.appendingPathComponent(".ccbud-ui-test-clipboard")
+        let pasteboard = NSPasteboard(
+            name: .init("dev.ccbud.app-clipboard.\(UUID().uuidString)")
+        )
+
+        let disabledEnvironments = [
+            ["CCBUD_HOME": root.path],
+            ["CCBUD_UI_TESTING": "1"],
+            ["CCBUD_UI_TESTING": "0", "CCBUD_HOME": root.path],
+        ]
+        for (index, environment) in disabledEnvironments.enumerated() {
+            try? FileManager.default.removeItem(at: capture)
+            let text = "pasteboard-only-\(index)"
+
+            XCTAssertTrue(
+                AppClipboard.write(text, pasteboard: pasteboard, environment: environment)
+            )
+            XCTAssertEqual(pasteboard.string(forType: .string), text)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: capture.path))
+        }
+
+        let exact = #"{"authorization":"Bearer ui-secret-token","unicode":"复制•"}"#
+        XCTAssertTrue(
+            AppClipboard.write(
+                exact,
+                pasteboard: pasteboard,
+                environment: ["CCBUD_UI_TESTING": "1", "CCBUD_HOME": root.path]
+            )
+        )
+        XCTAssertEqual(pasteboard.string(forType: .string), exact)
+#if DEBUG
+        XCTAssertEqual(try Data(contentsOf: capture), Data(exact.utf8))
+#else
+        XCTAssertFalse(FileManager.default.fileExists(atPath: capture.path))
+#endif
+    }
+
+    func testAppClipboardMirrorFailurePreservesPasteboardResultAndContents() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("app-clipboard-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blockedHome = root.appendingPathComponent("not-a-directory")
+        try Data("leave unchanged".utf8).write(to: blockedHome)
+        let text = "exact value despite mirror failure"
+
+        let controlPasteboard = NSPasteboard(
+            name: .init("dev.ccbud.app-clipboard.control.\(UUID().uuidString)")
+        )
+        controlPasteboard.clearContents()
+        let expectedResult = controlPasteboard.setString(text, forType: .string)
+
+        let pasteboard = NSPasteboard(
+            name: .init("dev.ccbud.app-clipboard.failure.\(UUID().uuidString)")
+        )
+        let result = AppClipboard.write(
+            text,
+            pasteboard: pasteboard,
+            environment: ["CCBUD_UI_TESTING": "1", "CCBUD_HOME": blockedHome.path]
+        )
+
+        XCTAssertEqual(result, expectedResult)
+        XCTAssertEqual(pasteboard.string(forType: .string), text)
+        XCTAssertEqual(try Data(contentsOf: blockedHome), Data("leave unchanged".utf8))
+    }
+
     func testGatewayDetailAlwaysUsesFourExactCaptureBoundaries() throws {
         let log = GatewayLog(
             id: "1",

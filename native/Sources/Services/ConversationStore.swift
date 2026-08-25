@@ -915,12 +915,10 @@ final class ConversationStore: ObservableObject {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         fileInspector: any ConversationFileInspecting = ConversationFileInspector(),
         pathCopier: @escaping (String) -> Void = { path in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(path, forType: .string)
+            AppClipboard.write(path)
         },
         commandCopier: @escaping (String) -> Bool = { command in
-            NSPasteboard.general.clearContents()
-            return NSPasteboard.general.setString(command, forType: .string)
+            AppClipboard.write(command)
         },
         fileRevealer: @escaping (URL) -> Void = { file in
             NSWorkspace.shared.activateFileViewerSelecting([file])

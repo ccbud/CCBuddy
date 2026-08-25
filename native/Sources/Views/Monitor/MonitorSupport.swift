@@ -97,8 +97,7 @@ enum MonitorFormat {
     }
 
     static func copyToPasteboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        AppClipboard.write(text)
     }
 }
 

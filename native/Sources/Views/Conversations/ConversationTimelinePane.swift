@@ -60,7 +60,10 @@ struct ConversationTimelinePane: View {
                     metadataBadge(metadata.project)
                 }
                 if let branch = metadata.gitBranch, !branch.isEmpty {
-                    Label(branch, systemImage: "arrow.triangle.branch")
+                    HStack(spacing: 4) {
+                        ConversationWorkbenchIcon(.gitBranch, size: 11)
+                        Text(branch)
+                    }
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -84,7 +87,10 @@ struct ConversationTimelinePane: View {
             }
 
             if let cwd = metadata.cwd, !cwd.isEmpty {
-                Label(cwd, systemImage: "folder")
+                HStack(spacing: 5) {
+                    ConversationWorkbenchIcon(.folder, size: 12)
+                    Text(cwd)
+                }
                     .font(.system(size: 11))
                     .foregroundStyle(Color.ccCaption)
                     .lineLimit(1)
@@ -169,7 +175,11 @@ struct ConversationTimelinePane: View {
                 ForEach(subagents) { tab in
                     Button { store.selectTranscript(tab.id) } label: {
                         HStack {
-                            Image(systemName: tab.id == store.activeTranscriptID ? "checkmark" : "cpu")
+                            if tab.id == store.activeTranscriptID {
+                                ConversationWorkbenchIcon(.check, size: 12)
+                            } else {
+                                Image(systemName: "cpu")
+                            }
                             Text("\(hierarchyPrefix(for: tab.depth))\(tab.title)")
                             Text(appLanguage.localized("\(tab.messageCount) 条"))
                         }
@@ -214,8 +224,7 @@ struct ConversationTimelinePane: View {
                 .font(.system(size: 11, weight: .semibold))
                 .lineLimit(1)
             if showsDisclosure {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7.5, weight: .bold))
+                ConversationWorkbenchIcon(.chevronDown, size: 9)
                     .opacity(0.7)
             }
         }
@@ -235,8 +244,7 @@ struct ConversationTimelinePane: View {
     private var toolbar: some View {
         HStack(spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 10.5))
+                ConversationWorkbenchIcon(.search, size: 12)
                     .foregroundStyle(Color.ccCaption)
                 TextField(
                     "搜索消息…",
@@ -294,14 +302,14 @@ struct ConversationTimelinePane: View {
                 resumeControl
             }
             toolbarButton(
-                store.selectedMetadata?.starred == true ? "star.fill" : "star",
+                store.selectedMetadata?.starred == true ? .starFilled : .star,
                 label: store.selectedMetadata?.starred == true ? "取消收藏" : "收藏",
                 identifier: "conversation.action.starred"
             ) {
                 Task { await store.toggleSelectedStarred() }
             }
             toolbarButton(
-                store.selectedMetadata?.pinned == true ? "pin.fill" : "pin",
+                store.selectedMetadata?.pinned == true ? .pinFilled : .pin,
                 label: store.selectedMetadata?.pinned == true ? "取消置顶" : "置顶",
                 identifier: "conversation.action.pinned"
             ) {
@@ -320,7 +328,7 @@ struct ConversationTimelinePane: View {
                     Task { await store.restoreSelected() }
                 }
             }
-            toolbarButton("sidebar.right", label: "会话概览", identifier: "conversation.action.overview") {
+            toolbarButton(.messageSquare, label: "会话概览", identifier: "conversation.action.overview") {
                 showingOverview.toggle()
             }
             .popover(isPresented: $showingOverview, arrowEdge: .bottom) {
@@ -333,11 +341,15 @@ struct ConversationTimelinePane: View {
             }
 
             Menu {
-                Button("用 Claude 分析会话") {
+                Button {
                     Task { await store.replaySelected(in: .claude, language: appLanguage) }
+                } label: {
+                    Label("用 Claude 分析会话", systemImage: "sparkles")
                 }
-                Button("用 ChatGPT 分析会话") {
+                Button {
                     Task { await store.replaySelected(in: .chatGPT, language: appLanguage) }
+                } label: {
+                    Label("用 ChatGPT 分析会话", systemImage: "bubble.left.and.text.bubble.right")
                 }
                 Divider()
                 if store.canResumeSelected {
@@ -349,20 +361,42 @@ struct ConversationTimelinePane: View {
                     }
                     Divider()
                 }
-                Button(store.selectedMetadata?.starred == true ? "取消收藏" : "收藏") {
+                Button {
                     Task { await store.toggleSelectedStarred() }
+                } label: {
+                    workbenchMenuLabel(
+                        store.selectedMetadata?.starred == true ? "取消收藏" : "收藏",
+                        icon: store.selectedMetadata?.starred == true ? .starFilled : .star
+                    )
                 }
-                Button(store.selectedMetadata?.pinned == true ? "取消置顶" : "置顶") {
+                Button {
                     Task { await store.toggleSelectedPinned() }
+                } label: {
+                    workbenchMenuLabel(
+                        store.selectedMetadata?.pinned == true ? "取消置顶" : "置顶",
+                        icon: store.selectedMetadata?.pinned == true ? .pinFilled : .pin
+                    )
                 }
                 Divider()
-                Button("编辑标题与标签…") { showingMetadataEditor = true }
-                Button("复制会话路径") { store.copySelectedPath() }
-                Button("在 Finder 中显示") { store.revealSelectedInFinder() }
+                Button { showingMetadataEditor = true } label: {
+                    Label("编辑标题与标签…", systemImage: "tag")
+                }
+                Button { store.copySelectedPath() } label: {
+                    workbenchMenuLabel("复制会话路径", icon: .copy)
+                }
+                Button { store.revealSelectedInFinder() } label: {
+                    workbenchMenuLabel("在 Finder 中显示", icon: .folder)
+                }
                 Divider()
-                Button("导出 Markdown…") { presentMarkdownExportPanel() }
-                Button("导出原始会话…") { presentRawExportPanel() }
-                Button("导出独立 HTML…") { presentHTMLExportPanel() }
+                Button { presentMarkdownExportPanel() } label: {
+                    workbenchMenuLabel("导出 Markdown…", icon: .fileText)
+                }
+                Button { presentRawExportPanel() } label: {
+                    workbenchMenuLabel("导出原始会话…", icon: .download)
+                }
+                Button { presentHTMLExportPanel() } label: {
+                    workbenchMenuLabel("导出独立 HTML…", icon: .download)
+                }
                 Divider()
                 if store.isTrash {
                     Button("恢复会话") { Task { await store.restoreSelected() } }
@@ -372,12 +406,14 @@ struct ConversationTimelinePane: View {
                         }
                     }
                 } else {
-                    Button("移入回收站", role: .destructive) {
+                    Button(role: .destructive) {
                         Task { await store.softDeleteSelected() }
+                    } label: {
+                        workbenchMenuLabel("移入回收站", icon: .trash)
                     }
                 }
             } label: {
-                Image(systemName: "ellipsis")
+                ConversationWorkbenchIcon(.moreHorizontal, size: 16)
                     .frame(width: 26, height: 26)
             }
             .menuStyle(.borderlessButton)
@@ -400,7 +436,15 @@ struct ConversationTimelinePane: View {
                 guard let current else { return }
                 Task { await store.resumeSelected(in: current) }
             } label: {
-                Label(appLanguage.localized("继续"), systemImage: current?.systemImage ?? "terminal")
+                HStack(spacing: 5) {
+                    if let current {
+                        Image(systemName: current.systemImage)
+                            .font(.system(size: 11, weight: .medium))
+                    } else {
+                        ConversationWorkbenchIcon(.terminal, size: 13)
+                    }
+                    Text(appLanguage.localized("继续"))
+                }
                     .font(.system(size: 11, weight: .medium))
                     .padding(.leading, 8)
                     .padding(.trailing, 7)
@@ -425,8 +469,7 @@ struct ConversationTimelinePane: View {
                     }
                 }
             } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
+                ConversationWorkbenchIcon(.chevronDown, size: 10)
                     .frame(width: 22, height: 27)
                     .contentShape(Rectangle())
             }
@@ -451,6 +494,7 @@ struct ConversationTimelinePane: View {
         case .idle:
             ConversationDetailState(
                 symbol: "bubble.left.and.text.bubble.right",
+                workbenchIcon: .messageSquare,
                 title: "选择左侧会话，查看完整对话历史",
                 subtitle: "数据来自已配置的本地会话目录 · 活跃会话实时跟随"
             )
@@ -466,7 +510,11 @@ struct ConversationTimelinePane: View {
             if let session = store.activeTranscript {
                 timeline(session)
             } else {
-                ConversationDetailState(symbol: "bubble.left", title: "会话没有可显示的消息")
+                ConversationDetailState(
+                    symbol: "bubble.left",
+                    workbenchIcon: .messageSquare,
+                    title: "会话没有可显示的消息"
+                )
             }
         }
     }
@@ -551,6 +599,19 @@ struct ConversationTimelinePane: View {
             .accessibilityIdentifier(identifier)
     }
 
+    private func toolbarButton(
+        _ icon: ConversationWorkbenchIconName,
+        label: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) { ConversationWorkbenchIcon(icon, size: 14) }
+            .buttonStyle(ConversationToolButtonStyle())
+            .help(appLanguage.localized(label))
+            .accessibilityLabel(appLanguage.localized(label))
+            .accessibilityIdentifier(identifier)
+    }
+
     private func labeledToolbarButton(
         _ symbol: String,
         title: String,
@@ -566,6 +627,17 @@ struct ConversationTimelinePane: View {
         .buttonStyle(ConversationToolButtonStyle())
         .help(appLanguage.localized(title))
         .accessibilityIdentifier(identifier)
+    }
+
+    private func workbenchMenuLabel(
+        _ title: String,
+        icon: ConversationWorkbenchIconName
+    ) -> some View {
+        Label {
+            Text(appLanguage.localized(title))
+        } icon: {
+            ConversationWorkbenchIcon(icon, size: 13)
+        }
     }
 
     private func presentRawExportPanel() {
@@ -668,6 +740,7 @@ private struct ConversationDetailState<Actions: View>: View {
     @Environment(\.appLanguage) private var appLanguage
 
     let symbol: String
+    var workbenchIcon: ConversationWorkbenchIconName?
     let title: String
     var subtitle: String?
     var showsProgress: Bool
@@ -675,12 +748,14 @@ private struct ConversationDetailState<Actions: View>: View {
 
     init(
         symbol: String,
+        workbenchIcon: ConversationWorkbenchIconName? = nil,
         title: String,
         subtitle: String? = nil,
         showsProgress: Bool = false,
         @ViewBuilder actions: () -> Actions
     ) {
         self.symbol = symbol
+        self.workbenchIcon = workbenchIcon
         self.title = title
         self.subtitle = subtitle
         self.showsProgress = showsProgress
@@ -695,7 +770,11 @@ private struct ConversationDetailState<Actions: View>: View {
                 } else {
                     ZStack {
                         Circle().fill(Color.ccForeground.opacity(0.055))
-                        Image(systemName: symbol).font(.system(size: 25, weight: .light))
+                        if let workbenchIcon {
+                            ConversationWorkbenchIcon(workbenchIcon, size: 28)
+                        } else {
+                            Image(systemName: symbol).font(.system(size: 25, weight: .light))
+                        }
                     }
                     .frame(width: 58, height: 58)
                 }
@@ -722,8 +801,20 @@ private struct ConversationDetailState<Actions: View>: View {
 }
 
 private extension ConversationDetailState where Actions == EmptyView {
-    init(symbol: String, title: String, subtitle: String? = nil, showsProgress: Bool = false) {
-        self.init(symbol: symbol, title: title, subtitle: subtitle, showsProgress: showsProgress) {
+    init(
+        symbol: String,
+        workbenchIcon: ConversationWorkbenchIconName? = nil,
+        title: String,
+        subtitle: String? = nil,
+        showsProgress: Bool = false
+    ) {
+        self.init(
+            symbol: symbol,
+            workbenchIcon: workbenchIcon,
+            title: title,
+            subtitle: subtitle,
+            showsProgress: showsProgress
+        ) {
             EmptyView()
         }
     }

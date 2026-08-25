@@ -74,7 +74,7 @@ struct CLIConnectionManager {
         "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
     ] + claudeModelKeys
     private static let codexOwnedKeys = [
-        "model", "model_provider", "model_reasoning_effort",
+        "model", "model_provider", "model_reasoning_effort", "web_search",
     ]
 
     let repository: ConfigRepository
@@ -390,13 +390,58 @@ struct CLIConnectionManager {
             }
             backup["provider_block_raw"] = document.rawProviderBlock().map(JSONValue.string) ?? .null
             config.codexBackup = .object(backup)
+        } else if var backup = config.codexBackup.objectValue,
+                  backup["web_search"] == nil,
+                  backup["web_search_raw"] == nil {
+            // Backups written before web_search became a managed Codex key do not say whether
+            // the user owned the live assignment. Capture it before applying the new sentinel so
+            // a later disconnect cannot mistake that legacy omission for an original null value.
+            backup["web_search"] = document.topLevelString(for: "web_search")
+                .map(JSONValue.string) ?? .null
+            backup["web_search_raw"] = document.rawTopLevelAssignment(for: "web_search")
+                .map(JSONValue.string) ?? .null
+            config.codexBackup = .object(backup)
         }
         select(Self.codexTarget, in: &config)
         document.setTopLevelString("ccbud", for: "model_provider")
         if !model.isEmpty { document.setTopLevelString(model, for: "model") }
         document.setTopLevelString("ultra", for: "model_reasoning_effort")
+        if !codexHasHostedWebSearchRoute(in: config) {
+            // Codex 0.149+ declares its hosted web-search tool on ordinary Responses requests.
+            // Cross-wire providers cannot execute that server-side tool. When failover is active,
+            // however, their provider-local preparation failure can skip to a native Responses
+            // route, so disable search only when no effective route can execute it.
+            document.setTopLevelString("disabled", for: "web_search")
+        } else if document.topLevelString(for: "web_search") == "disabled",
+                  let backup = config.codexBackup.objectValue {
+            // Remove only the sentinel this managed cross-wire profile may have written. Restore
+            // the user's exact original assignment (including comments) when an effective route
+            // can expose hosted search again.
+            document.restoreTopLevelValue(
+                for: "web_search",
+                rawAssignment: backup["web_search_raw"]?.stringValue,
+                fallbackValue: backup["web_search"]?.stringValue
+            )
+        }
         document.setCCBuddyProvider(port: config.port, token: currentToken(for: config))
         return Data(document.source.utf8)
+    }
+
+    private func codexHasHostedWebSearchRoute(in config: AppConfig) -> Bool {
+        let providerIDs: [String]
+        if config.gatewayFailover.enabled {
+            providerIDs = config.gatewayFailover.providerIds
+        } else if let activeProviderID = config.activeProvider?.id {
+            providerIDs = [activeProviderID]
+        } else {
+            providerIDs = []
+        }
+        var providersByID: [String: Provider] = [:]
+        for provider in config.providers {
+            guard providersByID[provider.id] == nil else { return false }
+            providersByID[provider.id] = provider
+        }
+        return providerIDs.contains { providersByID[$0]?.protocol == .openAIResponses }
     }
 
     private func disconnectedCodexDocument(config: inout AppConfig) throws -> Data? {
@@ -409,6 +454,14 @@ struct CLIConnectionManager {
         document.removeCCBuddyProvider()
 
         for key in Self.codexOwnedKeys {
+            if key == "web_search",
+               backup["web_search"] == nil,
+               backup["web_search_raw"] == nil {
+                // A pre-web_search backup proves the older CCBuddy never took ownership of this
+                // key. Direct disconnect after an upgrade must therefore leave the live user
+                // assignment byte-for-byte intact instead of interpreting a missing field as null.
+                continue
+            }
             document.restoreTopLevelValue(
                 for: key,
                 rawAssignment: backup["\(key)_raw"]?.stringValue,

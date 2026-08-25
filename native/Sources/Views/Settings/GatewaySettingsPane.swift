@@ -357,8 +357,7 @@ struct GatewaySettingsPane: View {
     }
 
     private func copy(_ value: String, marker: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+        AppClipboard.write(value)
         copiedValue = marker
         Task {
             try? await Task.sleep(nanoseconds: 1_400_000_000)

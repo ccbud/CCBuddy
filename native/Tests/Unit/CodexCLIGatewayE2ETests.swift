@@ -77,6 +77,7 @@ final class CodexCLIGatewayE2ETests: XCTestCase {
         )
         XCTAssertEqual(codexDocument.topLevelString(for: "model_provider"), "ccbud")
         XCTAssertEqual(codexDocument.topLevelString(for: "model"), CLIConnectionManager.codexModel)
+        XCTAssertEqual(codexDocument.topLevelString(for: "web_search"), "disabled")
         XCTAssertEqual(codexDocument.providerString(for: "base_url"), "http://localhost:\(config.port)/v1")
         XCTAssertEqual(codexDocument.providerString(for: "wire_api"), "responses")
         XCTAssertEqual(codexDocument.providerString(for: "experimental_bearer_token"), gatewayToken)

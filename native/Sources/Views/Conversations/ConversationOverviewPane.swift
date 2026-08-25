@@ -25,7 +25,7 @@ struct ConversationOverviewPane: View {
                     HStack {
                         Spacer(minLength: 0)
                         Button(action: toggleCollapsed) {
-                            Image(systemName: "chevron.right")
+                            ConversationWorkbenchIcon(.chevronRight, size: 12)
                         }
                         .buttonStyle(ConversationToolButtonStyle())
                         .help(appLanguage.localized("收起会话概览"))

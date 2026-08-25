@@ -712,13 +712,17 @@ final class ConversationSessionLocationsTests: XCTestCase {
             activeOnly: false
         )
 
-        XCTAssertEqual(
-            discovery.candidates.filter { $0.formatHint == .pi }.map { $0.file.path },
-            [newer.path]
+        let winner = try XCTUnwrap(
+            discovery.candidates.first { $0.formatHint == .pi }
         )
         XCTAssertEqual(
-            discovery.fallbackCandidatesByWinnerPath[newer.path]?.map { $0.file.path },
-            [older.path]
+            winner.file.resolvingSymlinksInPath(),
+            newer.resolvingSymlinksInPath()
+        )
+        XCTAssertEqual(
+            discovery.fallbackCandidatesByWinnerPath[winner.file.standardizedFileURL.path]?
+                .map { $0.file.resolvingSymlinksInPath() },
+            [older.resolvingSymlinksInPath()]
         )
     }
 
@@ -773,17 +777,18 @@ final class ConversationSessionLocationsTests: XCTestCase {
             ),
             nativeID
         )
-        XCTAssertEqual(
-            discovery.candidates.filter { $0.formatHint == .codex }.map { $0.file.path },
-            [newer.path]
+        let winner = try XCTUnwrap(
+            discovery.candidates.first { $0.formatHint == .codex }
         )
         XCTAssertEqual(
-            discovery.candidates.first { $0.file.path == newer.path }?.nativeID,
-            nativeID
+            winner.file.resolvingSymlinksInPath(),
+            newer.resolvingSymlinksInPath()
         )
+        XCTAssertEqual(winner.nativeID, nativeID)
         XCTAssertEqual(
-            discovery.fallbackCandidatesByWinnerPath[newer.path]?.map { $0.file.path },
-            [older.path]
+            discovery.fallbackCandidatesByWinnerPath[winner.file.standardizedFileURL.path]?
+                .map { $0.file.resolvingSymlinksInPath() },
+            [older.resolvingSymlinksInPath()]
         )
     }
 

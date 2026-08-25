@@ -5,6 +5,7 @@
 //! as the single source of truth preserves Anthropic, OpenAI Chat, and OpenAI Responses behavior
 //! (including tool history) across the Tauri and native applications.
 
+pub mod anthropic_reasoning;
 pub mod auth;
 mod citation_renderer;
 pub mod config;

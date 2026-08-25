@@ -1,9 +1,13 @@
+use ccbud_gateway::anthropic_reasoning::{
+    encode_anthropic_thinking_block, ANTHROPIC_THINKING_ENCRYPTED_PREFIX,
+};
 use ccbud_gateway::config::GatewayConfig;
 use ccbud_gateway::server::{start, RunningGateway};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 const MANAGEMENT_TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
@@ -65,6 +69,62 @@ impl MockUpstream {
 }
 
 impl Drop for MockUpstream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+struct GatedSseUpstream {
+    port: u16,
+    requests: Arc<Mutex<Vec<Vec<u8>>>>,
+    release_terminal: Arc<Notify>,
+    terminal_sent: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl GatedSseUpstream {
+    async fn start(first: String, terminal: String) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let release_terminal = Arc::new(Notify::new());
+        let release = release_terminal.clone();
+        let terminal_sent = Arc::new(AtomicBool::new(false));
+        let sent = terminal_sent.clone();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_message(&mut stream).await.unwrap();
+            recorded.lock().await.push(request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            stream.write_all(first.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+            release.notified().await;
+            sent.store(true, Ordering::SeqCst);
+            stream.write_all(terminal.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        Self {
+            port,
+            requests,
+            release_terminal,
+            terminal_sent,
+            task,
+        }
+    }
+
+    async fn latest_text(&self) -> String {
+        let requests = self.requests.lock().await;
+        String::from_utf8(requests.last().unwrap().clone()).unwrap()
+    }
+}
+
+impl Drop for GatedSseUpstream {
     fn drop(&mut self) {
         self.task.abort();
     }
@@ -990,6 +1050,123 @@ async fn anthropic_hosted_search_stream_recovers_terminal_responses_sse() {
 }
 
 #[tokio::test]
+async fn codex_anthropic_signed_thinking_stream_is_incremental_and_complete() {
+    let first = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_live\",\"model\":\"claude-upstream\",\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":2}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"inspect live\"}}\n\n"
+    );
+    let terminal = concat!(
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_live\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_live\",\"name\":\"read\",\"input\":{}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"live.txt\\\"}\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"thinking_tokens\":2}}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n"
+    );
+    let upstream = GatedSseUpstream::start(first.to_string(), terminal.to_string()).await;
+    let running = start(config(
+        json!([{
+            "id":"primary","name":"Primary",
+            "baseUrl":format!("http://127.0.0.1:{}/v1",upstream.port),
+            "defaultModel":"claude-upstream","protocol":"anthropic"
+        }]),
+        json!({"enabled":false,"providerIds":[]}),
+        json!({"failureThreshold":1,"successThreshold":1,"timeoutSeconds":60,"errorRateThreshold":1.0,"minRequests":10}),
+    ))
+    .await
+    .unwrap();
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", running.listeners.public_port))
+        .await
+        .unwrap();
+    let body = json!({
+        "model":"gpt-client","stream":true,"reasoning":{"effort":"high"},
+        "input":[{"type":"message","role":"user","content":"inspect live"}],
+        "tools":[{
+            "type":"function","name":"read","parameters":{
+                "type":"object","properties":{"path":{"type":"string"}}
+            }
+        }]
+    })
+    .to_string();
+    let request = format!(
+        "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        running.listeners.public_port,
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = Vec::new();
+    let mut buffer = [0u8; 8192];
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let count = stream.read(&mut buffer).await.unwrap();
+            assert!(count > 0, "gateway closed before the live reasoning delta");
+            response.extend_from_slice(&buffer[..count]);
+            if String::from_utf8_lossy(&response).contains("response.reasoning_summary_text.delta")
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("live reasoning was buffered until the Anthropic terminal event");
+
+    let prefix = String::from_utf8_lossy(&response);
+    assert!(prefix.contains("response.reasoning_summary_part.added"));
+    assert!(!prefix.contains("response.completed"));
+    assert!(!prefix.contains(ANTHROPIC_THINKING_ENCRYPTED_PREFIX));
+    assert!(!upstream.terminal_sent.load(Ordering::SeqCst));
+
+    upstream.release_terminal.notify_one();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8_lossy(&response);
+    assert!(
+        response.contains("response.reasoning_summary_text.done"),
+        "{response}"
+    );
+    assert!(
+        response.contains("response.reasoning_summary_part.done"),
+        "{response}"
+    );
+    assert!(
+        response.contains("response.function_call_arguments.delta"),
+        "{response}"
+    );
+    assert!(
+        response.contains("response.function_call_arguments.done"),
+        "{response}"
+    );
+    assert!(response.contains("event: response.completed"), "{response}");
+    assert_eq!(
+        response
+            .matches(ANTHROPIC_THINKING_ENCRYPTED_PREFIX)
+            .count(),
+        2,
+        "the done item and terminal response must both carry signed reasoning: {response}"
+    );
+    assert!(response.contains("\"reasoning_tokens\":2"), "{response}");
+
+    let upstream_request = upstream.latest_text().await;
+    let upstream_body: Value =
+        serde_json::from_str(upstream_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(upstream_body["stream"], true);
+    running.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn anthropic_hosted_search_stream_fails_closed_without_terminal_response() {
     let sse = concat!(
         "event: response.created\n",
@@ -1030,6 +1207,111 @@ async fn anthropic_hosted_search_stream_fails_closed_without_terminal_response()
         "{response}"
     );
     assert!(!response.contains("server_tool_use"), "{response}");
+    running.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_anthropic_bridge_replays_and_returns_signed_thinking() {
+    let returned_thinking =
+        json!({"type":"thinking","thinking":"inspect next","signature":"sig_returned"});
+    let upstream = MockUpstream::start(
+        200,
+        json!({
+            "id":"msg_signed", "type":"message", "role":"assistant",
+            "model":"claude-upstream",
+            "content":[
+                returned_thinking,
+                {"type":"tool_use","id":"call_next","name":"read","input":{"path":"next.txt"}}
+            ],
+            "stop_reason":"tool_use",
+            "usage":{
+                "input_tokens":5,"cache_read_input_tokens":2,
+                "cache_creation_input_tokens":1,"output_tokens":3,
+                "output_tokens_details":{"thinking_tokens":2}
+            }
+        }),
+    )
+    .await;
+    let running = start(config(
+        json!([{
+            "id":"primary","name":"Primary",
+            "baseUrl":format!("http://127.0.0.1:{}/v1",upstream.port),
+            "defaultModel":"claude-upstream","protocol":"anthropic"
+        }]),
+        json!({"enabled":false,"providerIds":[]}),
+        json!({"failureThreshold":1,"successThreshold":1,"timeoutSeconds":60,"errorRateThreshold":1.0,"minRequests":10}),
+    ))
+    .await
+    .unwrap();
+
+    let replayed_thinking =
+        json!({"type":"thinking","thinking":"inspect","signature":"sig_replayed"});
+    let encrypted = encode_anthropic_thinking_block(&replayed_thinking).unwrap();
+    let response = send_raw_gateway_request_to(
+        &running,
+        "/v1/responses",
+        &json!({
+            "model":"gpt-client","max_output_tokens":8192,"stream":true,
+            "reasoning":{"effort":"high","summary":"auto"},
+            "input":[
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]},
+                {"type":"reasoning","id":"rs_previous","summary":[{"type":"summary_text","text":"inspect"}],
+                 "encrypted_content":encrypted},
+                {"type":"function_call","id":"fc_previous","call_id":"call_previous",
+                 "name":"read","arguments":"{\"path\":\"old.txt\"}","status":"completed"},
+                {"type":"function_call_output","call_id":"call_previous","output":"old contents"}
+            ],
+            "tools":[{
+                "type":"function","name":"read","description":"Read a file",
+                "parameters":{"type":"object","properties":{"path":{"type":"string"}}}
+            }]
+        }),
+    )
+    .await;
+
+    let response = String::from_utf8(response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains("content-type: text/event-stream"),
+        "{response}"
+    );
+    assert!(response.contains("event: response.completed"), "{response}");
+    assert!(
+        response.contains("response.reasoning_summary_text.delta"),
+        "{response}"
+    );
+    assert_eq!(
+        response
+            .matches(ANTHROPIC_THINKING_ENCRYPTED_PREFIX)
+            .count(),
+        2,
+        "signed reasoning must be present in the done item and terminal response: {response}"
+    );
+    assert!(response.contains("\"cached_tokens\":2"), "{response}");
+    assert!(response.contains("\"reasoning_tokens\":2"), "{response}");
+
+    let upstream_request = upstream.latest_text().await;
+    let upstream_body: Value =
+        serde_json::from_str(upstream_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(upstream_body["model"], "claude-upstream");
+    // Compatible gateways may ignore stream:true and return JSON. The gateway still preserves
+    // signed reasoning while the conforming path remains genuinely incremental (covered above).
+    assert_eq!(upstream_body["stream"], true);
+    assert_eq!(upstream_body["thinking"]["type"], "enabled");
+    assert_eq!(upstream_body["thinking"]["budget_tokens"], 4096);
+    let assistant = upstream_body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(|block| block["id"] == "call_previous"))
+        })
+        .unwrap();
+    assert_eq!(assistant["content"][0], replayed_thinking);
+    assert_eq!(assistant["content"][1]["type"], "tool_use");
     running.shutdown().await.unwrap();
 }
 

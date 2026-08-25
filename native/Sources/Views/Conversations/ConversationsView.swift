@@ -261,7 +261,7 @@ private struct ConversationNotice: View {
     var body: some View {
         Button(action: dismiss) {
             HStack(spacing: 8) {
-                Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                ConversationWorkbenchIcon(isError ? .circleX : .check, size: 14)
                 Text(appLanguage.localized(message)).lineLimit(2)
             }
             .font(.system(size: 12, weight: .medium))
