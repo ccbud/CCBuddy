@@ -56,14 +56,17 @@ extension Theme {
     /// Body copy and titles.
     static let foreground = Color.themed(light: 0x1D1B18, dark: 0xF0EEE9)
     /// Every kind of secondary text. Never stack opacity on top of it.
-    static let mutedForeground = Color.themed(light: 0x6B6760, dark: 0xA8A49B)
+    ///
+    /// Dark enough to clear 4.5:1 against `sidebarAccent`, the darkest material it ever sits on —
+    /// metadata here is body-sized, so the large-text allowance does not apply to it.
+    static let mutedForeground = Color.themed(light: 0x64605A, dark: 0xA8A49B)
     /// Placeholder / disabled text — the only third step, used sparingly.
     static let faintForeground = Color.themed(light: 0x9A958A, dark: 0x7A766D)
 
     /// Claude clay. Fills for primary buttons, toggles, focus rings and active segments.
     static let accent = Color.themed(light: 0xCC785C, dark: 0xD97757)
     /// Darkened clay for accent-colored *text* so it clears contrast on paper.
-    static let accentText = Color.themed(light: 0xA8502C, dark: 0xE7A184)
+    static let accentText = Color.themed(light: 0xA64F2B, dark: 0xE7A184)
     /// Content placed on top of `accent`.
     static let onAccent = Color.themed(light: 0xFFFFFF, dark: 0xFFFFFF)
     /// Faint clay wash for accent-tinted backings.
@@ -73,11 +76,11 @@ extension Theme {
 // MARK: - Status
 
 extension Theme {
-    static let success = Color.themed(light: 0x3D7A4E, dark: 0x56C789)
+    static let success = Color.themed(light: 0x3B774C, dark: 0x56C789)
     static let successSoft = Color.themed(light: 0xE7EFE6, dark: 0x1D3527)
     static let danger = Color.themed(light: 0xB4442F, dark: 0xFF6B60)
     static let dangerSoft = Color.themed(light: 0xF8E7E2, dark: 0x3E2321)
-    static let warning = Color.themed(light: 0x9A6C18, dark: 0xE0A94A)
+    static let warning = Color.themed(light: 0x8D6316, dark: 0xE0A94A)
     static let warningSoft = Color.themed(light: 0xF6EEDD, dark: 0x3A2F1C)
 }
 
