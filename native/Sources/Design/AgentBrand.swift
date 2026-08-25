@@ -15,6 +15,10 @@ enum AgentBrand {
         var monochrome: Bool
         /// Shown when no asset resolves.
         var letter: String
+        /// True when the asset is a full app icon with an opaque background rather than a trimmed
+        /// glyph. Those get the squircle clip macOS gives app icons; drawn flat they would sit on
+        /// the warm materials as a hard-edged block of their own background colour.
+        var appIcon: Bool = false
     }
 
     static func mark(for source: HistorySource) -> Mark {
@@ -24,7 +28,7 @@ enum AgentBrand {
         case .grok: Mark(asset: "grok", monochrome: true, letter: "G")
         case .copilot: Mark(asset: "copilot", monochrome: true, letter: "G")
         case .antigravity: Mark(asset: "antigravity", monochrome: false, letter: "A")
-        case .qoder: Mark(asset: nil, monochrome: false, letter: "Q")
+        case .qoder: Mark(asset: "qoder", monochrome: false, letter: "Q", appIcon: true)
         }
     }
 
@@ -52,10 +56,15 @@ struct AgentBrandMark: View {
     var body: some View {
         Group {
             if let image = AgentBrand.image(for: source, dark: colorScheme == .dark) {
+                let mark = AgentBrand.mark(for: source)
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
+                    .clipShape(RoundedRectangle(
+                        cornerRadius: mark.appIcon ? size * 0.24 : 0,
+                        style: .continuous
+                    ))
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)

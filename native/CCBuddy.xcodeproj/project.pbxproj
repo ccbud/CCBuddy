@@ -85,6 +85,7 @@
 		6366DD72CD593250CE200A68 /* AppLocalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7656CCCB935AF046CA50C818 /* AppLocalizationTests.swift */; };
 		64B54206383FDECD40B03729 /* ConversationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C71A06CBACEAA701108EA659 /* ConversationStoreTests.swift */; };
 		67F1915A5554DA2FC7CD4C19 /* chatgpt.svg in Resources */ = {isa = PBXBuildFile; fileRef = EE73982AF1812DD14888E1F2 /* chatgpt.svg */; };
+		680DE72A64FA72BA9B47B164 /* qoder.png in Resources */ = {isa = PBXBuildFile; fileRef = 775892055508C268BA09D38C /* qoder.png */; };
 		68759ABDA2397675EC2E4616 /* UsageHistoryScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7D79207DFFABC08E99B355F /* UsageHistoryScanner.swift */; };
 		6953099919213A0F6856512D /* DesignProofSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4DE8FA9EF70BFD05664E7E1 /* DesignProofSheetTests.swift */; };
 		6A6531F8569DDDDEE268FF08 /* CodexConfigDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2548DDBF33AFC1E1B524FF9 /* CodexConfigDocument.swift */; };
@@ -352,6 +353,7 @@
 		7554A1CED26299CACF25D624 /* GrokHistoryParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokHistoryParser.swift; sourceTree = "<group>"; };
 		762EA39470095D5CB70B5818 /* PluginSidecarSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginSidecarSupervisor.swift; sourceTree = "<group>"; };
 		7656CCCB935AF046CA50C818 /* AppLocalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLocalizationTests.swift; sourceTree = "<group>"; };
+		775892055508C268BA09D38C /* qoder.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = qoder.png; sourceTree = "<group>"; };
 		77F8388C1561DA4F13A2DA50 /* AppLocalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLocalization.swift; sourceTree = "<group>"; };
 		7835141C13476E72C184E75C /* PluginActionFormSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginActionFormSheet.swift; sourceTree = "<group>"; };
 		7991215D51C81FDEF653B27C /* copilot-light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "copilot-light.png"; sourceTree = "<group>"; };
@@ -885,6 +887,7 @@
 				CDBD37601C3D88C5D8F5DB39 /* gemini.png */,
 				3843426FFCFAAB585E5E8E04 /* grok-light.png */,
 				F630DAC1C354055489498DB1 /* grok.png */,
+				775892055508C268BA09D38C /* qoder.png */,
 			);
 			path = Brands;
 			sourceTree = "<group>";
@@ -1059,6 +1062,7 @@
 				247D14A7F69C57004BAEE444 /* kimi.svg in Resources */,
 				38A8BCAF8B7679C024DACF32 /* minimax.svg in Resources */,
 				4A19BDF0D3AF616BB21A42DB /* nvidia.svg in Resources */,
+				680DE72A64FA72BA9B47B164 /* qoder.png in Resources */,
 				ADD7FF2F04ACE02844712021 /* xiaomi.svg in Resources */,
 				7C1FAEE1923B69074D92E871 /* zenmux.svg in Resources */,
 				29CC805D0000B120B55DDC82 /* zhipu.svg in Resources */,

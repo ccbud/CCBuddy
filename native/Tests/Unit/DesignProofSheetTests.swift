@@ -361,7 +361,9 @@ private struct RailProofSheet: View {
                 SidebarRow(lead: .symbol("star", size: 14), title: "收藏", count: 6, selected: false, identifier: "l2") {}
                 SidebarRow(lead: .brand(.claude), title: "Claude Code", count: 2, selected: false, nested: true, identifier: "l3") {}
                 SidebarRow(lead: .brand(.codex), title: "Codex", count: 749, selected: false, nested: true, identifier: "l4") {}
-                SidebarRow(lead: .symbol("folder", size: 14), title: "ccg", count: 245, selected: false, nested: true, identifier: "l5") {}
+                SidebarRow(lead: .brand(.qoder), title: "Qoder", count: 46, selected: false, nested: true, identifier: "l5") {}
+            SidebarRow(lead: .brand(.grok), title: "Grok", count: 111, selected: false, nested: true, identifier: "l6") {}
+            SidebarRow(lead: .symbol("folder", size: 14), title: "ccg", count: 245, selected: false, nested: true, identifier: "l7") {}
             }
             Spacer(minLength: Space.md)
         }
