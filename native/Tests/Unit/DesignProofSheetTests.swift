@@ -71,9 +71,79 @@ final class DesignProofSheetTests: XCTestCase {
     func testRenderSessionRowSheet() throws {
         try render("session-rows", SessionRowProofSheet())
     }
+
+    func testRenderTranscriptSheet() throws {
+        try render("transcript", TranscriptProofSheet())
+    }
 }
 
 // MARK: - Sheets
+
+/// A short exchange in the reading card: who is speaking, prose, thinking and a tool call.
+private struct TranscriptProofSheet: View {
+    private func message(
+        _ role: String,
+        _ blocks: [HistoryContentBlock],
+        sidechain: Bool = false
+    ) -> HistoryMessage {
+        HistoryMessage(role: role, content: blocks, isSidechain: sidechain)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            ConversationMessageView(
+                message: message("user", [.init(type: "text", text: "把索引限制从 600 提到全量，顺便看看空闲页为什么不回收。")]),
+                messageIndex: 0,
+                sourceRawValue: HistorySource.claude.rawValue,
+                toolResults: [:],
+                pairedToolResultIDs: [],
+                searchQuery: "",
+                isCurrentSearchMatch: false,
+                fontSize: 13
+            )
+            ConversationMessageView(
+                message: message("assistant", [
+                    .init(type: "thinking", thinking: "先确认 listProjects 的上限来自哪里。"),
+                    .init(type: "text", text: "`auto_vacuum` 在已有数据库上是 no-op，所以 `incremental_vacuum` 一直在空转。"),
+                ]),
+                messageIndex: 1,
+                sourceRawValue: HistorySource.claude.rawValue,
+                toolResults: [:],
+                pairedToolResultIDs: [],
+                searchQuery: "",
+                isCurrentSearchMatch: false,
+                fontSize: 13
+            )
+            ConversationMessageView(
+                message: message("assistant", [
+                    .init(
+                        type: "tool_use",
+                        id: "call-1",
+                        name: "Bash",
+                        input: .object(["command": .string("sqlite3 index.sqlite3 'PRAGMA freelist_count'")])
+                    ),
+                    .init(
+                        type: "tool_use",
+                        id: "call-2",
+                        name: "Read",
+                        input: .object(["file_path": .string("Sources/History/ConversationIndexDatabase.swift")])
+                    ),
+                    .init(type: "text", text: "已在 ConversationIndexDatabase 里加上一次性 VACUUM。"),
+                ], sidechain: true),
+                messageIndex: 2,
+                sourceRawValue: HistorySource.codex.rawValue,
+                toolResults: [:],
+                pairedToolResultIDs: [],
+                searchQuery: "",
+                isCurrentSearchMatch: false,
+                fontSize: 13
+            )
+        }
+        .padding(Space.xl)
+        .frame(width: 620, alignment: .leading)
+        .background(Theme.surface)
+    }
+}
 
 /// The session stream row in the states it actually appears in.
 private struct SessionRowProofSheet: View {

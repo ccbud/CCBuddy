@@ -207,7 +207,9 @@ final class ConversationPresentationParityTests: XCTestCase {
                 "description": .string("list"),
             ])
         )
-        XCTAssertEqual(bash.icon, "⌘")
+        // Tool rows are marked with monoline symbols, not emoji: emoji vary in weight, colour and
+        // baseline, which made every row in a transcript look like a different kind of thing.
+        XCTAssertEqual(bash.symbol, "terminal")
         XCTAssertEqual(bash.label, "Bash")
         XCTAssertEqual(bash.target, "list")
         XCTAssertEqual(bash.body, .code("ls -la"))

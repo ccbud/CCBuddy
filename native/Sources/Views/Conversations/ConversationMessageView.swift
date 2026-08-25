@@ -53,24 +53,47 @@ struct ConversationMessageView: View {
         .accessibilityIdentifier("conversation.message.\(messageIndex)")
     }
 
+    /// Who is speaking, said plainly.
+    ///
+    /// The assistant is identified by its own brand mark rather than by a decorative "✦", which is
+    /// the same rule the rest of the app follows; the bullets used here were Unicode glyphs standing
+    /// in for icons. Names are no longer upper-cased either: it does nothing to Chinese and turns
+    /// "Claude Code" into shouting.
     private var roleHeader: some View {
-        HStack(spacing: 5) {
-            Text(roleSymbol)
-            Text(localizedRoleName.uppercased())
+        HStack(spacing: Space.xs + 2) {
+            roleMark
+            Text(localizedRoleName)
             if message.isSidechain {
                 Text("子代理")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .textCase(nil)
+                    .font(.system(size: max(9, fontSize * 0.72), weight: .medium))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(Theme.foreground.opacity(0.055))
-                    .clipShape(Capsule())
+                    .background(Theme.fill)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
             }
             Spacer(minLength: 0)
         }
-        .font(.system(size: max(9.5, fontSize * 0.77), weight: .bold))
-        .tracking(0.45)
+        .font(.system(size: max(10, fontSize * 0.82), weight: .medium))
         .foregroundStyle(Theme.mutedForeground)
+    }
+
+    @ViewBuilder private var roleMark: some View {
+        let size = max(12, fontSize * 0.95)
+        if message.isMetadata {
+            Image(systemName: "info.circle")
+                .font(.system(size: size * 0.85))
+                .frame(width: size, height: size)
+        } else if message.role == "user" {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: size * 0.9))
+                .frame(width: size, height: size)
+        } else if message.role == "assistant", let source = HistorySource(rawValue: sourceRawValue) {
+            AgentBrandMark(source: source, size: size)
+        } else {
+            Image(systemName: "circle")
+                .font(.system(size: size * 0.5))
+                .frame(width: size, height: size)
+        }
     }
 
     @ViewBuilder private var messageBody: some View {
@@ -186,12 +209,6 @@ struct ConversationMessageView: View {
         return message.role.isEmpty ? appLanguage.localized("消息") : message.role
     }
 
-    private var roleSymbol: String {
-        if message.isMetadata { return "◇" }
-        if message.role == "user" { return "●" }
-        if message.role == "assistant" { return "✦" }
-        return "•"
-    }
 }
 
 private struct ConversationBlockView: View {
@@ -281,7 +298,8 @@ private struct ConversationThinkingView: View {
                 .padding(.bottom, 9)
         } label: {
             HStack(spacing: 5) {
-                Text("💭")
+                Image(systemName: "brain")
+                    .font(.system(size: max(10, fontSize * 0.82)))
                 Text("思考")
                 Text("· \(thinking.split(whereSeparator: \.isNewline).first.map(String.init) ?? "")")
                     .foregroundStyle(Theme.mutedForeground)
@@ -325,7 +343,9 @@ struct ConversationToolPresentation: Equatable, Sendable {
         var status: String
     }
 
-    var icon: String
+    /// An SF Symbol name. Emoji used to stand in here, which broke the rule that interface
+    /// icons are monoline symbols and made every tool row a different weight and colour.
+    var symbol: String
     var label: String
     var target: String
     var body: Body
@@ -338,7 +358,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
         switch name {
         case "Bash":
             return .init(
-                icon: "⌘",
+                symbol: "terminal",
                 label: "Bash",
                 target: string("description", in: object),
                 body: codeBody(string("command", in: object)),
@@ -346,7 +366,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "Script":
             return .init(
-                icon: "📜",
+                symbol: "scroll",
                 label: "Script",
                 target: "",
                 body: codeBody(string("code", in: object)),
@@ -354,7 +374,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "Read":
             return .init(
-                icon: "📖",
+                symbol: "doc.text",
                 label: "Read",
                 target: shortPath(string("file_path", in: object)),
                 body: .none,
@@ -362,7 +382,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "Edit":
             return .init(
-                icon: "✏️",
+                symbol: "pencil.line",
                 label: "Edit",
                 target: shortPath(string("file_path", in: object)),
                 body: .diff(
@@ -373,7 +393,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "Write":
             return .init(
-                icon: "📝",
+                symbol: "square.and.pencil",
                 label: "Write",
                 target: shortPath(string("file_path", in: object)),
                 body: codeBody(string("content", in: object)),
@@ -382,7 +402,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
         case "ApplyPatch":
             let patch = string("patch", in: object)
             return .init(
-                icon: "✏️",
+                symbol: "pencil.line",
                 label: "ApplyPatch",
                 target: patchTarget(patch),
                 body: codeBody(patch),
@@ -391,7 +411,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
         case "Grep":
             let path = string("path", in: object)
             return .init(
-                icon: "🔎",
+                symbol: "magnifyingglass",
                 label: "Grep",
                 target: string("pattern", in: object),
                 body: path.isEmpty ? .none : .note("in \(path)"),
@@ -399,7 +419,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "Glob":
             return .init(
-                icon: "🔎",
+                symbol: "magnifyingglass",
                 label: "Glob",
                 target: string("pattern", in: object),
                 body: .none,
@@ -413,7 +433,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
                 )
             } ?? []
             return .init(
-                icon: "✅",
+                symbol: "checklist",
                 label: "Todos",
                 target: "",
                 body: todos.isEmpty ? .none : .todos(todos),
@@ -425,7 +445,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             let prompt = string("prompt", in: object)
             let body = [description, prompt].filter { !$0.isEmpty }.joined(separator: "\n")
             return .init(
-                icon: "🤖",
+                symbol: "cpu",
                 label: "Task",
                 target: agent.isEmpty ? "→ agent" : "→ \(agent)",
                 body: codeBody(body),
@@ -433,7 +453,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "WebSearch":
             return .init(
-                icon: "🌐",
+                symbol: "globe",
                 label: "WebSearch",
                 target: string("query", in: object),
                 body: .none,
@@ -441,7 +461,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case "WebFetch":
             return .init(
-                icon: "🌐",
+                symbol: "globe",
                 label: "WebFetch",
                 target: string("url", in: object),
                 body: .none,
@@ -449,7 +469,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         case _ where name.hasPrefix("mcp__"):
             return .init(
-                icon: "🧩",
+                symbol: "puzzlepiece.extension",
                 label: "MCP · \(String(name.dropFirst(5)))",
                 target: "",
                 body: object.isEmpty ? .none : .code(input?.conversationPrettyJSON ?? ""),
@@ -457,7 +477,7 @@ struct ConversationToolPresentation: Equatable, Sendable {
             )
         default:
             return .init(
-                icon: "🔧",
+                symbol: "wrench.adjustable",
                 label: name,
                 target: "",
                 body: object.isEmpty ? .none : .code(input?.conversationPrettyJSON ?? ""),
@@ -519,7 +539,9 @@ private struct ConversationToolCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
-                Text(presentation.icon)
+                Image(systemName: presentation.symbol)
+                    .font(.system(size: max(10, fontSize * 0.82)))
+                    .frame(width: max(13, fontSize))
                     .font(.system(size: max(10, fontSize * 0.84), weight: .semibold))
                     .frame(minWidth: 12)
                 Text(presentation.label)
