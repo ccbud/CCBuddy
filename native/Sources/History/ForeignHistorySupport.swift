@@ -1,9 +1,23 @@
 import Foundation
 
-struct ForeignHistoryCustomMetadata: Sendable {
+/// The per-session facts CC Buddy owns, as opposed to the ones the producing CLI wrote.
+///
+/// It is stored inline in the app's own imports and in a sidecar for every foreign tree, because
+/// CC Buddy is read-only towards the files its agents produce.
+struct ConversationCustomMetadata: Sendable {
     var title: String?
     var tags: [String]
     var deleted: Bool
+    /// Wake's star. The index has carried a `starred` column since the catalog was introduced, but
+    /// nothing ever read or wrote it, so the library had no way to keep a session close at hand.
+    var starred: Bool
+
+    init(title: String? = nil, tags: [String] = [], deleted: Bool = false, starred: Bool = false) {
+        self.title = title
+        self.tags = tags
+        self.deleted = deleted
+        self.starred = starred
+    }
 }
 
 enum ForeignHistorySupport {
@@ -11,7 +25,7 @@ enum ForeignHistorySupport {
         source: HistorySource,
         sessionKey: String,
         appDataRoot: URL
-    ) -> ForeignHistoryCustomMetadata {
+    ) -> ConversationCustomMetadata {
         metadata(
             file: appDataRoot.appendingPathComponent("agent-meta.json"),
             key: "\(source.rawValue):\(sessionKey)"
@@ -21,26 +35,27 @@ enum ForeignHistorySupport {
     static func codexMetadata(
         sessionKey: String,
         appDataRoot: URL
-    ) -> ForeignHistoryCustomMetadata {
+    ) -> ConversationCustomMetadata {
         metadata(
             file: appDataRoot.appendingPathComponent("codex-meta.json"),
             key: sessionKey
         )
     }
 
-    private static func metadata(file: URL, key: String) -> ForeignHistoryCustomMetadata {
+    private static func metadata(file: URL, key: String) -> ConversationCustomMetadata {
         guard let root = jsonObject(at: file),
               let custom = root[key]?.objectValue else {
-            return .init(title: nil, tags: [], deleted: false)
+            return .init()
         }
         let rawTitle = custom["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let tags = custom["tagList"]?.arrayValue?.compactMap {
             $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         }.filter { !$0.isEmpty } ?? []
-        return ForeignHistoryCustomMetadata(
+        return ConversationCustomMetadata(
             title: rawTitle?.isEmpty == false ? rawTitle : nil,
             tags: tags,
-            deleted: custom["delete"]?.boolValue ?? false
+            deleted: custom["delete"]?.boolValue ?? false,
+            starred: custom["starred"]?.boolValue ?? false
         )
     }
 

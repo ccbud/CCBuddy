@@ -20,20 +20,25 @@ struct ProvidersView: View {
     @State private var probeMessageSucceeded = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                ProviderHeroView()
-                toolbar
-                if let pluginAlert = model.pluginAlert { pluginBanner(pluginAlert) }
-                if let probeMessage { probeBanner(probeMessage) }
-                providerList
+        VStack(spacing: 0) {
+            ProviderHeroView()
+
+            ScrollView {
+                VStack(spacing: Space.md) {
+                    if let pluginAlert = model.pluginAlert { pluginBanner(pluginAlert) }
+                    if let probeMessage { probeBanner(probeMessage) }
+                    toolbar
+                    providerList
+                }
+                .padding(.horizontal, Space.xl)
+                .padding(.top, Space.lg)
+                .padding(.bottom, Space.xxl)
+                .frame(maxWidth: 920)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 1120)
-            .padding(.horizontal, 40)
-            .padding(.top, 16)
-            .padding(.bottom, 40)
-            .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background)
         .blur(radius: showingEditor ? 10 : 0)
         .sheet(isPresented: $showingEditor) {
             ProviderEditorView(provider: editingProvider) { provider in
@@ -66,48 +71,36 @@ struct ProvidersView: View {
     }
 
     private var toolbar: some View {
-        HStack {
-            Text("服务商")
-                .font(.system(size: 12.5, weight: .semibold))
-                .tracking(0.5)
-                .foregroundStyle(Color.ccCaption)
-            Spacer()
-            Text("点选切换 · 拖动排序")
-                .font(.system(size: 12))
-                .foregroundStyle(Color.ccCaption)
-            Button(action: openNewProvider) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 26, height: 26)
-                    .background(Color.ccOrange)
-                    .clipShape(Circle())
-                    .shadow(color: Color.ccOrange.opacity(0.28), radius: 5, y: 2)
+        CCSectionHeader(appLanguage.localized("服务商")) {
+            HStack(spacing: Space.sm) {
+                Text(appLanguage.localized("点选切换 · 拖动排序"))
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
+                Button(action: openNewProvider) {
+                    Label(appLanguage.localized("添加"), systemImage: "plus")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.ccSecondary)
+                .accessibilityIdentifier("providers.add")
             }
-            .buttonStyle(PressableButtonStyle())
-            .accessibilityIdentifier("providers.add")
         }
-        .padding(.horizontal, 2)
     }
 
     @ViewBuilder private var providerList: some View {
         if model.config.providers.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "tray")
-                    .font(.system(size: 24))
-                    .foregroundStyle(Color.ccCaption)
-                Text("尚未添加服务商")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.ccMuted)
-                Button("添加第一个服务", action: openNewProvider)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+            CCEmptyState(
+                symbol: "tray",
+                title: appLanguage.localized("尚未添加服务商"),
+                message: appLanguage.localized("添加一个 Anthropic 或 OpenAI 兼容的服务，网关就能开始转发。"),
+                compact: true
+            ) {
+                Button(appLanguage.localized("添加第一个服务"), action: openNewProvider)
+                    .buttonStyle(.ccPrimary)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 32)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.ccBorder, style: .init(dash: [5])))
+            .padding(.vertical, Space.xxl)
         } else {
-            LazyVStack(spacing: 8) {
+            LazyVStack(spacing: Space.xs + 2) {
                 ForEach(model.config.providers) { provider in
                     ProviderRow(
                         provider: provider,
@@ -145,12 +138,12 @@ struct ProvidersView: View {
             appLanguage.localized(message),
             systemImage: probeMessageSucceeded ? "checkmark.circle.fill" : "xmark.circle.fill"
         )
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(probeMessageSucceeded ? Color.ccGreen : Color.ccRed)
-            .padding(.horizontal, 12)
+            .font(.ccCaption(.medium))
+            .foregroundStyle(probeMessageSucceeded ? Theme.success : Theme.danger)
+            .padding(.horizontal, Space.md)
             .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-            .background(probeMessageSucceeded ? Color.ccGreenSoft : Color.ccRedSoft)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(probeMessageSucceeded ? Theme.successSoft : Theme.dangerSoft)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
             .accessibilityIdentifier("providers.probe.result")
     }
 
@@ -171,12 +164,12 @@ struct ProvidersView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("关闭提示")
         }
-        .font(.system(size: 11.5, weight: .medium))
-        .foregroundStyle(alert.style == .error ? Color.ccRed : Color.ccBrandStrong)
-        .padding(.horizontal, 12)
+        .font(.ccCaption(.medium))
+        .foregroundStyle(alert.style == .error ? Theme.danger : Theme.accentText)
+        .padding(.horizontal, Space.md)
         .frame(maxWidth: .infinity, minHeight: 34)
-        .background(alert.style == .error ? Color.ccRedSoft : Color.ccBrandSoft)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(alert.style == .error ? Theme.dangerSoft : Theme.accentSoft)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("providers.plugin-alert")
     }

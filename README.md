@@ -26,12 +26,12 @@ Reads local histories from **Claude Code, Codex CLI, Qoder CLI, Grok Build CLI, 
 
 - **Reconstruct the run** — render Markdown, thinking, tool calls and results, patches, images, recorded model/token metadata, and main/subagent threads.
 - **Find the moment** — auto-discover histories, group by source and project, and search across sessions or inside one conversation.
-- **Manage the archive** — rename, tag, filter, recycle, add custom history roots, follow active sessions, and import compatible JSONL/ZIP transcripts.
-- **Continue the review** — export raw session files/bundles (JSONL, ZIP, or DB) or portable HTML; on macOS, open the main and subagent transcripts in Claude or ChatGPT for analysis.
+- **Manage the archive** — rename, tag, star, filter, recycle, follow active sessions, and import compatible JSONL/ZIP transcripts. History roots are managed in Settings › Session locations.
+- **Pick it back up** — reopen a session in Terminal, iTerm, Ghostty or Warp with the producing CLI's own resume flags; export raw session files/bundles (JSONL, ZIP, or DB) or portable HTML; hand the main and subagent transcripts to Claude or ChatGPT for analysis.
 
 ## Included: local API gateway
 
-As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** on both client and provider sides, passing through matching protocols or translating between them. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Preset, custom, and plugin-backed providers support switching and model mapping.
+As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** on both client and provider sides, passing through matching protocols or translating between them. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Around seventy provider presets ship built in, alongside custom and plugin-backed providers, with switching and model mapping.
 
 The gateway binds to `127.0.0.1`; inference requests still go to the provider you select.
 

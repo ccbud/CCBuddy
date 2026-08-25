@@ -148,7 +148,6 @@ final class AppConfigTests: XCTestCase {
 final class AppModelInterfacePreferencesTests: XCTestCase {
     func testInterfacePreferencesArePersistentOnlyForPrimaryApplicationProcess() {
         XCTAssertEqual(AppModel.themeModeDefaultsKey, "ccbud-theme")
-        XCTAssertEqual(AppModel.sidebarCollapsedDefaultsKey, "ccbud-sidebar-collapsed")
         XCTAssertTrue(AppModel.shouldUsePersistentInterfacePreferences(
             runtimeMode: .application,
             isPrimaryInstance: true
@@ -184,14 +183,8 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
         )
 
         XCTAssertEqual(initialModel.themeMode, .light)
-        XCTAssertFalse(initialModel.sidebarCollapsed)
         initialModel.toggleTheme()
-        initialModel.toggleSidebar()
         XCTAssertEqual(defaults.string(forKey: AppModel.themeModeDefaultsKey), "dark")
-        XCTAssertEqual(
-            defaults.object(forKey: AppModel.sidebarCollapsedDefaultsKey) as? Bool,
-            true
-        )
         await initialModel.shutdown()
 
         let restoredModel = makeModel(
@@ -203,14 +196,8 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
         )
 
         XCTAssertEqual(restoredModel.themeMode, .dark)
-        XCTAssertTrue(restoredModel.sidebarCollapsed)
         restoredModel.toggleTheme()
-        restoredModel.toggleSidebar()
         XCTAssertEqual(defaults.string(forKey: AppModel.themeModeDefaultsKey), "light")
-        XCTAssertEqual(
-            defaults.object(forKey: AppModel.sidebarCollapsedDefaultsKey) as? Bool,
-            false
-        )
         await restoredModel.shutdown()
     }
 
@@ -221,7 +208,6 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
         let (defaults, suiteName) = try isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("system", forKey: AppModel.themeModeDefaultsKey)
-        defaults.set(2, forKey: AppModel.sidebarCollapsedDefaultsKey)
 
         let model = makeModel(
             root: root,
@@ -232,9 +218,7 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
         )
 
         XCTAssertEqual(model.themeMode, .light)
-        XCTAssertFalse(model.sidebarCollapsed)
         XCTAssertEqual(defaults.string(forKey: AppModel.themeModeDefaultsKey), "system")
-        XCTAssertEqual(defaults.integer(forKey: AppModel.sidebarCollapsedDefaultsKey), 2)
         await model.shutdown()
     }
 
@@ -242,7 +226,6 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
         let (defaults, suiteName) = try isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("dark", forKey: AppModel.themeModeDefaultsKey)
-        defaults.set(true, forKey: AppModel.sidebarCollapsedDefaultsKey)
 
         let scenarios: [(name: String, environment: [String: String], primary: Bool)] = [
             ("ui", ["CCBUD_UI_TESTING": "1"], true),
@@ -266,19 +249,11 @@ final class AppModelInterfacePreferencesTests: XCTestCase {
             )
 
             XCTAssertEqual(model.themeMode, .light, scenario.name)
-            XCTAssertFalse(model.sidebarCollapsed, scenario.name)
             model.toggleTheme()
-            model.toggleSidebar()
             model.toggleTheme()
-            model.toggleSidebar()
             XCTAssertEqual(
                 defaults.string(forKey: AppModel.themeModeDefaultsKey),
                 "dark",
-                scenario.name
-            )
-            XCTAssertEqual(
-                defaults.object(forKey: AppModel.sidebarCollapsedDefaultsKey) as? Bool,
-                true,
                 scenario.name
             )
             await model.shutdown()

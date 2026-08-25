@@ -44,18 +44,18 @@ struct MenuBarView: View {
             footer
                 .frame(height: MenuBarPopoverLayout.footerHeight)
                 .overlay(alignment: .top) {
-                    Divider().overlay(Color.ccBorder)
+                    Divider().overlay(Theme.separator)
                 }
         }
         .padding(.horizontal, MenuBarPopoverLayout.horizontalInset)
         .padding(.top, MenuBarPopoverLayout.topInset)
         .frame(width: MenuBarPanelPositioner.defaultSize.width, height: MenuBarPanelPositioner.defaultSize.height)
         .background(panelBackground)
-        .foregroundStyle(Color.ccForeground)
+        .foregroundStyle(Theme.foreground)
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(Color.ccBorderStrong.opacity(reduceTransparency ? 1 : 0.72), lineWidth: 1)
+                .stroke(Theme.separator.opacity(reduceTransparency ? 1 : 0.72), lineWidth: 1)
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: section)
         .environment(\.locale, model.appLanguage.locale)
@@ -73,7 +73,7 @@ struct MenuBarView: View {
                 ProgressView().controlSize(.small)
                 Text(model.appLanguage.localized("正在读取历史用量…"))
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(Color.ccMuted)
+                    .foregroundStyle(Theme.mutedForeground)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("menubar.usage.loading")
@@ -81,12 +81,12 @@ struct MenuBarView: View {
             VStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 22, weight: .light))
-                    .foregroundStyle(Color.ccOrange)
+                    .foregroundStyle(Theme.warning)
                 Text(model.appLanguage.localized("历史用量读取失败"))
                     .font(.system(size: 12, weight: .semibold))
                 Text(message)
                     .font(.system(size: 10))
-                    .foregroundStyle(Color.ccCaption)
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                 Button(model.appLanguage.localized("重试")) {
@@ -106,7 +106,7 @@ struct MenuBarView: View {
             } else {
                 Text(model.appLanguage.localized("历史用量暂不可用"))
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(Color.ccMuted)
+                    .foregroundStyle(Theme.mutedForeground)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("menubar.usage.unavailable")
             }
@@ -148,13 +148,13 @@ struct MenuBarView: View {
                 } label: {
                     Text(model.appLanguage.localized(label(item)))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(selected ? Color.ccForeground : Color.ccMuted)
+                        .foregroundStyle(selected ? Theme.foreground : Theme.mutedForeground)
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .frame(height: 22)
                         .background {
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(selected ? Color.ccElevated : .clear)
+                                .fill(selected ? Theme.surface : .clear)
                                 .shadow(
                                     color: selected ? Color.black.opacity(0.10) : .clear,
                                     radius: 1,
@@ -164,7 +164,7 @@ struct MenuBarView: View {
                         .overlay {
                             if selected {
                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(Color.ccBorderStrong.opacity(0.72), lineWidth: 0.75)
+                                    .stroke(Theme.separator.opacity(0.72), lineWidth: 0.75)
                             }
                         }
                         .contentShape(Rectangle())
@@ -175,11 +175,11 @@ struct MenuBarView: View {
             }
         }
         .padding(2)
-        .background(Color.ccForeground.opacity(0.05))
+        .background(Theme.foreground.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(Color.ccBorder, lineWidth: 1)
+                .stroke(Theme.separator, lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(model.appLanguage.localized(title))
@@ -241,7 +241,7 @@ struct MenuBarView: View {
                 .font(.system(size: 10, weight: .semibold))
                 .textCase(.uppercase)
                 .tracking(0.3)
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
             Group {
                 if let unit {
@@ -251,7 +251,7 @@ struct MenuBarView: View {
                             .monospacedDigit()
                         Text(unit)
                             .font(.system(size: 10, weight: .regular))
-                            .foregroundStyle(Color.ccMuted)
+                            .foregroundStyle(Theme.mutedForeground)
                     }
                 } else {
                     Text(value)
@@ -275,12 +275,12 @@ struct MenuBarView: View {
             maxHeight: MenuBarPopoverLayout.cardHeight,
             alignment: .leading
         )
-        .background(Color.ccElevated)
+        .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.08), radius: 1.5, y: 1)
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(Color.ccBorder, lineWidth: 1)
+                .stroke(Theme.separator, lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.appLanguage.localized(
@@ -294,10 +294,10 @@ struct MenuBarView: View {
                 VStack(spacing: 7) {
                     Image(systemName: "chart.bar.doc.horizontal")
                         .font(.system(size: 24, weight: .light))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                     Text(model.appLanguage.localized("暂无模型用量"))
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Color.ccMuted)
+                        .foregroundStyle(Theme.mutedForeground)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -311,9 +311,9 @@ struct MenuBarView: View {
                                     .frame(width: 126, alignment: .leading)
                                 GeometryReader { proxy in
                                     ZStack(alignment: .leading) {
-                                        Capsule().fill(Color.ccForeground.opacity(0.055))
+                                        Capsule().fill(Theme.foreground.opacity(0.055))
                                         Capsule()
-                                            .fill(Color.ccBrandStrong)
+                                            .fill(Theme.accentText)
                                             .frame(width: max(2, proxy.size.width * CGFloat(item.percentage)))
                                     }
                                 }
@@ -321,12 +321,12 @@ struct MenuBarView: View {
                                 Text(UsageFormat.compactTokens(item.tokens))
                                     .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                     .monospacedDigit()
-                                    .foregroundStyle(Color.ccCaption)
+                                    .foregroundStyle(Theme.mutedForeground)
                                     .frame(width: 50, alignment: .trailing)
                             }
                             .padding(.horizontal, 9)
                             .frame(height: 34)
-                            .background(Color.ccElevated.opacity(reduceTransparency ? 1 : 0.6))
+                            .background(Theme.surface.opacity(reduceTransparency ? 1 : 0.6))
                             .accessibilityElement(children: .combine)
                             .accessibilityLabel(model.appLanguage.localized(
                                 "\(item.name)，\(UsageFormat.integer(item.tokens)) Tokens"
@@ -337,7 +337,7 @@ struct MenuBarView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.ccBorder.opacity(0.9), lineWidth: 1)
+                        .stroke(Theme.separator.opacity(0.9), lineWidth: 1)
                 }
             }
         }
@@ -360,11 +360,11 @@ struct MenuBarView: View {
         HStack(spacing: 5) {
             HStack(spacing: 5) {
                 Circle()
-                    .fill(model.gatewayState.isRunning ? Color.ccGreen : Color.ccCaption)
+                    .fill(model.gatewayState.isRunning ? Theme.success : Theme.mutedForeground)
                     .frame(width: 7, height: 7)
                 Text(connectionLabel)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.ccMuted)
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(1)
             }
             .accessibilityElement(children: .combine)
@@ -425,15 +425,15 @@ struct MenuBarView: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(bordered ? Color.ccForeground : Color.ccMuted)
+                .foregroundStyle(bordered ? Theme.foreground : Theme.mutedForeground)
                 .padding(.horizontal, 9)
                 .frame(height: 27)
-                .background(bordered ? Color.ccElevated : .clear)
+                .background(bordered ? Theme.surface : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay {
                     if bordered {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .stroke(Color.ccBorder, lineWidth: 1)
+                            .stroke(Theme.separator, lineWidth: 1)
                     }
                 }
                 .contentShape(Rectangle())
@@ -508,10 +508,10 @@ private struct UsageHistoryHeatmapView: View {
             }
         }
         switch level {
-        case 1: return Color.ccBrand.opacity(0.34)
-        case 2: return Color.ccBrand.opacity(0.55)
-        case 3: return Color.ccBrand.opacity(0.76)
-        case 4...: return Color.ccBrand
+        case 1: return Theme.accent.opacity(0.34)
+        case 2: return Theme.accent.opacity(0.55)
+        case 3: return Theme.accent.opacity(0.76)
+        case 4...: return Theme.accent
         default: return Color(red: 214 / 255, green: 209 / 255, blue: 196 / 255)
         }
     }

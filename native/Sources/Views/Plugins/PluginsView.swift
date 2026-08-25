@@ -26,19 +26,23 @@ struct PluginsView: View {
     )!
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                hero
-                toolbar
-                issues
-                pluginList
+        VStack(spacing: 0) {
+            hero
+            ScrollView {
+                VStack(spacing: Space.md) {
+                    toolbar
+                    issues
+                    pluginList
+                }
+                .padding(.horizontal, Space.xl)
+                .padding(.top, Space.lg)
+                .padding(.bottom, Space.xxl)
+                .frame(maxWidth: 920)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 1120)
-            .padding(.horizontal, 40)
-            .padding(.top, 16)
-            .padding(.bottom, 40)
-            .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background)
         .task { await loadCatalogAndUpdates() }
         .sheet(isPresented: $showingGitImport) {
             PluginGitImportSheet { source in
@@ -101,32 +105,21 @@ struct PluginsView: View {
         .pluginAccessibilityContainerIdentifier("view.plugins", label: appLanguage.localized("插件"))
     }
 
+    /// The page masthead, matching Providers: a title band on the list material that owns the
+    /// window's drag strip, rather than a boxed card floating on the canvas.
     private var hero: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(Color.ccForeground.opacity(0.05))
-                Image(systemName: "puzzlepiece.extension")
-                    .foregroundStyle(Color.ccMuted)
+        DestinationHeader(
+            title: appLanguage.localized("插件"),
+            subtitle: appLanguage.localized("复用第三方 coding agent 的本机登录态直连推理")
+        ) {
+            Button(appLanguage.localized("开发插件")) {
+                NSWorkspace.shared.open(documentationURL)
             }
-            .frame(width: 38, height: 38)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("插件")
-                    .font(.system(size: 16.5, weight: .semibold))
-                HStack(spacing: 4) {
-                    Text("复用第三方 coding agent 的本机登录态直连推理。")
-                    Button("开发插件") { NSWorkspace.shared.open(documentationURL) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.ccBrandStrong)
-                        .accessibilityIdentifier("plugins.documentation")
-                }
-                .font(.system(size: 12.5))
-                .foregroundStyle(Color.ccMuted)
-            }
-            Spacer()
+            .buttonStyle(.ccSecondary)
+            .accessibilityIdentifier("plugins.documentation")
         }
-        .padding(24)
-        .elevatedCard(radius: 18)
+        .background(Theme.list)
+        .hairline(.bottom)
         .pluginAccessibilityContainerIdentifier(
             "plugins.hero",
             label: appLanguage.localized("插件管理")
@@ -134,27 +127,23 @@ struct PluginsView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 8) {
-            Text("已安装")
-                .font(.system(size: 12.5, weight: .semibold))
-                .tracking(0.5)
-                .foregroundStyle(Color.ccCaption)
-            if model.pluginCatalogLoading { ProgressView().controlSize(.small) }
-            Spacer()
-            Button("打开目录") { openPluginsDirectory() }
-                .buttonStyle(CompactActionButtonStyle())
-                .disabled(model.pluginsDirectoryUnavailable || model.pluginGlobalOperation != nil)
-                .accessibilityIdentifier("plugins.open-directory")
-            Button("从 Git 添加") { showingGitImport = true }
-                .buttonStyle(CompactActionButtonStyle())
-                .disabled(model.pluginsDirectoryUnavailable || model.pluginGlobalOperation != nil)
-                .accessibilityIdentifier("plugins.install-git")
-            Button("添加插件…") { chooseLocalPlugin() }
-                .buttonStyle(CompactActionButtonStyle())
-                .disabled(model.pluginsDirectoryUnavailable || model.pluginGlobalOperation != nil)
-                .accessibilityIdentifier("plugins.install-local")
+        CCSectionHeader(appLanguage.localized("已安装")) {
+            HStack(spacing: Space.sm) {
+                if model.pluginCatalogLoading { ProgressView().controlSize(.small) }
+                Button(appLanguage.localized("打开目录")) { openPluginsDirectory() }
+                    .buttonStyle(.ccQuiet)
+                    .disabled(model.pluginsDirectoryUnavailable || model.pluginGlobalOperation != nil)
+                    .accessibilityIdentifier("plugins.open-directory")
+                Button(appLanguage.localized("从 Git 添加")) { showingGitImport = true }
+                    .buttonStyle(.ccSecondary)
+                    .disabled(model.pluginsDirectoryUnavailable || model.pluginGlobalOperation != nil)
+                    .accessibilityIdentifier("plugins.install-git")
+                Button(appLanguage.localized("添加插件…")) { chooseLocalPlugin() }
+                    .buttonStyle(.ccSecondary)
+                    .disabled(model.pluginsDirectoryUnavailable || model.pluginGlobalOperation != nil)
+                    .accessibilityIdentifier("plugins.install-local")
+            }
         }
-        .padding(.horizontal, 2)
     }
 
     @ViewBuilder
@@ -162,20 +151,20 @@ struct PluginsView: View {
         if !model.pluginIssues.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
                 Label("部分插件无法载入", systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.ccRed)
+                    .font(.ccBody(.medium))
+                    .foregroundStyle(Theme.danger)
                 ForEach(Array(model.pluginIssues.enumerated()), id: \.offset) { _, issue in
                     Text("\(issue.location)：\(issue.message)")
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
+                        .font(.ccMono(Typography.label))
+                        .foregroundStyle(Theme.mutedForeground)
                         .textSelection(.enabled)
                 }
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.ccRedSoft)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.ccRed.opacity(0.25)))
+            .background(Theme.dangerSoft)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Theme.danger.opacity(0.25)))
         }
     }
 
@@ -188,10 +177,10 @@ struct PluginsView: View {
                 Text("未发现插件。把插件目录放入插件目录后回到本页。")
                     .font(.system(size: 12))
             }
-            .foregroundStyle(Color.ccMuted)
+            .foregroundStyle(Theme.mutedForeground)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 32)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.ccBorder, style: .init(dash: [5])))
+            .overlay(RoundedRectangle(cornerRadius: Radius.panel).stroke(Theme.separator, style: .init(dash: [5])))
             .pluginAccessibilityContainerIdentifier(
                 "plugins.empty",
                 label: appLanguage.localized("未安装插件")
@@ -343,7 +332,7 @@ private struct PluginCard: View {
                 if !item.summary.isEmpty {
                     Text(item.summary)
                         .font(.system(size: 12))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                         .lineLimit(1)
                 }
                 status
@@ -359,11 +348,11 @@ private struct PluginCard: View {
         .padding(.trailing, 14)
         .padding(.vertical, 10)
         .frame(minHeight: 60)
-        .elevatedCard(radius: 13, border: item.isRunning ? Color.ccGreen.opacity(0.32) : .ccBorder)
+        .elevatedCard(radius: 13, border: item.isRunning ? Theme.success.opacity(0.32) : Theme.separator)
         .overlay {
             if busy {
                 RoundedRectangle(cornerRadius: 13)
-                    .fill(Color.ccElevated.opacity(0.72))
+                    .fill(Theme.surface.opacity(0.72))
                     .overlay(ProgressView().controlSize(.small))
             }
         }
@@ -375,15 +364,14 @@ private struct PluginCard: View {
     private var icon: some View {
         if let data = item.iconData, let image = NSImage(data: data) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9).fill(Color.clear)
+                RoundedRectangle(cornerRadius: Radius.row).fill(Color.clear)
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
                     .padding(4)
             }
             .frame(width: 36, height: 36)
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .shadow(color: .black.opacity(0.1), radius: 3, y: 1)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         } else {
             ProviderIconView(name: item.name, icon: nil, size: 36)
         }
@@ -395,16 +383,16 @@ private struct PluginCard: View {
                 .font(.system(size: 14.5, weight: .semibold))
             if !item.version.isEmpty {
                 Text("v\(item.version)")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccMono(Typography.label))
+                    .foregroundStyle(Theme.mutedForeground)
             }
-            if item.isOfficialSource { badge("可信来源", color: .ccBrandStrong) }
+            if item.isOfficialSource { badge("可信来源", color: Theme.accentText) }
             if item.updateAvailable {
                 Button("↑ v\(item.latestVersion ?? "")") {
                     Task { await model.updatePlugin(item.id) }
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.ccLabel(.medium))
                 .foregroundStyle(Color.orange)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2)
@@ -425,7 +413,7 @@ private struct PluginCard: View {
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
             Text("\(appLanguage.localized(item.lifecycleLabel)) · \(appLanguage.localized(item.authenticationLabel))")
-                .font(.system(size: 11.5))
+                .font(.ccCaption())
                 .foregroundStyle(authenticationColor)
         }
         .pluginAccessibilityContainerIdentifier(
@@ -438,13 +426,13 @@ private struct PluginCard: View {
     private var diagnostic: some View {
         if let failure = item.failureMessage, !failure.isEmpty {
             Text(failure)
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(Color.ccRed)
+                .font(.ccMono(Typography.label))
+                .foregroundStyle(Theme.danger)
                 .lineLimit(2)
         } else if let validation = item.validationMessages.first {
             Text(validation)
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(Color.ccRed)
+                .font(.ccMono(Typography.label))
+                .foregroundStyle(Theme.danger)
                 .lineLimit(2)
         }
     }
@@ -476,11 +464,11 @@ private struct PluginCard: View {
                     Task { await model.checkPluginUpdate(item.id) }
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10.5))
+                        .font(.ccLabel())
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
                 .disabled(checkingUpdate)
                 .help("检查更新")
             }
@@ -498,7 +486,7 @@ private struct PluginCard: View {
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.ccMuted)
+            .foregroundStyle(Theme.mutedForeground)
             .help("卸载插件")
             .accessibilityIdentifier("plugin.\(item.id).uninstall")
         }
@@ -506,19 +494,19 @@ private struct PluginCard: View {
 
     private var statusColor: Color {
         switch item.lifecycle {
-        case .running: return .ccGreen
-        case .failed: return .ccRed
+        case .running: return Theme.success
+        case .failed: return Theme.danger
         case .starting, .stopping: return .orange
-        case .installed, .stopped: return .ccBorderStrong
+        case .installed, .stopped: return Theme.separator
         }
     }
 
     private var authenticationColor: Color {
-        guard item.isRunning else { return .ccCaption }
+        guard item.isRunning else { return Theme.mutedForeground }
         switch item.authentication?.state {
-        case .loggedIn: return .ccGreen
+        case .loggedIn: return Theme.success
         case .expired: return .orange
-        case .loggedOut, .unknown, .none: return .ccCaption
+        case .loggedOut, .unknown, .none: return Theme.mutedForeground
         }
     }
 
@@ -535,13 +523,13 @@ private struct PluginCard: View {
     private func protocolBadge(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(Color.ccBrand)
+            .foregroundStyle(Theme.accent)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color.ccBrandSoft)
+            .background(Theme.accentSoft)
             .clipShape(Capsule())
             .overlay {
-                Capsule().stroke(Color.ccBrand.opacity(0.3), lineWidth: 1)
+                Capsule().stroke(Theme.accent.opacity(0.3), lineWidth: 1)
             }
     }
 }
@@ -552,14 +540,14 @@ private struct PluginLifecycleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(running ? Color.ccRed : Color.ccGreen)
+            .foregroundStyle(running ? Theme.danger : Theme.success)
             .padding(.horizontal, 11)
             .padding(.vertical, 6)
-            .background(running ? Color.ccRedSoft : Color.ccGreenSoft)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(running ? Theme.dangerSoft : Theme.successSoft)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button))
             .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke((running ? Color.ccRed : Color.ccGreen).opacity(0.18))
+                RoundedRectangle(cornerRadius: Radius.button)
+                    .stroke((running ? Theme.danger : Theme.success).opacity(0.18))
             }
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
@@ -584,17 +572,17 @@ private struct PluginGitImportSheet: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.ccMuted)
+                .foregroundStyle(Theme.mutedForeground)
             }
             .padding(.horizontal, 18)
             .frame(height: 52)
 
-            Divider().overlay(Color.ccBorder)
+            Divider().overlay(Theme.separator)
 
             VStack(alignment: .leading, spacing: 12) {
                 Text("Git 仓库地址")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.ccCaption)
+                    .foregroundStyle(Theme.mutedForeground)
                 TextField("https://github.com/owner/repo", text: $source)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12.5, design: .monospaced))
@@ -604,8 +592,8 @@ private struct PluginGitImportSheet: View {
                     "导入会克隆并构建仓库代码，需要本机具备 Git 与对应构建工具链。请仅使用可信来源。",
                     systemImage: "exclamationmark.triangle"
                 )
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
                 .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
@@ -620,7 +608,7 @@ private struct PluginGitImportSheet: View {
             .padding(20)
         }
         .frame(width: 460)
-        .background(Color.ccElevated)
+        .background(Theme.surface)
         .pluginAccessibilityContainerIdentifier(
             "plugins.git-sheet",
             label: appLanguage.localized("从 Git 添加")

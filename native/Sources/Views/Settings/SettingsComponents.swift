@@ -10,14 +10,14 @@ struct SettingsCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Space.lg) {
             Text(LocalizedStringKey(title))
-                .font(.system(size: 13, weight: .semibold))
+                .font(.ccBody(.medium))
             content
         }
-        .padding(28)
+        .padding(Space.xl)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .elevatedCard(radius: 12)
+        .panelSurface(bordered: true)
     }
 }
 
@@ -40,13 +40,13 @@ struct SettingsToggleRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 18) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(LocalizedStringKey(title)).font(.system(size: 12.5, weight: .medium))
+        HStack(spacing: Space.lg) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(LocalizedStringKey(title)).font(.ccBody())
                 if let detail {
                     Text(LocalizedStringKey(detail))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.ccCaption)
+                        .font(.ccCaption())
+                        .foregroundStyle(Theme.mutedForeground)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -66,17 +66,17 @@ struct ConnectionBadge: View {
 
     var body: some View {
         Text(LocalizedStringKey(connected ? "已接入" : "未接入"))
-            .font(.system(size: 10.5, weight: .semibold))
-            .foregroundStyle(connected ? Color.ccGreen : Color.ccMuted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(connected ? Color.ccGreenSoft : Color.ccForeground.opacity(0.05))
-            .clipShape(Capsule())
+            .font(.ccLabel(.medium))
+            .foregroundStyle(connected ? Theme.success : Theme.mutedForeground)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(connected ? Theme.successSoft : Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
     }
 }
 
 struct SettingsDivider: View {
-    var body: some View { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+    var body: some View { Rectangle().fill(Theme.separator).frame(height: 1) }
 }
 
 struct CompactActionButtonStyle: ButtonStyle {
@@ -84,15 +84,16 @@ struct CompactActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11, weight: primary ? .semibold : .medium))
-            .foregroundStyle(primary ? Color.white : Color.ccForeground)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(primary ? Color.ccBrandStrong : Color.ccElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .font(.ccCaption(primary ? .semibold : .medium))
+            .foregroundStyle(primary ? Theme.onAccent : Theme.foreground)
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.xs + 2)
+            .background(primary ? Theme.accent : Theme.fillSubtle)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
             .overlay {
                 if !primary {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Color.ccBorder)
+                    RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                        .strokeBorder(Theme.separator, lineWidth: 1)
                 }
             }
             .scaleEffect(configuration.isPressed ? 0.97 : 1)

@@ -115,20 +115,20 @@ extension BifrostLogStatus {
 
     var monitorColor: Color {
         switch self {
-        case .processing: .ccOrange
-        case .success: .ccGreen
-        case .error: .ccRed
-        case .cancelled: .ccMuted
-        case .unknown: .ccCaption
+        case .processing: Theme.warning
+        case .success: Theme.success
+        case .error: Theme.danger
+        case .cancelled: Theme.mutedForeground
+        case .unknown: Theme.mutedForeground
         }
     }
 
     var monitorBackground: Color {
         switch self {
-        case .success: .ccGreenSoft
-        case .error: .ccRedSoft
-        case .processing: Color.ccOrange.opacity(0.13)
-        case .cancelled, .unknown: Color.ccForeground.opacity(0.055)
+        case .success: Theme.successSoft
+        case .error: Theme.dangerSoft
+        case .processing: Theme.warning.opacity(0.13)
+        case .cancelled, .unknown: Theme.foreground.opacity(0.055)
         }
     }
 }
@@ -160,14 +160,14 @@ struct MonitorActionButton: View {
         Button(action: action) {
             Label(appLanguage.localized(title), systemImage: symbol)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(destructive ? Color.ccRed : Color.ccForeground)
+                .foregroundStyle(destructive ? Theme.danger : Theme.foreground)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(Color.ccElevated)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(Theme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(destructive ? Color.ccRed.opacity(0.25) : Color.ccBorder)
+                    RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                        .stroke(destructive ? Theme.danger.opacity(0.25) : Theme.separator)
                 }
                 .contentShape(Rectangle())
         }
@@ -182,10 +182,10 @@ struct MonitorMaterialBackground: View {
 
     var body: some View {
         if reduceTransparency {
-            Color.ccElevated
+            Theme.surface
         } else {
             Rectangle().fill(.ultraThickMaterial)
-                .overlay(Color.ccElevated.opacity(0.58))
+                .overlay(Theme.surface.opacity(0.58))
         }
     }
 }

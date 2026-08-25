@@ -1,6 +1,15 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The library rail.
+///
+/// One navigation model, not three. The rail used to stack an application list, a second compact
+/// icon strip, a source-directory group and a library tree on top of each other, so the same
+/// session was reachable four ways and counted differently each time. Now the rail states the
+/// destination first, then — only while browsing sessions — the library scopes underneath it.
+/// Configured history roots are no longer a navigation group: they are storage locations and live
+/// in Settings, where they can actually be added, edited and disabled.
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.appLanguage) private var appLanguage
@@ -9,196 +18,300 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             WindowDragRegion()
-                .frame(height: 38)
-                .background(Color.ccSidebar)
+                .frame(height: Metrics.titleBarHeight)
 
-            brand
-                .padding(.horizontal, compact ? 5 : 8)
-                .padding(.bottom, model.selected == .conversations ? 12 : 18)
+            wordmark
+                .padding(.bottom, Space.md)
+
+            SidebarSearchField(store: model.conversationStore)
+                .padding(.horizontal, Space.xs)
+                .padding(.bottom, Space.md)
+
+            VStack(spacing: 2) {
+                ForEach(SidebarView.destinations) { destination in
+                    destinationRow(destination)
+                }
+            }
 
             if model.selected == .conversations {
-                compactApplicationNavigation
-                    .padding(.bottom, 12)
                 ConversationLibraryNavigation(
                     store: model.conversationStore,
                     workbench: conversationWorkbench,
-                    historyDirectories: model.config.historyDirs,
                     selectHistoryScope: { scope in
                         Task { await model.setHistoryActive(scope) }
                     }
                 )
+                .padding(.top, Space.md)
             } else {
-                VStack(spacing: 2) {
-                    ForEach(AppModel.Destination.allCases) { destination in
-                        navButton(destination)
-                    }
-                }
-                Spacer(minLength: 12)
+                Spacer(minLength: Space.md)
             }
 
-            footer
+            SidebarFooter(workbench: conversationWorkbench)
         }
-        .padding(.horizontal, compact ? 5 : 10)
-        .padding(.bottom, 14)
-        .background(Color.ccSidebar)
+        .padding(.horizontal, Rail.edge)
+        .padding(.bottom, Space.sm)
+        .background(Theme.sidebar)
     }
 
-    private var compact: Bool {
-        model.sidebarCollapsed && model.selected != .conversations
-    }
+    /// Settings is deliberately absent: it is a scene reached from the footer gear and ⌘, , not a
+    /// peer of the four working destinations.
+    static let destinations: [AppModel.Destination] = [
+        .conversations, .providers, .monitor, .plugins,
+    ]
 
-    private var brand: some View {
-        HStack(spacing: 9) {
-            AppLogo().frame(width: 26, height: 26)
-            if !compact {
-                Text("CC Buddy")
-                    .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
+    private var wordmark: some View {
+        HStack(spacing: Space.sm) {
+            AppLogo().frame(width: 20, height: 20)
+            Text(verbatim: "CC Buddy")
+                .font(.ccHeading())
+                .foregroundStyle(Theme.foreground)
+                .lineLimit(1)
+            Spacer(minLength: 0)
         }
+        .padding(.leading, Rail.titleInset - Rail.edge + Space.xs)
     }
 
-    private var compactApplicationNavigation: some View {
-        HStack(spacing: 5) {
-            ForEach(AppModel.Destination.allCases) { destination in
-                let selected = model.selected == destination
-                Button {
-                    withAnimation(.easeOut(duration: 0.18)) { model.selected = destination }
-                } label: {
-                    Image(systemName: destination.symbol)
-                        .font(.system(size: 13, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? Color.ccForeground : Color.ccMuted)
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(selected ? Color.ccSidebarSelection : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableButtonStyle())
-                .help(appLanguage.localized(destination.title))
-                .accessibilityLabel(appLanguage.localized(destination.title))
-                .accessibilityIdentifier("sidebar.\(destination.rawValue)")
-            }
-        }
-    }
-
-    private func navButton(_ destination: AppModel.Destination) -> some View {
+    private func destinationRow(_ destination: AppModel.Destination) -> some View {
         let selected = model.selected == destination
-        return Button {
-            withAnimation(.easeOut(duration: 0.18)) { model.selected = destination }
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: destination.symbol).frame(width: 16, height: 16)
-                if !compact {
-                    Text(LocalizedStringKey(destination.title))
-                    Spacer(minLength: 0)
-                }
-            }
-            .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? Color.ccForeground : Color.ccMuted)
-            .padding(.horizontal, compact ? 0 : 10)
-            .frame(maxWidth: .infinity, minHeight: 32)
-            .background(selected ? Color.ccSidebarSelection : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
+        return SidebarRow(
+            lead: .symbol(destination.symbol, size: 15),
+            title: appLanguage.localized(destination.title),
+            selected: selected,
+            identifier: "sidebar.\(destination.rawValue)"
+        ) {
+            model.selected = destination
         }
-        .buttonStyle(PressableButtonStyle())
-        .accessibilityLabel(appLanguage.localized(destination.title))
-        .accessibilityIdentifier("sidebar.\(destination.rawValue)")
-    }
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            if !compact {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(model.gatewayState.isRunning ? Color.ccGreen : Color.ccMuted)
-                        .frame(width: 5, height: 5)
-                    Text(LocalizedStringKey(model.gatewayState.isRunning ? "已接入" : "未接入"))
-                }
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(model.gatewayState.isRunning ? Color.ccGreen : Color.ccMuted)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                    model.gatewayState.isRunning
-                        ? Color.ccGreenSoft
-                        : Color.ccForeground.opacity(0.05)
-                )
-                .clipShape(Capsule())
-                Spacer(minLength: 0)
-            }
-
-            VStack(spacing: 3) {
-                if model.selected != .conversations {
-                    footerButton(
-                        symbol: model.sidebarCollapsed ? "chevron.right" : "chevron.left",
-                        label: model.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏",
-                        identifier: "sidebar.collapse"
-                    ) { model.toggleSidebar() }
-                }
-                footerButton(
-                    symbol: model.themeMode == .dark ? "sun.max" : "moon",
-                    label: model.themeMode == .dark ? "切换到浅色模式" : "切换到深色模式",
-                    identifier: "sidebar.theme"
-                ) { model.toggleTheme() }
-            }
-        }
-        .padding(.top, 12)
-        .overlay(alignment: .top) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
-    }
-
-    private func footerButton(
-        symbol: String,
-        label: String,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 26, height: 26)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.ccMuted)
-        .background(Color.ccElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
-        .accessibilityLabel(appLanguage.localized(label))
-        .accessibilityIdentifier(identifier)
     }
 }
+
+// MARK: - Rows
+
+/// Every rail row carries a leading element. The slot is a fixed width so titles all start at the
+/// same x, and the element is centered inside it so it lands on the traffic-light axis.
+enum SidebarRowLead {
+    case symbol(String, size: CGFloat)
+    case brand(HistorySource)
+}
+
+struct SidebarRow: View {
+    let lead: SidebarRowLead
+    let title: String
+    var count: Int?
+    var selected: Bool
+    var nested: Bool = false
+    var destructive: Bool = false
+    let identifier: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    init(
+        lead: SidebarRowLead,
+        title: String,
+        count: Int? = nil,
+        selected: Bool,
+        nested: Bool = false,
+        destructive: Bool = false,
+        identifier: String,
+        action: @escaping () -> Void
+    ) {
+        self.lead = lead
+        self.title = title
+        self.count = count
+        self.selected = selected
+        self.nested = nested
+        self.destructive = destructive
+        self.identifier = identifier
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Space.sm) {
+                leadView.frame(width: Rail.leadBox, height: Rail.leadBox)
+                Text(title)
+                    .font(.system(
+                        size: nested ? Typography.caption : Typography.body,
+                        weight: selected ? .medium : .regular
+                    ))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: Space.xs)
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.ccLabel())
+                        .foregroundStyle(Theme.mutedForeground)
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(titleColor)
+            .padding(.leading, Rail.leadInset)
+            .padding(.trailing, Space.sm)
+            .frame(maxWidth: .infinity, minHeight: nested ? Metrics.subRowHeight : Metrics.rowHeight)
+            .background(rowBackground)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+            .contentShape(Rectangle())
+            .padding(.leading, nested ? Rail.subIndent : 0)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(title)
+        .accessibilityIdentifier(identifier)
+    }
+
+    @ViewBuilder private var leadView: some View {
+        switch lead {
+        case .symbol(let name, let size):
+            Image(systemName: name)
+                .font(.system(size: size, weight: .regular))
+                .foregroundStyle(selected ? Theme.foreground : Theme.mutedForeground)
+        case .brand(let source):
+            AgentBrandMark(source: source, size: nested ? 15 : 18)
+        }
+    }
+
+    private var titleColor: Color {
+        if destructive && selected { return Theme.danger }
+        return selected ? Theme.foreground : Theme.mutedForeground
+    }
+
+    private var rowBackground: Color {
+        if selected { return destructive ? Theme.dangerSoft : Theme.sidebarAccent }
+        return hovering ? Theme.hover : .clear
+    }
+}
+
+/// Collapsible group head. Body step at regular weight in the muted ink: same size as the rows it
+/// governs, distinguished only by color and by having no leading element. Emboldening it would make
+/// the head outweigh its own rows.
+private struct SidebarGroupHead: View {
+    let title: String
+    let expanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Space.xs + 2) {
+                Text(title).font(.ccBody())
+                Spacer(minLength: 0)
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(Theme.mutedForeground)
+            .padding(.leading, Rail.groupHeadInset)
+            .padding(.trailing, Space.sm)
+            .frame(height: Metrics.rowHeight - 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Search
+
+/// The rail owns the single full-text entry point. It must not overflow: the field is elastic and
+/// the badge is pinned, because a bare text child locks its own minimum width and would push the
+/// shortcut badge past the rail's edge.
+private struct SidebarSearchField: View {
+    @ObservedObject var store: ConversationStore
+    @Environment(\.appLanguage) private var appLanguage
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: Space.xs + 2) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: Typography.caption, weight: .medium))
+                .foregroundStyle(Theme.mutedForeground)
+                .frame(width: 14)
+
+            TextField(
+                appLanguage.localized("搜索会话"),
+                text: Binding(
+                    get: { store.listQuery },
+                    set: { store.updateListQuery($0) }
+                )
+            )
+            .textFieldStyle(.plain)
+            .font(.ccCaption())
+            .focused($focused)
+            .frame(maxWidth: .infinity)
+            .layoutPriority(1)
+            .accessibilityIdentifier("conversation.list.search")
+
+            if store.listQuery.isEmpty {
+                CCKeyBadge(keys: "⌘K")
+            } else {
+                Button { store.updateListQuery("") } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: Typography.caption))
+                        .foregroundStyle(Theme.mutedForeground)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(appLanguage.localized("清空搜索"))
+                .accessibilityIdentifier("conversation.list.search.clear")
+            }
+        }
+        .padding(.horizontal, Space.sm)
+        .frame(height: Metrics.rowHeight)
+        .background(Theme.fill)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+        .overlay {
+            if focused {
+                RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+                    .strokeBorder(Theme.accent, lineWidth: 1.5)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccbudFocusSearch)) { _ in
+            focused = true
+        }
+    }
+}
+
+/// Menu commands live on the scene, so they reach the app through notifications rather than by
+/// threading a binding down to whichever column happens to own the control.
+extension Notification.Name {
+    static let ccbudFocusSearch = Notification.Name("dev.ccbud.focus-search")
+    static let ccbudRefreshCatalog = Notification.Name("dev.ccbud.refresh-catalog")
+    static let ccbudOpenSettings = Notification.Name("dev.ccbud.open-settings")
+}
+
+// MARK: - Library
 
 private struct ConversationLibraryNavigation: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var workbench: ConversationWorkbenchState
     @Environment(\.appLanguage) private var appLanguage
 
-    let historyDirectories: [String]
     let selectHistoryScope: (String) -> Void
-
-    @State private var showingImporter = false
 
     var body: some View {
         VStack(spacing: 0) {
-            searchToolbar
-
             VStack(spacing: 2) {
-                libraryRow(
-                    symbol: "square.stack.3d.up",
+                SidebarRow(
+                    lead: .symbol("tray.full", size: 15),
                     title: appLanguage.localized("全部会话"),
                     count: totalSessionCount,
-                    selected: store.historyActive == "all"
-                        && workbench.selection == .all,
+                    selected: store.historyActive == "all" && workbench.selection == .all,
                     identifier: "conversation.library.all"
                 ) {
                     workbench.showAll()
                     selectHistoryScope("all")
                 }
 
+                SidebarRow(
+                    lead: .symbol("star", size: 14),
+                    title: appLanguage.localized("收藏"),
+                    count: starredCount,
+                    selected: store.historyActive == "all" && workbench.selection == .starred,
+                    identifier: "conversation.library.starred"
+                ) {
+                    workbench.showStarred()
+                    selectHistoryScope("all")
+                }
+
                 if store.scopeSnapshot.importedCount > 0 || store.historyActive == "__imported__" {
-                    libraryRow(
-                        symbol: "square.and.arrow.down",
+                    SidebarRow(
+                        lead: .symbol("square.and.arrow.down", size: 14),
                         title: appLanguage.localized("已导入"),
                         count: store.scopeSnapshot.importedCount,
                         selected: store.historyActive == "__imported__",
@@ -210,56 +323,38 @@ private struct ConversationLibraryNavigation: View {
                 }
 
                 if store.scopeSnapshot.trashCount > 0 || store.historyActive == "__trash__" {
-                    libraryRow(
-                        symbol: "trash",
+                    SidebarRow(
+                        lead: .symbol("trash", size: 14),
                         title: appLanguage.localized("回收站"),
                         count: store.scopeSnapshot.trashCount,
                         selected: store.historyActive == "__trash__",
-                        identifier: "conversation.library.trash",
-                        destructive: true
+                        destructive: true,
+                        identifier: "conversation.library.trash"
                     ) {
                         workbench.showAll()
                         selectHistoryScope("__trash__")
                     }
                 }
             }
-            .padding(.bottom, 8)
 
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    if historyDirectories.count > 1 {
-                        groupHeading(appLanguage.localized("来源"), expanded: true, action: {})
-                        ForEach(historyDirectories, id: \.self) { directory in
-                            libraryRow(
-                                symbol: "externaldrive",
-                                title: URL(fileURLWithPath: directory).lastPathComponent,
-                                count: store.scopeSnapshot.sessionCounts[directory],
-                                selected: store.historyActive == directory,
-                                identifier: "conversation.library.root.\(stableIdentifier(directory))",
-                                sublevel: true
-                            ) {
-                                workbench.showAll()
-                                selectHistoryScope(directory)
-                            }
-                        }
-                    }
-
-                    groupHeading(
-                        appLanguage.localized("代理"),
+                    SidebarGroupHead(
+                        title: appLanguage.localized("代理"),
                         expanded: workbench.agentsExpanded
                     ) {
                         workbench.agentsExpanded.toggle()
                     }
                     if workbench.agentsExpanded {
                         ForEach(agentCounts, id: \.source.rawValue) { item in
-                            libraryRow(
-                                symbol: sourceSymbol(item.source),
+                            SidebarRow(
+                                lead: .brand(item.source),
                                 title: ConversationPresentation.sourceName(rawValue: item.source.rawValue),
                                 count: item.count,
                                 selected: store.historyActive == "all"
                                     && workbench.selection == .agent(item.source),
-                                identifier: "conversation.library.agent.\(item.source.rawValue)",
-                                sublevel: true
+                                nested: true,
+                                identifier: "conversation.library.agent.\(item.source.rawValue)"
                             ) {
                                 workbench.select(agent: item.source)
                                 selectHistoryScope("all")
@@ -267,22 +362,25 @@ private struct ConversationLibraryNavigation: View {
                         }
                     }
 
-                    groupHeading(
-                        appLanguage.localized("项目"),
+                    SidebarGroupHead(
+                        title: appLanguage.localized("项目"),
                         expanded: workbench.projectsExpanded
                     ) {
                         workbench.projectsExpanded.toggle()
                     }
                     if workbench.projectsExpanded {
                         ForEach(store.projects) { project in
-                            libraryRow(
-                                symbol: "folder",
-                                title: project.name,
+                            SidebarRow(
+                                lead: .symbol("folder", size: 14),
+                                title: ConversationPresentation.projectName(
+                                    project.name,
+                                    language: appLanguage
+                                ),
                                 count: project.sessions.count,
                                 selected: store.historyActive == "all"
                                     && workbench.selection == .project(project.cwd),
-                                identifier: "conversation.library.project.\(stableIdentifier(project.cwd))",
-                                sublevel: true
+                                nested: true,
+                                identifier: "conversation.library.project.\(SidebarIdentifier.stable(project.cwd))"
                             ) {
                                 workbench.select(project: project.cwd)
                                 selectHistoryScope("all")
@@ -290,185 +388,31 @@ private struct ConversationLibraryNavigation: View {
                         }
                     }
                 }
-                .padding(.bottom, 8)
+                .padding(.top, Space.xs)
+                .padding(.bottom, Space.sm)
             }
+            .scrollIndicators(.automatic)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .fileImporter(
-            isPresented: $showingImporter,
-            allowedContentTypes: [UTType(filenameExtension: "jsonl"), .zip].compactMap { $0 },
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let files):
-                Task { await store.importFiles(files) }
-            case .failure(let error):
-                store.reportActionError("导入失败：\(error.localizedDescription)")
-            }
-        }
     }
 
-    private var searchToolbar: some View {
-        HStack(spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.ccCaption)
-                TextField(
-                    "搜索项目 / 会话 / 内容…",
-                    text: Binding(
-                        get: { store.listQuery },
-                        set: { store.updateListQuery($0) }
-                    )
-                )
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .accessibilityIdentifier("conversation.list.search")
-                if !store.listQuery.isEmpty {
-                    Button { store.updateListQuery("") } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.ccCaption)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(appLanguage.localized("清空搜索"))
-                    .accessibilityIdentifier("conversation.list.search.clear")
-                }
-            }
-            .padding(.horizontal, 9)
-            .frame(maxWidth: .infinity, minHeight: 32)
-            .background(Color.ccConversationSecondary)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            if let progress = store.importProgress {
-                ProgressView(
-                    value: Double(progress.completed),
-                    total: Double(max(progress.total, 1))
-                )
-                .progressViewStyle(.circular)
-                .controlSize(.small)
-                .frame(width: 30, height: 30)
-                .background(Color.ccConversationSecondary)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .help(appLanguage.localized(
-                    "正在导入 \(progress.completed)/\(progress.total)"
-                ))
-                .accessibilityLabel(appLanguage.localized("正在导入会话"))
-                .accessibilityValue("\(progress.completed)/\(progress.total)")
-                .accessibilityIdentifier("conversation.import.progress")
-            } else {
-                libraryToolButton(
-                    symbol: "plus",
-                    label: "导入 JSONL 或 ZIP",
-                    identifier: "conversation.import"
-                ) {
-                    showingImporter = true
-                }
-                .disabled(store.isMutating)
-            }
-
-            libraryToolButton(
-                symbol: "arrow.clockwise",
-                label: "更新会话索引",
-                identifier: "conversation.library.refresh"
-            ) {
-                store.retryIndexing()
-            }
-            .disabled(store.indexingState.isScanning)
-        }
-        .padding(.bottom, 12)
-    }
-
-    private func libraryToolButton(
-        symbol: String,
-        label: String,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Group {
-                if identifier == "conversation.library.refresh", store.indexingState.isScanning {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Image(systemName: symbol).font(.system(size: 11.5, weight: .semibold))
-                }
-            }
-            .frame(width: 30, height: 30)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.ccMuted)
-        .background(Color.ccConversationSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .help(appLanguage.localized(label))
-        .accessibilityLabel(appLanguage.localized(label))
-        .accessibilityIdentifier(identifier)
-    }
-
-    private func groupHeading(
-        _ title: String,
-        expanded: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                Text(title).font(.system(size: 13, weight: .regular))
-                Spacer(minLength: 0)
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .foregroundStyle(Color.ccMuted)
-            .padding(.horizontal, 9)
-            .frame(height: 29)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func libraryRow(
-        symbol: String,
-        title: String,
-        count: Int?,
-        selected: Bool,
-        identifier: String,
-        sublevel: Bool = false,
-        destructive: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: sublevel ? 11.5 : 13, weight: .medium))
-                    .frame(width: 18)
-                Text(title).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 4)
-                if let count, count > 0 {
-                    Text("\(count)").font(.system(size: 10.5, design: .rounded))
-                }
-            }
-            .font(.system(size: sublevel ? 12 : 13.5, weight: selected ? .semibold : .regular))
-            .foregroundStyle(
-                destructive && selected
-                    ? Color.ccRed
-                    : (selected ? Color.ccForeground : Color.ccMuted)
-            )
-            .padding(.leading, sublevel ? 18 : 8)
-            .padding(.trailing, 9)
-            .frame(maxWidth: .infinity, minHeight: sublevel ? 27 : 32)
-            .background(
-                selected
-                    ? (destructive ? Color.ccRedSoft : Color.ccSidebarSelection)
-                    : Color.clear
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(ConversationPressableButtonStyle())
-        .help(title)
-        .accessibilityIdentifier(identifier)
-    }
-
+    /// Prefer the index's authoritative tally. Counting the loaded stream instead would report the
+    /// truncation cap rather than the size of the library.
     private var totalSessionCount: Int {
-        store.projects.reduce(0) { $0 + $1.sessions.count }
+        let snapshot = store.scopeSnapshot
+        if snapshot.isAuthoritative {
+            let live = snapshot.sessionCounts
+                .filter { $0.key != "__imported__" }
+                .values
+                .reduce(0, +)
+            let imported = snapshot.importedCount
+            if live + imported > 0 { return live + imported }
+        }
+        return store.projects.reduce(0) { $0 + $1.sessions.count }
+    }
+
+    private var starredCount: Int {
+        store.projects.reduce(0) { $0 + $1.sessions.lazy.filter(\.starred).count }
     }
 
     private var agentCounts: [(source: HistorySource, count: Int)] {
@@ -481,34 +425,117 @@ private struct ConversationLibraryNavigation: View {
             return count > 0 ? (source, count) : nil
         }
     }
+}
 
-    private func sourceSymbol(_ source: HistorySource) -> String {
-        switch source {
-        case .claude: "sparkles"
-        case .codex: "terminal"
-        case .qoder: "q.square"
-        case .grok: "bolt"
-        case .copilot: "chevron.left.forwardslash.chevron.right"
-        case .antigravity: "atom"
-        }
-    }
-
-    private func stableIdentifier(_ value: String) -> String {
+enum SidebarIdentifier {
+    static func stable(_ value: String) -> String {
         String(value.unicodeScalars.map { scalar in
             CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "_"
         })
     }
 }
 
-private struct AppLogo: View {
+// MARK: - Footer
+
+/// Always present, quiet by construction: a status line that stays silent unless it has something
+/// to report, and a right-aligned strip of secondary actions that never competes with the selected
+/// navigation row.
+private struct SidebarFooter: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.appLanguage) private var appLanguage
+    @ObservedObject var workbench: ConversationWorkbenchState
+
+    @State private var showingImporter = false
+
+    var body: some View {
+        VStack(spacing: Space.xs) {
+            HStack(spacing: Space.sm) {
+                CCStatusLabel(
+                    text: model.gatewayState.isRunning
+                        ? appLanguage.localized("网关运行中")
+                        : appLanguage.localized("网关未启动"),
+                    tint: model.gatewayState.isRunning ? Theme.success : Theme.mutedForeground
+                )
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Rail.leadInset)
+            .frame(height: 18)
+
+            HStack(spacing: 2) {
+                if model.selected == .conversations {
+                    footerButton("square.and.arrow.down", "导入 JSONL 或 ZIP", "conversation.import") {
+                        showingImporter = true
+                    }
+                    .disabled(model.conversationStore.isMutating)
+
+                    footerButton("arrow.clockwise", "更新会话索引", "conversation.library.refresh") {
+                        model.conversationStore.retryIndexing()
+                    }
+                    .disabled(model.conversationStore.indexingState.isScanning)
+                }
+
+                Spacer(minLength: 0)
+
+                footerButton(
+                    model.themeMode == .dark ? "sun.max" : "moon",
+                    model.themeMode == .dark ? "切换到浅色模式" : "切换到深色模式",
+                    "sidebar.theme"
+                ) {
+                    model.toggleTheme()
+                }
+
+                footerButton("gearshape", "设置", "sidebar.settings") {
+                    model.selected = .settings
+                }
+            }
+        }
+        .padding(.top, Space.sm)
+        .hairline(.top)
+        .fileImporter(
+            isPresented: $showingImporter,
+            allowedContentTypes: [UTType(filenameExtension: "jsonl"), .zip].compactMap { $0 },
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let files):
+                Task { await model.conversationStore.importFiles(files) }
+            case .failure(let error):
+                model.conversationStore.reportActionError("导入失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func footerButton(
+        _ symbol: String,
+        _ label: String,
+        _ identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            if identifier == "conversation.library.refresh",
+               model.conversationStore.indexingState.isScanning {
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: symbol)
+            }
+        }
+        .buttonStyle(CCIconButtonStyle(size: 26, symbolSize: Typography.caption))
+        .help(appLanguage.localized(label))
+        .accessibilityLabel(appLanguage.localized(label))
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+struct AppLogo: View {
     var body: some View {
         if let url = Bundle.main.url(forResource: "icon", withExtension: "png"),
            let image = NSImage(contentsOf: url) {
             Image(nsImage: image).resizable().scaledToFit()
         } else {
             ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(Color.ccBrandSoft)
-                Image(systemName: "command").foregroundStyle(Color.ccBrandStrong)
+                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                    .fill(Theme.accentSoft)
+                Image(systemName: "command").foregroundStyle(Theme.accentText)
             }
         }
     }

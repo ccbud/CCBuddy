@@ -135,6 +135,9 @@ struct HistorySessionMetadata: Codable, Equatable, Identifiable, Sendable {
     var subagentCount: Int = 0
     var imported: Bool = false
     var deleted: Bool = false
+    /// Kept close at hand by the user. Persisted with the rest of CC Buddy's own metadata, never in
+    /// the agent's transcript.
+    var starred: Bool = false
     var createdAt: Date
     var lastActivity: Date
     var sizeBytes: UInt64

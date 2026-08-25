@@ -31,6 +31,14 @@ enum ConversationPresentation {
         }
     }
 
+    /// Sessions whose producer never recorded a working directory group together. The list still
+    /// has to name that group; an empty row with only a folder icon and a count is unreadable.
+    static func projectName(_ raw: String, language: AppLanguage? = nil) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.isEmpty else { return value }
+        return language?.localized("未归类") ?? "未归类"
+    }
+
     static func sourceShortName(rawValue: String) -> String {
         rawValue == "disk" ? "Claude" : sourceName(rawValue: rawValue)
     }
@@ -122,6 +130,12 @@ enum ConversationIndexAccessibility {
             guard previous != current else { return nil }
             return .init(message: language.localized(message), isFailure: true)
 
+        case .incomplete(let message):
+            // The catalog is usable, so this is spoken at ordinary priority rather than as a
+            // failure that interrupts whatever VoiceOver is currently reading.
+            guard previous != current else { return nil }
+            return .init(message: language.localized(message), isFailure: false)
+
         case .idle:
             guard previous.isScanning else { return nil }
             return .init(
@@ -159,13 +173,13 @@ struct ConversationToolButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Color.ccMuted)
+            .foregroundStyle(Theme.mutedForeground)
             .frame(minWidth: 26, minHeight: 26)
-            .background(configuration.isPressed ? Color.ccBrandSoft : Color.ccElevated)
+            .background(configuration.isPressed ? Theme.accentSoft : Theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(configuration.isPressed ? Color.ccBrand.opacity(0.45) : Color.ccBorder)
+                    .stroke(configuration.isPressed ? Theme.accent.opacity(0.45) : Theme.separator)
             )
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
@@ -437,7 +451,7 @@ struct ConversationHighlightedText: View {
     var query: String = ""
     var current = false
     var fontSize: CGFloat = 13
-    var color: Color = .ccForeground
+    var color: Color = Theme.foreground
 
     var body: some View {
         ConversationMarkdownBlocksView(
@@ -507,7 +521,7 @@ private struct ConversationMarkdownBlocksView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(listMarker(item: item, ordered: ordered, number: start + offset))
                             .font(.system(size: fontSize, weight: .medium, design: ordered ? .monospaced : .default))
-                            .foregroundStyle(Color.ccCaption)
+                            .foregroundStyle(Theme.mutedForeground)
                             .frame(width: ordered ? 24 : 15, alignment: .trailing)
                         inlineText(listText(item))
                             .font(.system(size: fontSize))
@@ -521,14 +535,14 @@ private struct ConversationMarkdownBlocksView: View {
         case .blockquote(let quotedBlocks):
             HStack(alignment: .top, spacing: 9) {
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(Color.ccBorderStrong)
+                    .fill(Theme.separator)
                     .frame(width: 3)
                 ConversationMarkdownBlocksView(
                     blocks: quotedBlocks,
                     query: query,
                     current: current,
                     fontSize: max(10.5, fontSize * 0.94),
-                    color: .ccMuted
+                    color: Theme.mutedForeground
                 )
             }
             .padding(.vertical, 2)
@@ -548,7 +562,7 @@ private struct ConversationMarkdownBlocksView: View {
 
         case .thematicBreak:
             Rectangle()
-                .fill(Color.ccBorder)
+                .fill(Theme.separator)
                 .frame(height: 1)
                 .padding(.vertical, 4)
         }
@@ -621,7 +635,7 @@ private enum ConversationInlineMarkup {
             output = output + Text(String(rendered[cursor..<range.lowerBound]))
             output = output + Text(String(rendered[range]))
                 .bold()
-                .foregroundColor(current ? .ccBrandStrong : .ccBrand)
+                .foregroundColor(current ? Theme.accentText : Theme.accent)
             cursor = range.upperBound
         }
         return output + Text(String(rendered[cursor...]))
@@ -639,12 +653,12 @@ private struct ConversationMarkdownCodeBlock: View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(alignment: .top, spacing: 0) {
                 Text(lineNumbers)
-                    .foregroundStyle(Color.ccCaption.opacity(0.78))
+                    .foregroundStyle(Theme.mutedForeground.opacity(0.78))
                     .padding(.leading, 12)
                     .padding(.trailing, 9)
                     .accessibilityHidden(true)
                 Rectangle()
-                    .fill(Color.ccBorder)
+                    .fill(Theme.separator)
                     .frame(width: 1)
                 Text(value)
                     .foregroundStyle(codeForeground)
@@ -659,12 +673,12 @@ private struct ConversationMarkdownCodeBlock: View {
         }
         .background(codeBackground)
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator))
         .overlay(alignment: .topTrailing) {
             if let language, !language.isEmpty {
                 Text(language)
                     .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
+                    .foregroundStyle(Theme.mutedForeground)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(codeBackground.opacity(0.94))
@@ -706,7 +720,7 @@ private struct ConversationMarkdownTable: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorderStrong))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.separator))
     }
 
     private func tableRow(_ values: [String], isHeader: Bool) -> some View {
@@ -719,7 +733,7 @@ private struct ConversationMarkdownTable: View {
                     parsesMarkdown: true
                 )
                 .font(.system(size: max(10.5, fontSize * 0.96), weight: isHeader ? .semibold : .regular))
-                .foregroundStyle(Color.ccForeground)
+                .foregroundStyle(Theme.foreground)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .frame(
@@ -727,8 +741,8 @@ private struct ConversationMarkdownTable: View {
                     maxWidth: 240,
                     alignment: swiftUIAlignment(alignments[column])
                 )
-                .background(isHeader ? Color.ccForeground.opacity(0.05) : Color.clear)
-                .overlay(Rectangle().stroke(Color.ccBorder, lineWidth: 0.5))
+                .background(isHeader ? Theme.foreground.opacity(0.05) : Color.clear)
+                .overlay(Rectangle().stroke(Theme.separator, lineWidth: 0.5))
             }
         }
     }
@@ -744,7 +758,7 @@ private struct ConversationMarkdownTable: View {
 
 struct ConversationRailMaterial: ViewModifier {
     func body(content: Content) -> some View {
-        content.background(Color.ccConversationList)
+        content.background(Theme.list)
     }
 }
 

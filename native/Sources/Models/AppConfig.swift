@@ -4,6 +4,23 @@ struct AppConfig: Codable, Equatable {
     struct TrayUsage: Codable, Equatable { var enabled = false; var range = "7d" }
     struct Retry429: Codable, Equatable { var enabled = true; var max = 3; var baseMs = 500 }
     struct AutoUpdate: Codable, Equatable { var check = true; var autoDownload = true }
+    struct GatewayFailover: Codable, Equatable {
+        var enabled = false
+        var providerIds: [String] = []
+
+        private enum CodingKeys: String, CodingKey { case enabled, providerIds }
+
+        init(enabled: Bool = false, providerIds: [String] = []) {
+            self.enabled = enabled
+            self.providerIds = providerIds
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
+            providerIds = (try? c.decode([String].self, forKey: .providerIds)) ?? []
+        }
+    }
 
     var port = 8788
     var activeProviderId: String?
@@ -20,6 +37,7 @@ struct AppConfig: Codable, Equatable {
     var historyActive = "all"
     var connectTargets: [String] = []
     var retry429 = Retry429()
+    var gatewayFailover = GatewayFailover()
     var insecureSkipVerify = false
     var autoUpdate = AutoUpdate()
     var providers: [Provider] = []
@@ -30,6 +48,16 @@ struct AppConfig: Codable, Equatable {
     var activeProvider: Provider? {
         providers.first(where: { $0.id == activeProviderId }) ?? providers.first
     }
+
+    /// Mirrors cc-switch's queue-only routing rule when automatic failover is enabled. The
+    /// ordinary active provider remains the single route while failover is off.
+    var gatewayProviders: [Provider] {
+        guard gatewayFailover.enabled else { return activeProvider.map { [$0] } ?? [] }
+        let providersByID = Dictionary(uniqueKeysWithValues: providers.map { ($0.id, $0) })
+        return gatewayFailover.providerIds.compactMap { providersByID[$0] }
+    }
+
+    var gatewayPrimaryProvider: Provider? { gatewayProviders.first }
 
     mutating func normalize() {
         port = (1...65535).contains(port) ? port : 8788
@@ -50,6 +78,18 @@ struct AppConfig: Codable, Equatable {
         }
         if activeProviderId == nil || !providers.contains(where: { $0.id == activeProviderId }) {
             activeProviderId = providers.first?.id
+        }
+        let providerIDs = Set(providers.map(\.id))
+        var seenFailoverProviders = Set<String>()
+        gatewayFailover.providerIds = gatewayFailover.providerIds.filter {
+            providerIDs.contains($0) && seenFailoverProviders.insert($0).inserted
+        }
+        // A stale or partially written queue must not turn an otherwise valid gateway into an
+        // unexplained provider-less process. AppModel fills a newly enabled queue with every
+        // provider; this fallback only repairs legacy/manual configuration edits.
+        if gatewayFailover.enabled, gatewayFailover.providerIds.isEmpty,
+           let activeProviderId {
+            gatewayFailover.providerIds = [activeProviderId]
         }
         var normalizedDirectories: [String] = []
         for rawDirectory in ["~/.claude"] + historyDirs {

@@ -442,7 +442,7 @@
   },
   "网关运行中": {
     "en": "Gateway running",
-    "ja": "ゲートウェイ実行中",
+    "ja": "ゲートウェイ稼働中",
     "ko": "게이트웨이 실행 중",
     "zh-Hans": "网关运行中",
     "zh-Hant": "閘道執行中"
@@ -1253,11 +1253,11 @@
     "zh-Hant": "可用"
   },
   "目录不存在": {
-    "en": "Folder not found",
-    "ja": "フォルダがありません",
-    "ko": "폴더가 없습니다",
+    "en": "Directory not found",
+    "ja": "ディレクトリが見つかりません",
+    "ko": "디렉터리를 찾을 수 없음",
     "zh-Hans": "目录不存在",
-    "zh-Hant": "資料夾不存在"
+    "zh-Hant": "目錄不存在"
   },
   "选择": {
     "en": "Choose",
@@ -2365,20 +2365,6 @@
     "zh-Hans": "HTML 导出失败：{error}",
     "zh-Hant": "HTML 匯出失敗：{error}"
   },
-  "导入失败：{error}": {
-    "en": "Import failed: {error}",
-    "ja": "インポートに失敗しました：{error}",
-    "ko": "가져오기 실패: {error}",
-    "zh-Hans": "导入失败：{error}",
-    "zh-Hant": "匯入失敗：{error}"
-  },
-  "仅支持导入 JSONL 或 ZIP": {
-    "en": "Only JSONL or ZIP files can be imported",
-    "ja": "インポートできるのは JSONL または ZIP のみです",
-    "ko": "JSONL 또는 ZIP 파일만 가져올 수 있습니다",
-    "zh-Hans": "仅支持导入 JSONL 或 ZIP",
-    "zh-Hant": "僅支援匯入 JSONL 或 ZIP"
-  },
   "正在启动 Bifrost · localhost:{port}": {
     "en": "Starting Bifrost · localhost:{port}",
     "ja": "Bifrost を起動中 · localhost:{port}",
@@ -3155,5 +3141,390 @@
     "ko": "게이트웨이 액세스 토큰 업데이트 실패 · {error}; 이전 상태 복원도 실패했습니다: {recoveryError}",
     "zh-Hans": "更新网关访问令牌失败 · {error}；恢复先前状态失败：{recoveryError}",
     "zh-Hant": "更新閘道存取權杖失敗 · {error}；復原先前狀態失敗：{recoveryError}"
+  },
+  "搜索会话": {
+    "en": "Search sessions",
+    "ja": "セッションを検索",
+    "ko": "세션 검색",
+    "zh-Hans": "搜索会话",
+    "zh-Hant": "搜尋工作階段"
+  },
+  "网关未启动": {
+    "en": "Gateway stopped",
+    "ja": "ゲートウェイ停止中",
+    "ko": "게이트웨이 중지됨",
+    "zh-Hans": "网关未启动",
+    "zh-Hant": "閘道未啟動"
+  },
+  "返回会话": {
+    "en": "Back to sessions",
+    "ja": "セッションに戻る",
+    "ko": "세션으로 돌아가기",
+    "zh-Hans": "返回会话",
+    "zh-Hant": "返回工作階段"
+  },
+  "会话位置": {
+    "en": "Session locations",
+    "ja": "セッションの場所",
+    "ko": "세션 위치",
+    "zh-Hans": "会话位置",
+    "zh-Hant": "工作階段位置"
+  },
+  "添加位置": {
+    "en": "Add location",
+    "ja": "場所を追加",
+    "ko": "위치 추가",
+    "zh-Hans": "添加位置",
+    "zh-Hant": "新增位置"
+  },
+  "移除位置": {
+    "en": "Remove location",
+    "ja": "場所を削除",
+    "ko": "위치 제거",
+    "zh-Hans": "移除位置",
+    "zh-Hant": "移除位置"
+  },
+  "位置操作": {
+    "en": "Location actions",
+    "ja": "場所の操作",
+    "ko": "위치 작업",
+    "zh-Hans": "位置操作",
+    "zh-Hant": "位置操作"
+  },
+  "默认位置不可移除": {
+    "en": "The default location can't be removed",
+    "ja": "既定の場所は削除できません",
+    "ko": "기본 위치는 제거할 수 없습니다",
+    "zh-Hans": "默认位置不可移除",
+    "zh-Hant": "預設位置無法移除"
+  },
+  "在访达中显示": {
+    "en": "Show in Finder",
+    "ja": "Finder で表示",
+    "ko": "Finder에서 보기",
+    "zh-Hans": "在访达中显示",
+    "zh-Hant": "在 Finder 中顯示"
+  },
+  "选择会话位置（含 projects/ 或 sessions/）": {
+    "en": "Choose a session location (containing projects/ or sessions/)",
+    "ja": "セッションの場所を選択（projects/ または sessions/ を含む）",
+    "ko": "세션 위치 선택 (projects/ 또는 sessions/ 포함)",
+    "zh-Hans": "选择会话位置（含 projects/ 或 sessions/）",
+    "zh-Hant": "選擇工作階段位置（含 projects/ 或 sessions/）"
+  },
+  "每个位置都会同时扫描 Claude Code 的 projects/ 与 Codex 的 sessions/，以及 Grok、Copilot、Antigravity、Qoder 的会话树。检测到对应 CLI 时其默认位置会自动加入；用 CLAUDE_CONFIG_DIR、CODEX_HOME 等指定过其他路径时在这里补上。": {
+    "en": "Every location is scanned for Claude Code's projects/, Codex's sessions/, and the Grok, Copilot, Antigravity and Qoder session trees. Default locations are added automatically when the matching CLI is detected; add the rest here if you pointed CLAUDE_CONFIG_DIR, CODEX_HOME or similar somewhere else.",
+    "ja": "各場所で Claude Code の projects/、Codex の sessions/、および Grok・Copilot・Antigravity・Qoder のセッションツリーを走査します。対応する CLI を検出すると既定の場所は自動で追加されます。CLAUDE_CONFIG_DIR や CODEX_HOME などで別の場所を指定している場合はここで追加してください。",
+    "ko": "각 위치에서 Claude Code의 projects/, Codex의 sessions/, 그리고 Grok·Copilot·Antigravity·Qoder 세션 트리를 함께 검색합니다. 해당 CLI가 감지되면 기본 위치가 자동으로 추가됩니다. CLAUDE_CONFIG_DIR, CODEX_HOME 등으로 다른 경로를 지정했다면 여기에 추가하세요.",
+    "zh-Hans": "每个位置都会同时扫描 Claude Code 的 projects/ 与 Codex 的 sessions/，以及 Grok、Copilot、Antigravity、Qoder 的会话树。检测到对应 CLI 时其默认位置会自动加入；用 CLAUDE_CONFIG_DIR、CODEX_HOME 等指定过其他路径时在这里补上。",
+    "zh-Hant": "每個位置都會同時掃描 Claude Code 的 projects/ 與 Codex 的 sessions/，以及 Grok、Copilot、Antigravity、Qoder 的工作階段樹。偵測到對應 CLI 時其預設位置會自動加入；若以 CLAUDE_CONFIG_DIR、CODEX_HOME 等指定過其他路徑，請在此補上。"
+  },
+  "CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。": {
+    "en": "CC Buddy only reads these directories; it never modifies the original session files your CLIs write.",
+    "ja": "CC Buddy はこれらのディレクトリを読み取るだけで、各 CLI が書き込んだ元のセッションファイルは変更しません。",
+    "ko": "CC Buddy는 이 디렉터리를 읽기만 하며 각 CLI가 기록한 원본 세션 파일을 수정하지 않습니다.",
+    "zh-Hans": "CC Buddy 只读取这些目录，不会修改各 CLI 写下的原始会话文件。",
+    "zh-Hant": "CC Buddy 只讀取這些目錄，不會修改各 CLI 寫下的原始工作階段檔案。"
+  },
+  "本地存储": {
+    "en": "Local storage",
+    "ja": "ローカルストレージ",
+    "ko": "로컬 저장소",
+    "zh-Hans": "本地存储",
+    "zh-Hant": "本機儲存"
+  },
+  "位置": {
+    "en": "Location",
+    "ja": "場所",
+    "ko": "위치",
+    "zh-Hans": "位置",
+    "zh-Hant": "位置"
+  },
+  "会话索引": {
+    "en": "Session index",
+    "ja": "セッションインデックス",
+    "ko": "세션 인덱스",
+    "zh-Hans": "会话索引",
+    "zh-Hant": "工作階段索引"
+  },
+  "已收录会话": {
+    "en": "Indexed sessions",
+    "ja": "インデックス済みセッション",
+    "ko": "인덱싱된 세션",
+    "zh-Hans": "已收录会话",
+    "zh-Hant": "已收錄工作階段"
+  },
+  "正在统计…": {
+    "en": "Measuring…",
+    "ja": "計測中…",
+    "ko": "계산 중…",
+    "zh-Hans": "正在统计…",
+    "zh-Hant": "正在統計…"
+  },
+  "索引": {
+    "en": "Index",
+    "ja": "インデックス",
+    "ko": "인덱스",
+    "zh-Hans": "索引",
+    "zh-Hant": "索引"
+  },
+  "重建索引": {
+    "en": "Rebuild index",
+    "ja": "インデックスを再構築",
+    "ko": "인덱스 다시 만들기",
+    "zh-Hans": "重建索引",
+    "zh-Hant": "重建索引"
+  },
+  "设置、会话元数据与可重建的搜索索引都保存在这里。重装应用不会丢失它们。": {
+    "en": "Settings, session metadata and the rebuildable search index all live here. Reinstalling the app does not lose them.",
+    "ja": "設定・セッションのメタデータ・再構築可能な検索インデックスはすべてここに保存されます。アプリを再インストールしても失われません。",
+    "ko": "설정, 세션 메타데이터, 다시 만들 수 있는 검색 인덱스가 모두 여기에 저장됩니다. 앱을 다시 설치해도 사라지지 않습니다.",
+    "zh-Hans": "设置、会话元数据与可重建的搜索索引都保存在这里。重装应用不会丢失它们。",
+    "zh-Hant": "設定、工作階段中繼資料與可重建的搜尋索引都保存在這裡。重新安裝應用程式不會遺失。"
+  },
+  "索引只是原始会话文件的一份可重建副本。删除它不会影响任何 CLI 写下的会话；下次启动会重新扫描。": {
+    "en": "The index is only a rebuildable copy of the original session files. Deleting it affects nothing your CLIs wrote; the next launch scans again.",
+    "ja": "インデックスは元のセッションファイルの再構築可能なコピーにすぎません。削除しても各 CLI が書き込んだセッションには影響せず、次回起動時に再スキャンされます。",
+    "ko": "인덱스는 원본 세션 파일의 다시 만들 수 있는 사본일 뿐입니다. 삭제해도 CLI가 기록한 세션에는 영향이 없으며 다음 실행 시 다시 검색합니다.",
+    "zh-Hans": "索引只是原始会话文件的一份可重建副本。删除它不会影响任何 CLI 写下的会话；下次启动会重新扫描。",
+    "zh-Hant": "索引只是原始工作階段檔案的一份可重建副本。刪除它不會影響任何 CLI 寫下的工作階段；下次啟動會重新掃描。"
+  },
+  "在终端继续": {
+    "en": "Continue in terminal",
+    "ja": "ターミナルで続行",
+    "ko": "터미널에서 계속",
+    "zh-Hans": "在终端继续",
+    "zh-Hant": "在終端機繼續"
+  },
+  "部分会话已跳过": {
+    "en": "Some sessions skipped",
+    "ja": "一部のセッションをスキップ",
+    "ko": "일부 세션 건너뜀",
+    "zh-Hans": "部分会话已跳过",
+    "zh-Hant": "部分工作階段已略過"
+  },
+  "添加": {
+    "en": "Add",
+    "ja": "追加",
+    "ko": "추가",
+    "zh-Hans": "添加",
+    "zh-Hant": "新增"
+  },
+  "添加第一个服务": {
+    "en": "Add your first service",
+    "ja": "最初のサービスを追加",
+    "ko": "첫 서비스 추가",
+    "zh-Hans": "添加第一个服务",
+    "zh-Hant": "新增第一個服務"
+  },
+  "添加一个 Anthropic 或 OpenAI 兼容的服务，网关就能开始转发。": {
+    "en": "Add an Anthropic- or OpenAI-compatible service and the gateway can start forwarding.",
+    "ja": "Anthropic または OpenAI 互換のサービスを追加すると、ゲートウェイが転送を開始できます。",
+    "ko": "Anthropic 또는 OpenAI 호환 서비스를 추가하면 게이트웨이가 전달을 시작할 수 있습니다.",
+    "zh-Hans": "添加一个 Anthropic 或 OpenAI 兼容的服务，网关就能开始转发。",
+    "zh-Hant": "新增一個 Anthropic 或 OpenAI 相容的服務，閘道就能開始轉發。"
+  },
+  "启动后，已接入的 CLI 会通过本机网关转发": {
+    "en": "Once started, connected CLIs route through the local gateway",
+    "ja": "起動すると、接続済みの CLI はローカルゲートウェイ経由になります",
+    "ko": "시작하면 연결된 CLI가 로컬 게이트웨이를 통해 전달됩니다",
+    "zh-Hans": "启动后，已接入的 CLI 会通过本机网关转发",
+    "zh-Hant": "啟動後，已接入的 CLI 會透過本機閘道轉發"
+  },
+  "开发插件": {
+    "en": "Build a plugin",
+    "ja": "プラグインを開発",
+    "ko": "플러그인 개발",
+    "zh-Hans": "开发插件",
+    "zh-Hant": "開發外掛"
+  },
+  "复用第三方 coding agent 的本机登录态直连推理": {
+    "en": "Reuse a third-party coding agent's local sign-in to reach its models directly",
+    "ja": "サードパーティ製 coding agent のローカルログイン状態を再利用して直接推論します",
+    "ko": "서드파티 coding agent의 로컬 로그인 상태를 재사용해 직접 추론합니다",
+    "zh-Hans": "复用第三方 coding agent 的本机登录态直连推理",
+    "zh-Hant": "重用第三方 coding agent 的本機登入狀態直連推論"
+  },
+  "{count} 个会话": {
+    "en": "{count} sessions",
+    "ja": "{count} 件のセッション",
+    "ko": "세션 {count}개",
+    "zh-Hans": "{count} 个会话",
+    "zh-Hant": "{count} 個工作階段"
+  },
+  "{count} 个会话无法读取，已跳过": {
+    "en": "{count} sessions couldn't be read and were skipped",
+    "ja": "{count} 件のセッションを読み取れずスキップしました",
+    "ko": "세션 {count}개를 읽지 못해 건너뛰었습니다",
+    "zh-Hans": "{count} 个会话无法读取，已跳过",
+    "zh-Hant": "{count} 個工作階段無法讀取，已略過"
+  },
+  "在 {name} 中继续": {
+    "en": "Continue in {name}",
+    "ja": "{name} で続行",
+    "ko": "{name}에서 계속",
+    "zh-Hans": "在 {name} 中继续",
+    "zh-Hant": "在 {name} 繼續"
+  },
+  "在 {name} 中继续这个会话": {
+    "en": "Continue this session in {name}",
+    "ja": "このセッションを {name} で続行",
+    "ko": "이 세션을 {name}에서 계속",
+    "zh-Hans": "在 {name} 中继续这个会话",
+    "zh-Hant": "在 {name} 繼續這個工作階段"
+  },
+  "已在 {name} 中继续会话": {
+    "en": "Continued the session in {name}",
+    "ja": "{name} でセッションを再開しました",
+    "ko": "{name}에서 세션을 이어갔습니다",
+    "zh-Hans": "已在 {name} 中继续会话",
+    "zh-Hant": "已在 {name} 繼續工作階段"
+  },
+  "找不到命令 {name}，请确认它已安装并在 PATH 中": {
+    "en": "Command {name} not found — make sure it is installed and on your PATH",
+    "ja": "コマンド {name} が見つかりません。インストール済みで PATH に含まれているか確認してください",
+    "ko": "{name} 명령을 찾을 수 없습니다. 설치되어 있고 PATH에 있는지 확인하세요",
+    "zh-Hans": "找不到命令 {name}，请确认它已安装并在 PATH 中",
+    "zh-Hant": "找不到命令 {name}，請確認它已安裝並在 PATH 中"
+  },
+  "{name} 还不支持在终端继续": {
+    "en": "{name} doesn't support continuing in a terminal yet",
+    "ja": "{name} はターミナルでの続行にまだ対応していません",
+    "ko": "{name}은(는) 아직 터미널에서 이어가기를 지원하지 않습니다",
+    "zh-Hans": "{name} 还不支持在终端继续",
+    "zh-Hant": "{name} 尚未支援在終端機繼續"
+  },
+  "项目目录已不存在：{path}。命令已复制到剪贴板，可手动运行。": {
+    "en": "The project directory no longer exists: {path}. The command was copied to the clipboard so you can run it yourself.",
+    "ja": "プロジェクトディレクトリが存在しません: {path}。コマンドをクリップボードにコピーしたので手動で実行できます。",
+    "ko": "프로젝트 디렉터리가 더 이상 없습니다: {path}. 명령을 클립보드에 복사했으니 직접 실행할 수 있습니다.",
+    "zh-Hans": "项目目录已不存在：{path}。命令已复制到剪贴板，可手动运行。",
+    "zh-Hant": "專案目錄已不存在：{path}。命令已複製到剪貼簿，可手動執行。"
+  },
+  "无法打开 {name}。命令已复制到剪贴板，可手动运行。": {
+    "en": "Couldn't open {name}. The command was copied to the clipboard so you can run it yourself.",
+    "ja": "{name} を開けませんでした。コマンドをクリップボードにコピーしたので手動で実行できます。",
+    "ko": "{name}을(를) 열 수 없습니다. 명령을 클립보드에 복사했으니 직접 실행할 수 있습니다.",
+    "zh-Hans": "无法打开 {name}。命令已复制到剪贴板，可手动运行。",
+    "zh-Hant": "無法開啟 {name}。命令已複製到剪貼簿，可手動執行。"
+  },
+  "网关运行中 · localhost:{port}": {
+    "en": "Gateway running · localhost:{port}",
+    "ja": "ゲートウェイ稼働中 · localhost:{port}",
+    "ko": "게이트웨이 실행 중 · localhost:{port}",
+    "zh-Hans": "网关运行中 · localhost:{port}",
+    "zh-Hant": "閘道執行中 · localhost:{port}"
+  },
+  "经 {name} 转发 · 在下方选择其他服务商": {
+    "en": "Forwarding through {name} · pick another service below",
+    "ja": "{name} 経由で転送中 · 下から別のサービスを選べます",
+    "ko": "{name}을(를) 통해 전달 중 · 아래에서 다른 서비스를 선택하세요",
+    "zh-Hans": "经 {name} 转发 · 在下方选择其他服务商",
+    "zh-Hant": "經 {name} 轉發 · 在下方選擇其他服務商"
+  },
+  "收藏": {
+    "en": "Starred",
+    "ja": "スター付き",
+    "ko": "즐겨찾기",
+    "zh-Hans": "收藏",
+    "zh-Hant": "收藏"
+  },
+  "收藏会话": {
+    "en": "Star session",
+    "ja": "セッションにスターを付ける",
+    "ko": "세션 즐겨찾기",
+    "zh-Hans": "收藏会话",
+    "zh-Hant": "收藏工作階段"
+  },
+  "取消收藏": {
+    "en": "Unstar session",
+    "ja": "スターを外す",
+    "ko": "즐겨찾기 해제",
+    "zh-Hans": "取消收藏",
+    "zh-Hant": "取消收藏"
+  },
+  "已收藏": {
+    "en": "Starred",
+    "ja": "スター付き",
+    "ko": "즐겨찾기됨",
+    "zh-Hans": "已收藏",
+    "zh-Hant": "已收藏"
+  },
+  "已收藏会话": {
+    "en": "Session starred",
+    "ja": "セッションにスターを付けました",
+    "ko": "세션을 즐겨찾기에 추가했습니다",
+    "zh-Hans": "已收藏会话",
+    "zh-Hant": "已收藏工作階段"
+  },
+  "已取消收藏": {
+    "en": "Session unstarred",
+    "ja": "セッションのスターを外しました",
+    "ko": "세션 즐겨찾기를 해제했습니다",
+    "zh-Hans": "已取消收藏",
+    "zh-Hant": "已取消收藏"
+  },
+  "未归类": {
+    "en": "Ungrouped",
+    "ja": "未分類",
+    "ko": "미분류",
+    "zh-Hans": "未归类",
+    "zh-Hant": "未歸類"
+  },
+  "设置…": {
+    "en": "Settings…",
+    "ja": "設定…",
+    "ko": "설정…",
+    "zh-Hans": "设置…",
+    "zh-Hant": "設定…"
+  },
+  "更新会话索引": {
+    "en": "Refresh sessions",
+    "ja": "セッションを更新",
+    "ko": "세션 새로 고침",
+    "zh-Hans": "更新会话索引",
+    "zh-Hant": "更新工作階段"
+  },
+  "搜索服务商…": {
+    "en": "Search services…",
+    "ja": "サービスを検索…",
+    "ko": "서비스 검색…",
+    "zh-Hans": "搜索服务商…",
+    "zh-Hant": "搜尋服務商…"
+  },
+  "没有匹配的预设，直接在下方填写即可": {
+    "en": "No matching preset — fill the fields below directly",
+    "ja": "一致するプリセットがありません。下のフィールドに直接入力してください",
+    "ko": "일치하는 프리셋이 없습니다. 아래 필드에 직접 입력하세요",
+    "zh-Hans": "没有匹配的预设，直接在下方填写即可",
+    "zh-Hant": "沒有相符的預設，直接在下方填寫即可"
+  },
+  "官方": {
+    "en": "Official",
+    "ja": "公式",
+    "ko": "공식",
+    "zh-Hans": "官方",
+    "zh-Hant": "官方"
+  },
+  "模型厂商": {
+    "en": "Model vendors",
+    "ja": "モデルベンダー",
+    "ko": "모델 제공사",
+    "zh-Hans": "模型厂商",
+    "zh-Hant": "模型廠商"
+  },
+  "聚合平台": {
+    "en": "Aggregators",
+    "ja": "アグリゲーター",
+    "ko": "애그리게이터",
+    "zh-Hans": "聚合平台",
+    "zh-Hant": "聚合平台"
+  },
+  "第三方中转": {
+    "en": "Third-party relays",
+    "ja": "サードパーティ中継",
+    "ko": "서드파티 릴레이",
+    "zh-Hans": "第三方中转",
+    "zh-Hant": "第三方中轉"
   }
 }

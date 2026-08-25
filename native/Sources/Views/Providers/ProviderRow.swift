@@ -23,15 +23,17 @@ struct ProviderRow: View {
                 .frame(minWidth: 720)
             compactContent
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(minHeight: 60)
-        .background(active ? Color.ccGreenSoft.opacity(0.45) : Color.ccElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 13)
-                .stroke(active ? Color.ccGreen.opacity(0.34) : Color.ccBorder)
-        )
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm)
+        .frame(minHeight: 56)
+        // Selection speaks the same language everywhere in the app: the clay wash, not a second
+        // status color. Green stays reserved for "the gateway is up".
+        .background(active ? Theme.selection : Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+                .strokeBorder(active ? Theme.accent.opacity(0.35) : Theme.separator, lineWidth: 1)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("provider.\(provider.id)")
         .accessibilityHint(
@@ -98,7 +100,7 @@ struct ProviderRow: View {
                 VStack(spacing: 2) {
                     ForEach(0..<3, id: \.self) { _ in
                         Circle()
-                            .fill(Color.ccCaption.opacity(0.55))
+                            .fill(Theme.faintForeground)
                             .frame(width: 2, height: 2)
                     }
                 }
@@ -113,22 +115,22 @@ struct ProviderRow: View {
     private var providerIdentity: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 7) {
-                Text(provider.name).font(.system(size: 14.5, weight: .semibold))
+                Text(provider.name).font(.ccBody(.semibold))
                 protocolBadge
-                if active { badge("使用中", color: .ccGreen) }
+                if active { badge("使用中", color: Theme.accentText) }
                 if provider.backend == .plugin {
-                    badge("插件", color: .ccBrandStrong)
+                    badge("插件", color: Theme.mutedForeground)
                     badge(
                         pluginRunning == true ? "运行中" : "已停用",
-                        color: pluginRunning == true ? .ccGreen : .ccCaption
+                        color: pluginRunning == true ? Theme.success : Theme.mutedForeground
                     )
                 }
             }
             Text(provider.backend == .plugin
                  ? "Sidecar · \(displayURL)"
                  : "\(masked(provider.authToken)) · \(displayURL)")
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccMono(Typography.label))
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .privacySensitive()
@@ -165,12 +167,12 @@ struct ProviderRow: View {
     private var protocolBadge: some View {
         let translated = provider.protocol != .anthropic
         return Text(protocolLabel)
-            .font(.system(size: 9.5, weight: .semibold))
-            .foregroundStyle(translated ? Color.ccBrandStrong : Color.ccMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(translated ? Color.ccBrandSoft : Color.ccForeground.opacity(0.05))
-            .clipShape(Capsule())
+            .font(.ccLabel(.medium))
+            .foregroundStyle(translated ? Theme.accentText : Theme.mutedForeground)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(translated ? Theme.accentSoft : Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
             .help(appLanguage.localized(
                 translated ? "由 Bifrost 自动转换协议" : "Anthropic 协议直通"
             ))
@@ -186,12 +188,12 @@ struct ProviderRow: View {
 
     private var modelBadges: some View {
         HStack(spacing: 4) {
-            if !provider.defaultModel.isEmpty { badge("主 \(provider.defaultModel)", color: .ccMuted) }
+            if !provider.defaultModel.isEmpty { badge("主 \(provider.defaultModel)", color: Theme.mutedForeground) }
             if !provider.smallFastModel.isEmpty, provider.smallFastModel != provider.defaultModel {
-                badge("快 \(provider.smallFastModel)", color: .ccMuted)
+                badge("快 \(provider.smallFastModel)", color: Theme.mutedForeground)
             }
             ForEach(provider.models.prefix(2)) { item in
-                badge("\(item.alias) → \(item.upstream)", color: .ccBrandStrong)
+                badge("\(item.alias) → \(item.upstream)", color: Theme.accentText)
             }
         }
         .lineLimit(1)
@@ -199,12 +201,12 @@ struct ProviderRow: View {
 
     private func badge(_ text: String, color: Color) -> some View {
         Text(appLanguage.localized(text))
-            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+            .font(.ccMono(Typography.label, weight: .medium))
             .foregroundStyle(color)
             .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .padding(.vertical, 1)
+            .background(Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
     }
 
     private func actionButton(
@@ -216,14 +218,8 @@ struct ProviderRow: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .medium))
-                .frame(width: 26, height: 26)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.ccCaption)
-        .background(Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .buttonStyle(CCIconButtonStyle(size: 26, symbolSize: Typography.caption))
         .disabled(disabled)
         .opacity(disabled && probeState != .testing ? 0.25 : 1)
         .help(appLanguage.localized(help))
@@ -241,9 +237,9 @@ struct ProviderRow: View {
 
     private var probeColor: Color {
         switch probeState {
-        case .succeeded: .ccGreen
-        case .failed: .ccRed
-        default: .ccCaption
+        case .succeeded: Theme.success
+        case .failed: Theme.danger
+        default: Theme.mutedForeground
         }
     }
 

@@ -6,11 +6,18 @@ struct ConversationMetadataPatch: Equatable, Sendable {
     var title: String?
     var tags: [String]?
     var deleted: Bool?
+    var starred: Bool?
 
-    init(title: String? = nil, tags: [String]? = nil, deleted: Bool? = nil) {
+    init(
+        title: String? = nil,
+        tags: [String]? = nil,
+        deleted: Bool? = nil,
+        starred: Bool? = nil
+    ) {
         self.title = title
         self.tags = tags
         self.deleted = deleted
+        self.starred = starred
     }
 }
 
@@ -420,6 +427,12 @@ struct ConversationMutationService: @unchecked Sendable {
         if let deleted = patch.deleted {
             if deleted { custom["delete"] = true }
             else { custom.removeValue(forKey: "delete") }
+        }
+        // Absent means "not starred": clearing the key keeps sidecars from accumulating false flags
+        // for every session the user has ever glanced at.
+        if let starred = patch.starred {
+            if starred { custom["starred"] = true }
+            else { custom.removeValue(forKey: "starred") }
         }
     }
 

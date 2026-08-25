@@ -83,9 +83,9 @@ struct GeneralSettingsPane: View {
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
                             .padding(.horizontal, 9).padding(.vertical, 7)
-                            .background(Color.ccInput)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorder))
+                            .background(Theme.fill)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.button))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
                             .onSubmit { Task { await model.setGatewayToken(tokenDraft) } }
                         Button("保存") { Task { await model.setGatewayToken(tokenDraft) } }
                             .buttonStyle(CompactActionButtonStyle())
@@ -98,8 +98,8 @@ struct GeneralSettingsPane: View {
                         .buttonStyle(CompactActionButtonStyle())
                     }
                     Text("令牌会同步写入已接入的 Claude Code 与 Codex 配置。")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.ccCaption)
+                        .font(.ccCaption())
+                        .foregroundStyle(Theme.mutedForeground)
                 }
 
                 SettingsDivider()
@@ -183,18 +183,18 @@ struct GeneralSettingsPane: View {
                     Spacer(minLength: 0)
                     Text("\(displayedFontSize)px")
                         .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(Color.ccForeground.opacity(0.05))
+                        .background(Theme.foreground.opacity(0.05))
                         .clipShape(Capsule())
                         .accessibilityIdentifier("settings.general.font.preview.value")
                 }
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.ccInput)
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.ccBorder))
+                    .background(Theme.fill)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.row))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Theme.separator))
             }
         }
         .onAppear {
@@ -238,8 +238,8 @@ struct GeneralSettingsPane: View {
         VStack(alignment: .leading, spacing: 3) {
             Text("正文字号").font(.system(size: 12.5, weight: .medium))
             Text("调整会话页消息正文的字体大小。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -270,9 +270,9 @@ struct GeneralSettingsPane: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 6)
                     .frame(width: 56)
-                    .background(Color.ccInput)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorder))
+                    .background(Theme.fill)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.button))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
                     .accessibilityLabel("自定义")
                     .accessibilityValue("\(customFontSize) px")
                     .accessibilityIdentifier("settings.general.font.custom.value")
@@ -287,7 +287,7 @@ struct GeneralSettingsPane: View {
                     }
                     Text("px")
                         .font(.system(size: 11))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                 }
                 .transition(.opacity)
             }

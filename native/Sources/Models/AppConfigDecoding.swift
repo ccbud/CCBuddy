@@ -4,7 +4,7 @@ extension AppConfig {
     enum CodingKeys: String, CodingKey {
         case port, activeProviderId, requireToken, gatewayToken, gatewayEnabled, openAtLogin
         case claudeBackup, codexBackup, trayUsage, language, convFontPx, historyDirs, historyActive, connectTargets
-        case retry429, insecureSkipVerify, autoUpdate, providers
+        case retry429, gatewayFailover, insecureSkipVerify, autoUpdate, providers
     }
 
     init(from decoder: Decoder) throws {
@@ -24,6 +24,9 @@ extension AppConfig {
         historyActive = try c.decodeIfPresent(String.self, forKey: .historyActive) ?? "all"
         connectTargets = try c.decodeIfPresent([String].self, forKey: .connectTargets) ?? []
         retry429 = c.decodeRetry429()
+        gatewayFailover = try c.decodeIfPresent(
+            GatewayFailover.self, forKey: .gatewayFailover
+        ) ?? .init()
         insecureSkipVerify = try c.decodeIfPresent(Bool.self, forKey: .insecureSkipVerify) ?? false
         autoUpdate = c.decodeAutoUpdate()
         providers = try c.decodeIfPresent([Provider].self, forKey: .providers) ?? []
@@ -53,6 +56,7 @@ extension AppConfig {
         try c.encode(historyActive, forKey: .historyActive)
         try c.encode(connectTargets, forKey: .connectTargets)
         try c.encode(retry429, forKey: .retry429)
+        try c.encode(gatewayFailover, forKey: .gatewayFailover)
         try c.encode(insecureSkipVerify, forKey: .insecureSkipVerify)
         try c.encode(autoUpdate, forKey: .autoUpdate)
         try c.encode(providers, forKey: .providers)
@@ -153,7 +157,7 @@ private extension AppConfig.CodingKeys {
             .port, .activeProviderId, .requireToken, .gatewayToken, .gatewayEnabled,
             .openAtLogin, .claudeBackup, .codexBackup, .trayUsage, .language, .convFontPx,
             .historyDirs, .historyActive, .connectTargets, .retry429,
-            .insecureSkipVerify, .autoUpdate, .providers,
+            .gatewayFailover, .insecureSkipVerify, .autoUpdate, .providers,
         ]
     }
 }

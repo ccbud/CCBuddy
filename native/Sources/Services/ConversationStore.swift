@@ -120,6 +120,10 @@ enum ConversationLoadState: Equatable {
 enum ConversationIndexingState: Equatable, Sendable {
     case idle
     case scanning(completed: Int, total: Int)
+    /// The scan completed but some files could not be read. The rest of the library is usable, so
+    /// this is an aside, not an alarm — one unreadable transcript out of a thousand used to paint
+    /// the column header red and raise an error toast.
+    case incomplete(String)
     case failed(String)
 
     var isScanning: Bool {
@@ -1088,6 +1092,34 @@ final class ConversationStore: ObservableObject {
         }
     }
 
+    /// Toggles Wake's star on the selected session.
+    ///
+    /// The flag lives in CC Buddy's own metadata — inline for imports, in a sidecar for every
+    /// foreign tree — so starring never writes into a transcript an agent owns.
+    func toggleStarSelected() async {
+        guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let file = metadata.file
+        let starred = !metadata.starred
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                try mutationService.updateMetadata(for: metadata, patch: .init(starred: starred))
+                try Task.checkCancellation()
+            }.value
+            await synchronizeIndex(files: [file])
+            await reloadAndReselect(file)
+            actionMessage = starred ? "已收藏会话" : "已取消收藏"
+            actionIsError = false
+        } catch is CancellationError {
+            return
+        } catch {
+            actionMessage = "更新失败：\(error.localizedDescription)"
+            actionIsError = true
+        }
+    }
+
     func softDeleteSelected() async {
         guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
         isMutating = true
@@ -1256,6 +1288,19 @@ final class ConversationStore: ObservableObject {
         actionIsError = true
     }
 
+    func reportActionSuccess(_ message: String) {
+        actionMessage = message
+        actionIsError = false
+    }
+
+    /// Reopens the selected session in a terminal using the producing agent's own resume dialect.
+    func resumeSelected(in terminal: ConversationResume.TerminalApp? = nil) {
+        guard let metadata = selectedMetadata else { return }
+        let outcome = ConversationResume.resume(metadata: metadata, in: terminal)
+        actionMessage = outcome.message
+        actionIsError = !outcome.succeeded
+    }
+
     private func reloadAndReselect(_ file: URL) async {
         await reload()
         guard let refreshed = projects.lazy.flatMap(\.sessions).first(where: {
@@ -1342,7 +1387,7 @@ final class ConversationStore: ObservableObject {
             if let error = event.errorDescription {
                 publishIndexFailure("会话索引失败：\(error)")
             } else if event.failed > 0 {
-                publishIndexFailure("\(event.failed) 个会话无法建立索引，已显示其余会话")
+                publishIndexIncomplete("\(event.failed) 个会话无法读取，已跳过")
             } else {
                 indexingState = .idle
             }
@@ -1355,6 +1400,16 @@ final class ConversationStore: ObservableObject {
         requestReload()
         let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty { updateListQuery(listQuery) }
+    }
+
+    /// A partial scan keeps the catalog usable, so it is reported in place and never interrupts.
+    /// If nothing at all could be indexed there is no library to browse, and it becomes a failure.
+    private func publishIndexIncomplete(_ message: String) {
+        if projects.isEmpty {
+            publishIndexFailure(message)
+        } else {
+            indexingState = .incomplete(message)
+        }
     }
 
     private func publishIndexFailure(_ message: String) {
@@ -1405,7 +1460,7 @@ final class ConversationStore: ObservableObject {
         let provider = repository
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let projects = try provider.listProjects(limit: 600)
+            let projects = try provider.listProjects(limit: ConversationCatalogLimits.sessionList)
             try Task.checkCancellation()
             let explicitScopes = provider.conversationScopeSnapshot()
             try Task.checkCancellation()
@@ -1460,7 +1515,7 @@ final class ConversationStore: ObservableObject {
         let provider = repository
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let value = try provider.search(query: query, limit: 120)
+            let value = try provider.search(query: query, limit: ConversationCatalogLimits.searchHits)
             try Task.checkCancellation()
             return value
         }

@@ -34,6 +34,48 @@ final class ConversationMutationServiceTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix("\n"), "trailing newline must be preserved")
     }
 
+    /// Starring is CC Buddy's own fact about a session, so it is written into the app's metadata
+    /// record and is absent — not `false` — when the session is not starred. Persisting a false flag
+    /// for every session the user ever opened would grow the record for no information.
+    func testStarRoundTripsAndClearsTheKeyWhenRemoved() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeSession(name: "star", text: Self.claudeJSONL(id: "star"))
+        let metadata = fixture.metadata(file: file)
+
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: true))
+        var custom = try XCTUnwrap(firstJSONObject(file)["__ccbud__"] as? [String: Any])
+        XCTAssertEqual(custom["starred"] as? Bool, true)
+
+        XCTAssertTrue(
+            HistoryParsingSupport.customMetadata([
+                ["__ccbud__": .object(["starred": .bool(true)])],
+            ]).starred,
+            "the parser must read back what the mutation wrote"
+        )
+
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: false))
+        let record = firstJSONObjectIfPresent(file)?["__ccbud__"] as? [String: Any]
+        custom = record ?? [:]
+        XCTAssertNil(custom["starred"])
+    }
+
+    func testStarIsIndependentOfTitleAndTags() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeSession(name: "star-independent", text: Self.claudeJSONL(id: "si"))
+        let metadata = fixture.metadata(file: file)
+
+        try fixture.service.updateMetadata(for: metadata, patch: .init(title: "保留", tags: ["keep"]))
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: true))
+
+        // A patch carries only the fields it names; starring must not erase an edited title.
+        let custom = try XCTUnwrap(firstJSONObject(file)["__ccbud__"] as? [String: Any])
+        XCTAssertEqual(custom["title"] as? String, "保留")
+        XCTAssertEqual(custom["tagList"] as? [String], ["keep"])
+        XCTAssertEqual(custom["starred"] as? Bool, true)
+    }
+
     func testEditDetectsConcurrentReplacement() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -230,6 +272,12 @@ final class ConversationMutationServiceTests: XCTestCase {
         XCTAssertEqual(trashed.tags, ["local"])
         XCTAssertTrue(trashed.deleted)
         XCTAssertEqual(try String(contentsOf: sidecar, encoding: .utf8), conflicting)
+    }
+
+    /// The metadata record disappears entirely once its last field is cleared, so a caller checking
+    /// for a removed key must tolerate there being no record at all.
+    private func firstJSONObjectIfPresent(_ file: URL) -> [String: Any]? {
+        try? firstJSONObject(file)
     }
 
     private func firstJSONObject(_ file: URL) throws -> [String: Any] {

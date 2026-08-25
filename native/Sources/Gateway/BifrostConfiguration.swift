@@ -321,6 +321,11 @@ enum BifrostConfigBuilder {
     static let codexPrimaryAliases = ["gpt-5.4", "gpt-5.5-ccbud"]
     static let codexFastAliases = ["gpt-5.4-mini"]
 
+    struct RoutedProvider: Equatable {
+        let provider: Provider
+        let bifrostName: String
+    }
+
     enum BuildError: LocalizedError, Equatable {
         case missingInferenceToken
 
@@ -343,14 +348,54 @@ enum BifrostConfigBuilder {
 
     static let modelParametersFileName = "model-parameters.json"
 
+    /// cc-switch treats an enabled failover queue as the complete ordered route set. Keep the
+    /// same rule in one place so configuration generation and the Swift request rewriter cannot
+    /// disagree about provider identities.
+    static func routedProviders(from config: AppConfig) -> [RoutedProvider] {
+        let providers = config.gatewayProviders
+        guard providers.count > 1 else {
+            return providers.map { .init(provider: $0, bifrostName: providerName) }
+        }
+        return providers.enumerated().map { index, provider in
+            let digest = SHA256.hash(data: Data(provider.id.utf8)).prefix(5).map {
+                String(format: "%02x", $0)
+            }.joined()
+            return .init(
+                provider: provider,
+                bifrostName: "ccbud-\(index + 1)-\(digest)"
+            )
+        }
+    }
+
     /// Bifrost's Chat -> Responses compatibility hook is model-catalog driven. Generate a
     /// deliberately small local catalog from every caller-facing alias and upstream model ID
     /// CC Buddy owns so conversion never depends on a remote catalog being current or reachable.
     static func modelParametersData(from config: AppConfig) throws -> Data {
-        guard let provider = config.activeProvider else { throw BifrostError.noActiveProvider }
+        let routedProviders = routedProviders(from: config)
+        guard !routedProviders.isEmpty else { throw BifrostError.noActiveProvider }
+        var document: [String: ModelParametersEntry] = [:]
+        for route in routedProviders {
+            let provider = route.provider
+            let entry = modelParametersEntry(for: provider.protocol)
+            for model in modelCatalogModels(for: provider) {
+                // Bifrost normally resolves the provider prefix before consulting its model
+                // catalog. Retaining both forms also keeps this file useful to the compatibility
+                // plugin across pinned sidecar upgrades and disambiguates mixed fallback chains.
+                if document[model] == nil { document[model] = entry }
+                document["\(route.bifrostName)/\(model)"] = entry
+            }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(document)
+    }
+
+    private static func modelParametersEntry(
+        for wireProtocol: Provider.WireProtocol
+    ) -> ModelParametersEntry {
         let endpoints: [String]
         let mode: String
-        switch provider.protocol {
+        switch wireProtocol {
         case .anthropic:
             mode = "chat"
             endpoints = ["/v1/chat/completions", "/v1/responses"]
@@ -361,13 +406,7 @@ enum BifrostConfigBuilder {
             mode = "responses"
             endpoints = ["/v1/responses"]
         }
-        let entry = ModelParametersEntry(mode: mode, supportedEndpoints: endpoints)
-        let document = Dictionary(uniqueKeysWithValues: modelCatalogModels(for: provider).map {
-            ($0, entry)
-        })
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(document)
+        return .init(mode: mode, supportedEndpoints: endpoints)
     }
 
     private static func aliases(for provider: Provider) -> [String: String] {
@@ -421,64 +460,60 @@ enum BifrostConfigBuilder {
         return components.url!
     }
 
-    static func build(
-        from config: AppConfig,
-        logDatabaseURL: URL,
-        managementCredentials: BifrostManagementCredentials
-    ) throws -> BifrostConfiguration {
-        guard let provider = config.activeProvider else { throw BifrostError.noActiveProvider }
+    private static func allowedRequests(
+        for wireProtocol: Provider.WireProtocol
+    ) -> BifrostConfiguration.AllowedRequests {
+        var requests = BifrostConfiguration.AllowedRequests()
+        switch wireProtocol {
+        case .anthropic:
+            // Bifrost's Anthropic transport represents Messages as Responses internally; its
+            // provider supports both caller-facing shapes on the same upstream endpoint.
+            requests.listModels = true
+            requests.chatCompletion = true
+            requests.chatCompletionStream = true
+            requests.responses = true
+            requests.responsesStream = true
+            requests.countTokens = true
+        case .openAIChat:
+            // Keeping Responses disabled makes Bifrost use its verified Responses -> Chat
+            // conversion, including the streaming event bridge.
+            requests.listModels = true
+            requests.chatCompletion = true
+            requests.chatCompletionStream = true
+        case .openAIResponses:
+            requests.listModels = true
+            requests.responses = true
+            requests.responsesStream = true
+            requests.responsesRetrieve = true
+            requests.responsesDelete = true
+            requests.responsesCancel = true
+            requests.responsesInputItems = true
+            requests.countTokens = true
+            requests.compaction = true
+            requests.webSocketResponses = true
+        }
+        return requests
+    }
+
+    private static func providerConfiguration(
+        for provider: Provider,
+        config: AppConfig,
+        retryCount: Int,
+        retryInitial: Int,
+        retryBackoffMax: Int
+    ) throws -> BifrostConfiguration.ProviderConfig {
         guard !provider.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BifrostError.invalidBaseURL
         }
-        let aliases = aliases(for: provider)
-        let catalogModels = modelCatalogModels(for: provider)
-        let modelParametersData = try modelParametersData(from: config)
         let baseType = provider.protocol == .anthropic ? "anthropic" : "openai"
-        let allowedRequests: BifrostConfiguration.AllowedRequests = {
-            var requests = BifrostConfiguration.AllowedRequests()
-            switch provider.protocol {
-            case .anthropic:
-                // Bifrost's Anthropic transport represents Messages as Responses
-                // internally; its provider supports both caller-facing shapes on
-                // the same upstream /v1/messages endpoint.
-                requests.listModels = true
-                requests.chatCompletion = true
-                requests.chatCompletionStream = true
-                requests.responses = true
-                requests.responsesStream = true
-                requests.countTokens = true
-            case .openAIChat:
-                // Keeping Responses explicitly disabled is intentional. Bifrost's
-                // OpenAI provider detects this exact capability pair and performs
-                // its native Responses -> Chat conversion, including SSE events.
-                requests.listModels = true
-                requests.chatCompletion = true
-                requests.chatCompletionStream = true
-            case .openAIResponses:
-                requests.listModels = true
-                requests.responses = true
-                requests.responsesStream = true
-                requests.responsesRetrieve = true
-                requests.responsesDelete = true
-                requests.responsesCancel = true
-                requests.responsesInputItems = true
-                requests.countTokens = true
-                requests.compaction = true
-                requests.webSocketResponses = true
-            }
-            return requests
-        }()
         let key = BifrostConfiguration.Key(
-            name: "CC Buddy \(provider.name)", value: provider.authToken.isEmpty ? nil : provider.authToken,
-            weight: 1, models: ["*"], aliases: aliases
+            name: "CC Buddy \(provider.name)",
+            value: provider.authToken.isEmpty ? nil : provider.authToken,
+            weight: 1,
+            models: ["*"],
+            aliases: aliases(for: provider)
         )
-        // Bifrost retries several transient upstream failures, including 429.  Keep the
-        // configured retry budget/backoff intact and set the cap beyond the final scheduled
-        // retry so it does not truncate CC Buddy's exponential sequence.
-        let retryCount = config.retry429.enabled ? min(max(config.retry429.max, 0), 10) : 0
-        let retryInitial = min(max(config.retry429.baseMs, 100), 10_000)
-        let retryBackoffMax = retryInitial * (1 << retryCount)
-        let providerConfig = BifrostConfiguration.ProviderConfig(
+        return .init(
             keys: [key],
             networkConfig: .init(
                 baseURL: provider.baseUrl,
@@ -489,13 +524,37 @@ enum BifrostConfigBuilder {
             ),
             customProviderConfig: .init(
                 baseProviderType: baseType,
-                allowedRequests: allowedRequests
+                allowedRequests: allowedRequests(for: provider.protocol)
             ),
-            // The monitor detail endpoint only returns provider-wire request/response bodies
-            // when Bifrost captured them for internal logging. They are deliberately not sent
-            // back to CLI clients.
+            // Raw bodies stay local and power the native monitor inspector.
             storeRawRequestResponse: true
         )
+    }
+
+    static func build(
+        from config: AppConfig,
+        logDatabaseURL: URL,
+        managementCredentials: BifrostManagementCredentials
+    ) throws -> BifrostConfiguration {
+        let routedProviders = routedProviders(from: config)
+        guard !routedProviders.isEmpty else { throw BifrostError.noActiveProvider }
+        let modelParametersData = try modelParametersData(from: config)
+        // Bifrost retries several transient upstream failures, including 429.  Keep the
+        // configured retry budget/backoff intact and set the cap beyond the final scheduled
+        // retry so it does not truncate CC Buddy's exponential sequence.
+        let retryCount = config.retry429.enabled ? min(max(config.retry429.max, 0), 10) : 0
+        let retryInitial = min(max(config.retry429.baseMs, 100), 10_000)
+        let retryBackoffMax = retryInitial * (1 << retryCount)
+        var providerConfigs: [String: BifrostConfiguration.ProviderConfig] = [:]
+        for route in routedProviders {
+            providerConfigs[route.bifrostName] = try providerConfiguration(
+                for: route.provider,
+                config: config,
+                retryCount: retryCount,
+                retryInitial: retryInitial,
+                retryBackoffMax: retryBackoffMax
+            )
+        }
         let appDirectory = logDatabaseURL.deletingLastPathComponent()
         let virtualKeys: [BifrostConfiguration.VirtualKey]
         if config.requireToken {
@@ -507,13 +566,15 @@ enum BifrostConfigBuilder {
                 name: virtualKeyName,
                 value: .init(token),
                 isActive: true,
-                providerConfigs: [.init(
-                    provider: providerName,
-                    weight: 1,
-                    allowedModels: ["*"],
-                    blacklistedModels: [],
-                    keyIDs: ["*"]
-                )],
+                providerConfigs: routedProviders.map { route in
+                    .init(
+                        provider: route.bifrostName,
+                        weight: 1,
+                        allowedModels: ["*"],
+                        blacklistedModels: [],
+                        keyIDs: ["*"]
+                    )
+                },
                 // CC Buddy's inference key deliberately grants no MCP access.
                 mcpConfigs: []
             )]
@@ -533,8 +594,10 @@ enum BifrostConfigBuilder {
                 // providers serve compatible Chat clients where Bifrost has a
                 // verified conversion path.
                 compat: .init(
-                    convertChatToResponses: provider.protocol == .openAIResponses
-                        && !catalogModels.isEmpty
+                    convertChatToResponses: routedProviders.contains {
+                        $0.provider.protocol == .openAIResponses
+                            && !modelCatalogModels(for: $0.provider).isEmpty
+                    }
                 )
             ),
             configStore: .init(
@@ -552,7 +615,7 @@ enum BifrostConfigBuilder {
                 adminPassword: .init(managementCredentials.password),
                 isEnabled: true
             ), virtualKeys: virtualKeys),
-            providers: [providerName: providerConfig]
+            providers: providerConfigs
         )
     }
 }

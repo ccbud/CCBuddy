@@ -20,28 +20,28 @@ struct MonitorRequestStream: View {
     private var toolbar: some View {
         HStack(spacing: 10) {
             Text("请求流")
-                .font(.system(size: 12.5, weight: .semibold))
+                .font(.ccBody(.medium))
                 .tracking(0.5)
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
 
             Spacer(minLength: 12)
 
             Text(streamHint)
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
 
             Button(appLanguage.localized(store.isClearing ? "清除中" : "清空")) {
                 requestClear()
             }
             .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Color.ccForeground)
+            .font(.ccCaption(.medium))
+            .foregroundStyle(Theme.foreground)
             .padding(.horizontal, 9)
             .frame(height: 23)
-            .background(Color.ccElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorder))
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
             .disabled(!gatewayRunning || store.isRefreshing || store.isClearing)
             .opacity(!gatewayRunning || store.isRefreshing || store.isClearing ? 0.5 : 1)
             .accessibilityIdentifier("monitor.clear")
@@ -64,13 +64,13 @@ struct MonitorRequestStream: View {
                     ? "接入网关后，转发记录将实时显示"
                     : "启动网关以读取请求记录"
             ))
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 20)
-            .background(Color.ccElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.ccBorder))
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous).stroke(Theme.separator))
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(store.requests) { request in
@@ -81,35 +81,34 @@ struct MonitorRequestStream: View {
                         action: { openDetail(request.id) }
                     )
                     if request.id != store.requests.last?.id {
-                        Rectangle().fill(Color.ccBorder).frame(height: 1)
+                        Rectangle().fill(Theme.separator).frame(height: 1)
                     }
                 }
             }
-            .background(Color.ccElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.ccBorder))
-            .shadow(color: .black.opacity(0.055), radius: 8, y: 3)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous).stroke(Theme.separator))
         }
     }
 
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Color.ccOrange)
+                .foregroundStyle(Theme.warning)
             Text(appLanguage.localized(message))
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccMuted)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(2)
             Spacer(minLength: 8)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.ccOrange.opacity(0.09))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Theme.warning.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.ccOrange.opacity(0.22))
+            RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+                .stroke(Theme.warning.opacity(0.22))
         }
         .accessibilityLabel(appLanguage.localized("刷新失败：\(message)"))
     }
@@ -134,42 +133,42 @@ private struct MonitorRequestRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 5) {
                         Text(requestedModelLabel)
-                            .foregroundStyle(Color.ccForeground)
+                            .foregroundStyle(Theme.foreground)
                             .lineLimit(1)
                         Image(systemName: "arrow.right")
                             .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(Color.ccBrandStrong.opacity(0.62))
+                            .foregroundStyle(Theme.accentText.opacity(0.62))
                         Text(outgoingModelLabel)
-                            .foregroundStyle(Color.ccMuted)
+                            .foregroundStyle(Theme.mutedForeground)
                             .lineLimit(1)
                     }
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .font(.ccMono(Typography.caption, weight: .medium))
                     HStack(spacing: 5) {
                         if let object = request.object, !object.isEmpty {
                             Text(object)
                         }
                         Text(String(request.id.prefix(8)))
                     }
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccMono(Typography.label))
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text(request.displayProvider.isEmpty ? "—" : request.displayProvider)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Color.ccMuted)
+                    .font(.ccLabel())
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(width: 92, alignment: .trailing)
 
                 Text(MonitorFormat.compactCost(request.cost) ?? "")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccMono(Typography.label))
+                    .foregroundStyle(Theme.mutedForeground)
                     .frame(width: 52, alignment: .trailing)
 
                 Text(rowStatusLabel)
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.ccLabel(.medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
                     .foregroundStyle(request.status.monitorColor)
@@ -180,13 +179,13 @@ private struct MonitorRequestRow: View {
                     .frame(width: 76)
 
                 Text("\(MonitorFormat.milliseconds(request.latency)) ms")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccMono(Typography.label))
+                    .foregroundStyle(Theme.mutedForeground)
                     .frame(width: 68, alignment: .trailing)
 
                 Text(MonitorFormat.clock(request.monitorTimestamp))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccMono(Typography.label))
+                    .foregroundStyle(Theme.mutedForeground)
                     .frame(width: 56, alignment: .trailing)
 
                 if loadingDetail {
@@ -194,7 +193,7 @@ private struct MonitorRequestRow: View {
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                         .frame(width: 12)
                 }
             }
@@ -212,8 +211,8 @@ private struct MonitorRequestRow: View {
     }
 
     private var rowBackground: Color {
-        if selected { return Color.ccBrandSoft.opacity(0.72) }
-        if hovering { return Color.ccForeground.opacity(0.035) }
+        if selected { return Theme.accentSoft.opacity(0.72) }
+        if hovering { return Theme.foreground.opacity(0.035) }
         return .clear
     }
 

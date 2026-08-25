@@ -1,40 +1,8 @@
 import AppKit
 import SwiftUI
 
-struct ProviderPreset: Identifiable {
-    let id: String
-    let title: String
-    let name: String
-    let baseURL: String
-    let defaultModel: String
-    let smallModel: String
-    let wireProtocol: Provider.WireProtocol
-
-    func apply(to provider: inout Provider) {
-        provider.name = name
-        provider.baseUrl = baseURL
-        provider.defaultModel = defaultModel
-        provider.smallFastModel = smallModel
-        provider.protocol = wireProtocol
-        provider.icon = nil
-    }
-
-    static let all: [ProviderPreset] = [
-        .init(id: "glm", title: "GLM", name: "GLM", baseURL: "https://open.bigmodel.cn/api/anthropic/v1", defaultModel: "glm-5.2", smallModel: "glm-5.2", wireProtocol: .anthropic),
-        .init(id: "deepseek", title: "DeepSeek", name: "DeepSeek", baseURL: "https://api.deepseek.com/anthropic", defaultModel: "deepseek-v4-pro", smallModel: "deepseek-v4-flash", wireProtocol: .anthropic),
-        .init(id: "mimo", title: "MiMo", name: "MiMo", baseURL: "https://token-plan-sgp.xiaomimimo.com/anthropic", defaultModel: "mimo-v2.5-pro", smallModel: "mimo-v2.5", wireProtocol: .anthropic),
-        .init(id: "kimi", title: "Kimi", name: "Kimi", baseURL: "https://api.kimi.com/coding", defaultModel: "kimi-for-coding", smallModel: "kimi-for-coding", wireProtocol: .anthropic),
-        .init(id: "minimax", title: "MiniMax", name: "MiniMax", baseURL: "https://api.minimax.io/anthropic", defaultModel: "MiniMax-M3", smallModel: "MiniMax-M3", wireProtocol: .anthropic),
-        .init(id: "nvidia", title: "NVIDIA", name: "NVIDIA", baseURL: "https://integrate.api.nvidia.com/v1", defaultModel: "z-ai/glm-5.2", smallModel: "z-ai/glm-5.2", wireProtocol: .openAIChat),
-        .init(id: "google", title: "Google AI Studio", name: "Google AI Studio", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", defaultModel: "gemini-3.5-flash", smallModel: "gemini-3.1-flash-lite", wireProtocol: .openAIChat),
-        .init(id: "openai", title: "OpenAI", name: "OpenAI", baseURL: "https://api.openai.com/v1", defaultModel: "gpt-5.2", smallModel: "gpt-5.2-mini", wireProtocol: .openAIResponses),
-        .init(id: "openrouter", title: "OpenRouter", name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", defaultModel: "", smallModel: "", wireProtocol: .openAIChat),
-        .init(id: "custom", title: "自定义", name: "", baseURL: "", defaultModel: "", smallModel: "", wireProtocol: .anthropic),
-    ]
-}
-
 enum ProviderEditorLayout {
-    static let sheetSize = CGSize(width: 580, height: 654)
+    static let sheetSize = CGSize(width: 600, height: 690)
     static let presetSpacing: CGFloat = 6
     static let apiURLPlaceholder = "https://open.bigmodel.cn/api/anthropic/v1"
 }
@@ -141,7 +109,6 @@ struct ProviderIconView: View {
         .background(background)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.25, style: .continuous))
         .clipped()
-        .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
         .accessibilityHidden(true)
     }
 

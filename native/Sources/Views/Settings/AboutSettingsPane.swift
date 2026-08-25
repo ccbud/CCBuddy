@@ -58,7 +58,7 @@ struct AboutSettingsPane: View {
             }
             Text(statusMessage)
                 .font(.system(size: 12))
-                .foregroundStyle(statusIsWarning ? Color.ccRed : Color.ccCaption)
+                .foregroundStyle(statusIsWarning ? Theme.danger : Theme.mutedForeground)
                 .textSelection(.enabled)
 
             HStack(spacing: 5) {
@@ -68,13 +68,13 @@ struct AboutSettingsPane: View {
                     .accessibilityIdentifier("about.bifrost.version")
             }
             .font(.system(size: 10.5, weight: .medium))
-            .foregroundStyle(Color.ccCaption)
+            .foregroundStyle(Theme.mutedForeground)
             .accessibilityElement(children: .contain)
 
             if let notes = releaseNotes {
                 Text(notes)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.ccMuted)
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(4)
                     .textSelection(.enabled)
             }
@@ -99,14 +99,14 @@ struct AboutSettingsPane: View {
                 .toggleStyle(.switch).controlSize(.small)
             }
             Text("原生版本只会安装已签名并通过公证的完整更新。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
 
             SettingsDivider()
             HStack(spacing: 10) {
                 Button("项目主页") { open("https://github.com/ccbud/ccbud") }
                     .buttonStyle(.link)
-                Text("·").foregroundStyle(Color.ccCaption)
+                Text("·").foregroundStyle(Theme.mutedForeground)
                 Button("发布记录") { open("https://github.com/ccbud/ccbud/releases") }
                     .buttonStyle(.link)
             }
@@ -212,9 +212,9 @@ struct AboutSettingsPane: View {
     private func versionColumn(_ title: String, value: String, identifier: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(appLanguage.localized(title).uppercased())
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.ccLabel(.medium))
                 .tracking(0.4)
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
             Text(value)
                 .font(.system(size: 15, weight: .bold, design: .monospaced))
                 .accessibilityIdentifier(identifier)

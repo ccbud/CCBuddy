@@ -7,59 +7,57 @@ struct MonitorMetricCard: View {
     let value: String
     var unit: String?
     let subtitle: String
-    var accent: Color = .ccForeground
+    var accent: Color = Theme.foreground
     var prominentNumber = false
     var showsStatusDot = false
     var statusActive = false
     var subtitlePrivacySensitive = false
 
+    /// A cell in the metric strip, not a tile.
+    ///
+    /// These were four shadowed, individually bordered cards, which is exactly the dashboard tile
+    /// wall the design system rules out — four boxes competing for attention above the request list
+    /// that actually matters. They now share one panel and are separated by hairlines.
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(appLanguage.localized(title).uppercased())
-                .font(.system(size: 10.5, weight: .semibold))
-                .tracking(0.45)
-                .foregroundStyle(Color.ccCaption)
+        VStack(alignment: .leading, spacing: Space.xs + 2) {
+            Text(appLanguage.localized(title))
+                .font(.ccLabel())
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
 
-            HStack(spacing: 7) {
+            HStack(spacing: Space.xs + 2) {
                 if showsStatusDot {
                     MonitorStatusDot(active: statusActive)
                 }
                 Text(value)
                     .font(.system(
-                        size: prominentNumber ? 20 : 15,
-                        weight: .bold,
+                        size: prominentNumber ? Typography.heading : Typography.body,
+                        weight: .medium,
                         design: prominentNumber ? .monospaced : .default
                     ))
-                    .tracking(-0.25)
+                    .tracking(-0.2)
                     .foregroundStyle(accent)
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
                 if let unit {
                     Text(unit)
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
-                        .padding(.top, 4)
+                        .font(.ccMono(Typography.label))
+                        .foregroundStyle(Theme.mutedForeground)
+                        .padding(.top, 2)
                 }
             }
-            .frame(height: 23, alignment: .leading)
+            .frame(height: 21, alignment: .leading)
 
             Text(subtitle)
-                .font(.system(size: 11))
-                .foregroundStyle(Color.ccMuted)
+                .font(.ccLabel())
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .privacySensitive(subtitlePrivacySensitive)
         }
-        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
-        .padding(18)
-        .background(Color.ccElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(statusActive && showsStatusDot ? Color.ccGreen.opacity(0.32) : Color.ccBorder)
-        }
-        .shadow(color: .black.opacity(0.065), radius: 10, y: 4)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .padding(.horizontal, Space.lg)
+        .padding(.vertical, Space.md)
     }
 }
 
@@ -72,12 +70,12 @@ private struct MonitorStatusDot: View {
         ZStack {
             if active && !reduceMotion {
                 Circle()
-                    .stroke(Color.ccGreen.opacity(0.5), lineWidth: 1)
+                    .stroke(Theme.success.opacity(0.5), lineWidth: 1)
                     .scaleEffect(pulse ? 2.1 : 1)
                     .opacity(pulse ? 0 : 0.48)
             }
             Circle()
-                .fill(active ? Color.ccGreen : Color.ccMuted)
+                .fill(active ? Theme.success : Theme.mutedForeground)
         }
         .frame(width: 8, height: 8)
         .task(id: active && !reduceMotion) {

@@ -36,8 +36,8 @@ struct GatewaySettingsPane: View {
         VStack(spacing: 28) {
             SettingsCard("网关") {
                 Text("本机 Bifrost 网关服务：接入的 CLI 都通过它转发请求。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
 
                 SettingsToggleRow(
                     "网关服务",
@@ -56,19 +56,19 @@ struct GatewaySettingsPane: View {
                     recoveryNotice(recovery)
                 } else if let error = model.lastError, !error.isEmpty {
                     Text(appLanguage.localized(error))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.ccRed)
+                        .font(.ccCaption())
+                        .foregroundStyle(Theme.danger)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.ccRedSoft)
+                        .background(Theme.dangerSoft)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
 
             SettingsCard("接入目标") {
                 Text("开关会立即、原子地写入或恢复各 CLI 的配置文件。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
                 connectionRow(
                     title: "Claude Code",
                     connected: model.claudeConnected,
@@ -84,8 +84,8 @@ struct GatewaySettingsPane: View {
                 )
                 if !model.codexAvailable {
                     Text("未检测到 Codex（~/.codex）。安装 Codex CLI 后可在此接入。")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.ccCaption)
+                        .font(.ccCaption())
+                        .foregroundStyle(Theme.mutedForeground)
                 }
             }
 
@@ -120,30 +120,29 @@ struct GatewaySettingsPane: View {
             // SwiftUI's localized interpolation formats integers with grouping separators.
             // Endpoints are protocol text, so render the exact byte-for-byte string instead.
             Text(verbatim: GatewaySettingsPresentation.endpoint(port: model.config.port))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Color.ccBrandStrong)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+                .font(.ccMono(Typography.caption))
+                .foregroundStyle(Theme.foreground)
+                .textSelection(.enabled)
+                .padding(.horizontal, Space.sm + 2)
+                .padding(.vertical, Space.sm)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.ccInput)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
                 .accessibilityIdentifier("settings.gateway.endpoint.value")
             Button(appLanguage.localized(copiedValue == "endpoint" ? "已复制 ✓" : "复制")) {
                 copy(GatewaySettingsPresentation.endpoint(port: model.config.port), marker: "endpoint")
             }
             .buttonStyle(CompactActionButtonStyle())
             .accessibilityIdentifier("settings.gateway.endpoint.copy")
-            Text("端口").font(.system(size: 12)).foregroundStyle(Color.ccMuted)
+            Text("端口").font(.ccCaption()).foregroundStyle(Theme.mutedForeground)
             TextField("端口", text: $portText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 6)
+                .font(.ccMono(Typography.caption))
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, Space.sm)
                 .frame(width: 72)
-                .background(Color.ccInput)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorder))
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
                 .onSubmit { commitPort() }
                 .disabled(model.cliRecoveryRequired)
                 .accessibilityIdentifier("settings.gateway.port")
@@ -152,14 +151,17 @@ struct GatewaySettingsPane: View {
 
     private var codeBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // A black terminal panel is the one motif the design system rules out: it imports a
+            // second visual world into a warm-paper settings page. The snippet is quiet monospace
+            // on the ordinary fill instead, which reads as "text you can copy" without cosplay.
             Text(exportText)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Color(red: 0.91, green: 0.93, blue: 0.96))
+                .font(.ccMono(Typography.caption))
+                .foregroundStyle(Theme.foreground)
                 .textSelection(.enabled)
-                .padding(14)
+                .padding(Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(red: 0.047, green: 0.055, blue: 0.071))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
                 .accessibilityIdentifier("settings.gateway.exports.value")
             HStack {
                 Button(appLanguage.localized(copiedValue == "exports" ? "已复制 ✓" : "复制 export")) {
@@ -168,8 +170,8 @@ struct GatewaySettingsPane: View {
                 .buttonStyle(CompactActionButtonStyle())
                 .accessibilityIdentifier("settings.gateway.exports.copy")
                 Text(appLanguage.localized("Claude 配置：") + claudeSettingsPath)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
@@ -179,8 +181,8 @@ struct GatewaySettingsPane: View {
                     .accessibilityIdentifier("settings.gateway.claude-config.path")
             }
             Text("若曾在终端 export ANTHROPIC_BASE_URL，请删除旧值以免覆盖。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
         }
     }
 
@@ -202,7 +204,7 @@ struct GatewaySettingsPane: View {
         target: String
     ) -> some View {
         HStack(spacing: 9) {
-            Text(title).font(.system(size: 12.5, weight: .medium))
+            Text(title).font(.ccBody())
             ConnectionBadge(connected: connected)
             Spacer()
             Toggle(
@@ -225,18 +227,18 @@ struct GatewaySettingsPane: View {
     private func recoveryNotice(_ recovery: AppModel.CLIRecoveryState) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("CLI 配置需要手动恢复")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.ccBody(.medium))
             Text("请按照恢复目录中的 journal.json 恢复原始文件，移除恢复目录后重新检查。")
                 .font(.system(size: 11.5))
             ForEach(recovery.journalDirectories, id: \.path) { directory in
                 Text(verbatim: directory.path)
-                    .font(.system(size: 10.5, design: .monospaced))
+                    .font(.ccMono(Typography.label))
                     .textSelection(.enabled)
                     .lineLimit(2)
                     .truncationMode(.middle)
             }
             Text(appLanguage.localized(recovery.detail))
-                .font(.system(size: 11))
+                .font(.ccLabel())
                 .textSelection(.enabled)
             Button("重新检查") {
                 Task { await model.recheckCLIRecovery() }
@@ -244,10 +246,10 @@ struct GatewaySettingsPane: View {
             .buttonStyle(CompactActionButtonStyle())
             .accessibilityIdentifier("settings.gateway.recovery.recheck")
         }
-        .foregroundStyle(Color.ccRed)
+        .foregroundStyle(Theme.danger)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.ccRedSoft)
+        .background(Theme.dangerSoft)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.gateway.recovery")

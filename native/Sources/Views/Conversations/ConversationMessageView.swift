@@ -42,12 +42,12 @@ struct ConversationMessageView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(6)
-        .background(isCurrentSearchMatch ? Color.ccBrandSoft.opacity(0.48) : Color.clear)
+        .background(isCurrentSearchMatch ? Theme.accentSoft.opacity(0.48) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             if isCurrentSearchMatch {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.ccBrand.opacity(0.35))
+                    .stroke(Theme.accent.opacity(0.35))
             }
         }
         .accessibilityIdentifier("conversation.message.\(messageIndex)")
@@ -63,14 +63,14 @@ struct ConversationMessageView: View {
                     .textCase(nil)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(Color.ccForeground.opacity(0.055))
+                    .background(Theme.foreground.opacity(0.055))
                     .clipShape(Capsule())
             }
             Spacer(minLength: 0)
         }
         .font(.system(size: max(9.5, fontSize * 0.77), weight: .bold))
         .tracking(0.45)
-        .foregroundStyle(Color.ccCaption)
+        .foregroundStyle(Theme.mutedForeground)
     }
 
     @ViewBuilder private var messageBody: some View {
@@ -94,10 +94,9 @@ struct ConversationMessageView: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.ccElevated)
+            .background(Theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.ccBorder))
-            .shadow(color: .black.opacity(0.045), radius: 5, y: 2)
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Theme.separator))
         } else {
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
@@ -115,7 +114,7 @@ struct ConversationMessageView: View {
             .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .leading) {
-                Rectangle().fill(Color.ccBorderStrong).frame(width: 2)
+                Rectangle().fill(Theme.separator).frame(width: 2)
             }
         }
     }
@@ -127,10 +126,10 @@ struct ConversationMessageView: View {
                 ForEach(chips, id: \.self) { chip in
                     Text(chip)
                         .font(.system(size: max(9, fontSize * 0.73), design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(Color.ccForeground.opacity(0.05))
+                        .background(Theme.foreground.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
             }
@@ -215,7 +214,7 @@ private struct ConversationBlockView: View {
                     query: searchQuery,
                     current: isCurrentSearchMatch,
                     fontSize: fontSize,
-                    color: .ccForeground
+                    color: Theme.foreground
                 )
             }
         case "thinking":
@@ -276,7 +275,7 @@ private struct ConversationThinkingView: View {
                 query: searchQuery,
                 current: isCurrentSearchMatch,
                 fontSize: max(10.5, fontSize * 0.88),
-                color: .ccMuted
+                color: Theme.mutedForeground
             )
                 .padding(.horizontal, 10)
                 .padding(.bottom, 9)
@@ -285,17 +284,17 @@ private struct ConversationThinkingView: View {
                 Text("💭")
                 Text("思考")
                 Text("· \(thinking.split(whereSeparator: \.isNewline).first.map(String.init) ?? "")")
-                    .foregroundStyle(Color.ccMuted)
+                    .foregroundStyle(Theme.mutedForeground)
                     .lineLimit(1)
             }
             .font(.system(size: max(10, fontSize * 0.84), weight: .medium))
-            .foregroundStyle(Color.ccOrange)
+            .foregroundStyle(Theme.warning)
             .padding(.vertical, 7)
         }
         .padding(.horizontal, 10)
-        .background(Color.ccOrange.opacity(0.045))
+        .background(Theme.warning.opacity(0.045))
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccOrange.opacity(0.15)))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.warning.opacity(0.15)))
         .accessibilityIdentifier("conversation.thinking")
     }
 }
@@ -529,7 +528,7 @@ private struct ConversationToolCard: View {
                 if !presentation.target.isEmpty {
                     Text(presentation.target)
                         .font(.system(size: max(9.5, fontSize * 0.80), design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -537,8 +536,8 @@ private struct ConversationToolCard: View {
             }
             .padding(.horizontal, 10)
             .frame(minHeight: 29)
-            .background(Color.ccForeground.opacity(0.045))
-            .overlay(alignment: .bottom) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+            .background(Theme.foreground.opacity(0.045))
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
 
             toolInput
 
@@ -552,21 +551,20 @@ private struct ConversationToolCard: View {
             } else {
                 Text("暂无工具结果")
                     .font(.system(size: max(9.5, fontSize * 0.8)))
-                    .foregroundStyle(Color.ccCaption)
+                    .foregroundStyle(Theme.mutedForeground)
                     .padding(.horizontal, 10)
                     .frame(minHeight: 26)
-                    .overlay(alignment: .top) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+                    .overlay(alignment: .top) { Rectangle().fill(Theme.separator).frame(height: 1) }
             }
         }
-        .background(Color.ccElevated)
+        .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.ccBorderStrong)
+            RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Theme.separator)
         }
         .overlay(alignment: .leading) {
             Rectangle().fill(toolAccent).frame(width: 3)
         }
-        .shadow(color: .black.opacity(0.045), radius: 4, y: 2)
         .accessibilityIdentifier("conversation.tool.\(block.name ?? "unknown")")
     }
 
@@ -585,7 +583,7 @@ private struct ConversationToolCard: View {
         case .note(let value):
             Text(value)
                 .font(.system(size: max(10, fontSize * 0.84)))
-                .foregroundStyle(Color.ccMuted)
+                .foregroundStyle(Theme.mutedForeground)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
         case .todos(let items):
@@ -596,7 +594,7 @@ private struct ConversationToolCard: View {
                         Text(item.text)
                             .strikethrough(item.status == "completed")
                     }
-                    .foregroundStyle(item.status == "in_progress" ? Color.ccBrandStrong : Color.ccMuted)
+                    .foregroundStyle(item.status == "in_progress" ? Theme.accentText : Theme.mutedForeground)
                 }
             }
             .font(.system(size: max(10.5, fontSize * 0.88)))
@@ -609,13 +607,13 @@ private struct ConversationToolCard: View {
         switch presentation.category {
         case .execution: return .orange
         case .read: return .blue
-        case .write: return .ccGreen
+        case .write: return Theme.success
         case .search: return .purple
         case .task: return .pink
         case .network: return .cyan
         case .todo: return .indigo
         case .mcp: return .teal
-        case .other: return .ccBorderStrong
+        case .other: return Theme.separator
         }
     }
 }
@@ -652,15 +650,15 @@ private struct ConversationToolResultDisclosure: View {
                     if !resultSummary.isEmpty {
                         Text(resultSummary)
                             .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Color.ccCaption)
+                            .foregroundStyle(Theme.mutedForeground)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 1)
-                            .background(Color.ccForeground.opacity(0.05))
+                            .background(Theme.foreground.opacity(0.05))
                             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
                 }
                 .font(.system(size: max(9.5, fontSize * 0.8), weight: .semibold))
-                .foregroundStyle(result.isError == true ? Color.ccRed : Color.ccGreen)
+                .foregroundStyle(result.isError == true ? Theme.danger : Theme.success)
                 .padding(.horizontal, 10)
                 .frame(minHeight: 27)
                 .contentShape(Rectangle())
@@ -674,7 +672,7 @@ private struct ConversationToolResultDisclosure: View {
                     .padding(.bottom, 8)
             }
         }
-        .overlay(alignment: .top) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+        .overlay(alignment: .top) { Rectangle().fill(Theme.separator).frame(height: 1) }
     }
 
     private var resultText: String? {
@@ -703,16 +701,16 @@ private struct ConversationStandaloneToolResult: View {
                 systemImage: "wrench.and.screwdriver"
             )
                 .font(.system(size: max(9.5, fontSize * 0.8), weight: .semibold))
-                .foregroundStyle(block.isError == true ? Color.ccRed : Color.ccGreen)
+                .foregroundStyle(block.isError == true ? Theme.danger : Theme.success)
             if let value = ConversationVisibleText.toolResultText(block.content) {
                 ConversationPlainHighlightedText(value: value, query: searchQuery, current: isCurrentSearchMatch)
                     .font(.system(size: max(10, fontSize * 0.84), design: .monospaced))
             }
         }
         .padding(10)
-        .background(Color.ccForeground.opacity(0.035))
+        .background(Theme.foreground.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.ccBorder))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.separator))
     }
 }
 
@@ -727,7 +725,7 @@ private struct ConversationSkillCard: View {
                 if let path = block.raw?["path"]?.stringValue, !path.isEmpty {
                     Text(path)
                         .font(.system(size: max(9.5, fontSize * 0.78), design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                 }
                 if let snapshot = block.raw?["snapshot"]?.stringValue, !snapshot.isEmpty {
                     ConversationCodeBlock(value: snapshot, fontSize: fontSize)
@@ -741,9 +739,9 @@ private struct ConversationSkillCard: View {
                 .padding(.vertical, 7)
         }
         .padding(.horizontal, 10)
-        .background(Color.ccForeground.opacity(0.035))
+        .background(Theme.foreground.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.ccBorderStrong))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.separator))
     }
 }
 
@@ -765,9 +763,9 @@ private struct ConversationRawBlock: View {
                 .padding(.vertical, 6)
         }
         .padding(.horizontal, 10)
-        .background(Color.ccForeground.opacity(0.035))
+        .background(Theme.foreground.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator))
     }
 }
 
@@ -781,12 +779,12 @@ private struct ConversationCodeBlock: View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(alignment: .top, spacing: 0) {
                 Text(lineNumbers)
-                    .foregroundStyle(Color.ccCaption.opacity(0.78))
+                    .foregroundStyle(Theme.mutedForeground.opacity(0.78))
                     .padding(.leading, 12)
                     .padding(.trailing, 9)
                     .accessibilityHidden(true)
                 Rectangle()
-                    .fill(Color.ccBorder)
+                    .fill(Theme.separator)
                     .frame(width: 1)
                 Text(value)
                     .foregroundStyle(codeForeground)
@@ -800,7 +798,7 @@ private struct ConversationCodeBlock: View {
         }
         .background(codeBackground)
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator))
     }
 
     private var lineNumbers: String {
@@ -829,14 +827,14 @@ private struct ConversationDiffBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(old.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                diffLine("- \(line)", foreground: .ccRed, background: .ccRedSoft)
+                diffLine("- \(line)", foreground: Theme.danger, background: Theme.dangerSoft)
             }
             ForEach(Array(new.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                diffLine("+ \(line)", foreground: .ccGreen, background: .ccGreenSoft)
+                diffLine("+ \(line)", foreground: Theme.success, background: Theme.successSoft)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.ccBorder))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.separator))
     }
 
     private func diffLine(_ value: String, foreground: Color, background: Color) -> some View {

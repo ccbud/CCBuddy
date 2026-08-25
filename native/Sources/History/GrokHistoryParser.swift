@@ -102,6 +102,7 @@ enum GrokHistoryParser {
             model: model,
             imported: false,
             deleted: custom.deleted,
+            starred: custom.starred,
             createdAt: createdAt,
             lastActivity: context.facts.modifiedAt,
             sizeBytes: context.facts.sizeBytes,

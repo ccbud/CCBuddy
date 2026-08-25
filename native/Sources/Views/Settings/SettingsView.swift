@@ -1,114 +1,121 @@
 import SwiftUI
 
+/// Settings is a scene, not a peer destination.
+///
+/// It keeps the same three-column rhythm as the rest of the window — a rail on the list material,
+/// content on the canvas — so arriving here does not feel like entering a different application.
+/// The old back-chevron and the "设置 / 网关与应用偏好" caption above the rail are gone: the rail
+/// already says where you are, and a second header only repeated it.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var navigationCollapsed = false
+    @Environment(\.appLanguage) private var appLanguage
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            header
-            HStack(alignment: .top, spacing: 20) {
-                navigation
-                ScrollView {
-                    pane
-                        .frame(maxWidth: 920)
-                        .padding(.trailing, 4)
-                        .padding(.bottom, 20)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
-                        .id(model.navigation.settingsPane)
-                }
-                .scrollIndicators(.automatic)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        HStack(spacing: 0) {
+            navigation
+                .frame(width: 188)
+            ScrollView {
+                pane
+                    .padding(.horizontal, Space.xl)
+                    // Clear the traffic-light band so the first section never starts underneath it.
+                    .padding(.top, Metrics.titleBarHeight + Space.sm)
+                    .padding(.bottom, Space.xxl)
+                    .frame(maxWidth: 780, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+                    .id(model.navigation.settingsPane)
             }
+            .scrollIndicators(.automatic)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.background)
         }
-        .frame(maxWidth: 1120, maxHeight: .infinity)
-        .padding(.horizontal, 40)
-        .padding(.top, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(
-            reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1),
-            value: model.navigation.settingsPane
-        )
-        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1), value: navigationCollapsed)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.navigation.settingsPane)
         .settingsAccessibilityContainerIdentifier("view.settings", label: "设置")
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Button {
-                navigationCollapsed.toggle()
-            } label: {
-                Image(systemName: navigationCollapsed ? "chevron.right" : "chevron.left")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .frame(width: 26, height: 26)
+    private var navigation: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(appLanguage.localized("设置"))
+                    .font(.ccTitle())
+                    .tracking(-0.35)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.ccMuted)
-            .background(Color.ccElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
-            .accessibilityLabel("收起或展开设置导航")
+            .padding(.horizontal, Space.md)
+            .padding(.top, Metrics.titleBarHeight + Space.sm)
+            .padding(.bottom, Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(WindowDragRegion())
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("设置")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Color.ccCaption)
-                Text("网关与应用偏好")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.ccCaption)
+            VStack(spacing: 2) {
+                ForEach(AppModel.SettingsPane.functionalCases) { item in
+                    paneRow(item)
+                }
             }
+            .padding(.horizontal, Space.sm)
+
+            Spacer(minLength: Space.md)
+
+            VStack(spacing: 2) {
+                paneRow(.about)
+            }
+            .padding(.horizontal, Space.sm)
+            .padding(.bottom, Space.md)
+
+            Button {
+                model.selected = .conversations
+            } label: {
+                Label(appLanguage.localized("返回会话"), systemImage: "chevron.left")
+            }
+            .buttonStyle(.ccQuiet)
+            .padding(.horizontal, Space.sm)
+            .padding(.bottom, Space.md)
+            .accessibilityIdentifier("settings.close")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.list)
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Theme.separator).frame(width: 1).accessibilityHidden(true)
         }
     }
 
-    private var navigation: some View {
-        VStack(spacing: 2) {
-            ForEach(AppModel.SettingsPane.allCases) { item in
-                let selected = item == model.navigation.settingsPane
-                Button {
-                    model.selectSettingsPane(item)
-                } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: item.symbol)
-                            .frame(width: 16)
-                        if !navigationCollapsed {
-                            Text(LocalizedStringKey(item.title)).lineLimit(1)
-                            Spacer(minLength: 0)
-                        }
-                    }
-                    .font(.system(size: 13, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(selected ? Color.ccBrandStrong : Color.ccMuted)
-                    .padding(.horizontal, navigationCollapsed ? 0 : 10)
-                    .frame(maxWidth: .infinity, minHeight: 34)
-                    .background(selected ? Color.ccBrandSoft : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableButtonStyle())
-                .accessibilityIdentifier("settings.nav.\(item.rawValue)")
+    private func paneRow(_ item: AppModel.SettingsPane) -> some View {
+        let selected = item == model.navigation.settingsPane
+        return Button {
+            model.selectSettingsPane(item)
+        } label: {
+            HStack(spacing: Space.sm) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: Typography.body))
+                    .frame(width: Rail.leadBox)
+                Text(appLanguage.localized(item.title)).lineLimit(1)
+                Spacer(minLength: 0)
             }
+            .font(.ccBody(selected ? .medium : .regular))
+            .foregroundStyle(selected ? Theme.foreground : Theme.mutedForeground)
+            .padding(.horizontal, Space.sm)
+            .frame(maxWidth: .infinity, minHeight: Metrics.rowHeight)
+            .background(selected ? Theme.sidebarAccent : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(.trailing, navigationCollapsed ? 8 : 16)
-        .frame(width: navigationCollapsed ? 44 : 148)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Color.ccBorder)
-                .frame(width: 1)
-                .accessibilityHidden(true)
-        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.nav.\(item.rawValue)")
     }
 
     @ViewBuilder private var pane: some View {
         switch model.navigation.settingsPane {
-        case .gateway:
-            GatewaySettingsPane()
-                .settingsAccessibilityContainerIdentifier("settings.pane.gateway", label: "网关")
         case .general:
             GeneralSettingsPane()
                 .settingsAccessibilityContainerIdentifier("settings.pane.general", label: "常规")
+        case .locations:
+            LocationsSettingsPane()
+                .settingsAccessibilityContainerIdentifier("settings.pane.locations", label: "会话位置")
+        case .gateway:
+            GatewaySettingsPane()
+                .settingsAccessibilityContainerIdentifier("settings.pane.gateway", label: "网关")
         case .data:
             DataSettingsPane()
                 .settingsAccessibilityContainerIdentifier("settings.pane.data", label: "数据")

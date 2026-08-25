@@ -12,15 +12,14 @@ enum CodexHistoryParser {
         }
         let agentTitle = subagentTitle(normalized.identity)
         let autoTitle = agentTitle.isEmpty ? transcriptTitle : agentTitle
-        let custom: (String?, [String], Bool)
+        let custom: ConversationCustomMetadata
         if context.candidate.directory.id == "__imported__" {
             custom = HistoryParsingSupport.customMetadata(context.document.records)
         } else {
-            let sidecar = ForeignHistorySupport.codexMetadata(
+            custom = ForeignHistorySupport.codexMetadata(
                 sessionKey: stem,
                 appDataRoot: context.appDataRoot
             )
-            custom = (sidecar.title, sidecar.tags, sidecar.deleted)
         }
 
         let metadata = HistorySessionMetadata(
@@ -39,9 +38,9 @@ enum CodexHistoryParser {
             project: HistoryParsingSupport.projectName(cwd: normalized.cwd, encodedDirectory: nil),
             gitBranch: normalized.gitBranch,
             version: normalized.version,
-            title: custom.0 ?? autoTitle,
+            title: custom.title ?? autoTitle,
             autoTitle: autoTitle,
-            tags: custom.1,
+            tags: custom.tags,
             model: normalized.model,
             isSubagent: normalized.identity.isSubagent,
             agentPath: normalized.identity.agentPath,
@@ -49,7 +48,8 @@ enum CodexHistoryParser {
             agentRole: normalized.identity.agentRole,
             agentDepth: normalized.identity.agentDepth,
             imported: context.candidate.directory.id == "__imported__",
-            deleted: custom.2,
+            deleted: custom.deleted,
+            starred: custom.starred,
             createdAt: context.facts.createdAt,
             lastActivity: context.facts.modifiedAt,
             sizeBytes: context.facts.sizeBytes,

@@ -1,95 +1,131 @@
 import AppKit
 import SwiftUI
 
+/// What CC Buddy itself stores on disk.
+///
+/// Source directories moved to Locations; this pane now answers the two questions people actually
+/// come here with — where does my data live, and how big has the index grown. Both are stated, and
+/// the only actions are the two that follow from them.
 struct DataSettingsPane: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.appLanguage) private var appLanguage
-    @State private var directoryStatistics: [String: HistoryDirectoryStatistic] = [:]
+
+    @State private var indexBytes: Int64?
+    @State private var sessionCount: Int?
+
+    private var storageDirectory: URL {
+        ConfigRepository.defaultConfigURL().deletingLastPathComponent()
+    }
 
     var body: some View {
-        SettingsCard("工作目录") {
-            HStack(alignment: .top, spacing: 16) {
-                Text("会话与用量统计的数据来源 —— 每个工作目录都会同时扫描 Claude Code 会话（projects/）与 Codex 会话（sessions/）。~/.claude 始终保留，检测到 Codex 时会自动加入 ~/.codex；若用 CLAUDE_CONFIG_DIR / CODEX_HOME 等指定了其他位置，在此添加，可在「会话」页切换查看。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.ccCaption)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                Button("选择目录…", action: chooseDirectory)
-                    .buttonStyle(CompactActionButtonStyle(primary: true))
-            }
-
-            VStack(spacing: 8) {
-                ForEach(model.config.historyDirs, id: \.self) { directory in
-                    directoryRow(directory)
+        VStack(alignment: .leading, spacing: Space.lg) {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                CCSectionHeader(appLanguage.localized("本地存储")) {
+                    Button(appLanguage.localized("在访达中显示")) {
+                        NSWorkspace.shared.selectFile(
+                            nil,
+                            inFileViewerRootedAtPath: storageDirectory.path
+                        )
+                    }
+                    .buttonStyle(.ccSecondary)
+                    .accessibilityIdentifier("settings.data.reveal")
                 }
+
+                Text(appLanguage.localized("设置、会话元数据与可重建的搜索索引都保存在这里。重装应用不会丢失它们。"))
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 1) {
+                infoRow(appLanguage.localized("位置"), value: storageDirectory.path, monospaced: true)
+                infoRow(
+                    appLanguage.localized("会话索引"),
+                    value: indexBytes.map(Self.formatBytes) ?? appLanguage.localized("正在统计…")
+                )
+                infoRow(
+                    appLanguage.localized("已收录会话"),
+                    value: sessionCount.map { appLanguage.localized("\($0) 个会话") }
+                        ?? appLanguage.localized("正在统计…"),
+                    isLast: true
+                )
+            }
+            .panelSurface(bordered: true)
+
+            VStack(alignment: .leading, spacing: Space.sm) {
+                CCSectionHeader(appLanguage.localized("索引")) {
+                    Button(appLanguage.localized("重建索引")) {
+                        model.conversationStore.retryIndexing()
+                    }
+                    .buttonStyle(.ccSecondary)
+                    .disabled(model.conversationStore.indexingState.isScanning)
+                    .accessibilityIdentifier("settings.data.reindex")
+                }
+
+                Text(appLanguage.localized("索引只是原始会话文件的一份可重建副本。删除它不会影响任何 CLI 写下的会话；下次启动会重新扫描。"))
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task(id: model.config.historyDirs.joined(separator: "\u{0}")) {
-            let statistics = await model.historyDirectoryStatistics()
-            directoryStatistics = Dictionary(uniqueKeysWithValues: statistics.map { ($0.id, $0) })
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task { await refresh() }
+        .task(id: model.conversationStore.indexingState) { await refresh() }
     }
 
-    private func directoryRow(_ directory: String) -> some View {
-        let statistic = directoryStatistics[directory]
-        let exists = statistic?.exists ?? FileManager.default.fileExists(atPath: expanded(directory))
-        return HStack(spacing: 12) {
-            Text(directory)
-                .font(.system(size: 12.5, design: .monospaced))
-                .foregroundStyle(exists ? Color.ccForeground : Color.ccMuted)
+    private func infoRow(
+        _ title: String,
+        value: String,
+        monospaced: Bool = false,
+        isLast: Bool = false
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.md) {
+            Text(title)
+                .font(.ccBody())
+                .foregroundStyle(Theme.foreground)
+            Spacer(minLength: Space.sm)
+            Text(value)
+                .font(monospaced ? .ccMono(Typography.caption) : .ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
-            Spacer()
-            Text(appLanguage.localized(
-                exists ? "\(statistic?.sessionCount ?? 0) 会话" : "目录不存在"
-            ))
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(exists ? Color.ccGreen : Color.ccRed)
-                .padding(.horizontal, 8).padding(.vertical, 2)
-                .background(exists ? Color.ccGreenSoft : Color.ccRedSoft)
-                .clipShape(Capsule())
-            Button {
-                Task { await model.removeHistoryDirectory(directory) }
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 11))
-                    .frame(width: 26, height: 26)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .help(value)
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm + 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) {
+            if !isLast { Rectangle().fill(Theme.separator).frame(height: 1) }
+        }
+    }
+
+    private func refresh() async {
+        let directory = storageDirectory
+        let bytes = await Task.detached(priority: .utility) { () -> Int64 in
+            let manager = FileManager.default
+            let names = [
+                "conversation-index-v1.sqlite3",
+                "conversation-index-v1.sqlite3-wal",
+                "conversation-index-v1.sqlite3-shm",
+            ]
+            return names.reduce(into: Int64(0)) { total, name in
+                let path = directory.appendingPathComponent(name).path
+                let size = (try? manager.attributesOfItem(atPath: path)[.size]) as? NSNumber
+                total += size?.int64Value ?? 0
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.ccMuted)
-            .disabled(directory == "~/.claude")
-            .opacity(directory == "~/.claude" ? 0.25 : 1)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Color.ccElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.ccBorder))
+        }.value
+        indexBytes = bytes
+
+        let statistics = await model.historyDirectoryStatistics()
+        sessionCount = statistics.reduce(0) { $0 + $1.sessionCount }
     }
 
-    private func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.showsHiddenFiles = true
-        panel.title = appLanguage.localized("选择工作目录（含 projects/ 或 sessions/）")
-        panel.prompt = appLanguage.localized("选择")
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            let selected = Self.historyRoot(for: url)
-            Task { @MainActor in await model.addHistoryDirectory(selected.path) }
-        }
-    }
-
-    static func historyRoot(for selectedURL: URL) -> URL {
-        ["projects", "sessions"].contains(selectedURL.lastPathComponent)
-            ? selectedURL.deletingLastPathComponent()
-            : selectedURL
-    }
-
-    private func expanded(_ path: String) -> String {
-        guard path == "~" || path.hasPrefix("~/") else { return path }
-        let suffix = path == "~" ? "" : String(path.dropFirst(2))
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(suffix).path
+    static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 }

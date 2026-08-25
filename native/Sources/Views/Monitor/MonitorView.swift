@@ -105,7 +105,7 @@ struct MonitorView: View {
         } message: {
             Text("将从 Bifrost 永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。")
         }
-        .background(Color.ccAppBackground)
+        .background(Theme.background)
         .monitorAccessibilityContainerIdentifier(
             "view.monitor",
             label: appLanguage.localized("监控")
@@ -113,12 +113,27 @@ struct MonitorView: View {
     }
 
     private var content: some View {
+        VStack(spacing: 0) {
+            DestinationHeader(
+                title: appLanguage.localized("监控"),
+                subtitle: appLanguage.localized(
+                    gatewayRunning ? "网关运行中 · localhost:\(port)" : "网关未启动"
+                )
+            )
+            .background(Theme.list)
+            .hairline(.bottom)
+            scrollingContent
+        }
+    }
+
+    private var scrollingContent: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(spacing: Space.lg) {
                 if revealsSensitiveData {
                     revealedDataWarning
                 }
                 metricGrid
+                    .panelSurface(bordered: true)
                 MonitorRequestStream(
                     store: store,
                     gatewayRunning: gatewayRunning,
@@ -133,10 +148,6 @@ struct MonitorView: View {
                 )
             }
             .frame(maxWidth: 1120)
-            .padding(.horizontal, 40)
-            .padding(.top, 16)
-            .padding(.bottom, 40)
-            .frame(maxWidth: .infinity)
         }
     }
 
@@ -147,10 +158,10 @@ struct MonitorView: View {
         HStack(spacing: 9) {
             Image(systemName: "eye")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.ccOrange)
+                .foregroundStyle(Theme.warning)
             Text(appLanguage.localized("正在显示未经脱敏的监控内容；关闭页面后会自动恢复保护"))
-            .font(.system(size: 11))
-            .foregroundStyle(Color.ccCaption)
+            .font(.ccCaption())
+            .foregroundStyle(Theme.mutedForeground)
             Spacer(minLength: 10)
             MonitorActionButton(
                 title: "隐藏敏感值",
@@ -160,27 +171,24 @@ struct MonitorView: View {
             }
             .accessibilityIdentifier("monitor.privacy.toggle")
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Space.md)
         .frame(height: 38)
-        .background(Color.ccElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.ccBorder))
+        .background(Theme.warningSoft)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
     }
 
     private var metricGrid: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 14), count: 4),
-            spacing: 14
-        ) {
+        HStack(spacing: 0) {
             MonitorMetricCard(
                 title: "网关",
                 value: appLanguage.localized(gatewayRunning ? "已接入" : "未接入"),
                 subtitle: "localhost:\(port)",
-                accent: gatewayRunning ? .ccForeground : .ccMuted,
+                accent: gatewayRunning ? Theme.foreground : Theme.mutedForeground,
                 showsStatusDot: true,
                 statusActive: gatewayRunning
             )
             .accessibilityIdentifier("monitor.metric.gateway")
+            metricSeparator
 
             MonitorMetricCard(
                 title: "活跃服务",
@@ -190,10 +198,11 @@ struct MonitorView: View {
                         ? $0.baseUrl
                         : MonitorPrivacyRedactor.redact($0.baseUrl, language: appLanguage)
                 } ?? appLanguage.localized("未选择服务"),
-                accent: .ccForeground,
+                accent: Theme.foreground,
                 subtitlePrivacySensitive: true
             )
             .accessibilityIdentifier("monitor.metric.provider")
+            metricSeparator
 
             MonitorMetricCard(
                 title: "总请求",
@@ -202,21 +211,31 @@ struct MonitorView: View {
                 subtitle: appLanguage.localized(
                     "成功率 \(MonitorFormat.percent(store.stats?.rootSuccessRate))"
                 ),
-                accent: .ccForeground,
+                accent: Theme.foreground,
                 prominentNumber: true
             )
             .accessibilityIdentifier("monitor.metric.total")
+            metricSeparator
 
             MonitorMetricCard(
                 title: "平均耗时",
                 value: MonitorFormat.milliseconds(averageLatency),
                 unit: "ms",
                 subtitle: latestRequestText,
-                accent: .ccForeground,
+                accent: Theme.foreground,
                 prominentNumber: true
             )
             .accessibilityIdentifier("monitor.metric.latency")
         }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var metricSeparator: some View {
+        Rectangle()
+            .fill(Theme.separator)
+            .frame(width: 1)
+            .padding(.vertical, Space.md)
+            .accessibilityHidden(true)
     }
 
     private var totalRequests: Int {

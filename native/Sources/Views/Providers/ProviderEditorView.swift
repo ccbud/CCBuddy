@@ -8,6 +8,7 @@ struct ProviderEditorView: View {
     @EnvironmentObject private var model: AppModel
     @State private var draft: Provider
     @State private var selectedPreset: String?
+    @State private var presetQuery = ""
     @State private var showsToken = false
     @State private var mappingsExpanded = true
     @State private var iconPickerPresented = false
@@ -27,7 +28,7 @@ struct ProviderEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Color.ccBorder).frame(height: 1)
+            Rectangle().fill(Theme.separator).frame(height: 1)
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 17) {
                     presets
@@ -47,24 +48,24 @@ struct ProviderEditorView: View {
                             systemImage: testSucceeded ? "checkmark.circle.fill" : "xmark.circle.fill"
                         )
                             .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(testSucceeded ? Color.ccGreen : Color.ccRed)
+                            .foregroundStyle(testSucceeded ? Theme.success : Theme.danger)
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(testSucceeded ? Color.ccGreenSoft : Color.ccRedSoft)
+                            .background(testSucceeded ? Theme.successSoft : Theme.dangerSoft)
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
             }
-            Rectangle().fill(Color.ccBorder).frame(height: 1)
+            Rectangle().fill(Theme.separator).frame(height: 1)
             footer
         }
         .frame(
             width: ProviderEditorLayout.sheetSize.width,
             height: ProviderEditorLayout.sheetSize.height
         )
-        .background(Color.ccElevated)
+        .background(Theme.surface)
         .overlay(alignment: .topLeading) {
             Rectangle()
                 .fill(Color.clear)
@@ -82,9 +83,9 @@ struct ProviderEditorView: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 10.5, weight: .bold))
                     .frame(width: 26, height: 26)
-                    .background(Color.ccElevated)
+                    .background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator))
             }
             .buttonStyle(.plain)
             Text(appLanguage.localized(draft.name.isEmpty ? "添加服务" : "编辑服务"))
@@ -92,35 +93,91 @@ struct ProviderEditorView: View {
             Spacer()
             Text("Bifrost")
                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
         }
         .padding(.horizontal, 18)
         .frame(height: 55)
     }
 
+    /// A searchable, grouped picker rather than a wall of chips.
+    ///
+    /// The catalog grew from ten entries to seventy when it was ported from cc-switch, and seventy
+    /// capsules would fill the sheet before the fields it is meant to prefill. Typing narrows by
+    /// name, host or model id, which is how people actually look for a provider.
     private var presets: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            fieldLabel("预设")
-            ProviderPresetFlowLayout {
-                ForEach(ProviderPreset.all) { preset in
-                    Button(preset.id == "custom"
-                        ? appLanguage.localized(preset.title)
-                        : preset.title) {
-                        selectedPreset = preset.id
-                        preset.apply(to: &draft)
-                        testMessage = nil
-                    }
-                    .buttonStyle(ProviderPresetButtonStyle(selected: selectedPreset == preset.id))
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                fieldLabel("预设")
+                Spacer(minLength: 0)
+                HStack(spacing: Space.xs + 2) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: Typography.label))
+                        .foregroundStyle(Theme.mutedForeground)
+                    TextField(
+                        appLanguage.localized("搜索服务商…"),
+                        text: $presetQuery
+                    )
+                    .textFieldStyle(.plain)
+                    .font(.ccCaption())
+                    .accessibilityIdentifier("provider.preset.search")
                 }
+                .padding(.horizontal, Space.sm)
+                .frame(width: 180, height: Metrics.controlHeight - 2)
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            }
+
+            let groups = ProviderPreset.grouped(matching: presetQuery)
+            if groups.isEmpty {
+                Text(appLanguage.localized("没有匹配的预设，直接在下方填写即可"))
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, Space.sm)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        ForEach(groups, id: \.category.id) { group in
+                            VStack(alignment: .leading, spacing: Space.xs + 2) {
+                                Text(appLanguage.localized(group.category.title))
+                                    .font(.ccLabel())
+                                    .foregroundStyle(Theme.mutedForeground)
+                                ProviderPresetFlowLayout {
+                                    ForEach(group.presets) { preset in
+                                        presetChip(preset)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(Space.sm)
+                }
+                // A bounded region with its own material reads as a list you scroll inside, rather
+                // than as page content that happens to be clipped.
+                .frame(height: 138)
+                .background(Theme.fillSubtle)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
             }
         }
+    }
+
+    private func presetChip(_ preset: ProviderPreset) -> some View {
+        Button(preset.category == .custom
+            ? appLanguage.localized("自定义")
+            : preset.name) {
+            selectedPreset = preset.id
+            preset.apply(to: &draft)
+            testMessage = nil
+        }
+        .buttonStyle(ProviderPresetButtonStyle(selected: selectedPreset == preset.id))
+        .help(preset.baseURL.isEmpty ? preset.name : preset.baseURL)
     }
 
     private var iconEditor: some View {
         VStack(spacing: 5) {
             Button { iconPickerPresented.toggle() } label: {
                 ProviderIconView(name: draft.name.isEmpty ? "?" : draft.name, icon: draft.icon, size: 52)
-                    .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.ccBrandStrong.opacity(0.2)))
+                    .overlay(RoundedRectangle(cornerRadius: 13).stroke(Theme.accentText.opacity(0.2)))
             }
             .buttonStyle(.plain)
             .popover(isPresented: $iconPickerPresented, arrowEdge: .bottom) {
@@ -128,7 +185,7 @@ struct ProviderEditorView: View {
             }
             Text("点击自定义图标")
                 .font(.system(size: 10.5))
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
         }
         .frame(maxWidth: .infinity)
     }
@@ -144,7 +201,7 @@ struct ProviderEditorView: View {
                     .buttonStyle(.plain)
                     .font(.system(size: 18))
                     .frame(width: 29, height: 29)
-                    .background(Color.ccInput)
+                    .background(Theme.fill)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
@@ -181,9 +238,9 @@ struct ProviderEditorView: View {
                 fieldLabel("上游协议")
                 Text(appLanguage.localized(draft.protocol == .anthropic ? "直通" : "自动转换"))
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(draft.protocol == .anthropic ? Color.ccMuted : Color.ccBrandStrong)
+                    .foregroundStyle(draft.protocol == .anthropic ? Theme.mutedForeground : Theme.accentText)
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(draft.protocol == .anthropic ? Color.ccForeground.opacity(0.05) : Color.ccBrandSoft)
+                    .background(draft.protocol == .anthropic ? Theme.foreground.opacity(0.05) : Theme.accentSoft)
                     .clipShape(Capsule())
             }
             Picker("上游协议", selection: $draft.protocol) {
@@ -222,12 +279,12 @@ struct ProviderEditorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("把客户端模型名精确映射到上游模型；未命中时才使用自动映射。")
                     .font(.system(size: 11.5))
-                    .foregroundStyle(Color.ccCaption)
+                    .foregroundStyle(Theme.mutedForeground)
                 ForEach(Array(draft.models.indices), id: \.self) { index in
                     HStack(spacing: 7) {
                         TextField("客户端别名", text: mappingBinding(index, \.alias))
                             .providerEditorTextField()
-                        Text("→").foregroundStyle(Color.ccCaption)
+                        Text("→").foregroundStyle(Theme.mutedForeground)
                         TextField("上游模型", text: mappingBinding(index, \.upstream))
                             .providerEditorTextField()
                         Button {
@@ -238,7 +295,7 @@ struct ProviderEditorView: View {
                                 .frame(width: 24, height: 24)
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Color.ccMuted)
+                        .foregroundStyle(Theme.mutedForeground)
                     }
                 }
                 Button("+ 添加映射") { draft.models.append(.init(alias: "", upstream: "")) }
@@ -250,9 +307,9 @@ struct ProviderEditorView: View {
                 .font(.system(size: 12.5, weight: .medium))
         }
         .padding(12)
-        .background(Color.ccElevated)
+        .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.ccBorder))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.separator))
     }
 
     private var footer: some View {
@@ -267,7 +324,7 @@ struct ProviderEditorView: View {
             Spacer()
             Button("取消") { dismiss() }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.ccMuted)
+                .foregroundStyle(Theme.mutedForeground)
                 .keyboardShortcut(.cancelAction)
             Button("保存") {
                 var value = draft
@@ -301,7 +358,7 @@ struct ProviderEditorView: View {
         Text(appLanguage.localized(title).uppercased())
             .font(.system(size: 10.5, weight: .semibold))
             .tracking(0.35)
-            .foregroundStyle(Color.ccCaption)
+            .foregroundStyle(Theme.mutedForeground)
     }
 
     private func mappingBinding(
@@ -371,15 +428,18 @@ private struct ProviderPresetButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11.5, weight: .medium))
+            .font(.ccCaption(.medium))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(selected ? Color.ccBrandStrong : Color.ccForeground)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 27)
-            .background(selected ? Color.ccBrandSoft : Color.ccInput)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(selected ? Color.ccBrandStrong.opacity(0.55) : Color.ccBorder))
+            .foregroundStyle(selected ? Theme.accentText : Theme.foreground)
+            .padding(.horizontal, Space.sm + 2)
+            .frame(minHeight: 26)
+            .background(selected ? Theme.accentSoft : Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                    .strokeBorder(selected ? Theme.accent.opacity(0.5) : Color.clear, lineWidth: 1)
+            }
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }
 }
@@ -388,11 +448,11 @@ private extension View {
     func providerEditorTextField() -> some View {
         self
             .textFieldStyle(.plain)
-            .font(.system(size: 12, design: .monospaced))
-            .padding(.horizontal, 9)
-            .frame(minHeight: 31)
-            .background(Color.ccInput)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+            .font(.ccMono(Typography.caption))
+            .padding(.horizontal, Space.sm + 1)
+            .frame(minHeight: 30)
+            .background(Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator))
     }
 }

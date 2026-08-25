@@ -23,11 +23,11 @@ struct ConversationTimelinePane: View {
             } else {
                 WindowDragRegion()
                     .frame(height: 52)
-                    .background(Color.ccConversationBackground)
+                    .background(Theme.background)
             }
             detail
         }
-        .background(Color.ccConversationBackground)
+        .background(Theme.background)
         .sheet(isPresented: $showingMetadataEditor) {
             if let metadata = store.selectedMetadata {
                 ConversationMetadataEditor(metadata: metadata) { title, tags in
@@ -49,11 +49,15 @@ struct ConversationTimelinePane: View {
         )
     }
 
+    /// Three bands, in Wake's order: who produced the session, what it is called and what you can
+    /// do with it, then the facts about it.
+    ///
+    /// The last band is a tight 4pt group deliberately set 8pt below the title. Spreading those
+    /// lines evenly makes them read as four unrelated blocks rather than one caption.
     private func sessionHeader(_ metadata: HistorySessionMetadata) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Image(systemName: sourceSymbol(metadata.source))
-                    .font(.system(size: 11, weight: .semibold))
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.xs + 2) {
+                AgentBrandMark(source: metadata.source, size: 15)
                 Text(ConversationPresentation.sourceName(rawValue: metadata.source.rawValue))
                 if !metadata.project.isEmpty {
                     metadataBadge(metadata.project)
@@ -64,16 +68,16 @@ struct ConversationTimelinePane: View {
                 }
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 11.5))
-            .foregroundStyle(Color.ccCaption)
+            .font(.ccLabel())
+            .foregroundStyle(Theme.mutedForeground)
 
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 16) {
+                HStack(alignment: .center, spacing: Space.lg) {
                     sessionTitle(metadata)
-                    Spacer(minLength: 8)
+                    Spacer(minLength: Space.sm)
                     actionButtons
                 }
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: Space.sm) {
                     sessionTitle(metadata)
                     HStack {
                         Spacer(minLength: 0)
@@ -82,43 +86,42 @@ struct ConversationTimelinePane: View {
                 }
             }
 
-            if let cwd = metadata.cwd, !cwd.isEmpty {
-                Label(cwd, systemImage: "folder")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.ccCaption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(cwd)
-            }
+            VStack(alignment: .leading, spacing: Space.xs) {
+                if let cwd = metadata.cwd, !cwd.isEmpty {
+                    Label(cwd, systemImage: "folder")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(cwd)
+                }
 
-            HStack(spacing: 7) {
-                if let model = metadata.model, !model.isEmpty {
-                    metadataBadge(model)
-                }
-                Text(headerStatistics(metadata).joined(separator: " · "))
-                    .lineLimit(1)
-                if !metadata.tags.isEmpty {
-                    ForEach(metadata.tags.prefix(2), id: \.self) { tag in
-                        metadataBadge(tag)
+                HStack(spacing: Space.xs + 2) {
+                    if let model = metadata.model, !model.isEmpty {
+                        metadataBadge(model)
                     }
+                    Text(headerStatistics(metadata).joined(separator: " · "))
+                        .lineLimit(1)
+                    if !metadata.tags.isEmpty {
+                        ForEach(metadata.tags.prefix(2), id: \.self) { tag in
+                            metadataBadge(tag)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Text(ConversationPresentation.relativeDate(metadata.lastActivity, language: appLanguage))
+                        .help(ConversationPresentation.absoluteDate(metadata.lastActivity, language: appLanguage))
                 }
-                Spacer(minLength: 0)
-                Text(ConversationPresentation.relativeDate(metadata.lastActivity, language: appLanguage))
-                    .help(ConversationPresentation.absoluteDate(metadata.lastActivity, language: appLanguage))
             }
-            .font(.system(size: 10.5))
-            .foregroundStyle(Color.ccCaption)
+            .font(.ccLabel())
+            .foregroundStyle(Theme.mutedForeground)
         }
-        .padding(.horizontal, 16)
-        // Match Wake's compact full-size-content header while retaining a drag surface.
-        .padding(.top, 20)
-        .padding(.bottom, 12)
+        .padding(.horizontal, Space.lg)
+        .padding(.top, Metrics.titleBarHeight - Space.sm)
+        .padding(.bottom, Space.md)
         .background(WindowDragRegion())
     }
 
     private func sessionTitle(_ metadata: HistorySessionMetadata) -> some View {
         Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
-            .font(.system(size: 22, weight: .semibold))
+            .font(.ccTitle())
             .tracking(-0.35)
             .lineLimit(1)
             .help(metadata.title)
@@ -127,10 +130,10 @@ struct ConversationTimelinePane: View {
     private func metadataBadge(_ value: String) -> some View {
         Text(value)
             .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.ccForeground.opacity(0.055))
-            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
     }
 
     private func headerStatistics(_ metadata: HistorySessionMetadata) -> [String] {
@@ -203,8 +206,8 @@ struct ConversationTimelinePane: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 15)
-        .padding(.bottom, 8)
+        .padding(.horizontal, Space.lg)
+        .padding(.bottom, Space.sm)
         .accessibilityIdentifier("conversation.transcript.tabs")
     }
 
@@ -216,21 +219,21 @@ struct ConversationTimelinePane: View {
     ) -> some View {
         HStack(spacing: 5) {
             Image(systemName: symbol)
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 10, weight: .medium))
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.ccCaption(.medium))
                 .lineLimit(1)
             if showsDisclosure {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 7.5, weight: .bold))
+                    .font(.system(size: 8, weight: .semibold))
                     .opacity(0.7)
             }
         }
-        .foregroundStyle(selected ? Color.ccBrandStrong : Color.ccMuted)
-        .padding(.horizontal, 10)
-        .frame(height: 28)
-        .background(selected ? Color.ccConversationSelection : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .foregroundStyle(selected ? Theme.foreground : Theme.mutedForeground)
+        .padding(.horizontal, Space.sm + 2)
+        .frame(height: Metrics.controlHeight)
+        .background(selected ? Theme.selection : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         .contentShape(Rectangle())
     }
 
@@ -243,25 +246,25 @@ struct ConversationTimelinePane: View {
         HStack(spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Color.ccCaption)
+                    .font(.system(size: Typography.label, weight: .medium))
+                    .foregroundStyle(Theme.mutedForeground)
                 TextField(
                     "搜索消息…",
                     text: Binding(get: { store.detailQuery }, set: { store.updateDetailQuery($0) })
                 )
                 .textFieldStyle(.plain)
-                .font(.system(size: 11.5))
+                .font(.ccCaption())
                 .disabled(store.selectedSession == nil)
                 .accessibilityIdentifier("conversation.detail.search")
             }
-            .padding(.horizontal, 9)
-            .frame(minWidth: 120, maxWidth: 280, minHeight: 28)
-            .background(Color.ccConversationSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .padding(.horizontal, Space.sm + 1)
+            .frame(minWidth: 120, maxWidth: 260, minHeight: Metrics.controlHeight)
+            .background(Theme.fill)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
 
             Text(store.detailSearchPositionText)
-                .font(.system(size: 9.5, design: .monospaced))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccMono(Typography.label))
+                .foregroundStyle(Theme.mutedForeground)
                 .frame(minWidth: 32)
                 .accessibilityIdentifier("conversation.detail.search.count")
 
@@ -283,24 +286,54 @@ struct ConversationTimelinePane: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.horizontal, Space.lg)
+        .padding(.bottom, Space.sm + 2)
         .accessibilityIdentifier("conversation.toolbar")
     }
 
+    /// One primary action, two icon affordances, everything else in the overflow menu.
+    ///
+    /// "Continue in terminal" earns the primary slot because it is the reason to look a session up
+    /// in the first place. The two analysis actions used to sit here as equally weighted labeled
+    /// buttons, which left the header with three competing calls to action and no obvious next step.
     private var actionButtons: some View {
-        HStack(spacing: 5) {
-            labeledToolbarButton("sparkles", title: "Claude 分析", identifier: "conversation.action.replay.claude") {
-                store.replaySelected(in: .claude, language: appLanguage)
+        HStack(spacing: Space.xs) {
+            if let metadata = store.selectedMetadata,
+               ConversationResume.isSupported(metadata.source),
+               !store.isTrash {
+                Button {
+                    store.resumeSelected()
+                } label: {
+                    Label(appLanguage.localized("在终端继续"), systemImage: "terminal")
+                }
+                .buttonStyle(CCButtonStyle(role: .primary, size: 27))
+                .help(appLanguage.localized(
+                    "在 \(ConversationResume.preferredTerminal.displayName) 中继续这个会话"
+                ))
+                .accessibilityIdentifier("conversation.action.resume")
             }
-            labeledToolbarButton("bubble.left.and.text.bubble.right", title: "ChatGPT 分析", identifier: "conversation.action.replay.chatgpt") {
-                store.replaySelected(in: .chatGPT, language: appLanguage)
-            }
+
             if store.isTrash {
                 toolbarButton("arrow.uturn.backward", label: "恢复", identifier: "conversation.action.restore") {
                     Task { await store.restoreSelected() }
                 }
             }
+            if let metadata = store.selectedMetadata {
+                Button {
+                    Task { await store.toggleStarSelected() }
+                } label: {
+                    Image(systemName: metadata.starred ? "star.fill" : "star")
+                }
+                .buttonStyle(CCIconButtonStyle(
+                    size: 27,
+                    symbolSize: Typography.caption,
+                    tint: metadata.starred ? Theme.accentText : Theme.mutedForeground
+                ))
+                .help(appLanguage.localized(metadata.starred ? "取消收藏" : "收藏会话"))
+                .accessibilityLabel(appLanguage.localized(metadata.starred ? "取消收藏" : "收藏会话"))
+                .accessibilityIdentifier("conversation.action.star")
+            }
+
             toolbarButton("sidebar.right", label: "会话概览", identifier: "conversation.action.overview") {
                 showingOverview.toggle()
             }
@@ -314,6 +347,15 @@ struct ConversationTimelinePane: View {
             }
 
             Menu {
+                if let metadata = store.selectedMetadata,
+                   ConversationResume.isSupported(metadata.source) {
+                    ForEach(ConversationResume.installedTerminals) { terminal in
+                        Button(appLanguage.localized("在 \(terminal.displayName) 中继续")) {
+                            store.resumeSelected(in: terminal)
+                        }
+                    }
+                    Divider()
+                }
                 Button("用 Claude 分析会话") {
                     store.replaySelected(in: .claude, language: appLanguage)
                 }
@@ -405,8 +447,8 @@ struct ConversationTimelinePane: View {
                     }
                     Color.clear.frame(height: 1).id(ConversationPresentation.bottomAnchor)
                 }
-                .padding(.horizontal, 26)
-                .padding(.vertical, 22)
+                .padding(.horizontal, Space.xl)
+                .padding(.vertical, Space.lg)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .textSelection(.enabled)
@@ -425,10 +467,10 @@ struct ConversationTimelinePane: View {
             .accessibilityIdentifier("conversation.timeline.scroll")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.ccConversationSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+        .padding(.horizontal, Space.md)
+        .padding(.bottom, Space.md)
     }
 
     private func scroll(_ proxy: ScrollViewProxy, to id: String, anchor: UnitPoint) {
@@ -460,8 +502,8 @@ struct ConversationTimelinePane: View {
     ) -> some View {
         Button(action: action) {
             Label(appLanguage.localized(title), systemImage: symbol)
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 8)
+                .font(.ccCaption(.medium))
+                .padding(.horizontal, Space.sm)
                 .frame(height: 27)
         }
         .buttonStyle(ConversationToolButtonStyle())
@@ -514,13 +556,13 @@ private struct ConversationMetadataEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("标题").font(.system(size: 11, weight: .semibold))
+                Text("标题").font(.ccCaption(.medium))
                 TextField("留空以使用自动标题", text: $title)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("conversation.edit.title")
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text("标签").font(.system(size: 11, weight: .semibold))
+                Text("标签").font(.ccCaption(.medium))
                 TextField("用逗号分隔", text: $tags)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("conversation.edit.tags")
@@ -538,8 +580,8 @@ private struct ConversationMetadataEditor: View {
                 .accessibilityIdentifier("conversation.edit.save")
             }
         }
-        .padding(20)
-        .frame(width: 390)
+        .padding(Space.xl)
+        .frame(width: 400)
         .accessibilityIdentifier("conversation.edit.sheet")
     }
 
@@ -575,32 +617,16 @@ private struct ConversationDetailState<Actions: View>: View {
 
     var body: some View {
         VStack {
-            VStack(spacing: 12) {
-                if showsProgress {
-                    ProgressView().controlSize(.small)
-                } else {
-                    ZStack {
-                        Circle().fill(Color.ccForeground.opacity(0.055))
-                        Image(systemName: symbol).font(.system(size: 25, weight: .light))
-                    }
-                    .frame(width: 58, height: 58)
-                }
-                Text(appLanguage.localized(title))
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.ccForeground)
-                    .multilineTextAlignment(.center)
-                if let subtitle {
-                    Text(appLanguage.localized(subtitle))
-                        .font(.system(size: 12))
-                        .multilineTextAlignment(.center)
-                }
+            CCEmptyState(
+                symbol: symbol,
+                title: appLanguage.localized(title),
+                message: subtitle.map { appLanguage.localized($0) },
+                showsProgress: showsProgress
+            ) {
                 actions
             }
-            .foregroundStyle(Color.ccMuted)
-            .padding(24)
-            .frame(maxWidth: 360)
-            .background(Color.ccConversationSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("conversation.detail.state")

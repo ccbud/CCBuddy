@@ -334,7 +334,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         let facts = try HistoryFileFacts.read(candidate.file, records: [])
         let stem = candidate.file.deletingPathExtension().lastPathComponent
         let autoTitle = Self.preferredCodexTitle(state) ?? stem
-        let custom: ForeignHistoryCustomMetadata
+        let custom: ConversationCustomMetadata
         if candidate.directory.id == "__imported__" {
             custom = .init(title: nil, tags: [], deleted: false)
         } else {
@@ -366,6 +366,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
             model: state.model,
             imported: candidate.directory.id == "__imported__",
             deleted: custom.deleted,
+            starred: custom.starred,
             createdAt: state.createdAt ?? facts.createdAt,
             lastActivity: state.updatedAt ?? facts.modifiedAt,
             sizeBytes: facts.sizeBytes
@@ -415,6 +416,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
             tags: custom.tags,
             imported: false,
             deleted: custom.deleted,
+            starred: custom.starred,
             createdAt: facts.createdAt,
             lastActivity: facts.modifiedAt,
             sizeBytes: facts.sizeBytes

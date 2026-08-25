@@ -119,10 +119,18 @@ enum HistoryParsingSupport {
         )
     }
 
+    /// Names a session after the first thing the person actually typed.
+    ///
+    /// The `user` role is not the same as "the user wrote this": in Claude and Codex transcripts a
+    /// user turn also carries the tool results of the previous assistant turn. Flattening every
+    /// block through `plainText` — which exists to feed the search index and therefore deliberately
+    /// includes tool calls and results — made sessions inherit that output as their name, which is
+    /// where titles like `Script completed Wall time 1.8 seconds Output: {"plan":{}…` came from.
+    /// Only prose blocks are considered here.
     static func firstUserTitle(in messages: [HistoryMessage]) -> String {
         var commandFallback = ""
         for message in messages where message.role == "user" && !message.isMetadata {
-            let raw = message.content.compactMap(plainText).joined(separator: " ")
+            let raw = message.content.compactMap(titleText).joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !raw.isEmpty else { continue }
             if raw.hasPrefix("<") {
@@ -131,9 +139,36 @@ enum HistoryParsingSupport {
             }
             let collapsed = raw.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
             if collapsed.hasPrefix("[Request interrupted") || collapsed.hasPrefix("Caveat:") { continue }
+            guard carriesTitleSignal(collapsed) else { continue }
             return String(collapsed.prefix(90))
         }
         return String(commandFallback.prefix(90))
+    }
+
+    /// Prose the person wrote, as opposed to everything the search index wants.
+    private static func titleText(_ block: HistoryContentBlock) -> String? {
+        block.type == "text" ? block.text : nil
+    }
+
+    /// Rejects turns that contain no words: a message of nothing but attachment placeholders, or an
+    /// identifier echoed back as text. Both produce titles that cannot be told apart in a list.
+    static func carriesTitleSignal(_ text: String) -> Bool {
+        let withoutPlaceholders = text
+            .replacingOccurrences(
+                of: "\\[Image(\\s*#\\d+)?\\]",
+                with: " ",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !withoutPlaceholders.isEmpty else { return false }
+        return !isBareIdentifier(withoutPlaceholders)
+    }
+
+    /// A canonical UUID and nothing else. Producers sometimes store one where a title belongs.
+    static func isBareIdentifier(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count == 36 else { return false }
+        return isCanonicalThreadID(value)
     }
 
     static func plainText(_ block: HistoryContentBlock) -> String? {
@@ -167,15 +202,20 @@ enum HistoryParsingSupport {
         return HistoryPathResolver.baseName(of: decoded)
     }
 
-    static func customMetadata(_ records: [[String: HistoryValue]]) -> (String?, [String], Bool) {
+    static func customMetadata(_ records: [[String: HistoryValue]]) -> ConversationCustomMetadata {
         guard let custom = records.lazy.compactMap({ $0["__ccbud__"]?.objectValue }).first else {
-            return (nil, [], false)
+            return .init()
         }
         let title = custom["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let tags = custom["tagList"]?.arrayValue?.compactMap {
             $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         }.filter { !$0.isEmpty } ?? []
-        return (title?.isEmpty == false ? title : nil, tags, custom["delete"]?.boolValue ?? false)
+        return ConversationCustomMetadata(
+            title: title?.isEmpty == false ? title : nil,
+            tags: tags,
+            deleted: custom["delete"]?.boolValue ?? false,
+            starred: custom["starred"]?.boolValue ?? false
+        )
     }
 
     static func isCanonicalThreadID(_ value: String?) -> Bool {

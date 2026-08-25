@@ -38,20 +38,20 @@ struct PluginActionFormSheet: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.ccMuted)
+                .foregroundStyle(Theme.mutedForeground)
                 .accessibilityLabel("关闭")
             }
             .padding(.horizontal, 18)
             .frame(height: 52)
 
-            Divider().overlay(Color.ccBorder)
+            Divider().overlay(Theme.separator)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 15) {
                     if draft.fields.isEmpty {
                         Text("此操作没有可填写的字段。")
                             .font(.system(size: 12))
-                            .foregroundStyle(Color.ccCaption)
+                            .foregroundStyle(Theme.mutedForeground)
                     }
                     ForEach(draft.fields) { field in
                         fieldRow(field)
@@ -61,15 +61,15 @@ struct PluginActionFormSheet: View {
                             appLanguage.localized(validationError.localizedDescription),
                             systemImage: "exclamationmark.circle"
                         )
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(Color.ccRed)
+                            .font(.ccCaption())
+                            .foregroundStyle(Theme.danger)
                             .accessibilityIdentifier("plugin.form.error")
                     }
                 }
                 .padding(20)
             }
 
-            Divider().overlay(Color.ccBorder)
+            Divider().overlay(Theme.separator)
 
             HStack(spacing: 8) {
                 Spacer()
@@ -94,7 +94,7 @@ struct PluginActionFormSheet: View {
         }
         .frame(width: 460)
         .frame(minHeight: 260, maxHeight: 620)
-        .background(Color.ccElevated)
+        .background(Theme.surface)
         .pluginAccessibilityContainerIdentifier(
             "plugin.form.\(pluginID).\(action.id)",
             label: action.label
@@ -105,22 +105,22 @@ struct PluginActionFormSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 3) {
                 Text(field.label)
-                if field.required { Text("*").foregroundStyle(Color.ccRed) }
+                if field.required { Text("*").foregroundStyle(Theme.danger) }
             }
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Color.ccCaption)
+            .foregroundStyle(Theme.mutedForeground)
 
             fieldControl(field)
                 .overlay {
                     if validationError?.key == field.key {
-                        RoundedRectangle(cornerRadius: 7).stroke(Color.ccRed, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.danger, lineWidth: 1)
                     }
                 }
 
             if let help = field.help {
                 Text(help)
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.ccCaption)
+                    .foregroundStyle(Theme.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -151,9 +151,9 @@ struct PluginActionFormSheet: View {
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .frame(minHeight: 82)
-                .background(Color.ccInput)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button))
+                .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
         case .password:
             SecureField(field.placeholder, text: textBinding(field.key))
                 .textFieldStyle(.roundedBorder)

@@ -1,5 +1,17 @@
 import Foundation
 
+/// Catalog-wide caps.
+///
+/// The session stream used to stop at 600 entries, which silently hid everything older on machines
+/// with a deep archive: the sidebar badge reported 600 while the index knew about far more, and the
+/// hidden tail was unreachable by scrolling *or* search. The index already materializes every entry
+/// before truncating, so a generous cap costs nothing and only guards pathological libraries.
+enum ConversationCatalogLimits {
+    static let sessionList = 5_000
+    static let searchScan = 5_000
+    static let searchHits = 200
+}
+
 /// Optional production capabilities layered on top of the read-only history provider.
 ///
 /// Tests and embedders may continue supplying a plain `ConversationHistoryProviding`. The live
@@ -104,9 +116,10 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, limit > 0 else { return [] }
 
-        // Preserve the legacy contract exactly: search only the first 600 activity-ordered,
-        // canonical sessions and return the first matching transcript per session.
-        let sessions = try listSessions(limit: 600)
+        // Scan activity-ordered canonical sessions and return the first matching transcript per
+        // session. The scan window matches the stream's window so search can never claim fewer
+        // results than the list is already showing.
+        let sessions = try listSessions(limit: ConversationCatalogLimits.searchScan)
         let filter = activeFilter
         let batch = try database.candidateDocuments(
             for: query,

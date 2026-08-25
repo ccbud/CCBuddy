@@ -5,14 +5,14 @@ final class SettingsPresentationTests: XCTestCase {
     func testDataDirectoryPickerCollapsesProducerSubdirectoriesToTheirRoot() {
         let root = URL(fileURLWithPath: "/tmp/ccbud-history-root", isDirectory: true)
         XCTAssertEqual(
-            DataSettingsPane.historyRoot(for: root.appendingPathComponent("projects")),
+            LocationsSettingsPane.historyRoot(for: root.appendingPathComponent("projects")),
             root
         )
         XCTAssertEqual(
-            DataSettingsPane.historyRoot(for: root.appendingPathComponent("sessions")),
+            LocationsSettingsPane.historyRoot(for: root.appendingPathComponent("sessions")),
             root
         )
-        XCTAssertEqual(DataSettingsPane.historyRoot(for: root), root)
+        XCTAssertEqual(LocationsSettingsPane.historyRoot(for: root), root)
     }
 
     func testConversationFontModesPreserveLegacyConfigurationSemantics() {

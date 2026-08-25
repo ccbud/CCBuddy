@@ -57,7 +57,6 @@ final class AppModel: ObservableObject {
     }
 
     static let themeModeDefaultsKey = "ccbud-theme"
-    static let sidebarCollapsedDefaultsKey = "ccbud-sidebar-collapsed"
 
     enum Destination: String, CaseIterable, Identifiable {
         case providers, plugins, conversations, monitor, settings
@@ -83,14 +82,18 @@ final class AppModel: ObservableObject {
     }
 
     enum SettingsPane: String, CaseIterable, Identifiable {
-        case gateway, general, data, about
+        case general, locations, gateway, data, about
 
         var id: String { rawValue }
 
+        /// About is pinned to the bottom of the rail, separated from the functional panes.
+        static var functionalCases: [SettingsPane] { allCases.filter { $0 != .about } }
+
         var title: String {
             switch self {
-            case .gateway: "网关"
             case .general: "常规"
+            case .locations: "会话位置"
+            case .gateway: "网关"
             case .data: "数据"
             case .about: "关于与更新"
             }
@@ -98,10 +101,11 @@ final class AppModel: ObservableObject {
 
         var symbol: String {
             switch self {
-            case .gateway: "network"
             case .general: "slider.horizontal.3"
-            case .data: "folder"
-            case .about: "arrow.down.circle"
+            case .locations: "folder"
+            case .gateway: "network"
+            case .data: "internaldrive"
+            case .about: "info.circle"
             }
         }
     }
@@ -152,7 +156,6 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var config: AppConfig
     @Published private(set) var navigation = NavigationState()
-    @Published private(set) var sidebarCollapsed: Bool
     @Published private(set) var themeMode: ThemeMode
     @Published var gatewayState: BifrostGatewayState = .stopped
     @Published private(set) var claudeConnected = false
@@ -270,9 +273,6 @@ final class AppModel: ObservableObject {
         _themeMode = Published(initialValue: shouldUsePersistentInterfacePreferences
             ? ThemeMode(rawValue: userDefaults.string(forKey: Self.themeModeDefaultsKey) ?? "") ?? .light
             : .light)
-        _sidebarCollapsed = Published(initialValue: shouldUsePersistentInterfacePreferences
-            ? userDefaults.object(forKey: Self.sidebarCollapsedDefaultsKey) as? Bool ?? false
-            : false)
         let mayMutateApplicationState = runtimeMode != .application
             || applicationIsPrimaryInstance
         self.repository = repository
@@ -653,14 +653,6 @@ final class AppModel: ObservableObject {
                   !isShuttingDown else { return }
             usageHistoryState = .failed(error.localizedDescription)
         }
-    }
-
-    func toggleSidebar() {
-        sidebarCollapsed.toggle()
-        interfacePreferencesDefaults?.set(
-            sidebarCollapsed,
-            forKey: Self.sidebarCollapsedDefaultsKey
-        )
     }
 
     func toggleTheme() {

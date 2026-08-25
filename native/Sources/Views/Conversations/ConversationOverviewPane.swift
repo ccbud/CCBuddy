@@ -12,7 +12,7 @@ struct ConversationOverviewPane: View {
                 Button(action: toggleCollapsed) {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Color.ccMuted)
+                        .foregroundStyle(Theme.mutedForeground)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
                 }
@@ -34,7 +34,7 @@ struct ConversationOverviewPane: View {
                     }
                     .padding(.horizontal, 8)
                     .frame(height: 40)
-                    .overlay(alignment: .bottom) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+                    .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
 
                     if let session = store.activeTranscript {
                         overview(session)
@@ -44,7 +44,7 @@ struct ConversationOverviewPane: View {
                 }
             }
         }
-        .background(Color.ccConversationSurface)
+        .background(Theme.surface)
         .accessibilityIdentifier("conversation.overview")
     }
 
@@ -55,24 +55,24 @@ struct ConversationOverviewPane: View {
                 ForEach(Array(statRows(session).enumerated()), id: \.offset) { _, row in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(appLanguage.localized(row.0))
-                            .foregroundStyle(Color.ccCaption)
+                            .foregroundStyle(Theme.mutedForeground)
                         Spacer(minLength: 4)
                         Text(row.1)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(Color.ccForeground)
+                            .font(.ccMono(Typography.label))
+                            .foregroundStyle(Theme.foreground)
                             .lineLimit(1)
                             .help(row.1)
                     }
                     .font(.system(size: 11))
                     .padding(.vertical, 4.5)
-                    .overlay(alignment: .bottom) { Rectangle().fill(Color.ccBorder).frame(height: 1) }
+                    .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
                 }
 
                 if !session.metadata.tags.isEmpty {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("标签")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Color.ccCaption)
+                            .font(.ccLabel())
+                            .foregroundStyle(Theme.mutedForeground)
                         FlexibleOverviewTags(tags: session.metadata.tags)
                     }
                     .padding(.vertical, 7)
@@ -86,8 +86,8 @@ struct ConversationOverviewPane: View {
                     let entries = tableOfContents(session.messages)
                     if entries.isEmpty {
                         Text("没有用户消息可供导航")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Color.ccCaption)
+                            .font(.ccLabel())
+                            .foregroundStyle(Theme.mutedForeground)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 5)
                     } else {
@@ -101,7 +101,7 @@ struct ConversationOverviewPane: View {
                                     Spacer(minLength: 0)
                                 }
                                 .font(.system(size: 11))
-                                .foregroundStyle(Color.ccCaption)
+                                .foregroundStyle(Theme.mutedForeground)
                                 .padding(.horizontal, 7)
                                 .frame(height: 25)
                                 .contentShape(Rectangle())
@@ -126,13 +126,13 @@ struct ConversationOverviewPane: View {
                 ProgressView().controlSize(.small)
                 Text("正在读取概览…")
             }
-            .font(.system(size: 10.5))
-            .foregroundStyle(Color.ccCaption)
+            .font(.ccLabel())
+            .foregroundStyle(Theme.mutedForeground)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed(let message):
             Label(appLanguage.localized(message), systemImage: "exclamationmark.triangle")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Color.ccRed)
+                .font(.ccLabel())
+                .foregroundStyle(Theme.danger)
                 .padding(12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         default:
@@ -144,7 +144,7 @@ struct ConversationOverviewPane: View {
         Text(appLanguage.localized(value))
             .font(.system(size: 10.5, weight: .bold))
             .tracking(0.6)
-            .foregroundStyle(Color.ccCaption)
+            .foregroundStyle(Theme.mutedForeground)
             .padding(.horizontal, 12)
             .padding(.top, 13)
             .padding(.bottom, 6)
@@ -205,10 +205,10 @@ private struct FlexibleOverviewTags: View {
             ForEach(tags, id: \.self) { tag in
                 Text(tag)
                     .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(Color.ccBrandStrong)
+                    .foregroundStyle(Theme.accentText)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.ccBrandSoft)
+                    .background(Theme.accentSoft)
                     .clipShape(Capsule())
             }
         }

@@ -45,17 +45,15 @@ enum QoderHistoryParser {
             recordType: "runtime-config",
             field: "model"
         )
-        let custom: (title: String?, tags: [String], deleted: Bool)
+        let custom: ConversationCustomMetadata
         if context.candidate.directory.id == "__imported__" {
-            let inline = HistoryParsingSupport.customMetadata(context.document.records)
-            custom = (inline.0, inline.1, inline.2)
+            custom = HistoryParsingSupport.customMetadata(context.document.records)
         } else {
-            let sidecar = ForeignHistorySupport.customMetadata(
+            custom = ForeignHistorySupport.customMetadata(
                 source: .qoder,
                 sessionKey: stem,
                 appDataRoot: context.appDataRoot
             )
-            custom = (sidecar.title, sidecar.tags, sidecar.deleted)
         }
         let summary = records.first(where: {
             $0["type"]?.stringValue == "summary" && $0["summary"] != nil
@@ -84,6 +82,7 @@ enum QoderHistoryParser {
             model: runtimeModel ?? assistantModel,
             imported: context.candidate.directory.id == "__imported__",
             deleted: custom.deleted,
+            starred: custom.starred,
             createdAt: context.facts.createdAt,
             lastActivity: context.facts.modifiedAt,
             sizeBytes: context.facts.sizeBytes,

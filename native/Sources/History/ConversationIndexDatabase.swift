@@ -195,7 +195,10 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 final class ConversationIndexDatabase: @unchecked Sendable {
     /// Version 2 preserves the warm derived index while adding bounded deferred-maintenance
     /// markers. Version 1 could retain gigabytes of obsolete FTS segments after replacement.
-    static let schemaVersion: Int32 = 2
+    /// Version 3 adds `starred` to the encoded session metadata. Synthesized `Decodable` does not
+    /// fall back to a property's default value for a missing key, so blobs written by version 2
+    /// would fail to decode; the catalog is disposable and is simply rebuilt instead.
+    static let schemaVersion: Int32 = 3
 
     let file: URL
 
@@ -797,10 +800,21 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 }
 
                 if oneTimeCompactionPending {
-                    // Never run a full VACUUM automatically. It takes an exclusive writer and may
-                    // require a complete second copy of a large catalog. New catalogs already use
-                    // incremental auto-vacuum; legacy files simply transition to bounded cleanup.
+                    // New catalogs are created with incremental auto-vacuum and reclaim pages on
+                    // every pass below. A catalog created before that, however, cannot be switched:
+                    // `PRAGMA auto_vacuum` is a documented no-op on an existing non-empty database,
+                    // which also makes `incremental_vacuum` inert there. The intended "transition to
+                    // bounded cleanup" therefore never happened on exactly the files it was written
+                    // for — a real catalog measured 2.4 GB of freelist inside a 3.8 GB file.
+                    //
+                    // VACUUM is the only operation that both rewrites the file and commits the new
+                    // mode. It is expensive, so it runs once, only when the waste is large enough to
+                    // be worth an exclusive writer, and only behind `hasCapacityForMaintenance()`,
+                    // which already reserves twice the file size for exactly this copy.
                     try execute("PRAGMA auto_vacuum = INCREMENTAL")
+                    if try int64Value("PRAGMA auto_vacuum") == 0, try wastesEnoughToVacuum() {
+                        try execute("VACUUM")
+                    }
                     try execute(
                         "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
                             + "WHERE singleton = 1"
@@ -1377,6 +1391,29 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private func markMaintenancePending() throws {
         try execute(
             "UPDATE conversation_catalog_state SET maintenance_pending = 1 WHERE singleton = 1"
+        )
+    }
+
+    /// Whether reclaiming the freelist justifies a full rewrite of the catalog.
+    ///
+    /// Both conditions matter: the ratio keeps a small file from being rewritten over a few stale
+    /// pages, and the absolute floor keeps a mostly-empty new catalog — where the ratio is trivially
+    /// high — from triggering a VACUUM that would save nothing worth having.
+    static let vacuumFreelistRatio: Int64 = 4
+    static let vacuumMinimumReclaimedBytes: Int64 = 64 * 1_024 * 1_024
+
+    static func shouldVacuum(freelistPages: Int64, pageCount: Int64, pageSize: Int64) -> Bool {
+        guard pageCount > 0, pageSize > 0, freelistPages > 0 else { return false }
+        let reclaimable = freelistPages * pageSize
+        return reclaimable >= vacuumMinimumReclaimedBytes
+            && freelistPages * vacuumFreelistRatio >= pageCount
+    }
+
+    private func wastesEnoughToVacuum() throws -> Bool {
+        Self.shouldVacuum(
+            freelistPages: try int64Value("PRAGMA freelist_count"),
+            pageCount: try int64Value("PRAGMA page_count"),
+            pageSize: try int64Value("PRAGMA page_size")
         )
     }
 

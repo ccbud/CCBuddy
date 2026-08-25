@@ -5,6 +5,7 @@ import SwiftUI
 final class ConversationWorkbenchState: ObservableObject {
     enum Selection: Equatable {
         case all
+        case starred
         case agent(HistorySource)
         case project(String)
     }
@@ -15,6 +16,10 @@ final class ConversationWorkbenchState: ObservableObject {
 
     func showAll() {
         selection = .all
+    }
+
+    func showStarred() {
+        selection = .starred
     }
 
     func select(agent: HistorySource) {
@@ -34,6 +39,17 @@ final class ConversationWorkbenchState: ObservableObject {
         switch selection {
         case .all:
             return projects
+        case .starred:
+            return projects.compactMap { project in
+                let sessions = project.sessions.filter(\.starred)
+                guard !sessions.isEmpty else { return nil }
+                return HistoryProject(
+                    cwd: project.cwd,
+                    name: project.name,
+                    sessions: sessions,
+                    lastActivity: sessions.map(\.lastActivity).max() ?? project.lastActivity
+                )
+            }
         case .agent(let source):
             return projects.compactMap { project in
                 let sessions = project.sessions.filter { $0.source == source }
@@ -69,11 +85,14 @@ final class ConversationWorkbenchState: ObservableObject {
         switch selection {
         case .all:
             return language.localized("全部会话")
+        case .starred:
+            return language.localized("收藏")
         case .agent(let source):
             return ConversationPresentation.sourceName(rawValue: source.rawValue)
         case .project(let cwd):
-            return projects.first(where: { $0.cwd == cwd })?.name
+            let name = projects.first(where: { $0.cwd == cwd })?.name
                 ?? URL(fileURLWithPath: cwd).lastPathComponent
+            return ConversationPresentation.projectName(name, language: language)
         }
     }
 }
@@ -82,7 +101,6 @@ struct ConversationsView: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var workbench: ConversationWorkbenchState
     var fontSize: Int?
-    var historyDirectories: [String] = []
     var selectHistoryScope: (String) -> Void = { _ in }
 
     @State private var isDropTarget = false
@@ -98,7 +116,7 @@ struct ConversationsView: View {
             ConversationTimelinePane(store: store, fontSize: fontSize)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color.ccConversationBackground)
+        .background(Theme.background)
         .overlay(alignment: .bottom) {
             if let message = store.actionMessage {
                 ConversationNotice(
@@ -112,12 +130,12 @@ struct ConversationsView: View {
         .overlay {
             if isDropTarget {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.ccBrand, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
-                    .background(Color.ccBrandSoft.opacity(0.72))
+                    .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                    .background(Theme.accentSoft.opacity(0.72))
                     .overlay {
                         Label("松开以导入 JSONL / ZIP", systemImage: "square.and.arrow.down")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.ccBrandStrong)
+                            .foregroundStyle(Theme.accentText)
                     }
                     .padding(10)
                     .allowsHitTesting(false)
@@ -161,10 +179,10 @@ private struct ConversationNotice: View {
                 Text(appLanguage.localized(message)).lineLimit(2)
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(isError ? Color.white : Color.ccElevated)
+            .foregroundStyle(isError ? Color.white : Theme.surface)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(isError ? Color.ccRed : Color.ccForeground)
+            .background(isError ? Theme.danger : Theme.foreground)
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .shadow(color: .black.opacity(0.2), radius: 12, y: 5)
         }

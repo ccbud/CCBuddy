@@ -20,7 +20,7 @@ struct MonitorDetailDrawer: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Color.ccBorder).frame(height: 1)
+            Rectangle().fill(Theme.separator).frame(height: 1)
 
             if let detail = store.selectedDetail {
                 let document = MonitorInspectorDocument(
@@ -28,9 +28,9 @@ struct MonitorDetailDrawer: View {
                     upstreamProtocol: upstreamProtocol
                 )
                 meta(for: detail, document: document)
-                Rectangle().fill(Color.ccBorder).frame(height: 1)
+                Rectangle().fill(Theme.separator).frame(height: 1)
                 tabs(document)
-                Rectangle().fill(Color.ccBorder).frame(height: 1)
+                Rectangle().fill(Theme.separator).frame(height: 1)
                 payloadBody(detail, document: document)
             } else if store.isLoadingDetail {
                 loadingBody
@@ -41,7 +41,7 @@ struct MonitorDetailDrawer: View {
         .frame(width: width)
         .frame(maxHeight: .infinity)
         .background(MonitorMaterialBackground())
-        .overlay(alignment: .leading) { Rectangle().fill(Color.ccBorder).frame(width: 1) }
+        .overlay(alignment: .leading) { Rectangle().fill(Theme.separator).frame(width: 1) }
         .shadow(color: .black.opacity(0.18), radius: 30, x: -10)
         .onChange(of: store.detailRequestID) { _ in resetInspector() }
         .onChange(of: presentation) { _ in refreshSearch() }
@@ -65,11 +65,11 @@ struct MonitorDetailDrawer: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("请求详情")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.ccForeground)
+                    .foregroundStyle(Theme.foreground)
                 if let id = store.detailRequestID {
                     Text(id)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(Color.ccCaption)
+                        .font(.ccMono(Typography.label))
+                        .foregroundStyle(Theme.mutedForeground)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -79,7 +79,7 @@ struct MonitorDetailDrawer: View {
 
             if let record = headerRecord {
                 Text(headerStatus(for: record))
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.ccLabel(.medium))
                     .foregroundStyle(record.status.monitorColor)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
@@ -124,11 +124,11 @@ struct MonitorDetailDrawer: View {
         return Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(Color.ccMuted)
+                .foregroundStyle(Theme.mutedForeground)
                 .frame(width: 28, height: 28)
-                .background(Color.ccElevated.opacity(0.86))
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+                .background(Theme.surface.opacity(0.86))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
         }
         .buttonStyle(MonitorPressableButtonStyle())
         .help(localizedHelp)
@@ -181,13 +181,13 @@ struct MonitorDetailDrawer: View {
 
     private func chip(label: String, value: String) -> some View {
         HStack(spacing: 4) {
-            Text(appLanguage.localized(label)).foregroundStyle(Color.ccCaption)
-            Text(value).foregroundStyle(Color.ccForeground)
+            Text(appLanguage.localized(label)).foregroundStyle(Theme.mutedForeground)
+            Text(value).foregroundStyle(Theme.foreground)
         }
-        .font(.system(size: 10.5, design: .monospaced))
+        .font(.ccMono(Typography.label))
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
-        .background(Color.ccForeground.opacity(0.052))
+        .background(Theme.foreground.opacity(0.052))
         .clipShape(Capsule())
     }
 
@@ -209,9 +209,9 @@ struct MonitorDetailDrawer: View {
                         VStack(spacing: 6) {
                             Text(appLanguage.localized(item.shortTitle))
                                 .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(activeSection(in: document) == item ? Color.ccBrandStrong : Color.ccMuted)
+                                .foregroundStyle(activeSection(in: document) == item ? Theme.accentText : Theme.mutedForeground)
                             Rectangle()
-                                .fill(activeSection(in: document) == item ? Color.ccBrandStrong : Color.clear)
+                                .fill(activeSection(in: document) == item ? Theme.accentText : Color.clear)
                                 .frame(height: 2)
                         }
                         .padding(.horizontal, 12)
@@ -226,7 +226,7 @@ struct MonitorDetailDrawer: View {
             }
             .padding(.horizontal, 7)
         }
-        .background(Color.ccElevated.opacity(0.32))
+        .background(Theme.surface.opacity(0.32))
     }
 
     @ViewBuilder
@@ -239,7 +239,7 @@ struct MonitorDetailDrawer: View {
                     HStack(spacing: 7) {
                         Text(appLanguage.localized(selectedSection.title))
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Color.ccForeground)
+                            .foregroundStyle(Theme.foreground)
                         if let payload {
                             Text(appLanguage.localized(
                                 payload.isTruncated
@@ -247,16 +247,16 @@ struct MonitorDetailDrawer: View {
                                     : (payload.source == .capturedRaw ? "捕获原文" : "规范化 JSON")
                             ))
                                 .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(Color.ccCaption)
+                                .foregroundStyle(Theme.mutedForeground)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.ccForeground.opacity(0.05))
+                                .background(Theme.foreground.opacity(0.05))
                                 .clipShape(Capsule())
                         }
                     }
                     Text(appLanguage.localized(selectedSection.explanation))
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(selectedSection.isProviderWirePayload ? Color.ccBrandStrong : Color.ccCaption)
+                        .font(.ccLabel())
+                        .foregroundStyle(selectedSection.isProviderWirePayload ? Theme.accentText : Theme.mutedForeground)
                 }
                 Spacer(minLength: 8)
                 if let payload {
@@ -269,7 +269,7 @@ struct MonitorDetailDrawer: View {
                 if payload.copyIsPartial {
                     Text(appLanguage.localized(truncationNotice(for: payload)))
                         .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.ccOrange)
+                        .foregroundStyle(Theme.warning)
                         .accessibilityIdentifier("monitor.detail.truncation")
                 }
 
@@ -277,22 +277,22 @@ struct MonitorDetailDrawer: View {
 
                 MonitorPayloadTextView(text: visibleText(payload), search: search)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.ccInput.opacity(0.9))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.ccBorder))
+                    .background(Theme.fill.opacity(0.9))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.row).stroke(Theme.separator))
                     .privacySensitive()
                     .accessibilityIdentifier("monitor.detail.payload")
             } else {
                 VStack(spacing: 7) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 19, weight: .light))
-                        .foregroundStyle(Color.ccCaption)
+                        .foregroundStyle(Theme.mutedForeground)
                     Text("Bifrost 未保存此字段")
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Color.ccMuted)
+                        .foregroundStyle(Theme.mutedForeground)
                     Text("界面不会从其他字段猜测或拼装内容")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.ccCaption)
+                        .font(.ccLabel())
+                        .foregroundStyle(Theme.mutedForeground)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -312,18 +312,18 @@ struct MonitorDetailDrawer: View {
                 } label: {
                     Text(appLanguage.localized(item.title))
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(presentation == item ? Color.ccForeground : Color.ccCaption)
+                        .foregroundStyle(presentation == item ? Theme.foreground : Theme.mutedForeground)
                         .padding(.horizontal, 8)
                         .frame(height: 26)
-                        .background(presentation == item ? Color.ccForeground.opacity(0.07) : Color.clear)
+                        .background(presentation == item ? Theme.foreground.opacity(0.07) : Color.clear)
                 }
                 .buttonStyle(MonitorPressableButtonStyle())
                 .accessibilityIdentifier("monitor.detail.presentation.\(item.rawValue)")
             }
         }
-        .background(Color.ccElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorder))
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
     }
 
     private func copyButton(_ payload: MonitorInspectorPayload) -> some View {
@@ -341,13 +341,13 @@ struct MonitorDetailDrawer: View {
             }
         } label: {
             Label(copyLabel(for: payload), systemImage: copied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(copied ? Color.ccGreen : Color.ccMuted)
+                .font(.ccLabel(.medium))
+                .foregroundStyle(copied ? Theme.success : Theme.mutedForeground)
                 .padding(.horizontal, 9)
                 .frame(height: 26)
-                .background(Color.ccElevated)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.ccBorder))
+                .background(Theme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.button).stroke(Theme.separator))
         }
         .buttonStyle(MonitorPressableButtonStyle())
         .help("复制当前标签的原始正文")
@@ -367,8 +367,8 @@ struct MonitorDetailDrawer: View {
             .frame(width: 158, height: 24)
 
             Text(search.countLabel)
-                .font(.system(size: 9.5, design: .monospaced))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccMono(Typography.label))
+                .foregroundStyle(Theme.mutedForeground)
                 .frame(width: 46)
                 .accessibilityIdentifier("monitor.detail.search.count")
 
@@ -383,9 +383,9 @@ struct MonitorDetailDrawer: View {
             Image(systemName: symbol)
                 .font(.system(size: 9, weight: .semibold))
                 .frame(width: 22, height: 22)
-                .background(Color.ccElevated)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.ccBorder))
+                .background(Theme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.keyboard, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.keyboard).stroke(Theme.separator))
         }
         .buttonStyle(MonitorPressableButtonStyle())
         .disabled(search.matches.isEmpty)
@@ -402,7 +402,7 @@ struct MonitorDetailDrawer: View {
             Image(systemName: "checkmark.shield")
         }
         .font(.system(size: 9.5))
-        .foregroundStyle(Color.ccCaption)
+        .foregroundStyle(Theme.mutedForeground)
         .padding(.top, 1)
     }
 
@@ -410,8 +410,8 @@ struct MonitorDetailDrawer: View {
         VStack(spacing: 11) {
             ProgressView().controlSize(.small)
             Text("正在读取 Bifrost 请求详情…")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.ccMuted)
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -420,14 +420,14 @@ struct MonitorDetailDrawer: View {
         VStack(spacing: 9) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 21, weight: .light))
-                .foregroundStyle(Color.ccOrange)
+                .foregroundStyle(Theme.warning)
             Text("无法读取详情")
-                .font(.system(size: 12.5, weight: .semibold))
+                .font(.ccBody(.medium))
             Text(appLanguage.localized(
                 store.detailError ?? "这条记录可能已从 Bifrost 日志中清除"
             ))
                 .font(.system(size: 11))
-                .foregroundStyle(Color.ccCaption)
+                .foregroundStyle(Theme.mutedForeground)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 340)
         }

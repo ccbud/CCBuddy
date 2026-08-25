@@ -53,23 +53,18 @@ struct ConversationListPane: View {
                 historyActive: store.historyActive,
                 language: appLanguage
             ))
-                .font(.system(size: 22, weight: .semibold))
+                .font(.ccTitle())
                 .tracking(-0.35)
                 .lineLimit(1)
-            Text("\(flatSessions.count)")
-                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.ccCaption)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(Color.ccForeground.opacity(0.06))
-                .clipShape(Capsule())
+            CCBadge(text: "\(flatSessions.count)")
             Spacer(minLength: 0)
             indexingStatus
         }
-        .padding(.horizontal, 16)
-        // Match Wake's compact full-size-content header while retaining a drag surface.
-        .padding(.top, 20)
-        .padding(.bottom, 10)
+        .padding(.horizontal, Space.lg)
+        // The column carries the traffic-light band in its own material rather than the shell
+        // painting a title strip across all three columns.
+        .padding(.top, Metrics.titleBarHeight - Space.sm)
+        .padding(.bottom, Space.sm + 2)
         .background(WindowDragRegion())
     }
 
@@ -79,8 +74,8 @@ struct ConversationListPane: View {
             if case .unavailable(let message) = store.catalogWatcherState {
                 Button { store.retryIndexing() } label: {
                     Label(appLanguage.localized("实时更新关闭"), systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.ccRed)
+                        .font(.ccLabel())
+                        .foregroundStyle(Theme.danger)
                         .lineLimit(1)
                 }
                 .buttonStyle(.plain)
@@ -95,16 +90,26 @@ struct ConversationListPane: View {
                 Text(total > 0 ? "\(completed)/\(total)" : appLanguage.localized("正在更新…"))
                     .lineLimit(1)
             }
-            .font(.system(size: 10.5))
-            .foregroundStyle(Color.ccCaption)
+            .font(.ccLabel())
+            .foregroundStyle(Theme.mutedForeground)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(appLanguage.localized("正在更新会话索引"))
             .accessibilityValue(total > 0 ? "\(completed)/\(total)" : "")
             .accessibilityIdentifier("conversation.indexing.progress")
+        case .incomplete(let message):
+            Label(appLanguage.localized("部分会话已跳过"), systemImage: "exclamationmark.circle")
+                .font(.ccLabel())
+                .foregroundStyle(Theme.mutedForeground)
+                .lineLimit(1)
+                .help(appLanguage.localized(message))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(appLanguage.localized("会话索引状态"))
+                .accessibilityValue(appLanguage.localized(message))
+                .accessibilityIdentifier("conversation.indexing.incomplete")
         case .failed(let message):
             Label(appLanguage.localized("更新失败"), systemImage: "exclamationmark.triangle")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Color.ccRed)
+                .font(.ccLabel())
+                .foregroundStyle(Theme.danger)
                 .lineLimit(1)
                 .help(appLanguage.localized(message))
                 .accessibilityElement(children: .ignore)
@@ -163,15 +168,15 @@ struct ConversationListPane: View {
                                 Text("正在搜索会话内容…")
                             }
                             .font(.system(size: 11))
-                            .foregroundStyle(Color.ccCaption)
+                            .foregroundStyle(Theme.mutedForeground)
                             .padding(12)
                         } else if let error = store.contentSearchError {
                             Label(
                                 appLanguage.localized(error),
                                 systemImage: "exclamationmark.triangle"
                             )
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Color.ccRed)
+                                .font(.ccLabel())
+                                .foregroundStyle(Theme.danger)
                             .padding(12)
                         }
                     }
@@ -215,6 +220,8 @@ private struct ConversationSessionRow: View {
     let searchQuery: String
     let action: () -> Void
 
+    @State private var hovering = false
+
     var body: some View {
         let activityRelative = ConversationPresentation.relativeDate(
             metadata.lastActivity,
@@ -231,35 +238,39 @@ private struct ConversationSessionRow: View {
                 HStack(spacing: 6) {
                     if ConversationStore.isLive(lastActivity: metadata.lastActivity) {
                         Circle()
-                            .fill(Color.ccGreen)
+                            .fill(Theme.success)
                             .frame(width: 5, height: 5)
                             .accessibilityLabel("活跃会话")
                     }
                     if metadata.isSubagent {
                         Image(systemName: "arrow.turn.down.right")
                             .font(.system(size: 9))
-                            .foregroundStyle(Color.ccCaption)
+                            .foregroundStyle(Theme.mutedForeground)
                     }
                     Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.ccBody(.medium))
                         .lineLimit(1)
                         .help(metadata.title)
+                    if metadata.starred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: Typography.label))
+                            .foregroundStyle(Theme.accentText)
+                            .accessibilityLabel(appLanguage.localized("已收藏"))
+                    }
                     Spacer(minLength: 0)
                 }
 
-                HStack(spacing: 6) {
-                    Image(systemName: sourceSymbol)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .frame(width: 13)
+                HStack(spacing: Space.xs + 2) {
+                    AgentBrandMark(source: metadata.source, size: 15)
                     Text(sourceName)
                         .lineLimit(1)
                     if !metadata.project.isEmpty {
                         Text(metadata.project)
                             .lineLimit(1)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.ccForeground.opacity(0.055))
-                            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Theme.fill)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
                     }
                     if metadata.isSubagent {
                         Image(systemName: "arrow.turn.down.right")
@@ -267,49 +278,40 @@ private struct ConversationSessionRow: View {
                     }
                     if metadata.imported {
                         Image(systemName: "square.and.arrow.down")
-                            .foregroundStyle(Color.ccBrandStrong)
+                            .foregroundStyle(Theme.accentText)
                     }
                     if metadata.deleted {
                         Image(systemName: "trash")
-                            .foregroundStyle(Color.ccRed)
+                            .foregroundStyle(Theme.danger)
                     }
                     Spacer(minLength: 0)
                     Text(activityRelative)
                         .help(appLanguage.localized("更新于 \(activityAbsolute)"))
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(Color.ccCaption)
+                .font(.ccLabel())
+                .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)
 
                 if let hit, !hit.snippet.isEmpty {
                     ConversationPlainHighlightedText(value: hit.snippet, query: searchQuery)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.ccMuted)
+                        .font(.ccLabel())
+                        .foregroundStyle(Theme.mutedForeground)
                         .lineLimit(2)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.sm)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Color.ccConversationSelection : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(selected ? Theme.selection : (hovering ? Theme.hover : Color.clear))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(ConversationPressableButtonStyle())
+        .onHover { hovering = $0 }
         .accessibilityLabel("\(metadata.title)，\(sourceName)")
         .accessibilityIdentifier(metadata.conversationRowAccessibilityIdentifier)
     }
 
-    private var sourceSymbol: String {
-        switch metadata.source {
-        case .claude: "sparkles"
-        case .codex: "terminal"
-        case .qoder: "q.square"
-        case .grok: "bolt"
-        case .copilot: "chevron.left.forwardslash.chevron.right"
-        case .antigravity: "atom"
-        }
-    }
 }
 
 private struct ConversationListState<Actions: View>: View {
@@ -341,23 +343,23 @@ private struct ConversationListState<Actions: View>: View {
                 ProgressView().controlSize(.small)
             } else {
                 ZStack {
-                    Circle().fill(Color.ccForeground.opacity(0.055))
+                    Circle().fill(Theme.fill)
                     Image(systemName: symbol).font(.system(size: 20, weight: .light))
                 }
                 .frame(width: 48, height: 48)
             }
             Text(appLanguage.localized(title))
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color.ccForeground)
+                .font(.ccBody(.medium))
+                .foregroundStyle(Theme.foreground)
                 .multilineTextAlignment(.center)
             if let subtitle {
                 Text(appLanguage.localized(subtitle))
-                    .font(.system(size: 12))
+                    .font(.ccCaption())
                     .multilineTextAlignment(.center)
             }
             actions
         }
-        .foregroundStyle(Color.ccCaption)
+        .foregroundStyle(Theme.mutedForeground)
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("conversation.list.state")

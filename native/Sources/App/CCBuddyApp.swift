@@ -22,8 +22,22 @@ struct CCBuddyApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") { post(.ccbudOpenSettings) }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandMenu("会话") {
+                Button("搜索会话") { post(.ccbudFocusSearch) }
+                    .keyboardShortcut("k", modifiers: .command)
+                Button("更新会话索引") { post(.ccbudRefreshCatalog) }
+                    .keyboardShortcut("r", modifiers: .command)
+            }
         }
     }
+}
+
+private func post(_ name: Notification.Name) {
+    NotificationCenter.default.post(name: name, object: nil)
 }
 
 private struct LiveApplicationRoot: View {

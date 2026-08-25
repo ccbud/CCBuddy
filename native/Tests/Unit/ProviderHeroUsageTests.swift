@@ -2,43 +2,48 @@ import XCTest
 @testable import CCBuddy
 
 final class ProviderHeroUsageTests: XCTestCase {
-    func testProviderEditorParityMetricsMatchLegacySheet() throws {
-        XCTAssertEqual(ProviderEditorLayout.sheetSize, CGSize(width: 580, height: 654))
-        let glm = try XCTUnwrap(ProviderPreset.all.first { $0.id == "glm" })
-        XCTAssertEqual(ProviderEditorLayout.apiURLPlaceholder, glm.baseURL)
+    func testEditorPlaceholderIsARealCatalogEndpoint() throws {
+        // The placeholder is the shape people copy when filling the field by hand, so it has to be a
+        // live endpoint in the catalog rather than a URL that drifted out of date on its own.
+        XCTAssertTrue(
+            ProviderPreset.all.contains { $0.baseURL == ProviderEditorLayout.apiURLPlaceholder },
+            "placeholder \(ProviderEditorLayout.apiURLPlaceholder) is not any preset's endpoint"
+        )
     }
 
-    func testCompleteProviderPresetTableMatchesLegacyRendererContract() {
-        let expected: [(
-            id: String,
-            title: String,
-            name: String,
-            baseURL: String,
-            defaultModel: String,
-            smallModel: String,
-            wireProtocol: Provider.WireProtocol
-        )] = [
-            ("glm", "GLM", "GLM", "https://open.bigmodel.cn/api/anthropic/v1", "glm-5.2", "glm-5.2", .anthropic),
-            ("deepseek", "DeepSeek", "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-v4-pro", "deepseek-v4-flash", .anthropic),
-            ("mimo", "MiMo", "MiMo", "https://token-plan-sgp.xiaomimimo.com/anthropic", "mimo-v2.5-pro", "mimo-v2.5", .anthropic),
-            ("kimi", "Kimi", "Kimi", "https://api.kimi.com/coding", "kimi-for-coding", "kimi-for-coding", .anthropic),
-            ("minimax", "MiniMax", "MiniMax", "https://api.minimax.io/anthropic", "MiniMax-M3", "MiniMax-M3", .anthropic),
-            ("nvidia", "NVIDIA", "NVIDIA", "https://integrate.api.nvidia.com/v1", "z-ai/glm-5.2", "z-ai/glm-5.2", .openAIChat),
-            ("google", "Google AI Studio", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.5-flash", "gemini-3.1-flash-lite", .openAIChat),
-            ("openai", "OpenAI", "OpenAI", "https://api.openai.com/v1", "gpt-5.2", "gpt-5.2-mini", .openAIResponses),
-            ("openrouter", "OpenRouter", "OpenRouter", "https://openrouter.ai/api/v1", "", "", .openAIChat),
-            ("custom", "自定义", "", "", "", "", .anthropic),
-        ]
-
-        XCTAssertEqual(ProviderPreset.all.map(\.id), expected.map(\.id))
-        for (preset, contract) in zip(ProviderPreset.all, expected) {
-            XCTAssertEqual(preset.title, contract.title, contract.id)
-            XCTAssertEqual(preset.name, contract.name, contract.id)
-            XCTAssertEqual(preset.baseURL, contract.baseURL, contract.id)
-            XCTAssertEqual(preset.defaultModel, contract.defaultModel, contract.id)
-            XCTAssertEqual(preset.smallModel, contract.smallModel, contract.id)
-            XCTAssertEqual(preset.wireProtocol, contract.wireProtocol, contract.id)
+    /// cc-switch stores the base URL a *client* appends `/v1/messages` to; this app stores the base
+    /// the gateway appends `/messages` to. Porting the catalog verbatim would have shipped seventy
+    /// presets that each 404 until the user happened to press "test" and let the probe repair them.
+    func testAnthropicEndpointsCarryTheVersionSegmentThisAppExpects() {
+        for preset in ProviderPreset.all
+        where preset.wireProtocol == .anthropic && !preset.baseURL.isEmpty {
+            let segments = preset.baseURL.split(separator: "/").map(String.init)
+            let last = try? XCTUnwrap(segments.last)
+            XCTAssertTrue(
+                (last?.first == "v") && (last?.dropFirst().first?.isNumber == true),
+                "\(preset.name) endpoint is missing its version segment: \(preset.baseURL)"
+            )
         }
+    }
+
+    func testTheProvidersTheHandWrittenListCoveredSurvivedThePort() throws {
+        // Every vendor the old ten-entry table reached must still be reachable, under whichever name
+        // the upstream catalog uses for it.
+        let required = [
+            "https://open.bigmodel.cn/api/anthropic/v1",
+            "https://api.deepseek.com/anthropic/v1",
+            "https://api.openai.com/v1",
+            "https://openrouter.ai/api/v1",
+            "https://integrate.api.nvidia.com/v1",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ]
+        let endpoints = Set(ProviderPreset.all.map(\.baseURL))
+        for endpoint in required {
+            XCTAssertTrue(endpoints.contains(endpoint), "lost \(endpoint) in the catalog port")
+        }
+        XCTAssertTrue(ProviderPreset.all.contains { $0.name.localizedCaseInsensitiveContains("kimi") })
+        XCTAssertTrue(ProviderPreset.all.contains { $0.name.localizedCaseInsensitiveContains("minimax") })
+        XCTAssertTrue(ProviderPreset.all.contains { $0.name.localizedCaseInsensitiveContains("mimo") })
     }
 
     func testFallbackIconHashMatchesLegacyRenderer() {

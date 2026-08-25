@@ -31,10 +31,12 @@ enum AntigravityHistoryParser {
         let summaryTitle = summary?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let preview = summary?.preview.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fallbackTitle = HistoryParsingSupport.firstUserTitle(in: normalized.messages)
+        // Antigravity stores the conversation id in the title column when it never named the
+        // session, which produced rows that were indistinguishable from one another in the list.
         let autoTitle: String
-        if !summaryTitle.isEmpty {
+        if !summaryTitle.isEmpty, HistoryParsingSupport.carriesTitleSignal(summaryTitle) {
             autoTitle = summaryTitle
-        } else if !preview.isEmpty {
+        } else if !preview.isEmpty, HistoryParsingSupport.carriesTitleSignal(preview) {
             autoTitle = String(preview.prefix(90))
         } else {
             autoTitle = fallbackTitle
@@ -54,6 +56,7 @@ enum AntigravityHistoryParser {
             tags: custom.tags,
             imported: false,
             deleted: custom.deleted,
+            starred: custom.starred,
             createdAt: normalized.firstStepTimestamp ?? facts.createdAt,
             lastActivity: walAwareModifiedAt(candidate.file, fallback: facts.modifiedAt),
             sizeBytes: facts.sizeBytes,

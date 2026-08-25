@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// The window shell: a fixed library rail plus one destination.
+///
+/// The rail is structural, not an inspector, so it does not collapse — a rail that can vanish makes
+/// the traffic lights float over whatever happens to be behind them and forces every destination to
+/// reason about two layouts. Destinations own their own title-bar inset so each column can carry the
+/// drag strip in its own material instead of the shell painting a band across all of them.
 struct AppShellView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var conversationWorkbench = ConversationWorkbenchState()
@@ -7,24 +13,22 @@ struct AppShellView: View {
     var body: some View {
         HStack(spacing: 0) {
             SidebarView(conversationWorkbench: conversationWorkbench)
-                .frame(width: sidebarWidth)
+                .frame(width: Metrics.sidebarWidth)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Conversation columns own their title-bar drag insets. Other destinations keep
-                // their controls below native chrome while their semantic background fills it.
-                .padding(.top, model.selected == .conversations ? 0 : 30)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
-        .background(Color.ccAppBackground.ignoresSafeArea())
-        .foregroundStyle(Color.ccForeground)
-        .tint(Color.ccBrandStrong)
-        .overlay(alignment: .top) {
-            if model.selected != .conversations {
-                WindowDragRegion()
-                    .frame(height: 30)
-                    .padding(.leading, sidebarWidth)
-            }
+        .background(Theme.background.ignoresSafeArea())
+        .foregroundStyle(Theme.foreground)
+        .tint(Theme.accent)
+        // Shortcuts are declared as scene commands (see CCBuddyApp) so they also appear in the menu
+        // bar; a zero-sized hidden Button is not a dependable place to register one.
+        .onReceive(NotificationCenter.default.publisher(for: .ccbudRefreshCatalog)) { _ in
+            model.conversationStore.retryIndexing()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccbudOpenSettings)) { _ in
+            model.selected = .settings
         }
         .overlay(alignment: .topLeading) {
             Rectangle()
@@ -35,27 +39,19 @@ struct AppShellView: View {
                 .accessibilityIdentifier("app.shell")
                 .allowsHitTesting(false)
         }
-        .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.22), value: model.sidebarCollapsed)
-    }
-
-    private var sidebarWidth: CGFloat {
-        // Wake's library rail is structural, not an optional inspector. Keep its reference width
-        // while browsing sessions; the compact app rail remains available on other destinations.
-        model.selected == .conversations ? 224 : (model.sidebarCollapsed ? 52 : 224)
     }
 
     @ViewBuilder private var content: some View {
         switch model.selected {
-        case .providers: ProvidersView()
-        case .plugins: PluginsView()
         case .conversations:
             ConversationsView(
                 store: model.conversationStore,
                 workbench: conversationWorkbench,
                 fontSize: model.config.convFontPx,
-                historyDirectories: model.config.historyDirs,
                 selectHistoryScope: { scope in Task { await model.setHistoryActive(scope) } }
             )
+        case .providers:
+            ProvidersView()
         case .monitor:
             MonitorView(
                 store: model.monitorStore,
@@ -63,7 +59,50 @@ struct AppShellView: View {
                 gatewayRunning: model.gatewayState.isRunning,
                 activeProvider: model.activeProvider
             )
-        case .settings: SettingsView()
+        case .plugins:
+            PluginsView()
+        case .settings:
+            SettingsView()
         }
+    }
+}
+
+/// A destination header that owns the window's drag strip.
+///
+/// Every non-library destination starts with this so the traffic-light band belongs to the column's
+/// own material and the page title sits on the same baseline as the session stream's context title.
+struct DestinationHeader<Trailing: View>: View {
+    let title: String
+    var subtitle: String?
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.ccTitle())
+                    .tracking(-0.35)
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.ccCaption())
+                        .foregroundStyle(Theme.mutedForeground)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: Space.md)
+            trailing
+        }
+        .padding(.horizontal, Space.xl)
+        .padding(.top, Metrics.titleBarHeight - Space.sm)
+        .padding(.bottom, Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WindowDragRegion())
+    }
+}
+
+extension DestinationHeader where Trailing == EmptyView {
+    init(title: String, subtitle: String? = nil) {
+        self.init(title: title, subtitle: subtitle) { EmptyView() }
     }
 }
