@@ -326,7 +326,7 @@
 "今日" = "Today";
 "仅使用真实终态" = "Terminal results only";
 "仅图标" = "Icon only";
-"仅显示前 {shown} / 共 {total}（已截断）" = "Showing the first {shown} of {total} (truncated)";
+"仅显示前 {shown} / 共 {total}（已截断）" = "Showing first {shown} / {total} total (truncated)";
 "仅支持 macOS" = "Only available on macOS";
 "仅支持导入 JSONL 或 ZIP" = "Only JSONL or ZIP files can be imported";
 "近 30 天" = "Last 30 days";
@@ -831,7 +831,7 @@
 "最后更新" = "Last updated";
 "最近 —" = "Last —";
 "最近 {count} 条 · 每 10 秒自动刷新" = "Latest {count} · Refreshes every 10 seconds";
-"最近 {time}" = "Latest {time}";
+"最近 {time}" = "Last {time}";
 "最新版本" = "Latest version";
 "最长" = "Longest";
 "Agent" = "Agent";

@@ -650,13 +650,6 @@
     "zh-Hans": "原始 Credits {value}",
     "zh-Hant": "原始 Credits {value}"
   },
-  "上下文 {percent}%": {
-    "en": "Context {percent}%",
-    "ja": "コンテキスト {percent}%",
-    "ko": "컨텍스트 {percent}%",
-    "zh-Hans": "上下文 {percent}%",
-    "zh-Hant": "上下文 {percent}%"
-  },
   "未知内容": {
     "en": "Unknown content",
     "ja": "不明な内容",
@@ -1657,13 +1650,6 @@
     "ko": "원문 표시",
     "zh-Hans": "显示原文",
     "zh-Hant": "顯示原文"
-  },
-  "刷新于 {time}": {
-    "en": "Refreshed at {time}",
-    "ja": "{time} に更新",
-    "ko": "{time}에 새로 고침",
-    "zh-Hans": "刷新于 {time}",
-    "zh-Hant": "更新於 {time}"
   },
   "刷新中": {
     "en": "Refreshing",
@@ -3646,19 +3632,19 @@
     "zh-Hans": "会话概览",
     "zh-Hant": "工作階段概覽"
   },
+  "上下文 {percent}%": {
+    "en": "Context {percent}%",
+    "ja": "コンテキスト {percent}%",
+    "ko": "컨텍스트 {percent}%",
+    "zh-Hans": "上下文 {percent}%",
+    "zh-Hant": "上下文 {percent}%"
+  },
   "截断预览": {
     "en": "Truncated preview",
     "ja": "切り詰めプレビュー",
     "ko": "잘린 미리보기",
     "zh-Hans": "截断预览",
     "zh-Hant": "截斷預覽"
-  },
-  "仅显示前 {shown} / 共 {total}（已截断）": {
-    "en": "Showing the first {shown} of {total} (truncated)",
-    "ja": "全 {total} のうち先頭 {shown} を表示（切り詰め）",
-    "ko": "전체 {total} 중 앞부분 {shown}만 표시 (잘림)",
-    "zh-Hans": "仅显示前 {shown} / 共 {total}（已截断）",
-    "zh-Hant": "僅顯示前 {shown} / 共 {total}（已截斷）"
   },
   "Bifrost 仅提供截断预览（原始总大小未知）": {
     "en": "Bifrost only kept a truncated preview (original size unknown)",
@@ -3681,12 +3667,12 @@
     "zh-Hans": "成功率 {rate}",
     "zh-Hant": "成功率 {rate}"
   },
-  "最近 {time}": {
-    "en": "Latest {time}",
-    "ja": "最新 {time}",
-    "ko": "최근 {time}",
-    "zh-Hans": "最近 {time}",
-    "zh-Hant": "最近 {time}"
+  "刷新于 {time}": {
+    "en": "Refreshed at {time}",
+    "ja": "{time} に更新",
+    "ko": "{time}에 새로 고침",
+    "zh-Hans": "刷新于 {time}",
+    "zh-Hant": "更新於 {time}"
   },
   "切换到{name}": {
     "en": "Switch to {name}",
