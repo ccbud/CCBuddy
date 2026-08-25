@@ -298,13 +298,21 @@ final class CCBuddyUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [countUpdated], timeout: 2), .completed)
 
+        let copy = app.buttons["monitor.detail.copy"]
         clearClipboardCapture()
-        app.buttons["monitor.detail.copy"].click()
+        copy.click()
         guard let redactedCapture = waitForClipboardCapture() else {
             return XCTFail("The app did not record the redacted clipboard value")
         }
         XCTAssertTrue(redactedCapture.contains("••••••（已隐藏）"))
         XCTAssertFalse(redactedCapture.contains("ui-secret-token"))
+        XCTAssertEqual(copy.label, "已复制")
+
+        let copyFeedbackSettled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "复制脱敏内容"),
+            object: copy
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [copyFeedbackSettled], timeout: 3), .completed)
 
         let privacy = app.buttons["monitor.detail.privacy"]
         privacy.click()
@@ -314,7 +322,7 @@ final class CCBuddyUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [privacyRevealed], timeout: 2), .completed)
         clearClipboardCapture()
-        app.buttons["monitor.detail.copy"].click()
+        copy.click()
         XCTAssertEqual(
             waitForClipboardCapture(),
             #"{"body":{"model":"upstream-model","prompt":"Needle secret"},"headers":{"authorization":"Bearer ui-secret-token"},"truncated":false}"#
