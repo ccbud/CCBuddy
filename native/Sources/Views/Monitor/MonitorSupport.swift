@@ -144,6 +144,63 @@ struct MonitorPressableButtonStyle: ButtonStyle {
     }
 }
 
+/// Real AppKit buttons keep stable native hit targets and accessibility frames inside the
+/// full-size-content window. SwiftUI's synthetic icon-button accessibility frames can be clamped
+/// to the title-bar safe area, causing an XCUI or physical click to land on the drag region.
+struct MonitorHeaderButton: NSViewRepresentable {
+    let symbol: String
+    let label: String
+    let identifier: String
+    let keyEquivalent: String
+    let action: () -> Void
+
+    final class Coordinator: NSObject {
+        var parent: MonitorHeaderButton
+
+        init(parent: MonitorHeaderButton) {
+            self.parent = parent
+        }
+
+        @objc func activate(_ sender: NSButton) {
+            parent.action()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.title = ""
+        button.isBordered = false
+        button.setButtonType(.momentaryPushIn)
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.activate(_:))
+        button.setAccessibilityIdentifier(identifier)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.parent = self
+        button.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+        )
+        button.contentTintColor = NSColor(Color.ccMuted)
+        button.toolTip = label
+        button.keyEquivalent = keyEquivalent
+        button.keyEquivalentModifierMask = []
+        button.setAccessibilityLabel(label)
+        button.setAccessibilityHelp(label)
+        button.setAccessibilityIdentifier(identifier)
+    }
+}
+
 struct MonitorActionButton: View {
     @Environment(\.appLanguage) private var appLanguage
 

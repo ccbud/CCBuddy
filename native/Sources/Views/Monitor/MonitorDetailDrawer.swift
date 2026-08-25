@@ -102,9 +102,9 @@ struct MonitorDetailDrawer: View {
                 symbol: "xmark",
                 help: "关闭详情",
                 identifier: "monitor.detail.close",
+                keyEquivalent: "\u{1B}",
                 action: close
             )
-            .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 17)
         .padding(.vertical, 14)
@@ -114,22 +114,25 @@ struct MonitorDetailDrawer: View {
         symbol: String,
         help: String,
         identifier: String,
+        keyEquivalent: String = "",
         action: @escaping () -> Void
     ) -> some View {
         let localizedHelp = appLanguage.localized(help)
-        return Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(Color.ccMuted)
-                .frame(width: 28, height: 28)
-                .background(Color.ccElevated.opacity(0.86))
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.ccBorder))
+        return MonitorHeaderButton(
+            symbol: symbol,
+            label: localizedHelp,
+            identifier: identifier,
+            keyEquivalent: keyEquivalent,
+            action: action
+        )
+        .frame(width: 28, height: 28)
+        .background(Color.ccElevated.opacity(0.86))
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.ccBorder)
+                .allowsHitTesting(false)
         }
-        .buttonStyle(MonitorPressableButtonStyle())
-        .help(localizedHelp)
-        .accessibilityLabel(localizedHelp)
-        .accessibilityIdentifier(identifier)
     }
 
     private var headerRecord: GatewayLog? {

@@ -315,12 +315,25 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [copyFeedbackSettled], timeout: 3), .completed)
 
         let privacy = app.buttons["monitor.detail.privacy"]
+        XCTAssertTrue(privacy.waitForExistence(timeout: 2))
+        let privacyReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true AND hittable == true"),
+            object: privacy
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [privacyReady], timeout: 2), .completed)
         privacy.click()
         let privacyRevealed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "隐藏敏感值"),
             object: privacy
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [privacyRevealed], timeout: 2), .completed)
+        let rawCopyEnabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "复制原文"),
+            object: copy
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [privacyRevealed, rawCopyEnabled], timeout: 2),
+            .completed
+        )
         clearClipboardCapture()
         copy.click()
         XCTAssertEqual(
