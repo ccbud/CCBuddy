@@ -20,6 +20,11 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
         let roots = configuration.activeRoots
         var days: [String: UsageHistoryDay] = [:]
 
+        // Records are folded in as they are parsed rather than collected first. Holding every
+        // parsed line before aggregating meant peak memory tracked the size of the transcripts —
+        // on a 14 GB library that is hundreds of megabytes of records that are about to collapse
+        // into a few hundred day buckets. Deduplication still sees the same records in the same
+        // order, so the result is unchanged.
         var claudeFiles: [URL] = []
         for root in roots {
             guard !Task.isCancelled else { return days }
@@ -28,46 +33,44 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
             ))
         }
         qoderReader.prefetch(claudeFiles)
-        var claudeRecords: [ClaudeRecord] = []
+        var claudeDeduplicator = ClaudeDeduplicator()
         for file in claudeFiles {
             guard !Task.isCancelled else { return days }
             forEachUsageLine(in: file) { line in
-                if let record = Self.parseClaude(line) { claudeRecords.append(record) }
+                if let record = Self.parseClaude(line) { claudeDeduplicator.append(record) }
             }
         }
-        for record in Self.deduplicateClaude(claudeRecords) {
+        for record in claudeDeduplicator.kept {
             guard !Task.isCancelled else { return days }
             bump(record.event, into: &days)
         }
 
-        var codexEvents: [CodexEvent] = []
+        var seenCodex = Set<CodexEventKey>()
         for root in roots {
             guard !Task.isCancelled else { return days }
             for file in Self.codexFiles(root: root) {
                 guard !Task.isCancelled else { return days }
-                codexEvents.append(contentsOf: Self.parseCodex(file))
+                for event in Self.parseCodex(file) {
+                    guard !Task.isCancelled else { return days }
+                    let key = CodexEventKey(
+                        timestampMilliseconds: Self.timestampMilliseconds(event.timestamp),
+                        model: event.model,
+                        usage: event.usage
+                    )
+                    guard seenCodex.insert(key).inserted else { continue }
+                    bump(
+                        UsageHistoryEvent(
+                            timestamp: event.timestamp,
+                            model: event.model,
+                            input: max(0, event.usage.input - event.usage.cached),
+                            output: event.usage.output,
+                            cacheRead: event.usage.cached,
+                            cacheCreation: 0
+                        ),
+                        into: &days
+                    )
+                }
             }
-        }
-        var seenCodex = Set<CodexEventKey>()
-        for event in codexEvents {
-            guard !Task.isCancelled else { return days }
-            let key = CodexEventKey(
-                timestampMilliseconds: Self.timestampMilliseconds(event.timestamp),
-                model: event.model,
-                usage: event.usage
-            )
-            guard seenCodex.insert(key).inserted else { continue }
-            bump(
-                UsageHistoryEvent(
-                    timestamp: event.timestamp,
-                    model: event.model,
-                    input: max(0, event.usage.input - event.usage.cached),
-                    output: event.usage.output,
-                    cacheRead: event.usage.cached,
-                    cacheCreation: 0
-                ),
-                into: &days
-            )
         }
         return days
     }
@@ -195,14 +198,23 @@ private extension UsageHistoryScanner {
     }
 
     static func deduplicateClaude(_ records: [ClaudeRecord]) -> [ClaudeRecord] {
-        var kept: [ClaudeRecord] = []
-        var byExact: [ClaudeExactKey: Int] = [:]
-        var byID: [String: Int] = [:]
+        var deduplicator = ClaudeDeduplicator()
+        for record in records { deduplicator.append(record) }
+        return deduplicator.kept
+    }
 
-        for candidate in records {
-            guard let id = candidate.id, !isDegenerateClaudeID(id) else {
+    /// The same rule as before, applied one record at a time: an assistant message can appear in
+    /// both a parent transcript and a subagent's, and the fuller copy wins. Keeping it incremental
+    /// is what lets the scan avoid materialising every parsed record first.
+    struct ClaudeDeduplicator {
+        private(set) var kept: [ClaudeRecord] = []
+        private var byExact: [ClaudeExactKey: Int] = [:]
+        private var byID: [String: Int] = [:]
+
+        mutating func append(_ candidate: ClaudeRecord) {
+            guard let id = candidate.id, !UsageHistoryScanner.isDegenerateClaudeID(id) else {
                 kept.append(candidate)
-                continue
+                return
             }
             let exact = ClaudeExactKey(id: id, requestID: candidate.requestID)
             let slot = byExact[exact] ?? byID[id].flatMap { index in
@@ -222,7 +234,6 @@ private extension UsageHistoryScanner {
                 kept.append(candidate)
             }
         }
-        return kept
     }
 
     static func isDegenerateClaudeID(_ id: String) -> Bool {
