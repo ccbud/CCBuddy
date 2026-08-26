@@ -674,6 +674,12 @@ final class AppModel: ObservableObject {
         }
         await persistAndRestartGateway { next in
             next.activeProviderId = id
+            // With failover on the queue decides where requests go, so choosing a provider has to
+            // mean "try this one first" — otherwise the click marks a row that receives nothing.
+            if next.gatewayFailover.enabled {
+                next.gatewayFailover.providerIds.removeAll { $0 == id }
+                next.gatewayFailover.providerIds.insert(id, at: 0)
+            }
         }
     }
 

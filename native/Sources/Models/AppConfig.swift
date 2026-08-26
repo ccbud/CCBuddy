@@ -105,6 +105,12 @@ struct AppConfig: Codable, Equatable {
            let activeProviderId {
             gatewayFailover.providerIds = [activeProviderId]
         }
+        // An enabled queue routes every request, so the head of it *is* the provider in use. Left
+        // free to disagree, the provider list marked one row "使用中" while a different one took
+        // the traffic.
+        if gatewayFailover.enabled, let head = gatewayFailover.providerIds.first {
+            activeProviderId = head
+        }
         var normalizedDisabled: [String] = []
         var normalizedDirectories: [String] = []
         for rawDirectory in ["~/.claude"] + historyDirs {

@@ -163,6 +163,63 @@ final class GatewayFailoverQueueTests: XCTestCase {
         XCTAssertEqual(reloaded.gatewayFailover.providerIds, ["alpha", "gamma"])
     }
 
+    func testChoosingAProviderWhileFailoverIsOnMakesItTheHeadOfTheQueue() async throws {
+        let model = try makeModel(baseConfig())
+        await model.setGatewayFailoverEnabled(true)
+        await model.addFailoverProvider("beta")
+
+        await model.setActiveProvider("gamma")
+
+        XCTAssertEqual(
+            model.config.gatewayFailover.providerIds,
+            ["gamma", "alpha", "beta"],
+            "otherwise the row the list marks as in use is not the one taking the traffic"
+        )
+        XCTAssertEqual(model.config.activeProviderId, "gamma")
+        await model.shutdown()
+    }
+
+    func testReorderingTheQueueMovesWhichProviderCountsAsActive() async throws {
+        let model = try makeModel(baseConfig())
+        await model.setGatewayFailoverEnabled(true)
+        await model.addFailoverProvider("beta")
+
+        await model.moveFailoverProvider("beta", offset: -1)
+
+        XCTAssertEqual(model.config.gatewayFailover.providerIds, ["beta", "alpha"])
+        XCTAssertEqual(model.config.activeProviderId, "beta")
+        await model.shutdown()
+    }
+
+    func testRemovingTheHeadPromotesTheNextProvider() async throws {
+        let model = try makeModel(baseConfig())
+        await model.setGatewayFailoverEnabled(true)
+        await model.addFailoverProvider("beta")
+
+        await model.removeFailoverProvider("alpha")
+
+        XCTAssertEqual(model.config.gatewayFailover.providerIds, ["beta"])
+        XCTAssertEqual(model.config.activeProviderId, "beta")
+        await model.shutdown()
+    }
+
+    func testTurningFailoverOffLeavesTheLastHeadActive() async throws {
+        let model = try makeModel(baseConfig())
+        await model.setGatewayFailoverEnabled(true)
+        await model.addFailoverProvider("gamma")
+        await model.moveFailoverProvider("gamma", offset: -1)
+
+        await model.setGatewayFailoverEnabled(false)
+
+        XCTAssertEqual(
+            model.config.activeProviderId,
+            "gamma",
+            "the provider that was taking requests keeps taking them when the queue stops routing"
+        )
+        XCTAssertEqual(model.config.gatewayProviders.map(\.id), ["gamma"])
+        await model.shutdown()
+    }
+
     func testDeletingAProviderDropsItFromTheQueue() async throws {
         let model = try makeModel(baseConfig())
         await model.setGatewayFailoverEnabled(true)
