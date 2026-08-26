@@ -148,17 +148,6 @@ struct ConversationTimelinePane: View {
         return values
     }
 
-    private func sourceSymbol(_ source: HistorySource) -> String {
-        switch source {
-        case .claude: "sparkles"
-        case .codex: "terminal"
-        case .qoder: "q.square"
-        case .grok: "bolt"
-        case .copilot: "chevron.left.forwardslash.chevron.right"
-        case .antigravity: "atom"
-        }
-    }
-
     private var transcriptTabs: some View {
         let tabs = store.transcriptTabs
         let subagents = Array(tabs.dropFirst())
@@ -508,23 +497,6 @@ struct ConversationTimelinePane: View {
             .help(appLanguage.localized(label))
             .accessibilityLabel(appLanguage.localized(label))
             .accessibilityIdentifier(identifier)
-    }
-
-    private func labeledToolbarButton(
-        _ symbol: String,
-        title: String,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Label(appLanguage.localized(title), systemImage: symbol)
-                .font(.ccCaption(.medium))
-                .padding(.horizontal, Space.sm)
-                .frame(height: 27)
-        }
-        .buttonStyle(ConversationToolButtonStyle())
-        .help(appLanguage.localized(title))
-        .accessibilityIdentifier(identifier)
     }
 
     private func presentRawExportPanel() {
