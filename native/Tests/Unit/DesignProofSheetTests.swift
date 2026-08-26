@@ -15,13 +15,17 @@ import XCTest
 /// the design system itself — materials, inks, type, controls, rail rows — and not whole panels,
 /// where a blank area could not be told apart from a real regression.
 ///
-/// Opt in by creating `/tmp/ccg-proof` (or pointing `CCBUD_PROOF_SHEETS` somewhere) before running;
-/// an ordinary run stays quiet.
+/// The sheets are always rendered — that alone is worth having, since it proves each surface still
+/// lays out and draws — but they are only written where someone can look at them when
+/// `/tmp/ccg-proof` exists or `CCBUD_PROOF_SHEETS` points somewhere. An ordinary run stays quiet.
+///
+/// Rendering is never skipped: this repository's gate requires zero skipped tests, and a test that
+/// opts itself out is indistinguishable from one that was never written.
 @MainActor
 final class DesignProofSheetTests: XCTestCase {
-    /// Opt in by creating the directory before running: a hosted test process does not reliably
-    /// inherit ad-hoc environment variables, and an existing directory is a signal that survives
-    /// however the runner is launched.
+    /// Where to leave the sheets, when anyone asked for them. Opting in by creating the directory
+    /// works even though a hosted test process does not reliably inherit ad-hoc environment
+    /// variables.
     private var outputDirectory: URL? {
         let environmentPath = ProcessInfo.processInfo.environment["CCBUD_PROOF_SHEETS"]
         if let environmentPath, !environmentPath.isEmpty {
@@ -37,7 +41,7 @@ final class DesignProofSheetTests: XCTestCase {
     }
 
     private func render<V: View>(_ name: String, _ view: V) throws {
-        guard let outputDirectory else { throw XCTSkip("Set CCBUD_PROOF_SHEETS to render") }
+        let destination = outputDirectory
         for (suffix, appearance) in [
             ("light", NSAppearance(named: .aqua)!),
             ("dark", NSAppearance(named: .darkAqua)!),
@@ -51,8 +55,10 @@ final class DesignProofSheetTests: XCTestCase {
                       let bitmap = NSBitmapImageRep(data: tiff) else { return }
                 data = bitmap.representation(using: .png, properties: [:])
             }
-            let payload = try XCTUnwrap(data, "\(name) produced no image")
-            try payload.write(to: outputDirectory.appendingPathComponent("\(name)-\(suffix).png"))
+            let payload = try XCTUnwrap(data, "\(name) produced no image in \(suffix)")
+            XCTAssertGreaterThan(payload.count, 1_000, "\(name)-\(suffix) rendered to almost nothing")
+            guard let destination else { continue }
+            try payload.write(to: destination.appendingPathComponent("\(name)-\(suffix).png"))
         }
     }
 
