@@ -403,11 +403,18 @@ struct ConversationTimelinePane: View {
     @ViewBuilder private var detail: some View {
         switch store.detailState {
         case .idle:
-            ConversationDetailState(
-                symbol: "bubble.left.and.text.bubble.right",
-                title: "选择左侧会话，查看完整对话历史",
-                subtitle: "数据来自已配置的本地会话目录 · 活跃会话实时跟随"
-            )
+            // Inviting a selection from an empty list put two competing empty states side by side,
+            // one of them asking for something the other had just said does not exist. The list
+            // keeps the explanation; this side simply stays quiet.
+            if store.filteredSessionCount > 0 {
+                ConversationDetailState(
+                    symbol: "bubble.left.and.text.bubble.right",
+                    title: "选择左侧会话，查看完整对话历史",
+                    subtitle: "数据来自已配置的本地会话目录 · 活跃会话实时跟随"
+                )
+            } else {
+                Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .loading:
             ConversationDetailState(symbol: "clock.arrow.circlepath", title: "正在读取会话…", showsProgress: true)
         case .failed(let message):
