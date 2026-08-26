@@ -757,12 +757,19 @@ final class ConversationIndexScannerTests: XCTestCase {
         await Task.detached(priority: .utility) { coordinator.stop() }.value
 
         let reattachedEvents = reattached.events
-        XCTAssertEqual(reattachedEvents.last?.phase, .finished)
-        XCTAssertEqual(reattachedEvents.last?.completed, 3)
+        // The delivered sequence is the whole evidence for these three claims, and this test has
+        // failed on a loaded runner where the counts alone said nothing about which scan produced
+        // which event. Report it with every failure rather than reproducing the load to find out.
+        let delivered = reattachedEvents
+            .map { "\($0.phase)/\($0.completed)of\($0.total)" }
+            .joined(separator: " → ")
+        XCTAssertEqual(reattachedEvents.last?.phase, .finished, "delivered: \(delivered)")
+        XCTAssertEqual(reattachedEvents.last?.completed, 3, "delivered: \(delivered)")
         XCTAssertEqual(
             reattachedEvents.filter { $0.phase == .finished }.count,
             1,
-            "Reattaching during one scan must deliver exactly one terminal event"
+            "Reattaching during one scan must deliver exactly one terminal event; "
+                + "delivered: \(delivered)"
         )
 
         var terminalReached = false
