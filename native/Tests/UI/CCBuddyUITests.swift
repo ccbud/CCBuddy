@@ -440,10 +440,15 @@ final class CCBuddyUITests: XCTestCase {
         // A SwiftUI `Menu` surfaces as a pop-up button rather than a plain button, and one inside a
         // window that is not key reports itself unhittable on a headless runner — hence the
         // coordinate click, which asks for the point rather than the element's own permission.
+        app.activate()
         let overflow = app.descendants(matching: .any)["conversation.action.more"]
         XCTAssertTrue(overflow.waitForExistence(timeout: 3))
-        overflow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-        XCTAssertTrue(app.menuItems["用 Claude 分析会话"].waitForExistence(timeout: 3))
+        let claudeAction = app.menuItems["用 Claude 分析会话"]
+        for _ in 0..<3 where !claudeAction.exists {
+            overflow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+            _ = claudeAction.waitForExistence(timeout: 2)
+        }
+        XCTAssertTrue(claudeAction.waitForExistence(timeout: 3))
         XCTAssertTrue(app.menuItems["用 ChatGPT 分析会话"].exists)
         app.typeKey(.escape, modifierFlags: [])
     }

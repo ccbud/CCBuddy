@@ -158,7 +158,11 @@ struct GatewaySettingsPane: View {
                         } label: {
                             Label(appLanguage.localized("添加供应商"), systemImage: "plus")
                         }
-                        .menuStyle(.borderlessButton)
+                        // A borderless menu renders as tinted text with a disclosure arrow, which
+                        // reads as a link in a page whose every other action is a quiet button.
+                        .menuStyle(.button)
+                        .buttonStyle(CompactActionButtonStyle())
+                        .menuIndicator(.hidden)
                         .fixedSize()
                         .accessibilityIdentifier("settings.failover.add")
                     }
@@ -221,7 +225,7 @@ struct GatewaySettingsPane: View {
             .accessibilityLabel(appLanguage.localized("移出队列"))
         }
         .padding(.horizontal, Space.sm)
-        .padding(.vertical, Space.xs)
+        .padding(.vertical, Space.xs + 2)
         .background(Theme.fillSubtle)
         .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         .accessibilityIdentifier("settings.failover.row.\(providerID)")
