@@ -31,6 +31,7 @@
 "{n} 条消息" = "{n} messages";
 "{n} 小时前" = "{n} h ago";
 "{name} 还不支持在终端继续" = "{name} doesn't support continuing in a terminal yet";
+"{name} 现在是队列第 {position} 位" = "{name} is now number {position} in the queue";
 "{name}，{tokens} Tokens" = "{name}, {tokens} tokens";
 "{project}，{count} 个会话" = "{project}, {count} sessions";
 "{state} · localhost:{port}" = "{state} · localhost:{port}";
@@ -171,6 +172,7 @@
 "点击查看完整请求 / 响应" = "Click to view the full request / response";
 "点击自定义图标" = "Click to customize";
 "点选切换 · 拖动排序" = "Click to switch · drag to reorder";
+"调整故障转移顺序失败" = "Could not reorder the failover queue";
 "调整会话页消息正文的字体大小。" = "Adjust the message text size on the Sessions page.";
 "调整面板宽度" = "Resize panel";
 "独立于接入配置的本机服务开关；停止后所有转发暂停，接入配置保持不变。" = "Local service every connected CLI forwards through — independent of the connect configs; stopping it pauses forwarding without touching them.";
@@ -228,6 +230,7 @@
 "更新 429 重试设置失败，已恢复先前状态 · {error}" = "Could not update 429 retry settings; the previous state was restored · {error}";
 "更新插件失败：{detail}" = "Plugin update failed: {detail}";
 "更新到 v{ver}" = "Update to v{ver}";
+"更新故障转移设置失败" = "Could not update the failover setting";
 "更新后插件会保持停用" = "The plugin remains disabled after updating";
 "更新会话索引" = "Refresh sessions";
 "更新上游 TLS 设置失败 · {error}" = "Could not update upstream TLS settings · {error}";
@@ -244,6 +247,8 @@
 "工作目录" = "Working directories";
 "供应商限流（429）时自动重试几次，再如实返回，减少偶发失败。" = "When a provider rate-limits (429), retry a few times before returning the error — smooths over transient failures.";
 "供应商限流时由 Bifrost 重试策略处理。" = "Bifrost's retry policy handles provider rate limits.";
+"故障转移" = "Failover";
+"故障转移优先级 {priority}" = "Failover priority {priority}";
 "关闭" = "Close";
 "关闭提示" = "Dismiss notice";
 "关闭详情" = "Close details";
@@ -305,6 +310,7 @@
 "积分" = "Credits";
 "记录" = "Record";
 "继续" = "Continue";
+"加入故障转移队列失败" = "Could not add to the failover queue";
 "加载中…" = "Loading…";
 "监控" = "Monitor";
 "检测到未完成的 CLI 配置恢复记录：{paths}。请先按照 journal.json 恢复原始文件并移除恢复目录" = "Unfinished CLI configuration recovery records were found at: {paths}. Restore the original files using journal.json and remove the recovery directories before continuing";
@@ -340,6 +346,7 @@
 "开发插件" = "Build a plugin";
 "开关会立即、原子地写入或恢复各 CLI 的配置文件。" = "Each switch immediately and atomically writes or restores the CLI configuration file.";
 "开机自启动" = "Launch at login";
+"开启后网关按队列顺序发送请求，上游失败时自动改用下一个供应商；关闭时只使用当前启用的供应商。" = "With this on, the gateway sends requests down the queue in order and moves to the next provider when one fails. With it off, only the active provider is used.";
 "开始时间" = "Started";
 "开始于 {date}" = "Started {date}";
 "可信来源" = "Trusted source";
@@ -468,6 +475,7 @@
 "上下文 {percent}%" = "Context {percent}%";
 "上一个" = "Previous";
 "上一个匹配" = "Previous match";
+"上移" = "Move up";
 "上游模型" = "Upstream model";
 "上游模型 例如 glm-5.2[1m]" = "Upstream, e.g. glm-5.2[1m]";
 "上游请求" = "Upstream request";
@@ -517,6 +525,7 @@
 "搜索消息…" = "Search messages…";
 "搜索正文…" = "Search body…";
 "随机" = "Random";
+"所有供应商都已在队列中。" = "Every provider is already in the queue.";
 "索引" = "Index";
 "索引只是原始会话文件的一份可重建副本。删除它不会影响任何 CLI 写下的会话；下次启动会重新扫描。" = "The index is only a rebuildable copy of the original session files. Deleting it affects nothing your CLIs wrote; the next launch scans again.";
 "特大" = "X-Large";
@@ -527,6 +536,7 @@
 "添加插件…" = "Add plugin…";
 "添加第一个服务" = "Add your first service";
 "添加服务" = "Add service";
+"添加供应商" = "Add provider";
 "添加目录…" = "Add folder…";
 "添加失败：{msg}" = "Add failed: {msg}";
 "添加位置" = "Add location";
@@ -616,6 +626,7 @@
 "下面列出的是我之前一段 Coding CLI 会话的 JSONL 记录文件——主会话以及每个子代理各为一个文件。请读取它们后帮我复盘：1）这次会话的目标与最终结果；2）走过的弯路或失误；3）可改进的提示词或 agent 使用方式。" = "Listed below are the JSONL transcripts of a previous coding CLI session — the main thread plus each subagent run as its own file. Please read them together, then help me review: 1) the goal and final outcome; 2) any detours or mistakes; 3) how to improve the prompts or agent usage.";
 "下一个" = "Next";
 "下一个匹配" = "Next match";
+"下移" = "Move down";
 "下载并安装" = "Download & install";
 "下载并验证" = "Download and verify";
 "显示" = "Show";
@@ -647,6 +658,8 @@
 "选择目录…" = "Choose folder…";
 "选择左侧会话，查看完整对话历史" = "Select a session on the left to view the full conversation";
 "一键接入" = "Connect";
+"移出队列" = "Remove from queue";
+"移出故障转移队列失败" = "Could not remove from the failover queue";
 "移除" = "Remove";
 "移除导入" = "Remove import";
 "移除位置" = "Remove location";
@@ -668,8 +681,12 @@
 "已复制会话路径" = "Conversation path copied";
 "已复制路径" = "Path copied";
 "已关闭 429 自动重试" = "Automatic retry on 429 disabled";
+"已关闭自动故障转移" = "Automatic failover is off";
 "已恢复上游 TLS 证书校验" = "Upstream TLS certificate verification restored";
+"已将 {name} 加入故障转移队列" = "Added {name} to the failover queue";
+"已将 {name} 移出故障转移队列" = "Removed {name} from the failover queue";
 "已接入" = "Connected";
+"已开启自动故障转移" = "Automatic failover is on";
 "已启用 429 自动重试" = "Automatic retry on 429 enabled";
 "已切换备用服务" = "Switched to a fallback service";
 "已取消" = "Cancelled";
@@ -790,9 +807,14 @@
 "正在以可回滚的原子替换方式安装 v{version}…" = "Installing v{version} with a rollback-safe atomic replacement…";
 "正在应用插件服务配置并重启 Bifrost" = "Applying plugin service configuration and restarting Bifrost";
 "正在应用服务商配置并重启 Bifrost" = "Applying provider configuration and restarting Bifrost";
+"正在重启 Bifrost · 队列顺序已更新" = "Restarting Bifrost · queue order updated";
 "正在重启 Bifrost · 已关闭 429 自动重试" = "Restarting Bifrost · automatic retry on 429 disabled";
+"正在重启 Bifrost · 已关闭自动故障转移" = "Restarting Bifrost · automatic failover is off";
 "正在重启 Bifrost · 已恢复上游 TLS 证书校验" = "Restarting Bifrost · upstream TLS certificate verification restored";
+"正在重启 Bifrost · 已加入 {name}" = "Restarting Bifrost · added {name}";
+"正在重启 Bifrost · 已开启自动故障转移" = "Restarting Bifrost · automatic failover is on";
 "正在重启 Bifrost · 已启用 429 自动重试" = "Restarting Bifrost · automatic retry on 429 enabled";
+"正在重启 Bifrost · 已移出 {name}" = "Restarting Bifrost · removed {name}";
 "正在重启 Bifrost · 已允许上游使用不受信任的 TLS 证书" = "Restarting Bifrost · untrusted upstream TLS certificates are now allowed";
 "正在重启 Bifrost · localhost:{port}" = "Restarting Bifrost · localhost:{port}";
 "正在重启…" = "Restarting…";
@@ -822,6 +844,7 @@
 "自定义" = "Custom";
 "自定义模型别名（别名 ⇄ 上游模型）" = "Custom model aliases (alias ⇄ upstream)";
 "自定义图标" = "Customize icon";
+"自动故障转移" = "Automatic failover";
 "自动检查更新" = "Check for updates automatically";
 "自动下载" = "Download automatically";
 "自动下载更新" = "Download updates automatically";

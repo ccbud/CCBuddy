@@ -1134,6 +1134,69 @@ final class AppModel: ObservableObject {
         )
     }
 
+    // MARK: - Failover queue
+
+    /// The queue is the whole route set while failover is on, so an empty one would leave the
+    /// gateway with nowhere to send a request. `AppConfig.normalize()` seeds it with the active
+    /// provider in that case; these entry points only ever describe the user's edit.
+    func setGatewayFailoverEnabled(_ enabled: Bool) async {
+        guard !isShuttingDown else { return }
+        let setting = enabled ? "已开启自动故障转移" : "已关闭自动故障转移"
+        await applyGatewayConfiguration(
+            mutating: { $0.gatewayFailover.enabled = enabled },
+            progressMessage: "正在重启 Bifrost · \(setting)",
+            successMessage: setting,
+            failurePrefix: "更新故障转移设置失败"
+        )
+    }
+
+    func addFailoverProvider(_ providerID: String) async {
+        guard !isShuttingDown,
+              let provider = config.providers.first(where: { $0.id == providerID }),
+              !config.gatewayFailover.providerIds.contains(providerID) else { return }
+        await applyGatewayConfiguration(
+            mutating: { $0.gatewayFailover.providerIds.append(providerID) },
+            progressMessage: "正在重启 Bifrost · 已加入 \(provider.name)",
+            successMessage: "已将 \(provider.name) 加入故障转移队列",
+            failurePrefix: "加入故障转移队列失败"
+        )
+    }
+
+    func removeFailoverProvider(_ providerID: String) async {
+        guard !isShuttingDown,
+              config.gatewayFailover.providerIds.contains(providerID) else { return }
+        let name = config.providers.first(where: { $0.id == providerID })?.name ?? providerID
+        await applyGatewayConfiguration(
+            mutating: { $0.gatewayFailover.providerIds.removeAll { $0 == providerID } },
+            progressMessage: "正在重启 Bifrost · 已移出 \(name)",
+            successMessage: "已将 \(name) 移出故障转移队列",
+            failurePrefix: "移出故障转移队列失败"
+        )
+    }
+
+    /// Moves one entry by a single position. Priority is the queue's whole meaning, so it is edited
+    /// directly here rather than inherited from the provider list's own order.
+    func moveFailoverProvider(_ providerID: String, offset: Int) async {
+        guard !isShuttingDown, offset != 0 else { return }
+        let queue = config.gatewayFailover.providerIds
+        guard let index = queue.firstIndex(of: providerID) else { return }
+        let target = index + offset
+        guard queue.indices.contains(target) else { return }
+        let name = config.providers.first(where: { $0.id == providerID })?.name ?? providerID
+        await applyGatewayConfiguration(
+            mutating: { proposed in
+                guard let from = proposed.gatewayFailover.providerIds.firstIndex(of: providerID),
+                      proposed.gatewayFailover.providerIds.indices.contains(from + offset)
+                else { return }
+                proposed.gatewayFailover.providerIds.remove(at: from)
+                proposed.gatewayFailover.providerIds.insert(providerID, at: from + offset)
+            },
+            progressMessage: "正在重启 Bifrost · 队列顺序已更新",
+            successMessage: "\(name) 现在是队列第 \(target + 1) 位",
+            failurePrefix: "调整故障转移顺序失败"
+        )
+    }
+
     func setRequireToken(_ enabled: Bool) async {
         await applyGatewayCredentialConfiguration { next in
             next.requireToken = enabled

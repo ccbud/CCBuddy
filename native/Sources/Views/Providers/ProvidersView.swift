@@ -101,6 +101,7 @@ struct ProvidersView: View {
                     ProviderRow(
                         provider: provider,
                         active: provider.id == model.config.activeProviderId,
+                        failoverPriority: failoverPriority(for: provider),
                         pluginRunning: pluginRunning(for: provider),
                         probeState: probeStates[provider.id] ?? .idle,
                         dragProvider: {
@@ -227,6 +228,13 @@ struct ProvidersView: View {
             try? await Task.sleep(nanoseconds: 1_800_000_000)
             if probeStates[provider.id] != .testing { probeStates[provider.id] = .idle }
         }
+    }
+
+    private func failoverPriority(for provider: Provider) -> Int? {
+        let failover = model.config.gatewayFailover
+        guard failover.enabled,
+              let index = failover.providerIds.firstIndex(of: provider.id) else { return nil }
+        return index + 1
     }
 
     private func pluginRunning(for provider: Provider) -> Bool? {

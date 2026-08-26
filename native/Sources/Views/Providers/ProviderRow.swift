@@ -9,6 +9,9 @@ struct ProviderRow: View {
 
     let provider: Provider
     let active: Bool
+    /// The provider's place in the failover queue, when that queue is what routes traffic. Nil
+    /// while failover is off, so the badge only claims a priority that is actually in force.
+    var failoverPriority: Int?
     let pluginRunning: Bool?
     let probeState: ProviderRowProbeState
     let dragProvider: () -> NSItemProvider
@@ -118,6 +121,10 @@ struct ProviderRow: View {
                 Text(provider.name).font(.ccBody(.semibold))
                 protocolBadge
                 if active { badge("使用中", color: Theme.accentText) }
+                if let failoverPriority {
+                    badge("P\(failoverPriority)", color: Theme.accentText)
+                        .help(appLanguage.localized("故障转移优先级 \(failoverPriority)"))
+                }
                 if provider.backend == .plugin {
                     badge("插件", color: Theme.mutedForeground)
                     badge(

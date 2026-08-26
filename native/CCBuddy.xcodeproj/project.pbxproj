@@ -36,6 +36,7 @@
 		1A8B40FEFF1FDE3EAFC96B5C /* SingleInstanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F46160E86BD0A40C04CC2B /* SingleInstanceCoordinator.swift */; };
 		1ABD36387C48DAD8FB02292C /* SelfCheckRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E5BDD2839A5153837896750 /* SelfCheckRunnerTests.swift */; };
 		1D66857B7617D83352245A8C /* HistorySessionLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F1EDF499958846F7EC7233 /* HistorySessionLoader.swift */; };
+		1F5202A91CE62CC272605249 /* GatewayFailoverQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC03880370CADE575C561932 /* GatewayFailoverQueueTests.swift */; };
 		20B698F987406C199A73F619 /* ClaudeCLIE2ETestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 476A4D77504FB1F4EC470009 /* ClaudeCLIE2ETestSupport.swift */; };
 		247D14A7F69C57004BAEE444 /* kimi.svg in Resources */ = {isa = PBXBuildFile; fileRef = 7318DA8B68C3E9A10F8A0695 /* kimi.svg */; };
 		2506DC2DF588BD09613B9021 /* ProviderHeroUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F951E5B51A601EB3E2DCF3 /* ProviderHeroUsageTests.swift */; };
@@ -404,6 +405,7 @@
 		A9548560006C87E291F73BB7 /* ProviderPresetCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderPresetCatalogTests.swift; sourceTree = "<group>"; };
 		A9E6C3D003CF043890786DAD /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		A9E96FB1F83C90B64C0B4580 /* HistorySessionLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistorySessionLoaderTests.swift; sourceTree = "<group>"; };
+		AC03880370CADE575C561932 /* GatewayFailoverQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayFailoverQueueTests.swift; sourceTree = "<group>"; };
 		ADA2B97F8EDB4B014A9F0624 /* icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = icon.png; path = ../../build/icon.png; sourceTree = "<group>"; };
 		B33A258B1B5EFE6CD96798B2 /* UsageHistoryWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryWatcher.swift; sourceTree = "<group>"; };
 		B3E351EB3332316BC4119C10 /* ProvidersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersView.swift; sourceTree = "<group>"; };
@@ -842,6 +844,7 @@
 				C71A06CBACEAA701108EA659 /* ConversationStoreTests.swift */,
 				A4DE8FA9EF70BFD05664E7E1 /* DesignProofSheetTests.swift */,
 				1C6331BD246BB06F57E7199F /* ForeignHistoryParserTests.swift */,
+				AC03880370CADE575C561932 /* GatewayFailoverQueueTests.swift */,
 				3E420832A1781B39297AD612 /* HistoryAdvancedTests.swift */,
 				FB3C79387F26509C72739F80 /* HistoryDirectoryDiscoveryTests.swift */,
 				9485C01F22D71D5F4E10FD56 /* HistoryLocationToggleTests.swift */,
@@ -1271,6 +1274,7 @@
 				64B54206383FDECD40B03729 /* ConversationStoreTests.swift in Sources */,
 				6953099919213A0F6856512D /* DesignProofSheetTests.swift in Sources */,
 				91BE317F9AE916C7612CF63E /* ForeignHistoryParserTests.swift in Sources */,
+				1F5202A91CE62CC272605249 /* GatewayFailoverQueueTests.swift in Sources */,
 				139B2014D80FBF68A0EEAF4E /* HistoryAdvancedTests.swift in Sources */,
 				E7E0D2A00F472BBFBB7010F9 /* HistoryDirectoryDiscoveryTests.swift in Sources */,
 				0B27889980B2D8844BC2F144 /* HistoryLocationToggleTests.swift in Sources */,

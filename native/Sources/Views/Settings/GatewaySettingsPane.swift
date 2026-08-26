@@ -89,6 +89,8 @@ struct GatewaySettingsPane: View {
                 }
             }
 
+            failoverCard
+
             SettingsCard("高级") {
                 SettingsToggleRow(
                     "429 自动重试",
@@ -113,6 +115,116 @@ struct GatewaySettingsPane: View {
         }
         .onAppear { portText = String(model.config.port) }
         .onChange(of: model.config.port) { portText = String($0) }
+    }
+
+    /// cc-switch's failover queue, which the config and the Bifrost route builder already model:
+    /// while it is on, the queue *is* the route set, tried strictly in order. The queue therefore
+    /// owns its own order here rather than borrowing the provider list's, because the order is the
+    /// only thing it expresses.
+    private var failoverCard: some View {
+        SettingsCard("故障转移") {
+            SettingsToggleRow(
+                "自动故障转移",
+                detail: "开启后网关按队列顺序发送请求，上游失败时自动改用下一个供应商；关闭时只使用当前启用的供应商。",
+                isOn: Binding(
+                    get: { model.config.gatewayFailover.enabled },
+                    set: { enabled in Task { await model.setGatewayFailoverEnabled(enabled) } }
+                ),
+                enabled: !model.cliRecoveryRequired && !model.config.providers.isEmpty
+            )
+
+            if model.config.gatewayFailover.enabled {
+                SettingsDivider()
+                let queue = model.config.gatewayFailover.providerIds
+                VStack(spacing: Space.xs) {
+                    ForEach(Array(queue.enumerated()), id: \.element) { index, id in
+                        failoverRow(providerID: id, priority: index + 1, count: queue.count)
+                    }
+                }
+                .accessibilityIdentifier("settings.failover.queue")
+
+                HStack(spacing: Space.sm) {
+                    if unqueuedProviders.isEmpty {
+                        Text("所有供应商都已在队列中。")
+                            .font(.ccCaption())
+                            .foregroundStyle(Theme.mutedForeground)
+                    } else {
+                        Menu {
+                            ForEach(unqueuedProviders) { provider in
+                                Button(provider.name) {
+                                    Task { await model.addFailoverProvider(provider.id) }
+                                }
+                            }
+                        } label: {
+                            Label(appLanguage.localized("添加供应商"), systemImage: "plus")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .accessibilityIdentifier("settings.failover.add")
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .accessibilityIdentifier("settings.failover")
+    }
+
+    private var unqueuedProviders: [Provider] {
+        let queued = Set(model.config.gatewayFailover.providerIds)
+        return model.config.providers.filter { !queued.contains($0.id) }
+    }
+
+    private func failoverRow(providerID: String, priority: Int, count: Int) -> some View {
+        let provider = model.config.providers.first { $0.id == providerID }
+        let busy = model.cliRecoveryRequired
+        return HStack(spacing: Space.sm) {
+            CCBadge(text: "P\(priority)", tint: Theme.accentText, backing: Theme.accentSoft)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(provider?.name ?? providerID)
+                    .font(.ccBody(.medium))
+                    .lineLimit(1)
+                if let url = provider?.baseUrl, !url.isEmpty {
+                    Text(url)
+                        .font(.ccLabel())
+                        .foregroundStyle(Theme.mutedForeground)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: Space.sm)
+            Button {
+                Task { await model.moveFailoverProvider(providerID, offset: -1) }
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.ccIcon)
+            .disabled(busy || priority == 1)
+            .help(appLanguage.localized("上移"))
+            .accessibilityLabel(appLanguage.localized("上移"))
+            Button {
+                Task { await model.moveFailoverProvider(providerID, offset: 1) }
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.ccIcon)
+            .disabled(busy || priority == count)
+            .help(appLanguage.localized("下移"))
+            .accessibilityLabel(appLanguage.localized("下移"))
+            Button {
+                Task { await model.removeFailoverProvider(providerID) }
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(CCIconButtonStyle(tint: Theme.danger))
+            .disabled(busy)
+            .help(appLanguage.localized("移出队列"))
+            .accessibilityLabel(appLanguage.localized("移出队列"))
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, Space.xs)
+        .background(Theme.fillSubtle)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+        .accessibilityIdentifier("settings.failover.row.\(providerID)")
     }
 
     private var endpointRow: some View {
