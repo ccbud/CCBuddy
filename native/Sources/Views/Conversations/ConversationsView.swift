@@ -152,14 +152,8 @@ struct ConversationsView: View {
         } isTargeted: {
             isDropTarget = $0
         }
-        .onAppear {
-            store.requestHistoryScope = selectHistoryScope
-            store.activate()
-        }
-        .onDisappear {
-            store.requestHistoryScope = nil
-            store.deactivate()
-        }
+        .onAppear { store.requestHistoryScope = selectHistoryScope }
+        .onDisappear { store.requestHistoryScope = nil }
         .conversationAccessibilityContainerIdentifier("conversations.view", label: "会话")
     }
 

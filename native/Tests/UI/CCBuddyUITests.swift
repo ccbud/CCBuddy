@@ -373,7 +373,7 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(shell.waitForExistence(timeout: 5))
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)
-        app.buttons["sidebar.conversations"].click()
+        app.buttons["conversation.library.all"].click()
         XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
         XCTAssertTrue(
             app.staticTexts["没有可读取的本地会话"].waitForExistence(timeout: 8),
@@ -535,7 +535,7 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["plugin.demo"].waitForExistence(timeout: 3))
         keepMainContentScreenshot(named: "native-visual-plugins", shell: shell)
 
-        app.buttons["sidebar.conversations"].click()
+        app.buttons["conversation.library.all"].click()
         XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
         let session = app.buttons["conversation.session.disk:visual-session"]
         XCTAssertTrue(session.waitForExistence(timeout: 5))
@@ -543,7 +543,7 @@ final class CCBuddyUITests: XCTestCase {
         keepMainContentScreenshot(named: "native-visual-conversations-list", shell: shell)
         let conversationsView = app.otherElements["conversations.view"]
         if !conversationsView.exists {
-            app.buttons["sidebar.conversations"].click()
+            app.buttons["conversation.library.all"].click()
             XCTAssertTrue(conversationsView.waitForExistence(timeout: 3))
         }
         let currentSession = app.buttons["conversation.session.disk:visual-session"]

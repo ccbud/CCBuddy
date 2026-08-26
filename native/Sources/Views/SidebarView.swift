@@ -6,8 +6,9 @@ import UniformTypeIdentifiers
 ///
 /// One navigation model, not three. The rail used to stack an application list, a second compact
 /// icon strip, a source-directory group and a library tree on top of each other, so the same
-/// session was reachable four ways and counted differently each time. Now the rail states the
-/// destination first, then — only while browsing sessions — the library scopes underneath it.
+/// session was reachable four ways and counted differently each time.
+///
+/// What remains is the library itself, always listed, with the gateway destinations above it.
 /// Configured history roots are no longer a navigation group: they are storage locations and live
 /// in Settings, where they can actually be added, edited and disabled.
 struct SidebarView: View {
@@ -33,18 +34,16 @@ struct SidebarView: View {
                 }
             }
 
-            if model.selected == .conversations {
-                ConversationLibraryNavigation(
-                    store: model.conversationStore,
-                    workbench: conversationWorkbench,
-                    selectHistoryScope: { scope in
-                        Task { await model.setHistoryActive(scope) }
-                    }
-                )
-                .padding(.top, Space.md)
-            } else {
-                Spacer(minLength: Space.md)
-            }
+            ConversationLibraryNavigation(
+                store: model.conversationStore,
+                workbench: conversationWorkbench,
+                browsing: model.selected == .conversations,
+                selectHistoryScope: { scope in
+                    model.selected = .conversations
+                    Task { await model.setHistoryActive(scope) }
+                }
+            )
+            .padding(.top, Space.md)
 
             SidebarFooter(workbench: conversationWorkbench)
         }
@@ -53,10 +52,11 @@ struct SidebarView: View {
         .background(Theme.sidebar)
     }
 
-    /// Settings is deliberately absent: it is a scene reached from the footer gear and ⌘, , not a
-    /// peer of the four working destinations.
+    /// Sessions are absent for the opposite reason to Settings: the library below *is* the session
+    /// destination, always on screen, so a row that only re-selected it was a second door into the
+    /// room you were already standing in. Settings is a scene reached from the footer gear and ⌘,.
     static let destinations: [AppModel.Destination] = [
-        .conversations, .providers, .monitor, .plugins,
+        .providers, .monitor, .plugins,
     ]
 
     private var wordmark: some View {
@@ -290,6 +290,9 @@ private struct ConversationLibraryNavigation: View {
     @ObservedObject var workbench: ConversationWorkbenchState
     @Environment(\.appLanguage) private var appLanguage
 
+    /// The library is always listed, but a scope only reads as *current* while it is the thing on
+    /// screen; highlighting a row from the gateway pages would claim a selection that is not there.
+    let browsing: Bool
     let selectHistoryScope: (String) -> Void
 
     var body: some View {
@@ -299,7 +302,7 @@ private struct ConversationLibraryNavigation: View {
                     lead: .symbol("tray.full", size: 15),
                     title: appLanguage.localized("全部会话"),
                     count: totalSessionCount,
-                    selected: store.historyActive == "all" && workbench.selection == .all,
+                    selected: browsing && store.historyActive == "all" && workbench.selection == .all,
                     identifier: "conversation.library.all"
                 ) {
                     workbench.showAll()
@@ -310,7 +313,7 @@ private struct ConversationLibraryNavigation: View {
                     lead: .symbol("star", size: 14),
                     title: appLanguage.localized("收藏"),
                     count: starredCount,
-                    selected: store.historyActive == "all" && workbench.selection == .starred,
+                    selected: browsing && store.historyActive == "all" && workbench.selection == .starred,
                     identifier: "conversation.library.starred"
                 ) {
                     workbench.showStarred()
@@ -322,7 +325,7 @@ private struct ConversationLibraryNavigation: View {
                         lead: .symbol("square.and.arrow.down", size: 14),
                         title: appLanguage.localized("已导入"),
                         count: store.scopeSnapshot.importedCount,
-                        selected: store.historyActive == "__imported__",
+                        selected: browsing && store.historyActive == "__imported__",
                         identifier: "conversation.library.imported"
                     ) {
                         workbench.showAll()
@@ -335,7 +338,7 @@ private struct ConversationLibraryNavigation: View {
                         lead: .symbol("trash", size: 14),
                         title: appLanguage.localized("回收站"),
                         count: store.scopeSnapshot.trashCount,
-                        selected: store.historyActive == "__trash__",
+                        selected: browsing && store.historyActive == "__trash__",
                         destructive: true,
                         identifier: "conversation.library.trash"
                     ) {
@@ -359,7 +362,7 @@ private struct ConversationLibraryNavigation: View {
                                 lead: .brand(item.source),
                                 title: ConversationPresentation.sourceName(rawValue: item.source.rawValue),
                                 count: item.count,
-                                selected: store.historyActive == "all"
+                                selected: browsing && store.historyActive == "all"
                                     && workbench.selection == .agent(item.source),
                                 nested: true,
                                 identifier: "conversation.library.agent.\(item.source.rawValue)"
@@ -385,7 +388,7 @@ private struct ConversationLibraryNavigation: View {
                                     language: appLanguage
                                 ),
                                 count: project.sessions.count,
-                                selected: store.historyActive == "all"
+                                selected: browsing && store.historyActive == "all"
                                     && workbench.selection == .project(project.cwd),
                                 nested: true,
                                 identifier: "conversation.library.project.\(SidebarIdentifier.stable(project.cwd))"
@@ -470,17 +473,17 @@ private struct SidebarFooter: View {
             .frame(height: 18)
 
             HStack(spacing: 2) {
-                if model.selected == .conversations {
-                    footerButton("square.and.arrow.down", "导入 JSONL 或 ZIP", "conversation.import") {
-                        showingImporter = true
-                    }
-                    .disabled(model.conversationStore.isMutating)
-
-                    footerButton("arrow.clockwise", "更新会话索引", "conversation.library.refresh") {
-                        model.conversationStore.retryIndexing()
-                    }
-                    .disabled(model.conversationStore.indexingState.isScanning)
+                // Resident, like the library they act on: importing a transcript or refreshing the
+                // catalog should not require first navigating back to a particular page.
+                footerButton("square.and.arrow.down", "导入 JSONL 或 ZIP", "conversation.import") {
+                    showingImporter = true
                 }
+                .disabled(model.conversationStore.isMutating)
+
+                footerButton("arrow.clockwise", "更新会话索引", "conversation.library.refresh") {
+                    model.conversationStore.retryIndexing()
+                }
+                .disabled(model.conversationStore.indexingState.isScanning)
 
                 Spacer(minLength: 0)
 

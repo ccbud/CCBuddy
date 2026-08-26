@@ -23,6 +23,11 @@ struct AppShellView: View {
         .background(Theme.background.ignoresSafeArea())
         .foregroundStyle(Theme.foreground)
         .tint(Theme.accent)
+        // The library rail is resident, so the catalog it lists has to be live regardless of which
+        // destination is on screen; activating on the sessions page left the rail showing empty
+        // agent and project groups everywhere else.
+        .onAppear { model.conversationStore.activate() }
+        .onDisappear { model.conversationStore.deactivate() }
         .overlay {
             if searchPaletteVisible {
                 ConversationSearchPalette(store: model.conversationStore) {
