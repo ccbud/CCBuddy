@@ -40,12 +40,17 @@ final class CCBuddyUITests: XCTestCase {
 
     func testMainNavigationAndProviderEditor() {
         XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.otherElements["providers.hero"].exists)
-        XCTAssertTrue(app.groups["provider.p1"].exists)
+        // The shell appearing does not mean the destination inside it has laid out yet; asking
+        // with `exists` immediately after made this a race.
+        XCTAssertTrue(app.otherElements["providers.hero"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.groups["provider.p1"].waitForExistence(timeout: 2))
 
-        for destination in ["plugins", "conversations", "monitor", "settings", "providers"] {
+        for destination in ["plugins", "monitor", "settings", "providers"] {
             app.buttons["sidebar.\(destination)"].click()
         }
+        app.buttons["conversation.library.all"].click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 2))
+        app.buttons["sidebar.providers"].click()
 
         app.buttons["providers.add"].click()
         XCTAssertTrue(app.otherElements["provider.editor"].waitForExistence(timeout: 2))
@@ -319,13 +324,16 @@ final class CCBuddyUITests: XCTestCase {
 
     func testConfiguredLocalesLocalizeNavigationAndProviderHeroWithScreenshots() {
         let fixtures: [(String, [String], String)] = [
-            ("zh", ["服务", "插件", "会话", "监控", "设置"], "启动服务"),
-            ("zh-TW", ["服務", "外掛", "工作階段", "監控", "設定"], "啟動服務"),
-            ("ja", ["サービス", "プラグイン", "セッション", "モニター", "設定"], "サービスを起動"),
-            ("ko", ["서비스", "플러그인", "세션", "모니터", "설정"], "서비스 시작"),
-            ("en", ["Services", "Plugins", "Sessions", "Monitor", "Settings"], "Start service"),
+            ("zh", ["服务", "插件", "监控", "设置"], "启动服务"),
+            ("zh-TW", ["服務", "外掛", "監控", "設定"], "啟動服務"),
+            ("ja", ["サービス", "プラグイン", "モニター", "設定"], "サービスを起動"),
+            ("ko", ["서비스", "플러그인", "모니터", "설정"], "서비스 시작"),
+            ("en", ["Services", "Plugins", "Monitor", "Settings"], "Start service"),
         ]
-        let identifiers = ["providers", "plugins", "conversations", "monitor", "settings"]
+        // Sessions is no longer a destination row — the resident library below is the session
+        // destination — so the rail's localized rows are the three gateway pages and the footer
+        // gear that opens Settings.
+        let identifiers = ["providers", "plugins", "monitor", "settings"]
 
         for (language, labels, action) in fixtures {
             terminateAppIfRunning()

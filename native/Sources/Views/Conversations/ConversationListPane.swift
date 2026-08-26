@@ -43,6 +43,10 @@ struct ConversationListPane: View {
                 ]
             )
         }
+        // A bare identifier on a container propagates into its descendants, so the column matched
+        // several elements at once and automation could not ask for its frame. Making the column an
+        // accessibility element in its own right — still containing its rows — gives exactly one.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.list")
     }
 
