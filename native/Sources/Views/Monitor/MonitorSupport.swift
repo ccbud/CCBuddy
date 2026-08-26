@@ -6,21 +6,6 @@ struct MonitorRuntimeKey: Hashable {
     let gatewayRunning: Bool
 }
 
-extension View {
-    /// SwiftUI propagates a container identifier over nested AppKit controls on macOS. A separate
-    /// marker preserves the container hook without erasing the identifiers of its descendants.
-    func monitorAccessibilityContainerIdentifier(_ identifier: String, label: String) -> some View {
-        overlay(alignment: .topLeading) {
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 1, height: 1)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
-                .allowsHitTesting(false)
-        }
-    }
-}
 
 enum MonitorFormat {
     private static let clock: DateFormatter = {

@@ -43,7 +43,7 @@ struct ConversationTimelinePane: View {
         } message: {
             Text("主会话、导入记录与子代理文件都会被移除，此操作无法撤销。")
         }
-        .conversationAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "conversation.timeline",
             label: appLanguage.localized("会话时间线")
         )
@@ -373,9 +373,11 @@ struct ConversationTimelinePane: View {
                 Button("用 Claude 分析会话") {
                     store.replaySelected(in: .claude, language: appLanguage)
                 }
+                .accessibilityIdentifier("conversation.action.replay.claude")
                 Button("用 ChatGPT 分析会话") {
                     store.replaySelected(in: .chatGPT, language: appLanguage)
                 }
+                .accessibilityIdentifier("conversation.action.replay.chatgpt")
                 Divider()
                 Button("编辑标题与标签…") { showingMetadataEditor = true }
                 Button("复制会话路径") { store.copySelectedPath() }

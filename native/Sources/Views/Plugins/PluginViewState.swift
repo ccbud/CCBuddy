@@ -1,21 +1,6 @@
 import Foundation
 import SwiftUI
 
-extension View {
-    /// A container-level identifier otherwise propagates over every SwiftUI child control. This
-    /// marker keeps plugin automation identifiers independent while preserving the view hierarchy.
-    func pluginAccessibilityContainerIdentifier(_ identifier: String, label: String) -> some View {
-        overlay(alignment: .topLeading) {
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 1, height: 1)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
-                .allowsHitTesting(false)
-        }
-    }
-}
 
 struct PluginActionViewState: Identifiable, Equatable {
     enum Kind: String, Equatable {

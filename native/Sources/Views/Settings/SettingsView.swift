@@ -32,7 +32,7 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.navigation.settingsPane)
-        .settingsAccessibilityContainerIdentifier("view.settings", label: "设置")
+        .accessibilityContainerIdentifier("view.settings", label: "设置")
     }
 
     private var navigation: some View {
@@ -109,36 +109,20 @@ struct SettingsView: View {
         switch model.navigation.settingsPane {
         case .general:
             GeneralSettingsPane()
-                .settingsAccessibilityContainerIdentifier("settings.pane.general", label: "常规")
+                .accessibilityContainerIdentifier("settings.pane.general", label: "常规")
         case .locations:
             LocationsSettingsPane()
-                .settingsAccessibilityContainerIdentifier("settings.pane.locations", label: "会话位置")
+                .accessibilityContainerIdentifier("settings.pane.locations", label: "会话位置")
         case .gateway:
             GatewaySettingsPane()
-                .settingsAccessibilityContainerIdentifier("settings.pane.gateway", label: "网关")
+                .accessibilityContainerIdentifier("settings.pane.gateway", label: "网关")
         case .data:
             DataSettingsPane()
-                .settingsAccessibilityContainerIdentifier("settings.pane.data", label: "数据")
+                .accessibilityContainerIdentifier("settings.pane.data", label: "数据")
         case .about:
             AboutSettingsPane()
-                .settingsAccessibilityContainerIdentifier("settings.pane.about", label: "关于与更新")
+                .accessibilityContainerIdentifier("settings.pane.about", label: "关于与更新")
         }
     }
 }
 
-private extension View {
-    /// A full-pane identifier propagates through SwiftUI and replaces identifiers on copy buttons
-    /// and navigation controls. Keep the container marker independent so both levels remain
-    /// addressable by accessibility automation.
-    func settingsAccessibilityContainerIdentifier(_ identifier: String, label: String) -> some View {
-        overlay(alignment: .topLeading) {
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 1, height: 1)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
-                .allowsHitTesting(false)
-        }
-    }
-}

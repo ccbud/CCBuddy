@@ -63,7 +63,7 @@ struct ProvidersView: View {
                 )
             }
         }
-        .accessibilityIdentifier("view.providers")
+        .accessibilityContainerIdentifier("view.providers", label: appLanguage.localized("服务"))
     }
 
     private var toolbar: some View {

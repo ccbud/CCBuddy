@@ -95,7 +95,7 @@ struct PluginActionFormSheet: View {
         .frame(width: 460)
         .frame(minHeight: 260, maxHeight: 620)
         .background(Theme.surface)
-        .pluginAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "plugin.form.\(pluginID).\(action.id)",
             label: action.label
         )
@@ -124,7 +124,7 @@ struct PluginActionFormSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .pluginAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "plugin.form.field.\(field.key)",
             label: field.label
         )

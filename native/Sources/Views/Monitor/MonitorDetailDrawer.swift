@@ -54,7 +54,7 @@ struct MonitorDetailDrawer: View {
             refreshSearch()
         }
         .onChange(of: searchQuery) { _ in refreshSearch() }
-        .monitorAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "monitor.detail.drawer",
             label: appLanguage.localized("请求详情")
         )

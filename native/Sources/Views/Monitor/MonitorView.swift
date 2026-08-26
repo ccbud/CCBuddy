@@ -106,7 +106,7 @@ struct MonitorView: View {
             Text("将从 Bifrost 永久删除当前时间前的全部请求日志，并清除本机内存中的生命周期记录。清除期间产生的新请求会保留。")
         }
         .background(Theme.background)
-        .monitorAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "view.monitor",
             label: appLanguage.localized("监控")
         )

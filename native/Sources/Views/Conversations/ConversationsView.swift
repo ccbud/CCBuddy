@@ -154,7 +154,7 @@ struct ConversationsView: View {
         }
         .onAppear { store.requestHistoryScope = selectHistoryScope }
         .onDisappear { store.requestHistoryScope = nil }
-        .conversationAccessibilityContainerIdentifier("conversations.view", label: "会话")
+        .accessibilityContainerIdentifier("conversations.view", label: "会话")
     }
 
 }

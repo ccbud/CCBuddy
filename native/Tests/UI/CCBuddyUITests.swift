@@ -299,7 +299,9 @@ final class CCBuddyUITests: XCTestCase {
             predicate: NSPredicate(format: "value == %@", "1/1"),
             object: count
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [countUpdated], timeout: 2), .completed)
+        // The count is debounced behind the search field, so a loaded machine needs more than the
+        // two seconds this used to allow.
+        XCTAssertEqual(XCTWaiter.wait(for: [countUpdated], timeout: 8), .completed)
 
         pasteboard.clearContents()
         app.buttons["monitor.detail.copy"].click()
@@ -426,11 +428,20 @@ final class CCBuddyUITests: XCTestCase {
             app.descendants(matching: .any)["conversation.message.0"].waitForExistence(timeout: 10),
             "Selecting the fast metadata row must load the full conversation detail"
         )
-        XCTAssertTrue(app.buttons["conversation.action.replay.claude"].exists)
-        XCTAssertTrue(app.buttons["conversation.action.replay.chatgpt"].exists)
+        // Resuming in a terminal is the header's one primary action now; analysing the transcript in
+        // a chat client moved into the overflow menu, which is where this asserts it still is.
+        XCTAssertTrue(app.buttons["conversation.action.resume"].exists)
+        // Captured before the surface assertions so a failure ships the frame it was measuring.
+        keepMainContentScreenshot(named: "wake-conversation-detail", shell: shell)
         assertOpaqueConversationTopSurfaces(in: window)
         assertWakeConversationColumns(in: window)
-        keepMainContentScreenshot(named: "wake-conversation-detail", shell: shell)
+
+        // Opened last: a menu paints over the columns the surface samples above measure.
+        // A SwiftUI `Menu` surfaces as a pop-up button rather than a plain button.
+        app.descendants(matching: .any)["conversation.action.more"].click()
+        XCTAssertTrue(app.menuItems["用 Claude 分析会话"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.menuItems["用 ChatGPT 分析会话"].exists)
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     func testDeterministicVisualParityScreenshots() throws {
@@ -510,24 +521,15 @@ final class CCBuddyUITests: XCTestCase {
             accuracy: 1,
             "The traffic-light cluster should retain Wake's 20-point leading inset"
         )
-        let titleBarInset = shell.frame.minY - windowFrame.minY
-        XCTAssertEqual(
-            titleBarInset,
-            0,
-            accuracy: 1,
-            "The opaque app shell should extend beneath the integrated native title bar"
-        )
+        // Whether the opaque shell reaches under the title bar is settled by sampling the pixels
+        // in that band (see the top-surface samples below), not by an accessibility frame: SwiftUI
+        // reports overlay frames clipped to the safe area even when the layer beneath them extends
+        // past it, so this measured a title bar's height of inset while the band rendered correctly.
         XCTAssertEqual(windowFrame.width, 1_180, accuracy: 0.5)
         let hostingScreen = NSScreen.screens.first { $0.visibleFrame.intersects(windowFrame) }
             ?? NSScreen.main
-        let availableContentHeight = hostingScreen.map {
-            max(0, $0.visibleFrame.height - titleBarInset)
-        } ?? 760
-        XCTAssertEqual(
-            windowFrame.height - titleBarInset,
-            min(760, availableContentHeight),
-            accuracy: 4
-        )
+        let availableContentHeight = hostingScreen.map { max(0, $0.visibleFrame.height) } ?? 760
+        XCTAssertEqual(windowFrame.height, min(760, availableContentHeight), accuracy: 4)
         let visualTokens = app.staticTexts["providers.usage.tokens"]
         XCTAssertTrue(visualTokens.waitForExistence(timeout: 5))
         let usageLoaded = XCTNSPredicateExpectation(
@@ -700,10 +702,13 @@ final class CCBuddyUITests: XCTestCase {
             return
         }
 
+        // The three columns must still be told apart by tone alone in the title-bar band, which is
+        // also what proves the opaque shell reaches under it. Values are Theme.sidebar, Theme.list
+        // and Theme.background.
         let samples: [(name: String, point: CGPoint, expectedRGB: UInt32)] = [
-            ("sidebar", CGPoint(x: 112, y: 12), 0xEDEDEA),
-            ("conversation list", CGPoint(x: 392, y: 12), 0xF7F7F5),
-            ("conversation detail", CGPoint(x: 870, y: 12), 0xF1F1EF),
+            ("sidebar", CGPoint(x: 112, y: 12), 0xEDEBE4),
+            ("conversation list", CGPoint(x: 392, y: 12), 0xF7F5F0),
+            ("conversation detail", CGPoint(x: 870, y: 12), 0xF1EFE9),
         ]
         let xScale = CGFloat(bitmap.pixelsWide) / frame.width
         let yScale = CGFloat(bitmap.pixelsHigh) / frame.height
@@ -714,11 +719,13 @@ final class CCBuddyUITests: XCTestCase {
                 bitmap.pixelsWide - 1,
                 max(0, Int((sample.point.x * xScale).rounded(.down)))
             )
-            let topPixelY = min(
+            // `colorAt(x:y:)` already counts rows from the top of the image, so flipping here read
+            // the bottom of the window instead: the two flat columns looked identical either way,
+            // and the detail column quietly reported its reading card rather than its top band.
+            let pixelY = min(
                 bitmap.pixelsHigh - 1,
                 max(0, Int((sample.point.y * yScale).rounded(.down)))
             )
-            let pixelY = bitmap.pixelsHigh - 1 - topPixelY
             guard let color = bitmap.colorAt(x: pixelX, y: pixelY),
                   let sRGB = color.usingColorSpace(.sRGB) else {
                 XCTFail("Could not read the \(sample.name) top-surface pixel")

@@ -98,7 +98,7 @@ struct PluginsView: View {
             )
         }
         .overlay { globalBusyOverlay }
-        .pluginAccessibilityContainerIdentifier("view.plugins", label: appLanguage.localized("插件"))
+        .accessibilityContainerIdentifier("view.plugins", label: appLanguage.localized("插件"))
     }
 
     /// The page masthead, matching Providers: a title band on the list material that owns the
@@ -116,7 +116,7 @@ struct PluginsView: View {
         }
         .background(Theme.list)
         .hairline(.bottom)
-        .pluginAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "plugins.hero",
             label: appLanguage.localized("插件管理")
         )
@@ -177,7 +177,7 @@ struct PluginsView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 32)
             .overlay(RoundedRectangle(cornerRadius: Radius.panel).stroke(Theme.separator, style: .init(dash: [5])))
-            .pluginAccessibilityContainerIdentifier(
+            .accessibilityContainerIdentifier(
                 "plugins.empty",
                 label: appLanguage.localized("未安装插件")
             )
@@ -209,7 +209,7 @@ struct PluginsView: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .pluginAccessibilityContainerIdentifier(
+            .accessibilityContainerIdentifier(
                 "plugins.global-busy",
                 label: appLanguage.localized(operation.message)
             )
@@ -353,7 +353,7 @@ private struct PluginCard: View {
             }
         }
         .allowsHitTesting(!busy)
-        .pluginAccessibilityContainerIdentifier("plugin.\(item.id)", label: item.name)
+        .accessibilityContainerIdentifier("plugin.\(item.id)", label: item.name)
     }
 
     @ViewBuilder
@@ -412,7 +412,7 @@ private struct PluginCard: View {
                 .font(.ccCaption())
                 .foregroundStyle(authenticationColor)
         }
-        .pluginAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "plugin.\(item.id).status",
             label: "\(appLanguage.localized(item.lifecycleLabel)) · \(appLanguage.localized(item.authenticationLabel))"
         )
@@ -605,7 +605,7 @@ private struct PluginGitImportSheet: View {
         }
         .frame(width: 460)
         .background(Theme.surface)
-        .pluginAccessibilityContainerIdentifier(
+        .accessibilityContainerIdentifier(
             "plugins.git-sheet",
             label: appLanguage.localized("从 Git 添加")
         )

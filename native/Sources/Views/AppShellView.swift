@@ -20,7 +20,14 @@ struct AppShellView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
-        .background(Theme.background.ignoresSafeArea())
+        // The marker rides the background layer because that is the one that genuinely spans the
+        // window: hung off the outer chain it was placed against the safe area instead, reporting
+        // the shell as starting a title bar's height below the window's top edge.
+        .background(
+            Theme.background
+                .ignoresSafeArea()
+                .accessibilityContainerIdentifier("app.shell", label: "CC Buddy")
+        )
         .foregroundStyle(Theme.foreground)
         .tint(Theme.accent)
         // The library rail is resident, so the catalog it lists has to be live regardless of which
@@ -58,15 +65,6 @@ struct AppShellView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudOpenSettings)) { _ in
             model.selected = .settings
-        }
-        .overlay(alignment: .topLeading) {
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 1, height: 1)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("CC Buddy")
-                .accessibilityIdentifier("app.shell")
-                .allowsHitTesting(false)
         }
     }
 

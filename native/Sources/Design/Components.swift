@@ -80,6 +80,28 @@ extension View {
     }
 }
 
+// MARK: - Accessibility
+
+extension View {
+    /// Names a whole destination for automation without stealing its contents' identities.
+    ///
+    /// SwiftUI propagates an identifier placed on a container down into its descendants, where it
+    /// replaces their own, more specific hooks — a destination marked this way answered to
+    /// `view.providers` for its hero, its buttons and its scroll view alike. A one-point marker
+    /// carries the container's name instead, and nothing inherits it.
+    func accessibilityContainerIdentifier(_ identifier: String, label: String) -> some View {
+        overlay(alignment: .topLeading) {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 1, height: 1)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier(identifier)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
 // MARK: - Buttons
 
 /// The four button roles. Anything that needs a fifth is a design question, not a code question.

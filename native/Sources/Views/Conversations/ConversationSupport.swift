@@ -1,23 +1,6 @@
 import Foundation
 import SwiftUI
 
-extension View {
-    /// SwiftUI propagates a container identifier into descendants and can replace their more
-    /// specific automation hooks. A separate marker keeps the container addressable without
-    /// changing the accessibility identity or hit-testing behavior of its contents.
-    func conversationAccessibilityContainerIdentifier(_ identifier: String, label: String) -> some View {
-        overlay(alignment: .topLeading) {
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 1, height: 1)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
-                .allowsHitTesting(false)
-        }
-    }
-}
-
 enum ConversationPresentation {
     static func sourceName(rawValue: String) -> String {
         switch rawValue {
