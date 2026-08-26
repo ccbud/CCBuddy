@@ -30,17 +30,26 @@ xcodebuild -project CCBuddy.xcodeproj -scheme CCBuddy \
   -parallel-testing-enabled NO test
 ```
 
-Run UI tests under a unique application identifier. This is required when a production CC Buddy
-with `dev.ccbud.gateway` is installed or running, because `XCUIApplication.terminate()` operates
-by bundle identifier:
+Run UI tests under their own application identifier. A separate identifier is required when a
+production CC Buddy is installed or running, because `XCUIApplication.terminate()` operates by
+bundle identifier — but keep it *stable* rather than generating one per run: every new identifier
+is a new TCC subject, and each first launch then asks for consent that nobody is there to give.
 
 ```bash
-ui_suffix="$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')"
 xcodebuild -project CCBuddy.xcodeproj -scheme CCBuddy \
   -destination 'platform=macOS,arch=arm64' -only-testing:CCBuddyUITests \
-  -parallel-testing-enabled NO \
-  CCBUD_PRODUCT_BUNDLE_IDENTIFIER="dev.ccbud.gateway.uitest.$ui_suffix" test
+  -parallel-testing-enabled NO -maximum-parallel-testing-workers 1 \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO \
+  CCBUD_PRODUCT_BUNDLE_IDENTIFIER="dev.ccbud.gateway.uitest.local" test
 ```
+
+`CODE_SIGN_IDENTITY=-` and `ENABLE_HARDENED_RUNTIME=NO` are what CI uses; without them the runner
+refuses to inject its library into an app signed by a different team. A local run also has to
+answer one macOS prompt to enable UI automation, which CI does not.
+
+If a run reports that the runner hung before connecting, or leaves a system dialog that will not
+dismiss, the test daemon is wedged: `kill -9 $(pgrep -f testmanagerd)` clears both. It presents as
+unrelated failures — including gateway E2E suites appearing to hang forever.
 
 The app resolves Bifrost in this order: `CCBUD_BIFROST_BINARY`, an executable bundled in the app,
 then `native/Vendor/bifrost-http`. Release builds will bundle the pinned sidecar; local UI work can
