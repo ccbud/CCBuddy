@@ -351,7 +351,7 @@ private struct ConversationLibraryNavigation: View {
             ScrollView {
                 LazyVStack(spacing: 2) {
                     SidebarGroupHead(
-                        title: appLanguage.localized("代理"),
+                        title: appLanguage.localized("工具"),
                         expanded: workbench.agentsExpanded
                     ) {
                         workbench.agentsExpanded.toggle()

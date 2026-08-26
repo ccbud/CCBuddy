@@ -34,11 +34,7 @@ struct PluginsView: View {
                     issues
                     pluginList
                 }
-                .padding(.horizontal, Space.xl)
-                .padding(.top, Space.lg)
-                .padding(.bottom, Space.xxl)
-                .frame(maxWidth: 920)
-                .frame(maxWidth: .infinity)
+                .pageContent()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

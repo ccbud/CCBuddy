@@ -55,6 +55,31 @@ extension View {
     }
 }
 
+/// The standard inset for a destination's scrolling content.
+///
+/// Every page had been repeating these numbers, which is how one of them ended up with none at all:
+/// content flush against the header's hairline and against the window edge. `measure` caps the
+/// reading width on a wide window without letting the block drift away from the leading edge on a
+/// narrow one.
+struct PageContent: ViewModifier {
+    var measure: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, Space.xl)
+            .padding(.top, Space.xl)
+            .padding(.bottom, Space.xxl)
+            .frame(maxWidth: measure, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+extension View {
+    func pageContent(measure: CGFloat = 920) -> some View {
+        modifier(PageContent(measure: measure))
+    }
+}
+
 // MARK: - Buttons
 
 /// The four button roles. Anything that needs a fifth is a design question, not a code question.

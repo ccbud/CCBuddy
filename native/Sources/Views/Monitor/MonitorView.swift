@@ -147,7 +147,7 @@ struct MonitorView: View {
                     revealsSensitiveData: revealsSensitiveData
                 )
             }
-            .frame(maxWidth: 1120)
+            .pageContent(measure: 1_120)
         }
     }
 
@@ -177,57 +177,100 @@ struct MonitorView: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
     }
 
+    /// Four across when there is room, two by two when there is not. A fixed four-column strip
+    /// collided with itself on a narrow window — the endpoint and the timestamp had nowhere to go.
     private var metricGrid: some View {
-        HStack(spacing: 0) {
-            MonitorMetricCard(
-                title: "网关",
-                value: appLanguage.localized(gatewayRunning ? "已接入" : "未接入"),
-                subtitle: "localhost:\(port)",
-                accent: gatewayRunning ? Theme.foreground : Theme.mutedForeground,
-                showsStatusDot: true,
-                statusActive: gatewayRunning
-            )
-            .accessibilityIdentifier("monitor.metric.gateway")
-            metricSeparator
+        ViewThatFits(in: .horizontal) {
+            metricRow
+            metricPairs
+        }
+    }
 
-            MonitorMetricCard(
-                title: "活跃服务",
-                value: activeProvider?.name ?? "—",
-                subtitle: activeProvider.map {
-                    revealsSensitiveData
-                        ? $0.baseUrl
-                        : MonitorPrivacyRedactor.redact($0.baseUrl, language: appLanguage)
-                } ?? appLanguage.localized("未选择服务"),
-                accent: Theme.foreground,
-                subtitlePrivacySensitive: true
-            )
-            .accessibilityIdentifier("monitor.metric.provider")
-            metricSeparator
-
-            MonitorMetricCard(
-                title: "总请求",
-                value: MonitorFormat.integer(totalRequests, locale: appLanguage.locale),
-                unit: nil,
-                subtitle: appLanguage.localized(
-                    "成功率 \(MonitorFormat.percent(store.stats?.rootSuccessRate))"
-                ),
-                accent: Theme.foreground,
-                prominentNumber: true
-            )
-            .accessibilityIdentifier("monitor.metric.total")
-            metricSeparator
-
-            MonitorMetricCard(
-                title: "平均耗时",
-                value: MonitorFormat.milliseconds(averageLatency),
-                unit: "ms",
-                subtitle: latestRequestText,
-                accent: Theme.foreground,
-                prominentNumber: true
-            )
-            .accessibilityIdentifier("monitor.metric.latency")
+    private var metricPairs: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                gatewayMetric
+                metricSeparator
+                providerMetric
+            }
+            Rectangle()
+                .fill(Theme.separator)
+                .frame(height: 1)
+                .accessibilityHidden(true)
+            HStack(spacing: 0) {
+                totalMetric
+                metricSeparator
+                latencyMetric
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var metricRow: some View {
+        HStack(spacing: 0) {
+            gatewayMetric
+            metricSeparator
+            providerMetric
+            metricSeparator
+            totalMetric
+            metricSeparator
+            latencyMetric
+        }
+        .frame(minWidth: 720)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var gatewayMetric: some View {
+        MonitorMetricCard(
+            title: "网关",
+            value: appLanguage.localized(gatewayRunning ? "已接入" : "未接入"),
+            subtitle: "localhost:\(port)",
+            accent: gatewayRunning ? Theme.foreground : Theme.mutedForeground,
+            showsStatusDot: true,
+            statusActive: gatewayRunning
+        )
+        .accessibilityIdentifier("monitor.metric.gateway")
+    }
+
+    private var providerMetric: some View {
+        MonitorMetricCard(
+            title: "活跃服务",
+            value: activeProvider?.name ?? "—",
+            subtitle: activeProvider.map {
+                revealsSensitiveData
+                    ? $0.baseUrl
+                    : MonitorPrivacyRedactor.redact($0.baseUrl, language: appLanguage)
+            } ?? appLanguage.localized("未选择服务"),
+            accent: Theme.foreground,
+            subtitlePrivacySensitive: true
+        )
+        .accessibilityIdentifier("monitor.metric.provider")
+    }
+
+    private var totalMetric: some View {
+        MonitorMetricCard(
+            title: "总请求",
+            value: MonitorFormat.integer(totalRequests, locale: appLanguage.locale),
+            unit: nil,
+            subtitle: appLanguage.localized(
+                "成功率 \(MonitorFormat.percent(store.stats?.rootSuccessRate))"
+            ),
+            accent: Theme.foreground,
+            prominentNumber: true
+        )
+        .accessibilityIdentifier("monitor.metric.total")
+    }
+
+    private var latencyMetric: some View {
+        MonitorMetricCard(
+            title: "平均耗时",
+            value: MonitorFormat.milliseconds(averageLatency),
+            unit: "ms",
+            subtitle: latestRequestText,
+            accent: Theme.foreground,
+            prominentNumber: true
+        )
+        .accessibilityIdentifier("monitor.metric.latency")
     }
 
     private var metricSeparator: some View {
