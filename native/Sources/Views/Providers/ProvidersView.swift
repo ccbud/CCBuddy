@@ -63,7 +63,10 @@ struct ProvidersView: View {
                 )
             }
         }
-        .accessibilityIdentifier("view.providers")
+        .providersAccessibilityContainerIdentifier(
+            "view.providers",
+            label: appLanguage.localized("服务")
+        )
     }
 
     private var toolbar: some View {
@@ -232,5 +235,23 @@ struct ProvidersView: View {
     private func pluginRunning(for provider: Provider) -> Bool? {
         guard provider.backend == .plugin, let pluginID = provider.pluginId else { return nil }
         return model.plugins.first(where: { $0.id == pluginID })?.isRunning ?? false
+    }
+}
+
+private extension View {
+    /// A bare identifier on the page container propagates onto every descendant element and
+    /// replaces their more specific automation hooks — the hero marker, the connect button and the
+    /// provider rows all stopped being addressable. The separate marker keeps the container hook
+    /// without changing the accessibility identity of its contents.
+    func providersAccessibilityContainerIdentifier(_ identifier: String, label: String) -> some View {
+        overlay(alignment: .topLeading) {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 1, height: 1)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier(identifier)
+                .allowsHitTesting(false)
+        }
     }
 }

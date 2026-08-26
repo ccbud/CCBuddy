@@ -426,8 +426,12 @@ final class CCBuddyUITests: XCTestCase {
             app.descendants(matching: .any)["conversation.message.0"].waitForExistence(timeout: 10),
             "Selecting the fast metadata row must load the full conversation detail"
         )
-        XCTAssertTrue(app.buttons["conversation.action.replay.claude"].exists)
-        XCTAssertTrue(app.buttons["conversation.action.replay.chatgpt"].exists)
+        // The two analysis actions moved into the overflow menu; the header now carries the icon
+        // affordances and the menu that hosts everything else.
+        XCTAssertTrue(app.buttons["conversation.action.star"].exists)
+        XCTAssertTrue(app.buttons["conversation.action.pin"].exists)
+        XCTAssertTrue(app.buttons["conversation.action.overview"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["conversation.action.more"].exists)
         assertOpaqueConversationTopSurfaces(in: window)
         assertWakeConversationColumns(in: window)
         keepMainContentScreenshot(named: "wake-conversation-detail", shell: shell)

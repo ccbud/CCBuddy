@@ -19,7 +19,6 @@ struct AppShellView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.container, edges: .top)
         .background(Theme.background.ignoresSafeArea())
         .foregroundStyle(Theme.foreground)
         .tint(Theme.accent)
@@ -68,6 +67,10 @@ struct AppShellView: View {
                 .accessibilityIdentifier("app.shell")
                 .allowsHitTesting(false)
         }
+        // Last on purpose: an overlay is laid out against the safe area its base still reports, so
+        // ignoring it before the overlays left the `app.shell` marker (and the palette scrim) a
+        // title bar below the window edge while the columns behind them extended to the top.
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     @ViewBuilder private var content: some View {
