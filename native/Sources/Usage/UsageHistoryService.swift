@@ -238,10 +238,14 @@ actor UsageHistoryService {
 
     init(
         calendar: Calendar = .current,
-        scanner: (any UsageHistoryScanning)? = nil
+        scanner: (any UsageHistoryScanning)? = nil,
+        recordCacheRoot: URL? = nil
     ) {
         self.calendar = calendar
-        self.scanner = scanner ?? UsageHistoryScanner(calendar: calendar)
+        self.scanner = scanner ?? UsageHistoryScanner(
+            calendar: calendar,
+            recordCache: UsageHistoryRecordCache(applicationDataRoot: recordCacheRoot)
+        )
     }
 
     func summary(

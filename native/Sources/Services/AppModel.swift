@@ -245,7 +245,7 @@ final class AppModel: ObservableObject {
         launchAtLoginController: LaunchAtLoginController = LaunchAtLoginController(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pluginManager: (any PluginManaging)? = nil,
-        usageHistoryService: UsageHistoryService = UsageHistoryService(),
+        usageHistoryService: UsageHistoryService? = nil,
         historyDirectoryDiscovery: HistoryDirectoryDiscovery? = nil,
         isPrimaryInstance: Bool? = nil,
         userDefaults: UserDefaults = .standard,
@@ -298,7 +298,10 @@ final class AppModel: ObservableObject {
             ?? (runtimeMode == .application && mayMutateApplicationState)
         usageHistoryMayWatch = runtimeMode == .application && mayMutateApplicationState
         updateState = .idle(currentVersion: updateConfiguration.currentVersion)
+        // Built here rather than defaulted in the signature so the record cache lands beside the
+        // rest of this process's data — which is an isolated root under test, not the real home.
         self.usageHistoryService = usageHistoryService
+            ?? UsageHistoryService(recordCacheRoot: importsRoot.deletingLastPathComponent())
         self.supervisor = supervisor
         let resolvedConnectionManager = connectionManager ?? CLIConnectionManager(
             repository: repository,

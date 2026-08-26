@@ -7,13 +7,20 @@ protocol UsageHistoryScanning: Sendable {
 struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
     var calendar: Calendar
     var qoderReader: QoderFileReader
+    /// Optional because tests and embedders want a scanner that always reads from disk. When
+    /// present, unchanged transcripts are answered from their previously parsed records instead of
+    /// being read again — the difference between re-reading a 14 GB library on every launch and
+    /// reading a few megabytes of records.
+    var recordCache: UsageHistoryRecordCache?
 
     init(
         calendar: Calendar = .current,
-        qoderReader: QoderFileReader = .shared
+        qoderReader: QoderFileReader = .shared,
+        recordCache: UsageHistoryRecordCache? = nil
     ) {
         self.calendar = calendar
         self.qoderReader = qoderReader
+        self.recordCache = recordCache
     }
 
     func scan(configuration: UsageHistoryConfiguration) -> [String: UsageHistoryDay] {
@@ -32,12 +39,13 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
                 under: root.appendingPathComponent("projects", isDirectory: true)
             ))
         }
+        var visited = Set<String>()
         qoderReader.prefetch(claudeFiles)
         var claudeDeduplicator = ClaudeDeduplicator()
         for file in claudeFiles {
             guard !Task.isCancelled else { return days }
-            forEachUsageLine(in: file) { line in
-                if let record = Self.parseClaude(line) { claudeDeduplicator.append(record) }
+            for record in claudeRecords(in: file, visited: &visited) {
+                claudeDeduplicator.append(record)
             }
         }
         for record in claudeDeduplicator.kept {
@@ -50,7 +58,7 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
             guard !Task.isCancelled else { return days }
             for file in Self.codexFiles(root: root) {
                 guard !Task.isCancelled else { return days }
-                for event in Self.parseCodex(file) {
+                for event in codexEvents(in: file, visited: &visited) {
                     guard !Task.isCancelled else { return days }
                     let key = CodexEventKey(
                         timestampMilliseconds: Self.timestampMilliseconds(event.timestamp),
@@ -72,6 +80,8 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
                 }
             }
         }
+        guard !Task.isCancelled else { return days }
+        recordCache?.commit(retaining: visited)
         return days
     }
 
@@ -90,6 +100,117 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
         let hour = calendar.component(.hour, from: event.timestamp)
         day.hours[hour, default: 0] += event.total
         days[key] = day
+    }
+
+    /// Cached records for a transcript, or freshly parsed ones when it is new or has changed.
+    ///
+    /// Records — not day buckets — because deduplication runs across files: an assistant message
+    /// appears in both a parent transcript and its subagent's, so the fold has to see every record.
+    private func claudeRecords(in file: URL, visited: inout Set<String>) -> [ClaudeRecord] {
+        let key = UsageHistoryRecordCache.key(for: file)
+        visited.insert(key)
+        guard let cache = recordCache, let identity = UsageHistoryFileIdentity.of(file) else {
+            var parsed: [ClaudeRecord] = []
+            forEachUsageLine(in: file) { line in
+                if let record = Self.parseClaude(line) { parsed.append(record) }
+            }
+            return parsed
+        }
+        if let cached = cache.records(for: file, identity: identity) {
+            return cached.claude.map(Self.record(from:))
+        }
+        var parsed: [ClaudeRecord] = []
+        forEachUsageLine(in: file) { line in
+            if let record = Self.parseClaude(line) { parsed.append(record) }
+        }
+        cache.store(
+            UsageHistoryFileRecords(
+                modifiedAt: identity.modifiedAt,
+                sizeBytes: identity.sizeBytes,
+                claude: parsed.map(Self.cached(from:)),
+                codex: []
+            ),
+            for: file
+        )
+        return parsed
+    }
+
+    private func codexEvents(in file: URL, visited: inout Set<String>) -> [CodexEvent] {
+        let key = UsageHistoryRecordCache.key(for: file)
+        visited.insert(key)
+        guard let cache = recordCache, let identity = UsageHistoryFileIdentity.of(file) else {
+            return Self.parseCodex(file)
+        }
+        if let cached = cache.records(for: file, identity: identity) {
+            return cached.codex.map(Self.event(from:))
+        }
+        let parsed = Self.parseCodex(file)
+        cache.store(
+            UsageHistoryFileRecords(
+                modifiedAt: identity.modifiedAt,
+                sizeBytes: identity.sizeBytes,
+                claude: [],
+                codex: parsed.map(Self.cached(from:))
+            ),
+            for: file
+        )
+        return parsed
+    }
+
+    private static func cached(from record: ClaudeRecord) -> UsageHistoryCachedClaudeRecord {
+        .init(
+            id: record.id,
+            requestID: record.requestID,
+            sidechain: record.sidechain,
+            timestamp: record.event.timestamp,
+            model: record.event.model,
+            input: record.event.input,
+            output: record.event.output,
+            cacheRead: record.event.cacheRead,
+            cacheCreation: record.event.cacheCreation
+        )
+    }
+
+    private static func record(from cached: UsageHistoryCachedClaudeRecord) -> ClaudeRecord {
+        .init(
+            id: cached.id,
+            requestID: cached.requestID,
+            sidechain: cached.sidechain,
+            event: UsageHistoryEvent(
+                timestamp: cached.timestamp,
+                model: cached.model,
+                input: cached.input,
+                output: cached.output,
+                cacheRead: cached.cacheRead,
+                cacheCreation: cached.cacheCreation
+            )
+        )
+    }
+
+    private static func cached(from event: CodexEvent) -> UsageHistoryCachedCodexEvent {
+        .init(
+            timestamp: event.timestamp,
+            model: event.model,
+            input: event.usage.input,
+            cached: event.usage.cached,
+            output: event.usage.output,
+            reasoning: event.usage.reasoning,
+            total: event.usage.total
+        )
+    }
+
+    private static func event(from cached: UsageHistoryCachedCodexEvent) -> CodexEvent {
+        .init(
+            usage: CodexUsage(
+                input: cached.input,
+                cached: cached.cached,
+                output: cached.output,
+                reasoning: cached.reasoning,
+                total: cached.total
+            ),
+            timestamp: cached.timestamp,
+            model: cached.model
+        )
     }
 
     private func forEachUsageLine(in file: URL, _ body: (String) -> Void) {
