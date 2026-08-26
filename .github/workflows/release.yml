@@ -196,8 +196,11 @@ jobs:
             CCBUD_PRODUCT_BUNDLE_IDENTIFIER="$ui_bundle_id"
           xcrun xcresulttool get test-results summary \
             --path "$result" --compact > "$summary"
-          jq -e '.result == "Passed" and .totalTestCount == 10
-            and .passedTests == 10 and .failedTests == 0
+          # Counted, not pinned: an exact total meant every added UI test failed this gate while
+          # passing, and "all of them passed, none skipped" is the property being enforced. The
+          # floor still catches a suite that silently stopped running.
+          jq -e '.result == "Passed" and .totalTestCount >= 10
+            and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
             "$summary"
