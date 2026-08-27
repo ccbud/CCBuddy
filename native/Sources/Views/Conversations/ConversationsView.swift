@@ -11,8 +11,21 @@ final class ConversationWorkbenchState: ObservableObject {
     }
 
     @Published private(set) var selection: Selection = .all
-    @Published var agentsExpanded = true
-    @Published var projectsExpanded = true
+    @Published private(set) var agentsExpanded = true
+    @Published private(set) var projectsExpanded = true
+
+    /// Collapsing a group hides the row that is doing the filtering. Leaving the filter on would
+    /// leave the stream narrowed by a condition with nothing on screen to explain or undo it, so
+    /// putting a group away also puts away the scope it held.
+    func setAgentsExpanded(_ expanded: Bool) {
+        agentsExpanded = expanded
+        if !expanded, case .agent = selection { selection = .all }
+    }
+
+    func setProjectsExpanded(_ expanded: Bool) {
+        projectsExpanded = expanded
+        if !expanded, case .project = selection { selection = .all }
+    }
 
     func showAll() {
         selection = .all

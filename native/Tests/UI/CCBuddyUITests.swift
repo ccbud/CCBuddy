@@ -449,6 +449,67 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(overflow.isEnabled)
     }
 
+    func testLibraryGroupsCollapseAndComeBack() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-rail-groups-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let timestamp = "2026-01-01T00:00:00.000Z"
+        let lines = [
+            #"{"type":"user","uuid":"rail-user","timestamp":"\#(timestamp)","sessionId":"rail-session","cwd":"/workspace/rail","message":{"role":"user","content":"hello"},"__ccbud__":{"title":"Rail session"}}"#,
+            #"{"type":"assistant","uuid":"rail-assistant","timestamp":"\#(timestamp)","requestId":"rail-request","sessionId":"rail-session","cwd":"/workspace/rail","message":{"id":"rail-message","role":"assistant","model":"glm-5.2","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":4,"output_tokens":2}}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8)
+            .write(to: project.appendingPathComponent("rail-session.jsonl"))
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_VISUAL_FIXTURE"] = "legacy-smoke"
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 5))
+        refresh.click()
+
+        let agent = app.buttons["conversation.library.agent.disk"]
+        // The rail derives a row identifier from the working directory by replacing everything
+        // that is not alphanumeric; spelled out here because a UI test cannot see app internals.
+        let projectRow = app.buttons["conversation.library.project._workspace_rail"]
+        XCTAssertTrue(agent.waitForExistence(timeout: 10))
+        XCTAssertTrue(projectRow.waitForExistence(timeout: 10))
+
+        let agentsHead = app.buttons["conversation.library.group.agents"]
+        let projectsHead = app.buttons["conversation.library.group.projects"]
+        XCTAssertTrue(agentsHead.exists)
+        XCTAssertTrue(projectsHead.exists)
+
+        // Collapsing has to remove the rows, not merely stop tracking them: in a lazy container
+        // they kept their height and drew nothing, which reads as a broken rail.
+        agentsHead.click()
+        XCTAssertTrue(agent.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(projectRow.exists, "collapsing one group must leave the other alone")
+
+        projectsHead.click()
+        XCTAssertTrue(projectRow.waitForNonExistence(timeout: 3))
+
+        agentsHead.click()
+        XCTAssertTrue(agent.waitForExistence(timeout: 3))
+        projectsHead.click()
+        XCTAssertTrue(projectRow.waitForExistence(timeout: 3))
+
+        // The rows are the real thing, not just present: the one that comes back still selects.
+        projectRow.click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
+    }
+
     func testDeterministicVisualParityScreenshots() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ccbud-ui-visual-\(UUID().uuidString)", isDirectory: true)

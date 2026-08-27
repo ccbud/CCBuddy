@@ -187,6 +187,7 @@ struct SidebarRow: View {
 private struct SidebarGroupHead: View {
     let title: String
     let expanded: Bool
+    var identifier: String?
     let action: () -> Void
 
     var body: some View {
@@ -204,6 +205,7 @@ private struct SidebarGroupHead: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier ?? "")
     }
 }
 
@@ -349,12 +351,16 @@ private struct ConversationLibraryNavigation: View {
             }
 
             ScrollView {
-                LazyVStack(spacing: 2) {
+                // Not a `LazyVStack`: its children here appear and disappear as the two groups are
+                // collapsed, and a lazy container reserves height for rows it then declines to
+                // draw. The rail is tens of rows, so laziness bought nothing and cost correctness.
+                VStack(spacing: 2) {
                     SidebarGroupHead(
                         title: appLanguage.localized("工具"),
-                        expanded: workbench.agentsExpanded
+                        expanded: workbench.agentsExpanded,
+                        identifier: "conversation.library.group.agents"
                     ) {
-                        workbench.agentsExpanded.toggle()
+                        workbench.setAgentsExpanded(!workbench.agentsExpanded)
                     }
                     if workbench.agentsExpanded {
                         ForEach(agentCounts, id: \.source.rawValue) { item in
@@ -375,9 +381,10 @@ private struct ConversationLibraryNavigation: View {
 
                     SidebarGroupHead(
                         title: appLanguage.localized("项目"),
-                        expanded: workbench.projectsExpanded
+                        expanded: workbench.projectsExpanded,
+                        identifier: "conversation.library.group.projects"
                     ) {
-                        workbench.projectsExpanded.toggle()
+                        workbench.setProjectsExpanded(!workbench.projectsExpanded)
                     }
                     if workbench.projectsExpanded {
                         ForEach(store.projects) { project in
