@@ -11,6 +11,7 @@
 "（无）" = "(none)";
 "（无编辑内容）" = "(no edits)";
 "(项目)" = "(project)";
+"{count} 个分组 · {sessions} 个会话" = "{count} groups · {sessions} sessions";
 "{count} 个会话" = "{count} sessions";
 "{count} 个会话无法读取，已跳过" = "{count} sessions couldn't be read and were skipped";
 "{count} 个活跃日，{tokens} Tokens" = "{count} active days, {tokens} tokens";
@@ -60,6 +61,8 @@
 "安装" = "Install";
 "安装并重启" = "Install and restart";
 "安装插件失败：{detail}" = "Plugin installation failed: {detail}";
+"按 Agent" = "By agent";
+"按目录" = "By directory";
 "把客户端模型名精确映射到上游模型；未命中时才使用自动映射。" = "Map client model names exactly to upstream models; automatic mapping is used only when none match.";
 "把客户端请求的模型名精确映射到上游模型，回包自动改回原名。带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游，避免被自动映射降级。未命中别名时才走「自动映射」。" = "Map the client’s requested model name exactly to an upstream model; the response is renamed back automatically. Models with [1m] (1M context) etc. MUST be mapped here explicitly to a supported upstream, to avoid being auto-downgraded. Auto-mapping only kicks in when no alias matches.";
 "版本" = "Version";
@@ -267,6 +270,7 @@
 "唤起 ChatGPT 失败，请重试" = "Couldn’t open the ChatGPT app — try again";
 "唤起 Skill" = "Invoked skill";
 "唤起失败，请重试" = "Couldn’t open Claude Desktop — try again";
+"换个时间范围，或用「今天」回到当前。" = "Move the range, or use Today to come back to the present.";
 "换个说法，或删掉几个词再试。" = "Try different wording, or drop a word or two.";
 "恢复" = "Restore";
 "恢复 Claude Code 配置失败：{msg}" = "Failed to restore Claude Code config: {msg}";
@@ -309,6 +313,7 @@
 "或手动输入路径后回车（如 ~/.claude）" = "Or type a path and press Enter (e.g. ~/.claude)";
 "积分" = "Credits";
 "记录" = "Record";
+"季" = "Quarter";
 "继续" = "Continue";
 "加入故障转移队列失败" = "Could not add to the failover queue";
 "加载中…" = "Loading…";
@@ -332,6 +337,7 @@
 "截断预览" = "Truncated preview";
 "界面不会从其他字段猜测或拼装内容" = "The interface does not infer or assemble content from other fields";
 "今日" = "Today";
+"今天" = "Today";
 "仅使用真实终态" = "Terminal results only";
 "仅图标" = "Icon only";
 "仅显示前 {shown} / 共 {total}（已截断）" = "Showing first {shown} / {total} total (truncated)";
@@ -391,9 +397,11 @@
 "模型厂商" = "Model vendors";
 "默认" = "Default";
 "默认位置不可移除" = "The default location can't be removed";
+"目录 / 会话" = "Directory / sessions";
 "目录不存在" = "Directory not found";
 "内容" = "Content";
 "你" = "You";
+"年" = "Year";
 "平均耗时" = "Avg latency";
 "启动、停止、重试与请求错误会显示在这里" = "Starts, stops, retries, and request errors appear here";
 "启动服务" = "Start service";
@@ -490,6 +498,7 @@
 "生成" = "Generate";
 "失败 {count}" = "Failed {count}";
 "时间" = "Time";
+"时间线" = "Timeline";
 "实时更新关闭" = "Live updates off";
 "使用中" = "Active";
 "收藏" = "Starred";
@@ -574,6 +583,8 @@
 "网关运行中 · localhost:{port}" = "Gateway running · localhost:{port}";
 "网关运行中，切换会立即生效——正在使用的 Claude Code 从下一次请求起就改用此服务，无需重启。" = "The gateway is running, so switching takes effect immediately — your in-progress Claude Code work will use this service from its next request.";
 "网关正在运行；切换会让之后的新 CLI 会话立即改用这个服务。" = "The gateway is running. New CLI sessions will immediately use this service after switching.";
+"往后" = "Later";
+"往前" = "Earlier";
 "未安装 ChatGPT 桌面端" = "The ChatGPT app is not installed";
 "未安装 Claude 桌面端" = "Claude Desktop is not installed";
 "未安装插件" = "No plugins installed";
@@ -742,6 +753,7 @@
 "原始 Credits {value}" = "Original credits {value}";
 "原文" = "Raw";
 "源码" = "Source";
+"月" = "Month";
 "运行插件操作" = "Run plugin action";
 "运行中" = "Running";
 "在 {name} 中继续" = "Continue in {name}";
@@ -767,6 +779,7 @@
 "展开会话列表" = "Expand session list";
 "展开详情" = "Expand details";
 "找不到命令 {name}，请确认它已安装并在 PATH 中" = "Command {name} not found — make sure it is installed and on your PATH";
+"这段时间没有会话" = "No sessions in this range";
 "这将从磁盘永久删除该对话文件，且无法恢复。" = "This permanently deletes the conversation file from disk and cannot be undone.";
 "这条记录可能已从 Bifrost 日志中清除" = "This record may have been cleared from the Bifrost log";
 "真实上游 HTTP" = "Actual upstream HTTP";
@@ -828,6 +841,7 @@
 "重新检查" = "Check Again";
 "重新扫描这个位置" = "Scan this location again";
 "重置" = "Reset";
+"周" = "Week";
 "主" = "Main";
 "主 {model}" = "Main {model}";
 "主窗口" = "Main window";
@@ -860,6 +874,7 @@
 "最新版本" = "Latest version";
 "最长" = "Longest";
 "Agent" = "Agent";
+"Agent / 会话" = "Agent / sessions";
 "Agent 路径" = "Agent path";
 "Anthropic 协议直通" = "Anthropic protocol pass-through";
 "Anthropic Messages" = "Anthropic Messages";

@@ -86,6 +86,8 @@ struct AppShellView: View {
                 gatewayRunning: model.gatewayState.isRunning,
                 activeProvider: model.activeProvider
             )
+        case .timeline:
+            TimelineView(store: model.conversationStore)
         case .plugins:
             PluginsView()
         case .settings:

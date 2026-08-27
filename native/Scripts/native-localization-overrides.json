@@ -3855,5 +3855,110 @@
     "ko": "장애 조치 순서를 변경하지 못했습니다",
     "zh-Hans": "调整故障转移顺序失败",
     "zh-Hant": "調整故障轉移順序失敗"
+  },
+  "时间线": {
+    "en": "Timeline",
+    "ja": "タイムライン",
+    "ko": "타임라인",
+    "zh-Hans": "时间线",
+    "zh-Hant": "時間軸"
+  },
+  "按目录": {
+    "en": "By directory",
+    "ja": "ディレクトリ別",
+    "ko": "디렉터리별",
+    "zh-Hans": "按目录",
+    "zh-Hant": "依目錄"
+  },
+  "按 Agent": {
+    "en": "By agent",
+    "ja": "エージェント別",
+    "ko": "에이전트별",
+    "zh-Hans": "按 Agent",
+    "zh-Hant": "依 Agent"
+  },
+  "周": {
+    "en": "Week",
+    "ja": "週",
+    "ko": "주",
+    "zh-Hans": "周",
+    "zh-Hant": "週"
+  },
+  "月": {
+    "en": "Month",
+    "ja": "月",
+    "ko": "월",
+    "zh-Hans": "月",
+    "zh-Hant": "月"
+  },
+  "季": {
+    "en": "Quarter",
+    "ja": "四半期",
+    "ko": "분기",
+    "zh-Hans": "季",
+    "zh-Hant": "季"
+  },
+  "年": {
+    "en": "Year",
+    "ja": "年",
+    "ko": "년",
+    "zh-Hans": "年",
+    "zh-Hant": "年"
+  },
+  "往前": {
+    "en": "Earlier",
+    "ja": "前へ",
+    "ko": "이전",
+    "zh-Hans": "往前",
+    "zh-Hant": "往前"
+  },
+  "往后": {
+    "en": "Later",
+    "ja": "次へ",
+    "ko": "다음",
+    "zh-Hans": "往后",
+    "zh-Hant": "往後"
+  },
+  "今天": {
+    "en": "Today",
+    "ja": "今日",
+    "ko": "오늘",
+    "zh-Hans": "今天",
+    "zh-Hant": "今天"
+  },
+  "目录 / 会话": {
+    "en": "Directory / sessions",
+    "ja": "ディレクトリ / セッション",
+    "ko": "디렉터리 / 세션",
+    "zh-Hans": "目录 / 会话",
+    "zh-Hant": "目錄 / 對話"
+  },
+  "Agent / 会话": {
+    "en": "Agent / sessions",
+    "ja": "エージェント / セッション",
+    "ko": "에이전트 / 세션",
+    "zh-Hans": "Agent / 会话",
+    "zh-Hant": "Agent / 對話"
+  },
+  "这段时间没有会话": {
+    "en": "No sessions in this range",
+    "ja": "この期間にセッションはありません",
+    "ko": "이 기간에는 세션이 없습니다",
+    "zh-Hans": "这段时间没有会话",
+    "zh-Hant": "這段時間沒有對話"
+  },
+  "换个时间范围，或用「今天」回到当前。": {
+    "en": "Move the range, or use Today to come back to the present.",
+    "ja": "範囲を移動するか、「今日」で現在に戻ります。",
+    "ko": "범위를 옮기거나 '오늘'로 현재로 돌아가세요.",
+    "zh-Hans": "换个时间范围，或用「今天」回到当前。",
+    "zh-Hant": "換個時間範圍，或用「今天」回到目前。"
+  },
+  "{count} 个分组 · {sessions} 个会话": {
+    "en": "{count} groups · {sessions} sessions",
+    "ja": "{count} グループ · {sessions} セッション",
+    "ko": "{count}개 그룹 · {sessions}개 세션",
+    "zh-Hans": "{count} 个分组 · {sessions} 个会话",
+    "zh-Hant": "{count} 個分組 · {sessions} 個對話"
   }
 }

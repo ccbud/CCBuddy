@@ -59,13 +59,14 @@ final class AppModel: ObservableObject {
     static let themeModeDefaultsKey = "ccbud-theme"
 
     enum Destination: String, CaseIterable, Identifiable {
-        case providers, plugins, conversations, monitor, settings
+        case providers, plugins, conversations, timeline, monitor, settings
         var id: String { rawValue }
         var title: String {
             switch self {
             case .providers: "服务"
             case .plugins: "插件"
             case .conversations: "会话"
+            case .timeline: "时间线"
             case .monitor: "监控"
             case .settings: "设置"
             }
@@ -75,6 +76,7 @@ final class AppModel: ObservableObject {
             case .providers: "square.grid.2x2"
             case .plugins: "puzzlepiece.extension"
             case .conversations: "bubble.left"
+            case .timeline: "calendar"
             case .monitor: "chart.line.uptrend.xyaxis"
             case .settings: "gearshape"
             }
