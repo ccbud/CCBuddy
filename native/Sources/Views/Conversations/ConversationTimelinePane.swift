@@ -4,12 +4,12 @@ import UniformTypeIdentifiers
 
 struct ConversationTimelinePane: View {
     @ObservedObject var store: ConversationStore
+    @ObservedObject var columns: ColumnLayout
     var fontSize: Int?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appLanguage) private var appLanguage
     @State private var showingMetadataEditor = false
-    @State private var showingOverview = false
     @State private var confirmingPermanentDelete = false
 
     var body: some View {
@@ -338,15 +338,7 @@ struct ConversationTimelinePane: View {
             }
 
             toolbarButton("sidebar.right", label: "会话概览", identifier: "conversation.action.overview") {
-                showingOverview.toggle()
-            }
-            .popover(isPresented: $showingOverview, arrowEdge: .bottom) {
-                ConversationOverviewPane(
-                    store: store,
-                    collapsed: false,
-                    toggleCollapsed: { showingOverview = false }
-                )
-                .frame(width: 280, height: 520)
+                columns.toggleInspector()
             }
 
             Menu {

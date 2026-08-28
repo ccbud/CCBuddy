@@ -4,6 +4,7 @@ import SwiftUI
 struct ConversationListPane: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var workbench: ConversationWorkbenchState
+    @ObservedObject var columns: ColumnLayout
     @Environment(\.appLanguage) private var appLanguage
 
     @State private var previousIndexingState: ConversationIndexingState = .idle
@@ -63,6 +64,13 @@ struct ConversationListPane: View {
             CCBadge(text: "\(flatSessions.count)")
             Spacer(minLength: 0)
             indexingStatus
+            ColumnToggle(
+                symbol: "sidebar.left",
+                help: appLanguage.localized("隐藏会话列表"),
+                identifier: "layout.toggle.stream"
+            ) {
+                columns.toggleStream()
+            }
         }
         .padding(.horizontal, Space.lg)
         // The column carries the traffic-light band in its own material rather than the shell

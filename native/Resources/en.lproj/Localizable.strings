@@ -641,6 +641,8 @@
 "下载并安装" = "Download & install";
 "下载并验证" = "Download and verify";
 "显示" = "Show";
+"显示侧栏" = "Show sidebar";
+"显示会话列表" = "Show session list";
 "显示未经脱敏的原文" = "Show unredacted original";
 "显示原文" = "Show original";
 "响应" = "Response";
@@ -727,6 +729,8 @@
 "已最新" = "Up to date";
 "异常行" = "Malformed lines";
 "隐藏" = "Hide";
+"隐藏侧栏" = "Hide sidebar";
+"隐藏会话列表" = "Hide session list";
 "隐藏敏感值" = "Hide sensitive values";
 "应用" = "App";
 "应用服务商配置失败 · {error}" = "Could not apply provider configuration · {error}";

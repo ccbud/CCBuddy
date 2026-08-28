@@ -3960,5 +3960,33 @@
     "ko": "{count}개 그룹 · {sessions}개 세션",
     "zh-Hans": "{count} 个分组 · {sessions} 个会话",
     "zh-Hant": "{count} 個分組 · {sessions} 個對話"
+  },
+  "隐藏侧栏": {
+    "en": "Hide sidebar",
+    "ja": "サイドバーを隠す",
+    "ko": "사이드바 숨기기",
+    "zh-Hans": "隐藏侧栏",
+    "zh-Hant": "隱藏側邊欄"
+  },
+  "显示侧栏": {
+    "en": "Show sidebar",
+    "ja": "サイドバーを表示",
+    "ko": "사이드바 표시",
+    "zh-Hans": "显示侧栏",
+    "zh-Hant": "顯示側邊欄"
+  },
+  "隐藏会话列表": {
+    "en": "Hide session list",
+    "ja": "セッション一覧を隠す",
+    "ko": "세션 목록 숨기기",
+    "zh-Hans": "隐藏会话列表",
+    "zh-Hant": "隱藏對話清單"
+  },
+  "显示会话列表": {
+    "en": "Show session list",
+    "ja": "セッション一覧を表示",
+    "ko": "세션 목록 표시",
+    "zh-Hans": "显示会话列表",
+    "zh-Hant": "顯示對話清單"
   }
 }

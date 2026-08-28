@@ -1,22 +1,47 @@
 import SwiftUI
 
-/// The window shell: a fixed library rail plus one destination.
+/// The window shell: the library rail plus one destination, with a rule between them you can move.
 ///
-/// The rail is structural, not an inspector, so it does not collapse — a rail that can vanish makes
-/// the traffic lights float over whatever happens to be behind them and forces every destination to
-/// reason about two layouts. Destinations own their own title-bar inset so each column can carry the
-/// drag strip in its own material instead of the shell painting a band across all of them.
+/// The rail is structural rather than an inspector, but "structural" was taken too far: it was
+/// pinned at one width and could not be put away at all, which is worse than either on a laptop
+/// screen. It now remembers its width and whether it is showing, and every destination owns its own
+/// title-bar inset so each column carries the drag strip in its own material.
 struct AppShellView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.appLanguage) private var appLanguage
     @StateObject private var conversationWorkbench = ConversationWorkbenchState()
+    @StateObject private var columns = ColumnLayout()
     @State private var searchPaletteVisible = false
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(conversationWorkbench: conversationWorkbench)
-                .frame(width: Metrics.sidebarWidth)
+            if columns.railVisible {
+                SidebarView(conversationWorkbench: conversationWorkbench, columns: columns)
+                    .frame(width: columns.railWidth)
+                ColumnDivider(
+                    column: ColumnLayout.rail,
+                    width: $columns.railWidth,
+                    onCommit: { columns.resize(ColumnLayout.rail, to: $0) },
+                    identifier: "layout.divider.rail"
+                )
+            }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // With the rail away the traffic lights sit over the destination, so the control
+                // that brings it back waits just past them — the same edge it left from.
+                .overlay(alignment: .topLeading) {
+                    if !columns.railVisible {
+                        ColumnToggle(
+                            symbol: "sidebar.leading",
+                            help: appLanguage.localized("显示侧栏"),
+                            identifier: "layout.toggle.rail"
+                        ) {
+                            columns.toggleRail()
+                        }
+                        .padding(.leading, Metrics.trafficLightClearance)
+                        .padding(.top, 5)
+                    }
+                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
@@ -74,6 +99,7 @@ struct AppShellView: View {
             ConversationsView(
                 store: model.conversationStore,
                 workbench: conversationWorkbench,
+                columns: columns,
                 fontSize: model.config.convFontPx,
                 selectHistoryScope: { scope in Task { await model.setHistoryActive(scope) } }
             )

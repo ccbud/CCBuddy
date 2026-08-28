@@ -113,6 +113,8 @@ final class ConversationWorkbenchState: ObservableObject {
 struct ConversationsView: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var workbench: ConversationWorkbenchState
+    @ObservedObject var columns: ColumnLayout
+    @Environment(\.appLanguage) private var appLanguage
     var fontSize: Int?
     var selectHistoryScope: (String) -> Void = { _ in }
 
@@ -120,14 +122,63 @@ struct ConversationsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ConversationListPane(
-                store: store,
-                workbench: workbench
-            )
-            .frame(width: 336)
+            if columns.streamVisible {
+                ConversationListPane(
+                    store: store,
+                    workbench: workbench,
+                    columns: columns
+                )
+                .frame(width: columns.streamWidth)
 
-            ConversationTimelinePane(store: store, fontSize: fontSize)
+                ColumnDivider(
+                    column: ColumnLayout.stream,
+                    width: $columns.streamWidth,
+                    onCommit: { columns.resize(ColumnLayout.stream, to: $0) },
+                    identifier: "layout.divider.stream"
+                )
+            }
+
+            ConversationTimelinePane(store: store, columns: columns, fontSize: fontSize)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The stream's own control goes away with it, so the way back lives on the reading
+                // column and appears exactly when the column it restores is missing.
+                .overlay(alignment: .topLeading) {
+                    if !columns.streamVisible {
+                        ColumnToggle(
+                            symbol: "sidebar.left",
+                            help: appLanguage.localized("显示会话列表"),
+                            identifier: "layout.toggle.stream"
+                        ) {
+                            columns.toggleStream()
+                        }
+                        .padding(
+                            .leading,
+                            columns.railVisible ? Space.md : Metrics.trafficLightClearance
+                        )
+                        .padding(.top, 5)
+                    }
+                }
+
+            // The overview is a column again, not a popover: these are facts you read next to the
+            // transcript, and a sheet over the transcript to show them was the wrong shape. It
+            // takes space only while a session is open, so an empty library keeps its full width.
+            if columns.inspectorVisible, store.selectedMetadata != nil {
+                ColumnDivider(
+                    column: ColumnLayout.inspector,
+                    side: .trailing,
+                    width: $columns.inspectorWidth,
+                    onCommit: { columns.resize(ColumnLayout.inspector, to: $0) },
+                    identifier: "layout.divider.inspector"
+                )
+
+                ConversationOverviewPane(
+                    store: store,
+                    collapsed: false,
+                    toggleCollapsed: { columns.toggleInspector() }
+                )
+                .frame(width: columns.inspectorWidth)
+                .frame(maxHeight: .infinity)
+            }
         }
         .background(Theme.background)
         .overlay(alignment: .bottom) {

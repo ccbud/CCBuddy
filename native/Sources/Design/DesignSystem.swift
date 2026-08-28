@@ -160,6 +160,9 @@ enum Metrics {
     static let streamWidth: CGFloat = 336
     /// Height of the window drag strip that hosts the traffic lights.
     static let titleBarHeight: CGFloat = 38
+    /// Leading offset a control needs to clear the traffic lights and still look deliberate rather
+    /// than crowded against the green one.
+    static let trafficLightClearance: CGFloat = 94
     /// Primary navigation row.
     static let rowHeight: CGFloat = 32
     /// Nested navigation row (agents, projects).

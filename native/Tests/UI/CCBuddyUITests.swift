@@ -510,6 +510,54 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
     }
 
+    func testColumnsCollapseAndResize() {
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let railRow = app.buttons["conversation.library.all"]
+        XCTAssertTrue(railRow.waitForExistence(timeout: 5))
+
+        // The rail's control keeps its identity when it moves to the destination's title band, so
+        // the same query puts the column away and brings it back.
+        let railToggle = app.buttons["layout.toggle.rail"]
+        XCTAssertTrue(railToggle.exists)
+        railToggle.click()
+        XCTAssertTrue(railRow.waitForNonExistence(timeout: 3))
+
+        let restore = app.buttons["layout.toggle.rail"]
+        XCTAssertTrue(restore.waitForExistence(timeout: 3), "a column you cannot restore is a trap")
+        restore.click()
+        XCTAssertTrue(railRow.waitForExistence(timeout: 3))
+
+        railRow.click()
+        let stream = app.otherElements["conversation.list"]
+        XCTAssertTrue(stream.waitForExistence(timeout: 5))
+        let originalWidth = stream.frame.width
+        XCTAssertGreaterThan(originalWidth, 0)
+
+        let divider = app.descendants(matching: .any)["layout.divider.stream"]
+        XCTAssertTrue(divider.waitForExistence(timeout: 3))
+        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 6, dy: 0.5))
+            )
+        let widened = XCTNSPredicateExpectation(
+            predicate: NSPredicate { element, _ in
+                guard let element = element as? XCUIElement else { return false }
+                return element.frame.width > originalWidth + 10
+            },
+            object: stream
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [widened], timeout: 3),
+            .completed,
+            "dragging the rule between two columns has to move it"
+        )
+
+        app.buttons["layout.toggle.stream"].click()
+        XCTAssertTrue(stream.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["layout.toggle.stream"].waitForExistence(timeout: 3))
+    }
+
     func testDeterministicVisualParityScreenshots() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ccbud-ui-visual-\(UUID().uuidString)", isDirectory: true)

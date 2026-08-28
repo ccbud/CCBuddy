@@ -15,6 +15,7 @@ struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.appLanguage) private var appLanguage
     @ObservedObject var conversationWorkbench: ConversationWorkbenchState
+    @ObservedObject var columns: ColumnLayout
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,6 +68,13 @@ struct SidebarView: View {
                 .foregroundStyle(Theme.foreground)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            ColumnToggle(
+                symbol: "sidebar.leading",
+                help: appLanguage.localized("隐藏侧栏"),
+                identifier: "layout.toggle.rail"
+            ) {
+                columns.toggleRail()
+            }
         }
         .padding(.leading, Rail.titleInset - Rail.edge + Space.xs)
     }
