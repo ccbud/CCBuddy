@@ -61,6 +61,8 @@ struct ConversationOverviewPane: View {
                             .font(.ccMono(Typography.label))
                             .foregroundStyle(Theme.foreground)
                             .lineLimit(1)
+                            // Paths and thread ids differ at the end, so the end is what survives.
+                            .truncationMode(.middle)
                             .help(row.1)
                     }
                     .font(.system(size: 11))

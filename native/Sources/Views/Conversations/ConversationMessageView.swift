@@ -145,17 +145,26 @@ struct ConversationMessageView: View {
     @ViewBuilder private var messageMetadata: some View {
         let chips = metadataChips
         if !chips.isEmpty {
+            // Each chip keeps its own width. Left to shrink, a narrow column broke them mid-word
+            // — "gpt-5.6-sol" came out as four stacked fragments — which is unreadable in a way
+            // that losing the tail of the row is not.
             HStack(spacing: 4) {
                 ForEach(chips, id: \.self) { chip in
                     Text(chip)
                         .font(.system(size: max(9, fontSize * 0.73), design: .monospaced))
                         .foregroundStyle(Theme.mutedForeground)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(Theme.foreground.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
+                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
+            .help(chips.joined(separator: " · "))
             .padding(.leading, message.role == "user" ? 0 : 12)
         }
     }

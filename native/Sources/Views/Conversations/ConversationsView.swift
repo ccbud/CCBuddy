@@ -121,8 +121,26 @@ struct ConversationsView: View {
     @State private var isDropTarget = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            if columns.streamVisible {
+        // The width is only read, never fed back: the columns take their sizes from stored state,
+        // so measuring here cannot start the loop that once squeezed the navigation rail away.
+        GeometryReader { geometry in
+            columnStack(fitting: geometry.size.width)
+        }
+    }
+
+    private func columnStack(fitting available: CGFloat) -> some View {
+        let fit = ColumnLayout.columnsThatFit(
+            available: available,
+            streamWidth: columns.streamWidth,
+            inspectorWidth: columns.inspectorWidth,
+            wantsStream: columns.streamVisible,
+            wantsInspector: columns.inspectorVisible && store.selectedMetadata != nil
+        )
+        let streamFits = fit.stream
+        let inspectorFits = fit.inspector
+
+        return HStack(spacing: 0) {
+            if streamFits {
                 ConversationListPane(
                     store: store,
                     workbench: workbench,
@@ -143,7 +161,7 @@ struct ConversationsView: View {
                 // The stream's own control goes away with it, so the way back lives on the reading
                 // column and appears exactly when the column it restores is missing.
                 .overlay(alignment: .topLeading) {
-                    if !columns.streamVisible {
+                    if !streamFits {
                         ColumnToggle(
                             symbol: "sidebar.left",
                             help: appLanguage.localized("显示会话列表"),
@@ -162,7 +180,7 @@ struct ConversationsView: View {
             // The overview is a column again, not a popover: these are facts you read next to the
             // transcript, and a sheet over the transcript to show them was the wrong shape. It
             // takes space only while a session is open, so an empty library keeps its full width.
-            if columns.inspectorVisible, store.selectedMetadata != nil {
+            if inspectorFits {
                 ColumnDivider(
                     column: ColumnLayout.inspector,
                     side: .trailing,

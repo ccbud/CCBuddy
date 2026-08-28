@@ -91,6 +91,40 @@ final class ColumnLayout: ObservableObject {
     func toggleStream() { streamVisible.toggle() }
 
     func toggleInspector() { inspectorVisible.toggle() }
+
+    /// A column that would leave the transcript unreadable is not shown at all.
+    ///
+    /// Four columns in a narrow window squeezed the reading column to about two hundred points:
+    /// the prose wrapped two characters to a line, the metadata chips broke mid-word, and the
+    /// overview was pushed past the window edge with its values cut in half. Space runs out from
+    /// the trailing edge inwards — the overview yields first, then the stream — because the
+    /// transcript is the thing being read.
+    nonisolated static func columnsThatFit(
+        available: CGFloat,
+        streamWidth: CGFloat,
+        inspectorWidth: CGFloat,
+        wantsStream: Bool,
+        wantsInspector: Bool,
+        minimumReading: CGFloat = 380,
+        dividerWidth: CGFloat = 1
+    ) -> (stream: Bool, inspector: Bool) {
+        guard available > 0 else { return (wantsStream, wantsInspector) }
+        var stream = wantsStream
+        var inspector = wantsInspector
+        func remaining() -> CGFloat {
+            var used: CGFloat = 0
+            if stream { used += streamWidth + dividerWidth }
+            if inspector { used += inspectorWidth + dividerWidth }
+            return available - used
+        }
+        if inspector, remaining() < minimumReading { inspector = false }
+        if stream, remaining() < minimumReading { stream = false }
+        return (stream, inspector)
+    }
+
+    /// Narrower than this and a transcript stops being prose. Repeated as the default above
+    /// because a main-actor property cannot be a default argument.
+    nonisolated static let minimumReadingWidth: CGFloat = 380
 }
 
 /// The rule between two columns, and the handle that moves it.

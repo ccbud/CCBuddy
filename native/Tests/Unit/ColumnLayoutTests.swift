@@ -104,6 +104,62 @@ final class ColumnLayoutTests: XCTestCase {
         XCTAssertEqual(layout.streamWidth, 500)
     }
 
+    // MARK: - Fitting
+
+    private func fit(
+        _ available: CGFloat,
+        stream: CGFloat = 336,
+        inspector: CGFloat = 288,
+        wantsStream: Bool = true,
+        wantsInspector: Bool = true
+    ) -> (stream: Bool, inspector: Bool) {
+        ColumnLayout.columnsThatFit(
+            available: available,
+            streamWidth: stream,
+            inspectorWidth: inspector,
+            wantsStream: wantsStream,
+            wantsInspector: wantsInspector
+        )
+    }
+
+    func testAWideWindowKeepsEveryColumn() {
+        let result = fit(1_400)
+        XCTAssertTrue(result.stream)
+        XCTAssertTrue(result.inspector)
+    }
+
+    func testTheOverviewYieldsFirstWhenSpaceRunsOut() {
+        // 336 + 288 + two rules leaves 148 points to read in — the width at which the transcript
+        // wrapped two characters to a line.
+        let result = fit(774)
+        XCTAssertTrue(result.stream, "the stream is how you move between sessions")
+        XCTAssertFalse(result.inspector)
+    }
+
+    func testTheStreamYieldsWhenEvenItWouldStarveTheTranscript() {
+        let result = fit(600)
+        XCTAssertFalse(result.stream)
+        XCTAssertFalse(result.inspector)
+    }
+
+    func testAColumnAlreadyPutAwayIsNotBroughtBackByRoom() {
+        let result = fit(2_000, wantsStream: false, wantsInspector: false)
+        XCTAssertFalse(result.stream)
+        XCTAssertFalse(result.inspector)
+    }
+
+    func testTheOverviewSurvivesWhenTheStreamIsAlreadyAway() {
+        let result = fit(700, wantsStream: false)
+        XCTAssertFalse(result.stream)
+        XCTAssertTrue(result.inspector, "without the stream there is room to read beside it")
+    }
+
+    func testAnUnmeasuredWindowChangesNothing() {
+        let result = fit(0)
+        XCTAssertTrue(result.stream)
+        XCTAssertTrue(result.inspector)
+    }
+
     func testHidingAColumnKeepsTheWidthItWillComeBackAt() {
         let layout = ColumnLayout(store: defaults)
         layout.resize(ColumnLayout.rail, to: 320)
