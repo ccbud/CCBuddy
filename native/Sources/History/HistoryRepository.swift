@@ -58,6 +58,7 @@ struct HistoryRepository: Sendable {
 
         let trash = configuration.active == "__trash__"
         sessions.removeAll { $0.deleted != trash }
+        sessions = HistoryCatalogProjection.nestingSubagentRollouts(sessions)
         sessions = HistoryCatalogProjection.activityOrdered(sessions)
         return HistoryCatalogProjection.limitedKeepingCodexAncestors(sessions, limit: limit)
     }

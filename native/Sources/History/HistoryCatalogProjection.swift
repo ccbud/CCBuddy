@@ -262,6 +262,77 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         return result
     }
 
+    /// Folds Codex subagent rollouts into the session they belong to.
+    ///
+    /// Codex writes each subagent run as its own rollout in the same tree, so a session that
+    /// delegated forty-one tasks arrived as forty-two peers in the stream — the same thing Wake
+    /// shows, and just as hard to read. The link is `parentThreadID`; `rootSessionID` is not it,
+    /// because every child roots itself, which is why the nesting below never fired on real data.
+    ///
+    /// A descendant is attached to the topmost ancestor rather than its immediate parent: a chain
+    /// resolved one link at a time would hang a grandchild off a row that is itself about to be
+    /// folded away, and it would then be reachable from nothing.
+    static func nestingSubagentRollouts(
+        _ sessions: [HistorySessionMetadata]
+    ) -> [HistorySessionMetadata] {
+        var indexByThread: [String: Int] = [:]
+        for (index, session) in sessions.enumerated() where session.source == .codex {
+            for key in [session.threadID, session.sessionID].compactMap({ $0 }) where !key.isEmpty {
+                indexByThread[session.dirID + "\u{0}" + key] = index
+            }
+        }
+        guard !indexByThread.isEmpty else { return sessions }
+
+        var result = sessions
+        var absorbed = Set<Int>()
+        for (index, session) in sessions.enumerated() {
+            guard session.source == .codex,
+                  let rootIndex = topmostAncestor(of: index, in: sessions, byThread: indexByThread)
+            else { continue }
+            result[rootIndex].subagentRefs.append(HistorySubagentRef(
+                file: session.file,
+                threadID: session.threadID ?? session.sessionID,
+                title: session.title.isEmpty ? session.autoTitle : session.title,
+                agentNickname: session.agentNickname,
+                messageCount: session.messageCount,
+                lastActivity: session.lastActivity,
+                totals: session.totals
+            ))
+            absorbed.insert(index)
+        }
+        guard !absorbed.isEmpty else { return sessions }
+
+        for index in result.indices where !result[index].subagentRefs.isEmpty {
+            result[index].subagentRefs.sort { $0.lastActivity < $1.lastActivity }
+            result[index].subagentCount = result[index].subagentRefs.count
+        }
+        return result.enumerated().compactMap { absorbed.contains($0.offset) ? nil : $0.element }
+    }
+
+    /// The far end of a session's parent chain, or nil when it has none.
+    ///
+    /// Nil also covers a chain that loops: folding either member of a cycle into the other would
+    /// fold both away and leave the work in the list under no row at all.
+    private static func topmostAncestor(
+        of index: Int,
+        in sessions: [HistorySessionMetadata],
+        byThread indexByThread: [String: Int]
+    ) -> Int? {
+        var current = index
+        var visited: Set<Int> = [index]
+        var found: Int?
+        while true {
+            let session = sessions[current]
+            guard let parentID = session.parentThreadID, !parentID.isEmpty,
+                  let parentIndex = indexByThread[session.dirID + "\u{0}" + parentID]
+            else { return found }
+            guard !visited.contains(parentIndex) else { return nil }
+            visited.insert(parentIndex)
+            found = parentIndex
+            current = parentIndex
+        }
+    }
+
     static func activityOrdered(
         _ sessions: [HistorySessionMetadata]
     ) -> [HistorySessionMetadata] {

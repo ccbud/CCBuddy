@@ -133,6 +133,9 @@ struct HistorySessionMetadata: Codable, Equatable, Identifiable, Sendable {
     var agentRole: String?
     var agentDepth: Int?
     var subagentCount: Int = 0
+    /// Children that are separate files. Empty for agents whose subagents are stored beside the
+    /// main transcript, which the loader finds on its own.
+    var subagentRefs: [HistorySubagentRef] = []
     var imported: Bool = false
     var deleted: Bool = false
     /// Kept close at hand by the user. Persisted with the rest of CC Buddy's own metadata, never in
@@ -157,6 +160,21 @@ struct HistorySubagent: Codable, Equatable, Sendable {
     var count: Int = 0
     var totals: HistoryTotals = .init()
     var messages: [HistoryMessage] = []
+}
+
+/// A child transcript that lives in its own file rather than beside its parent.
+///
+/// Codex writes every subagent run as another rollout in the same tree, linked only by a thread id
+/// inside the file. The catalog resolves those links once and hands the parent enough to show its
+/// children as tabs — title, size, when they ran — without opening any of them.
+struct HistorySubagentRef: Codable, Equatable, Sendable {
+    var file: URL
+    var threadID: String
+    var title: String
+    var agentNickname: String?
+    var messageCount: Int
+    var lastActivity: Date
+    var totals: HistoryTotals = .init()
 }
 
 struct HistorySession: Codable, Equatable, Sendable {

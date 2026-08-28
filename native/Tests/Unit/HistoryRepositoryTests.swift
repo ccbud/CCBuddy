@@ -132,8 +132,9 @@ final class HistoryRepositoryTests: XCTestCase {
             ], to: file, modifiedAt: Date(timeIntervalSince1970: activity))
         }
 
-        // Global activity order starts with the child and interleaves the other root. The final
-        // project rows should instead show the active tree as one navigable root-first unit.
+        // A tree of subagent rollouts is one piece of work, and the listing now says so: the root
+        // is the only row, and the branches hang off it as tabs. The grandchild belongs to the
+        // child rather than the root, and folding the child must not take it out of reach.
         try write(rootID, rootID: rootID, activity: 100)
         try write(childID, rootID: rootID, parentID: rootID, depth: 1, activity: 500)
         try write(grandchildID, rootID: rootID, parentID: childID, depth: 2, activity: 300)
@@ -145,11 +146,17 @@ final class HistoryRepositoryTests: XCTestCase {
             homeDirectory: home,
             importsRoot: home.appendingPathComponent("app/imports")
         )
-        XCTAssertEqual(repository.listSessions().compactMap(\.threadID), [
-            childID, otherRootID, siblingID, grandchildID, rootID,
-        ])
+        let listed = repository.listSessions()
+        XCTAssertEqual(listed.compactMap(\.threadID), [otherRootID, rootID])
+        let rootRow = try XCTUnwrap(listed.first { $0.threadID == rootID })
+        XCTAssertEqual(
+            Set(rootRow.subagentRefs.map(\.threadID)),
+            [childID, grandchildID, siblingID],
+            "the whole tree hangs off the session that started it, however deep"
+        )
+        XCTAssertEqual(rootRow.subagentCount, 3)
         XCTAssertEqual(repository.listProjects().first?.sessions.compactMap(\.threadID), [
-            rootID, childID, grandchildID, siblingID, otherRootID,
+            otherRootID, rootID,
         ])
     }
 

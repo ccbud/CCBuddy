@@ -562,6 +562,7 @@ final class ConversationStore: ObservableObject {
     private let replayURLLauncher: (URL) -> Bool
     private let noticeLifetime: (Bool) -> TimeInterval
     private var actionMessageDismissal: Task<Void, Never>?
+    private var deferredTranscriptWorker: Task<Void, Never>?
     private var actionMessageGeneration: UInt64 = 0
     private let pollIntervalNanoseconds: UInt64
     private let searchDelayNanoseconds: UInt64
@@ -1012,12 +1013,66 @@ final class ConversationStore: ObservableObject {
         guard id != activeTranscriptID,
               transcriptTabs.contains(where: { $0.id == id }) else { return }
         activeTranscriptID = id
+        loadDeferredTranscriptIfNeeded(id)
         detailQuery = ""
         detailMatches = []
         detailMatchIndex = -1
         jumpRequest = nil
         detailRevision += 1
         jumpToFirstVisibleMessage()
+    }
+
+    /// A child that lives in its own file is described by the catalog but only read when its tab is
+    /// opened. Opening a session that delegated forty tasks would otherwise parse forty transcripts
+    /// nobody asked for.
+    private func loadDeferredTranscriptIfNeeded(_ id: ConversationTranscriptID) {
+        guard case .subagent(let agentID) = id,
+              let subagent = selectedSession?.subagents[agentID],
+              subagent.messages.isEmpty,
+              subagent.count > 0
+        else { return }
+
+        let file = subagent.file
+        let provider = repository
+        deferredTranscriptWorker?.cancel()
+        deferredTranscriptWorker = Task { [weak self] in
+            let loaded = await Task.detached(priority: .userInitiated) { () -> HistorySession? in
+                try? provider.getSession(file: file)
+            }.value
+            guard let self, !Task.isCancelled, let loaded else { return }
+            guard self.activeTranscriptID == id,
+                  var session = self.selectedSession,
+                  var child = session.subagents[agentID] else { return }
+            child.messages = loaded.messages
+            child.count = loaded.messages.count
+            session.subagents[agentID] = child
+            self.selectedSession = session
+            self.detailRevision += 1
+        }
+    }
+
+    /// Describes the catalog's separate-file children on the session that was just read, so its tabs
+    /// appear immediately with their titles and sizes.
+    static func attachingSubagentRefs(
+        of metadata: HistorySessionMetadata?,
+        to session: HistorySession
+    ) -> HistorySession {
+        guard let refs = metadata?.subagentRefs, !refs.isEmpty else { return session }
+        var result = session
+        for ref in refs where !ref.threadID.isEmpty {
+            guard result.subagents[ref.threadID] == nil else { continue }
+            result.subagents[ref.threadID] = HistorySubagent(
+                agentID: ref.threadID,
+                file: ref.file,
+                type: "agent",
+                description: ref.agentNickname ?? ref.title,
+                count: ref.messageCount,
+                totals: ref.totals,
+                messages: []
+            )
+        }
+        result.metadata.subagentCount = result.subagents.count
+        return result
     }
 
     func nextDetailMatch() {
@@ -1627,7 +1682,7 @@ final class ConversationStore: ObservableObject {
             let previousMatch = detailMatchIndex >= 0 && detailMatchIndex < detailMatches.count
                 ? detailMatches[detailMatchIndex].messageIndex
                 : nil
-            selectedSession = value
+            selectedSession = Self.attachingSubagentRefs(of: selectedMetadata, to: value)
             if !ConversationTranscriptPresentation.tabs(in: value).contains(where: {
                 $0.id == activeTranscriptID
             }) {

@@ -196,7 +196,11 @@ final class HistoryAdvancedTests: XCTestCase {
             historyDirs: [root.path], homeDirectory: home,
             importsRoot: home.appendingPathComponent("app/imports")
         ).listSessions(limit: 1)
-        XCTAssertEqual(rows.map(\.threadID), [childID, rootID])
+        // The subagent rollout is folded into the session that spawned it, so the limit sees one
+        // row rather than a child that then has to drag its parent in behind it.
+        XCTAssertEqual(rows.map(\.threadID), [rootID])
+        XCTAssertEqual(rows.first?.subagentRefs.map(\.threadID), [childID])
+        XCTAssertEqual(rows.first?.subagentCount, 1)
     }
 
     func testCodexLiveMetadataUsesAppSidecarWhileImportedSnapshotUsesInlineMetadata() throws {

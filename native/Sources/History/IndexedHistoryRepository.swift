@@ -104,7 +104,8 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
             indexed,
             homeDirectory: configuration.homeDirectory
         )
-        let ordered = HistoryCatalogProjection.activityOrdered(canonical)
+        let nested = HistoryCatalogProjection.nestingSubagentRollouts(canonical)
+        let ordered = HistoryCatalogProjection.activityOrdered(nested)
         return HistoryCatalogProjection.limitedKeepingCodexAncestors(ordered, limit: limit)
     }
 

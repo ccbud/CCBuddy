@@ -697,7 +697,11 @@ final class ConversationIndexScannerTests: XCTestCase {
             configuration: environment.configuration,
             registry: registry
         )
-        loader.loadDelay = 0.50
+        // Held rather than slow: the reattachment below has to land while a scan is genuinely in
+        // flight, and a sleep long enough to "probably" still be running is how this test failed on
+        // a loaded machine — it reattached after the scan had finished and saw a second, empty one.
+        loader.loadDelay = 0.02
+        loader.holdAfter(loads: 1)
         let database = try ConversationIndexDatabase(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
@@ -743,9 +747,10 @@ final class ConversationIndexScannerTests: XCTestCase {
             startReturned.fulfill()
         }
 
-        // This call is a subscription reattachment. It must not touch the scanner lock held by
-        // the deliberately slow full scan.
-        await fulfillment(of: [startReturned], timeout: 0.40)
+        // This call is a subscription reattachment. It must not touch the scanner lock held by the
+        // scan that is parked mid-flight.
+        await fulfillment(of: [startReturned], timeout: 5)
+        loader.resumeHeldLoad()
         let reattachedFinished = await waitForEvent(
             in: reattached,
             timeoutNanoseconds: 4_000_000_000
@@ -1183,6 +1188,9 @@ private final class ScannerTestRegistry: ConversationIndexSourceRegistering, @un
 }
 
 private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendable {
+    private let holdGate = DispatchSemaphore(value: 0)
+    private var holdAfterLoads = 0
+    private var didHold = false
     private let configuration: HistoryConfiguration
     private let registry: ScannerTestRegistry
     private let providesQuickMetadata: Bool
@@ -1227,6 +1235,18 @@ private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendabl
         lock.lock()
         defer { lock.unlock() }
         return maximumActiveLoads
+    }
+
+    /// Blocks one load so a test can act while a scan is genuinely in flight, instead of racing a
+    /// sleep against it.
+    func holdAfter(loads: Int) {
+        lock.lock()
+        holdAfterLoads = loads
+        lock.unlock()
+    }
+
+    func resumeHeldLoad() {
+        holdGate.signal()
     }
 
     var loadDelay: TimeInterval {
@@ -1317,6 +1337,15 @@ private final class ScannerTestLoader: HistorySessionLoading, @unchecked Sendabl
         }
 
         if loadDelay > 0 { Thread.sleep(forTimeInterval: loadDelay) }
+        var shouldHold = false
+        lock.lock()
+        // The load being counted is already recorded, so "after one load" means the next one.
+        if holdAfterLoads > 0, !didHold, loadStorage.count > holdAfterLoads {
+            didHold = true
+            shouldHold = true
+        }
+        lock.unlock()
+        if shouldHold { holdGate.wait() }
         if shouldFail { throw HistorySessionLoadError.dependenciesChanged(candidate.file) }
         let format = candidate.formatHint ?? .claude
         let manifest = try registry.manifest(
