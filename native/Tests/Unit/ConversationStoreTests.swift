@@ -327,6 +327,98 @@ final class ConversationPresentationParityTests: XCTestCase {
 }
 
 @MainActor
+final class ConversationNoticeLifetimeTests: XCTestCase {
+    private func store(lifetime: @escaping (Bool) -> TimeInterval) -> ConversationStore {
+        ConversationStore(
+            repository: FakeIndexedConversationRepository(
+                topologySignature: "notice",
+                projectsByScope: ["all": []]
+            ),
+            searchDelayNanoseconds: 0,
+            noticeLifetime: lifetime
+        )
+    }
+
+    private func waitForNotice(
+        _ store: ConversationStore,
+        toBecome expected: String?,
+        timeout: TimeInterval = 2
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while store.actionMessage != expected, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    func testAConfirmationWithdrawsOnItsOwn() async {
+        let store = self.store(lifetime: { _ in 0.05 })
+
+        store.reportActionSuccess("已导出独立 HTML")
+        XCTAssertEqual(store.actionMessage, "已导出独立 HTML")
+
+        await waitForNotice(store, toBecome: nil)
+        XCTAssertNil(store.actionMessage)
+        XCTAssertFalse(store.actionIsError)
+    }
+
+    func testAFailureIsGivenLongerThanAConfirmation() async {
+        var asked: [Bool] = []
+        let store = self.store(lifetime: { isError in
+            asked.append(isError)
+            return isError ? 0.4 : 0.05
+        })
+
+        store.reportActionError("something went wrong")
+        await waitForNotice(store, toBecome: nil, timeout: 0.2)
+
+        XCTAssertEqual(store.actionMessage, "something went wrong", "still on screen at 0.2s")
+        XCTAssertEqual(asked, [true], "the lifetime is chosen after the error flag is set")
+
+        await waitForNotice(store, toBecome: nil, timeout: 1)
+        XCTAssertNil(store.actionMessage)
+    }
+
+    func testANewNoticeIsNotTakenAwayByTheRetiringOne() async {
+        let store = self.store(lifetime: { _ in 0.12 })
+
+        store.reportActionSuccess("已导出独立 HTML")
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        store.reportActionError("second")
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(
+            store.actionMessage,
+            "second",
+            "the first notice's timer must not clear the message that replaced it"
+        )
+
+        await waitForNotice(store, toBecome: nil)
+        XCTAssertNil(store.actionMessage)
+    }
+
+    func testDismissingByHandCancelsThePendingRetirement() async {
+        let store = self.store(lifetime: { _ in 0.05 })
+        store.reportActionSuccess("已导出独立 HTML")
+
+        store.clearActionMessage()
+        XCTAssertNil(store.actionMessage)
+
+        store.reportActionError("kept")
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(store.actionMessage, "kept")
+    }
+
+    func testAZeroLifetimeLeavesTheNoticeAlone() async {
+        let store = self.store(lifetime: { _ in 0 })
+
+        store.reportActionSuccess("已导出独立 HTML")
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertNotNil(store.actionMessage, "zero means no timer, not instant dismissal")
+    }
+}
+
+@MainActor
 final class ConversationStoreTests: XCTestCase {
     func testWarmCatalogReloadsImmediatelyAndIndexerSurvivesViewDeactivation() async throws {
         let warm = Self.metadata(

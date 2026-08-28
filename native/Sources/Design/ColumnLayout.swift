@@ -37,7 +37,21 @@ final class ColumnLayout: ObservableObject {
 
     private let store: UserDefaults
 
-    init(store: UserDefaults = .standard) {
+    /// Under UI testing the layout is deliberately volatile. Widths and visibility are the one
+    /// piece of state that is *not* under `CCBUD_HOME`, so a test that put a column away would hand
+    /// that column's absence to every test after it in the same run.
+    static func defaultStore(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> UserDefaults {
+        guard environment["CCBUD_UI_TESTING"] == "1" else { return .standard }
+        let suite = "dev.ccbud.uitesting.layout.\(ProcessInfo.processInfo.processIdentifier)"
+        let store = UserDefaults(suiteName: suite) ?? .standard
+        store.removePersistentDomain(forName: suite)
+        return store
+    }
+
+    init(store: UserDefaults? = nil) {
+        let store = store ?? Self.defaultStore()
         self.store = store
         railWidth = Self.width(for: Self.rail, in: store)
         streamWidth = Self.width(for: Self.stream, in: store)

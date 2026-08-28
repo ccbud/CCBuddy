@@ -528,17 +528,21 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(railRow.waitForExistence(timeout: 3))
 
         railRow.click()
-        let stream = app.otherElements["conversation.list"]
+        // The column publishes itself as a container, which is not an `otherElement`; the rest of
+        // the suite asks for it the same way.
+        let stream = app.descendants(matching: .any)["conversation.list"]
         XCTAssertTrue(stream.waitForExistence(timeout: 5))
         let originalWidth = stream.frame.width
         XCTAssertGreaterThan(originalWidth, 0)
 
         let divider = app.descendants(matching: .any)["layout.divider.stream"]
         XCTAssertTrue(divider.waitForExistence(timeout: 3))
+        // Measured against the column, not the one-point rule: an offset multiplied out of a
+        // one-point element moves the pointer by almost nothing.
         divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(
                 forDuration: 0.2,
-                thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 6, dy: 0.5))
+                thenDragTo: stream.coordinate(withNormalizedOffset: CGVector(dx: 1.3, dy: 0.5))
             )
         let widened = XCTNSPredicateExpectation(
             predicate: NSPredicate { element, _ in

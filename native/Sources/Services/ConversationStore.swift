@@ -538,7 +538,14 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var detailMatchIndex = -1
     @Published private(set) var jumpRequest: ConversationJumpRequest?
 
-    @Published private(set) var actionMessage: String?
+    /// A notice reports something that already happened; it is not a dialog, so it withdraws on its
+    /// own. Failures stay longer than confirmations, because missing one costs more.
+    @Published private(set) var actionMessage: String? {
+        didSet {
+            guard actionMessage != nil else { return }
+            scheduleActionMessageDismissal()
+        }
+    }
     @Published private(set) var actionIsError = false
     @Published private(set) var isMutating = false
     @Published private(set) var importProgress: ConversationImportProgress?
@@ -553,6 +560,9 @@ final class ConversationStore: ObservableObject {
     private let fileInspector: any ConversationFileInspecting
     private let pathCopier: (String) -> Void
     private let replayURLLauncher: (URL) -> Bool
+    private let noticeLifetime: (Bool) -> TimeInterval
+    private var actionMessageDismissal: Task<Void, Never>?
+    private var actionMessageGeneration: UInt64 = 0
     private let pollIntervalNanoseconds: UInt64
     private let searchDelayNanoseconds: UInt64
     private let now: @Sendable () -> Date
@@ -646,6 +656,7 @@ final class ConversationStore: ObservableObject {
         replayURLLauncher: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) },
         pollIntervalNanoseconds: UInt64 = 4_000_000_000,
         searchDelayNanoseconds: UInt64 = 220_000_000,
+        noticeLifetime: @escaping (Bool) -> TimeInterval = { $0 ? 6 : 3.2 },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.repository = repository
@@ -658,6 +669,7 @@ final class ConversationStore: ObservableObject {
         self.replayURLLauncher = replayURLLauncher
         self.pollIntervalNanoseconds = pollIntervalNanoseconds
         self.searchDelayNanoseconds = searchDelayNanoseconds
+        self.noticeLifetime = noticeLifetime
         self.now = now
     }
 
@@ -667,6 +679,7 @@ final class ConversationStore: ObservableObject {
         fileInspector: any ConversationFileInspecting = ConversationFileInspector(),
         pollIntervalNanoseconds: UInt64 = 4_000_000_000,
         searchDelayNanoseconds: UInt64 = 220_000_000,
+        noticeLifetime: @escaping (Bool) -> TimeInterval = { $0 ? 6 : 3.2 },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         let mutationConfiguration = ConversationMutationConfiguration(
@@ -1304,8 +1317,30 @@ final class ConversationStore: ObservableObject {
     }
 
     func clearActionMessage() {
+        actionMessageDismissal?.cancel()
+        actionMessageDismissal = nil
         actionMessage = nil
         actionIsError = false
+    }
+
+    /// Every message is posted before its `actionIsError` flag is, so the lifetime is read one turn
+    /// later; the generation guard keeps a retiring notice from taking a newer one with it.
+    private func scheduleActionMessageDismissal() {
+        actionMessageDismissal?.cancel()
+        actionMessageGeneration &+= 1
+        let generation = actionMessageGeneration
+        actionMessageDismissal = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled, self.actionMessageGeneration == generation else {
+                return
+            }
+            let seconds = self.noticeLifetime(self.actionIsError)
+            guard seconds > 0 else { return }
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, self.actionMessageGeneration == generation else { return }
+            self.actionMessage = nil
+            self.actionIsError = false
+        }
     }
 
     func reportActionError(_ message: String) {
