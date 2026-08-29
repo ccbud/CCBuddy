@@ -280,6 +280,27 @@ enum ConversationResume {
                 message: "\(ConversationPresentation.sourceName(rawValue: metadata.source.rawValue)) 还不支持在终端继续"
             )
         }
+
+        let directory = metadata.cwd ?? ""
+        var isDirectory: ObjCBool = false
+        let directoryUsable = !directory.isEmpty
+            && FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+
+        if dialect.requiresWorkingDirectory && !directoryUsable {
+            let command = composeCommand(
+                binary: dialect.binary,
+                arguments: dialect.arguments,
+                workingDirectory: nil
+            )
+            clipboard(command)
+            return Outcome(
+                succeeded: false,
+                command: command,
+                message: "项目目录已不存在：\(directory)。命令已复制到剪贴板，可手动运行。"
+            )
+        }
+
         guard let executable = resolveBinary(dialect.binary) else {
             return Outcome(
                 succeeded: false,
@@ -288,26 +309,11 @@ enum ConversationResume {
             )
         }
 
-        let directory = metadata.cwd ?? ""
-        var isDirectory: ObjCBool = false
-        let directoryUsable = !directory.isEmpty
-            && FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory)
-            && isDirectory.boolValue
-
         let command = composeCommand(
             binary: executable,
             arguments: dialect.arguments,
             workingDirectory: directoryUsable ? directory : nil
         )
-
-        if dialect.requiresWorkingDirectory && !directoryUsable {
-            clipboard(command)
-            return Outcome(
-                succeeded: false,
-                command: command,
-                message: "项目目录已不存在：\(directory)。命令已复制到剪贴板，可手动运行。"
-            )
-        }
 
         do {
             try launch(host, command: command)
