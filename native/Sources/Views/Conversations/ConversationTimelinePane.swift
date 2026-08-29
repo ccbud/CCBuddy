@@ -425,8 +425,10 @@ struct ConversationTimelinePane: View {
     }
 
     private func timeline(_ session: HistorySession) -> some View {
-        let results = ConversationVisibleText.resultMap(in: session.messages)
-        let pairedIDs = ConversationVisibleText.pairedToolResultIDs(in: session.messages)
+        // Taken from the store, which computes them once per transcript. Rebuilding them here meant
+        // walking every message on every redraw.
+        let results = store.transcriptProjection.toolResults
+        let pairedIDs = store.transcriptProjection.pairedToolResultIDs
         let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
             ? store.detailMatches[store.detailMatchIndex].messageIndex
             : nil
@@ -434,7 +436,10 @@ struct ConversationTimelinePane: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(Array(session.messages.enumerated()), id: \.offset) { index, message in
+                    // Indices, not `enumerated()`: the latter copies the whole message array into
+                    // a fresh array of tuples every time the body runs.
+                    ForEach(session.messages.indices, id: \.self) { index in
+                        let message = session.messages[index]
                         if ConversationMessageView.isVisible(message, pairedToolResultIDs: pairedIDs) {
                             ConversationMessageView(
                                 message: message,

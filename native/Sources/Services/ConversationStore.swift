@@ -390,9 +390,15 @@ enum ConversationVisibleText {
     }
 
     static func pairedToolResultIDs(in messages: [HistoryMessage]) -> Set<String> {
-        Set(messages.flatMap(\.content).compactMap { block in
-            block.type == "tool_use" ? block.id : nil
-        })
+        // Walked rather than flattened: `flatMap(\.content)` copies every content block in the
+        // transcript into a throwaway array to read a handful of identifiers out of it.
+        var result: Set<String> = []
+        for message in messages {
+            for block in message.content where block.type == "tool_use" {
+                if let id = block.id, !id.isEmpty { result.insert(id) }
+            }
+        }
+        return result
     }
 
     static func searchableText(
@@ -540,6 +546,20 @@ final class ConversationStore: ObservableObject {
 
     /// A notice reports something that already happened; it is not a dialog, so it withdraws on its
     /// own. Failures stay longer than confirmations, because missing one costs more.
+    /// What the transcript view needs about the *whole* transcript, computed once when the
+    /// transcript changes.
+    ///
+    /// These two were being rebuilt inside the view body: every redraw walked all the messages to
+    /// collect tool results and flattened every content block into a fresh array just to read ids.
+    /// On a session with seventeen thousand messages that is hundreds of megabytes allocated per
+    /// keystroke, which is how the process reached ten gigabytes and more.
+    struct TranscriptProjection: Equatable, Sendable {
+        var toolResults: [String: HistoryContentBlock] = [:]
+        var pairedToolResultIDs: Set<String> = []
+    }
+
+    @Published private(set) var transcriptProjection = TranscriptProjection()
+
     @Published private(set) var actionMessage: String? {
         didSet {
             guard actionMessage != nil else { return }
@@ -1013,6 +1033,7 @@ final class ConversationStore: ObservableObject {
         guard id != activeTranscriptID,
               transcriptTabs.contains(where: { $0.id == id }) else { return }
         activeTranscriptID = id
+        refreshTranscriptProjection()
         loadDeferredTranscriptIfNeeded(id)
         detailQuery = ""
         detailMatches = []
@@ -1047,6 +1068,7 @@ final class ConversationStore: ObservableObject {
             child.count = loaded.messages.count
             session.subagents[agentID] = child
             self.selectedSession = session
+            self.refreshTranscriptProjection()
             self.detailRevision += 1
         }
     }
@@ -1371,6 +1393,17 @@ final class ConversationStore: ObservableObject {
         return htmlExporter.suggestedBaseName(for: session)
     }
 
+    private func refreshTranscriptProjection() {
+        guard let transcript = activeTranscript else {
+            if transcriptProjection != TranscriptProjection() { transcriptProjection = .init() }
+            return
+        }
+        transcriptProjection = TranscriptProjection(
+            toolResults: ConversationVisibleText.resultMap(in: transcript.messages),
+            pairedToolResultIDs: ConversationVisibleText.pairedToolResultIDs(in: transcript.messages)
+        )
+    }
+
     func clearActionMessage() {
         actionMessageDismissal?.cancel()
         actionMessageDismissal = nil
@@ -1683,6 +1716,7 @@ final class ConversationStore: ObservableObject {
                 ? detailMatches[detailMatchIndex].messageIndex
                 : nil
             selectedSession = Self.attachingSubagentRefs(of: selectedMetadata, to: value)
+            refreshTranscriptProjection()
             if !ConversationTranscriptPresentation.tabs(in: value).contains(where: {
                 $0.id == activeTranscriptID
             }) {
