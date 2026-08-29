@@ -75,6 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           node native/Scripts/tests/verify-legacy-tauri-manifest.test.js
+          node --test native/Scripts/tests/generate-latest-json.test.js
           bash native/Scripts/tests/verify-legacy-tauri-update-contract.test.sh
       - name: Install shared test dependencies
         run: |
@@ -115,7 +116,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CCBUD_BIFROST_ARCH=arm64 native/Scripts/fetch-bifrost.sh
+          CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
           xcodegen generate --spec native/project.yml --project native
           git diff --exit-code -- native/CCBuddy.xcodeproj
           node scripts/release-version.js check "${{ needs.verify.outputs.version }}"
@@ -204,6 +205,9 @@ jobs:
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
             "$summary"
+      - name: Run the Bifrost helper validator suite
+        shell: bash
+        run: bash native/Scripts/tests/verify-bifrost.test.sh
       - name: Build, exercise, and package the unsigned Release app
         shell: bash
         run: |
@@ -227,7 +231,7 @@ jobs:
           retention-days: 7
 
   build-native:
-    name: Sign, notarize, and package native arm64
+    name: Sign, notarize, and package the native universal build
     needs: [verify, native-test]
     runs-on: macos-26
     environment: release
@@ -260,7 +264,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CCBUD_BIFROST_ARCH=arm64 native/Scripts/fetch-bifrost.sh
+          CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
           xcodegen generate --spec native/project.yml --project native
           git diff --exit-code -- native/CCBuddy.xcodeproj
           node scripts/release-version.js check "${{ needs.verify.outputs.version }}"
@@ -401,8 +405,8 @@ jobs:
         run: |
           set -euo pipefail
           native/Scripts/verify-legacy-tauri-update-contract.sh \
-            "$RUNNER_TEMP/ccbud-native/artifacts/CC.Buddy_aarch64.app.tar.gz" \
-            "$RUNNER_TEMP/ccbud-native/artifacts/CC.Buddy_aarch64.app.tar.gz.sig" \
+            "$RUNNER_TEMP/ccbud-native/artifacts/CC.Buddy_universal.app.tar.gz" \
+            "$RUNNER_TEMP/ccbud-native/artifacts/CC.Buddy_universal.app.tar.gz.sig" \
             "$RUNNER_TEMP/ccbud-native/artifacts/latest.json" \
             "${{ needs.verify.outputs.version }}" "${{ github.repository }}"
       - name: Upload immutable release inputs
@@ -433,20 +437,25 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(printf '%s\n' \
-            "CC.Buddy_${VERSION}_aarch64.dmg" \
-            'CC.Buddy_aarch64.app.tar.gz' \
-            'CC.Buddy_aarch64.app.tar.gz.sig' \
+            "CC.Buddy_${VERSION}_universal.dmg" \
+            'CC.Buddy_universal.app.tar.gz' \
+            'CC.Buddy_universal.app.tar.gz.sig' \
             'latest.json' | sort)"
           actual="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
           [[ "$actual" == "$expected" ]]
           [[ "$TAG" == "v$VERSION" ]]
           jq -e --arg version "$VERSION" '.version == $version' dist/latest.json
-          jq -e '.platforms["darwin-aarch64-app"] == .platforms["darwin-aarch64"]' \
-            dist/latest.json
-          archive_sha="$(sha256sum dist/CC.Buddy_aarch64.app.tar.gz | awk '{print $1}')"
+          # Every macOS key must resolve to the one universal archive. A 1.3.9 updater on an Intel
+          # Mac reads darwin-x86_64 and nothing else, so a key going missing here strands it.
+          jq -e '
+            [.platforms["darwin-aarch64-app"], .platforms["darwin-aarch64"],
+             .platforms["darwin-x86_64-app"], .platforms["darwin-x86_64"]]
+            | length == 4 and (unique | length) == 1
+          ' dist/latest.json
+          archive_sha="$(sha256sum dist/CC.Buddy_universal.app.tar.gz | awk '{print $1}')"
           [[ "$(jq -r '.platforms["darwin-aarch64-app"].sha256' dist/latest.json)" \
             == "$archive_sha" ]]
-          signature="$(tr -d '\r\n' < dist/CC.Buddy_aarch64.app.tar.gz.sig)"
+          signature="$(tr -d '\r\n' < dist/CC.Buddy_universal.app.tar.gz.sig)"
           [[ "$(jq -r '.platforms["darwin-aarch64-app"].signature' dist/latest.json)" \
             == "$signature" ]]
       - name: Create draft and upload all assets

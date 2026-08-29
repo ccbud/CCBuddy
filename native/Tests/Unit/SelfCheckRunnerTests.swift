@@ -391,8 +391,8 @@ final class SelfCheckRunnerTests: XCTestCase {
                 exists: true,
                 isRegularFile: true,
                 executable: true,
-                architecture: "arm64",
-                sha256: SelfCheckRunner.expectedBifrostSHA256
+                slices: SelfCheckRunner.expectedBifrostSliceSHA256
+                    .map { SelfCheckMachOSlice(architecture: $0.key, sha256: $0.value) }
             )
         }
         dependencies.configProbe = { _, _ in
@@ -658,8 +658,8 @@ final class SelfCheckRunnerTests: XCTestCase {
                     exists: true,
                     isRegularFile: true,
                     executable: true,
-                    architecture: "arm64",
-                    sha256: SelfCheckRunner.expectedBifrostSHA256
+                    slices: SelfCheckRunner.expectedBifrostSliceSHA256
+                        .map { SelfCheckMachOSlice(architecture: $0.key, sha256: $0.value) }
                 )
             },
             configProbe: { _, _ in

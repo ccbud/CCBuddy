@@ -41,8 +41,22 @@ fi
   || fail "minimum system version is $MINIMUM_SYSTEM_VERSION"
 [[ -x "$EXECUTABLE" ]] || fail "main executable is missing"
 [[ -x "$HELPER" ]] || fail "bifrost-http is missing"
-[[ "$(lipo -archs "$EXECUTABLE")" == "arm64" ]] || fail "main executable is not arm64-only"
-[[ "$(lipo -archs "$HELPER")" == "arm64" ]] || fail "bifrost-http is not arm64-only"
+# Both slices, in either order: `lipo -archs` reports them in the order they were joined, and a
+# release that quietly lost one would install on an Intel Mac and then refuse to launch.
+require_universal() {
+  local label="$1"
+  local binary="$2"
+  local archs
+  archs="$(lipo -archs "$binary")"
+  for required in arm64 x86_64; do
+    case " $archs " in
+      *" $required "*) ;;
+      *) fail "$label is $archs, expected a universal arm64 and x86_64 binary" ;;
+    esac
+  done
+}
+require_universal "main executable" "$EXECUTABLE"
+require_universal "bifrost-http" "$HELPER"
 cmp -s "$APP_PATH/Contents/Resources/LICENSE" "$ROOT/LICENSE" \
   || fail "GPL-3.0 license resource is missing or changed"
 cmp -s "$APP_PATH/Contents/Resources/Bifrost-LICENSE.txt" \
@@ -84,4 +98,4 @@ if [[ "$MODE" == "stapled" ]]; then
   spctl --assess --type execute --verbose=4 "$APP_PATH"
 fi
 
-echo "verified $MODE arm64 app: $APP_PATH"
+echo "verified $MODE universal app: $APP_PATH"

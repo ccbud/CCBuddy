@@ -45,7 +45,7 @@ jobs:
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
 
   native-arm64:
-    name: Native arm64 tests and unsigned package
+    name: Native tests and unsigned universal package
     needs: shared-tests
     runs-on: macos-26
     env:
@@ -75,7 +75,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CCBUD_BIFROST_ARCH=arm64 native/Scripts/fetch-bifrost.sh
+          CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
           xcodegen generate --spec native/project.yml --project native
           git diff --exit-code -- native/CCBuddy.xcodeproj
           node scripts/release-version.js check
@@ -168,6 +168,9 @@ jobs:
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
             "$summary"
+      - name: Run the Bifrost helper validator suite
+        shell: bash
+        run: bash native/Scripts/tests/verify-bifrost.test.sh
       - name: Build and exercise explicit unsigned artifacts
         id: package
         shell: bash

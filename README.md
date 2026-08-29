@@ -37,11 +37,11 @@ The gateway binds to `127.0.0.1`; inference requests still go to the provider yo
 
 ## Installation
 
-CC Buddy 2.x supports **Apple-silicon Macs running macOS 13 or newer**. Download the signed arm64 DMG from [Releases](https://github.com/ccbud/ccbud/releases).
+CC Buddy 2.x supports **Macs running macOS 13 or newer**, Apple silicon and Intel alike. Download the signed universal DMG from [Releases](https://github.com/ccbud/ccbud/releases).
 
-Version 2 is the native Swift/SwiftUI replacement and does not publish Intel Mac, Windows, or Linux builds. Legacy 1.x artifacts remain available on the Releases page, but those platforms do not receive the 2.x application or updater channel.
+Version 2 is the native Swift/SwiftUI replacement and does not publish Windows or Linux builds. Legacy 1.x artifacts remain available on the Releases page, but those platforms do not receive the 2.x application or updater channel.
 
-Homebrew (Apple silicon):
+Homebrew:
 
 ```bash
 brew install --cask ccbud/tap/ccbud

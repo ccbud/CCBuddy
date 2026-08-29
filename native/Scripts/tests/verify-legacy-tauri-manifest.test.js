@@ -14,7 +14,7 @@ const {
 const ARTIFACT = Buffer.from('test');
 const VERSION = '2.0.0';
 const REPOSITORY = 'ccbud/ccbud';
-const ARTIFACT_NAME = 'CC.Buddy_aarch64.app.tar.gz';
+const ARTIFACT_NAME = 'CC.Buddy_universal.app.tar.gz';
 const PUBLIC_KEY_PAYLOAD = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3';
 const PUBLIC_KEY = Buffer.from([
   'untrusted comment: minisign public key: E7620F1842B4E81F',
@@ -48,6 +48,8 @@ function manifestFor(artifact = ARTIFACT) {
     platforms: {
       'darwin-aarch64-app': platform,
       'darwin-aarch64': { ...platform },
+      'darwin-x86_64-app': { ...platform },
+      'darwin-x86_64': { ...platform },
     },
   };
 }
@@ -133,11 +135,35 @@ test('manifest requires matching preferred and fallback targets', () => {
 
   const missingFallback = inputFor();
   delete missingFallback.manifest.platforms['darwin-aarch64'];
-  assert.throws(() => verifyLegacyManifestContract(missingFallback, TEST_CONTRACT), /fallback target/);
+  assert.throws(
+    () => verifyLegacyManifestContract(missingFallback, TEST_CONTRACT),
+    /target is missing: darwin-aarch64/,
+  );
 
   const mismatchedFallback = inputFor();
   mismatchedFallback.manifest.platforms['darwin-aarch64'].url += '?other';
   assert.throws(() => verifyLegacyManifestContract(mismatchedFallback, TEST_CONTRACT), /same artifact/);
+});
+
+// An Intel Mac running 1.3.9 reads darwin-x86_64 and nothing else. Dropping the key does not make
+// the release arm64-only for those users, it makes their update check fail with no explanation, so
+// the omission has to fail here instead.
+test('manifest requires the Intel targets the last 1.x release also published', () => {
+  for (const target of ['darwin-x86_64-app', 'darwin-x86_64']) {
+    const missing = inputFor();
+    delete missing.manifest.platforms[target];
+    assert.throws(
+      () => verifyLegacyManifestContract(missing, TEST_CONTRACT),
+      new RegExp(`target is missing: ${target}`),
+    );
+
+    const divergent = inputFor();
+    divergent.manifest.platforms[target].sha256 = 'f'.repeat(64);
+    assert.throws(
+      () => verifyLegacyManifestContract(divergent, TEST_CONTRACT),
+      new RegExp(`same artifact: ${target}`),
+    );
+  }
 });
 
 test('tampered artifact with a matching SHA-256 still fails Minisign verification', () => {

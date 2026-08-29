@@ -14,6 +14,15 @@ const LEGACY_CONTRACT = Object.freeze({
   bundleIdentifier: 'dev.ccbud.gateway',
   version: Object.freeze([1, 3, 9]),
   platformCandidates: Object.freeze(['darwin-aarch64-app', 'darwin-aarch64']),
+  // Every macOS key a 1.3.9 updater may ask for. It resolves its own platform by name and treats
+  // an absent key as a failed check, so an Intel Mac needs darwin-x86_64 present even though the
+  // release is one universal archive that both kinds of Mac download.
+  requiredTargets: Object.freeze([
+    'darwin-aarch64-app',
+    'darwin-aarch64',
+    'darwin-x86_64-app',
+    'darwin-x86_64',
+  ]),
 });
 
 function fail(message) {
@@ -164,14 +173,16 @@ function verifyLegacyManifestContract(input, contract = LEGACY_CONTRACT) {
   }
 
   const selected = selectLegacyPlatform(manifest.platforms, contract.platformCandidates);
-  const [preferredKey, fallbackKey] = contract.platformCandidates;
+  const [preferredKey] = contract.platformCandidates;
   if (selected.key !== preferredKey) fail('legacy preferred app target is missing');
-  const fallback = manifest.platforms[fallbackKey];
-  if (!fallback || typeof fallback !== 'object' || Array.isArray(fallback)) {
-    fail('legacy fallback target is missing');
-  }
-  if (!isDeepStrictEqual(selected.value, fallback)) {
-    fail('legacy preferred and fallback targets do not describe the same artifact');
+  for (const target of contract.requiredTargets) {
+    const entry = manifest.platforms[target];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      fail(`legacy target is missing: ${target}`);
+    }
+    if (!isDeepStrictEqual(selected.value, entry)) {
+      fail(`legacy target does not describe the same artifact: ${target}`);
+    }
   }
 
   const expectedURL = `https://github.com/${repository}/releases/download/v${version}/${encodeURIComponent(artifactName)}`;

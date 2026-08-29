@@ -31,12 +31,15 @@ command -v xcodegen >/dev/null || fail "xcodegen is required"
 [[ "$(xcodegen --version)" == "Version: 2.46.0" ]] \
   || fail "XcodeGen 2.46.0 is required"
 
+# A release is universal so that the Intel Macs running the last 1.x build have somewhere to
+# update to. Both the app and the helper it launches carry both slices.
+readonly RELEASE_ARCHS="arm64 x86_64"
 if [[ ! -x "$ROOT/native/Vendor/bifrost-http" ]]; then
   [[ "$MODE" == "unsigned" ]] \
     || fail "signed builds require the pinned Bifrost helper to be prepared before credentials"
-  CCBUD_BIFROST_ARCH=arm64 "$ROOT/native/Scripts/fetch-bifrost.sh" >/dev/null
+  CCBUD_BIFROST_ARCH=universal "$ROOT/native/Scripts/fetch-bifrost.sh" >/dev/null
 fi
-"$ROOT/native/Scripts/verify-bifrost.sh" "$ROOT/native/Vendor/bifrost-http" arm64
+"$ROOT/native/Scripts/verify-bifrost.sh" "$ROOT/native/Vendor/bifrost-http" "$RELEASE_ARCHS"
 
 xcodegen generate --spec "$ROOT/native/project.yml" --project "$ROOT/native"
 node "$ROOT/scripts/release-version.js" check "$VERSION"
@@ -62,7 +65,7 @@ if [[ "$MODE" == "signed" ]]; then
   xcodebuild archive \
     -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
     -destination 'generic/platform=macOS' -archivePath "$ARCHIVE_PATH" \
-    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO MARKETING_VERSION="$VERSION" \
+    ARCHS="$RELEASE_ARCHS" ONLY_ACTIVE_ARCH=NO MARKETING_VERSION="$VERSION" \
     CURRENT_PROJECT_VERSION="$BUILD_NUMBER" DEVELOPMENT_TEAM="$TEAM_ID" \
     CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$apple_signing_identity" \
     ENABLE_HARDENED_RUNTIME=YES OTHER_CODE_SIGN_FLAGS="$signing_flags"
@@ -74,7 +77,7 @@ else
   readonly PRODUCTS_PATH="$BUILD_ROOT/products"
   xcodebuild build \
     -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
-    -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+    -destination 'generic/platform=macOS' ARCHS="$RELEASE_ARCHS" ONLY_ACTIVE_ARCH=NO \
     MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
     CODE_SIGNING_ALLOWED=NO ENABLE_HARDENED_RUNTIME=YES \
     CONFIGURATION_BUILD_DIR="$PRODUCTS_PATH"

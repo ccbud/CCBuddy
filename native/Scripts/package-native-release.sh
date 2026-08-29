@@ -31,13 +31,15 @@ case "$MODE" in signed|unsigned) ;; *) fail "usage: $0 <signed|unsigned> <app> <
 [[ -d "$APP_SOURCE" ]] || fail "app is missing: $APP_SOURCE"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid version"
 [[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != "/" ]] || fail "unsafe output directory"
+# Named for what the archive holds. A universal build published as `_aarch64` would tell every
+# Intel Mac owner, on the release page and in the cask, that there is nothing here for them.
 if [[ "$MODE" == "signed" ]]; then
-  readonly UPDATER="$OUTPUT_DIR/CC.Buddy_aarch64.app.tar.gz"
-  readonly DMG="$OUTPUT_DIR/CC.Buddy_${VERSION}_aarch64.dmg"
+  readonly UPDATER="$OUTPUT_DIR/CC.Buddy_universal.app.tar.gz"
+  readonly DMG="$OUTPUT_DIR/CC.Buddy_${VERSION}_universal.dmg"
   readonly EXTRA_OUTPUTS=("$UPDATER.sig" "$OUTPUT_DIR/latest.json")
 else
-  readonly UPDATER="$OUTPUT_DIR/CC.Buddy_aarch64.unsigned.app.tar.gz"
-  readonly DMG="$OUTPUT_DIR/CC.Buddy_${VERSION}_aarch64.unsigned.dmg"
+  readonly UPDATER="$OUTPUT_DIR/CC.Buddy_universal.unsigned.app.tar.gz"
+  readonly DMG="$OUTPUT_DIR/CC.Buddy_${VERSION}_universal.unsigned.dmg"
   readonly EXTRA_OUTPUTS=("$OUTPUT_DIR/UNSIGNED-NOT-FOR-DISTRIBUTION.txt")
 fi
 for output in "$UPDATER" "$DMG" "${EXTRA_OUTPUTS[@]}"; do

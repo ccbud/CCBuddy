@@ -678,8 +678,42 @@ final class BifrostResponsesProtocolIntegrationTests: XCTestCase {
         )
     }
 
+    /// Verifies the helper the way the app and the build scripts do: one digest per Mach-O slice.
+    ///
+    /// A release helper is universal, so the file as a whole has a digest nobody published. The
+    /// pinned values live on `SelfCheckRunner` rather than being copied here again.
+    private func assertPinnedBifrost(at url: URL) throws {
+        let slices = try SelfCheckSystemProbe.machOSlices(at: url)
+        let digests = Dictionary(
+            slices.map { ($0.architecture, $0.sha256) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let expected = SelfCheckRunner.expectedBifrostSliceSHA256
+        guard !digests.isEmpty, digests.allSatisfy({ expected[$0.key] == $0.value }) else {
+            throw NSError(
+                domain: "PinnedBifrost",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Pinned bifrost-http slice digests do not match: \(digests)",
+                ]
+            )
+        }
+    }
+
+    /// A plain whole-file digest, used only to name and re-check the staged copy. Trust comes from
+    /// `assertPinnedBifrost`; this just proves the copy is byte-identical to what was verified.
+    private func fileDigest(at path: String) throws -> String {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1_024 * 1_024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     private func integrationBinaryPath() throws -> String? {
-        let pinnedSHA256 = "422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263"
         let environmentPath = ProcessInfo.processInfo.environment["CCBUD_BIFROST_BINARY"]
         let bundledPath = Bundle.main.executableURL?
             .deletingLastPathComponent()
@@ -692,24 +726,8 @@ final class BifrostResponsesProtocolIntegrationTests: XCTestCase {
             FileManager.default.isExecutableFile(atPath: $0)
         }) else { return nil }
 
-        func digest(at path: String) throws -> String {
-            let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
-            defer { try? handle.close() }
-            var hasher = SHA256()
-            while let chunk = try handle.read(upToCount: 1_024 * 1_024), !chunk.isEmpty {
-                hasher.update(data: chunk)
-            }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        }
-
-        let sourceDigest = try digest(at: sourcePath)
-        guard sourceDigest == pinnedSHA256 else {
-            throw NSError(
-                domain: "BifrostResponsesProtocolIntegrationTests",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Pinned helper SHA-256 mismatch: \(sourceDigest)"]
-            )
-        }
+        try assertPinnedBifrost(at: URL(fileURLWithPath: sourcePath))
+        let stagedToken = try fileDigest(at: sourcePath)
 
         let resolvedSourcePath = URL(fileURLWithPath: sourcePath)
             .resolvingSymlinksInPath().path
@@ -724,10 +742,10 @@ final class BifrostResponsesProtocolIntegrationTests: XCTestCase {
         // prolonged file-validation wait. Stage it under /tmp with streaming I/O so XCTest never
         // asks Foundation to memory-map the external executable, then verify the launched bytes.
         let destination = URL(fileURLWithPath: "/tmp", isDirectory: true)
-            .appendingPathComponent("ccbud-bifrost-integration-\(getuid())-\(pinnedSHA256)")
+            .appendingPathComponent("ccbud-bifrost-integration-\(getuid())-\(stagedToken)")
         let destinationPath = destination.path
         if FileManager.default.isExecutableFile(atPath: destinationPath),
-           try digest(at: destinationPath) == pinnedSHA256 {
+           try fileDigest(at: destinationPath) == stagedToken {
             return destinationPath
         }
         if FileManager.default.fileExists(atPath: destinationPath) {
@@ -752,8 +770,8 @@ final class BifrostResponsesProtocolIntegrationTests: XCTestCase {
             [.posixPermissions: 0o755],
             ofItemAtPath: partial.path
         )
-        let copiedDigest = try digest(at: partial.path)
-        guard copiedDigest == pinnedSHA256 else {
+        let copiedDigest = try fileDigest(at: partial.path)
+        guard copiedDigest == stagedToken else {
             throw NSError(
                 domain: "BifrostResponsesProtocolIntegrationTests",
                 code: 2,

@@ -45,6 +45,22 @@ function validateSignature(value) {
   return encoded;
 }
 
+// One universal archive under four keys. A Tauri updater resolves its own platform by name and
+// treats an absent key as a failed check, so the Intel Macs still running 1.3.9 need
+// `darwin-x86_64` spelled out even though it points at the same download as `darwin-aarch64`.
+const MACOS_TARGETS = Object.freeze([
+  'darwin-aarch64-app',
+  'darwin-aarch64',
+  'darwin-x86_64-app',
+  'darwin-x86_64',
+]);
+
+function buildManifest({ version, pubDate, url, signature, sha256 }) {
+  const platforms = {};
+  for (const target of MACOS_TARGETS) platforms[target] = { url, signature, sha256 };
+  return { version, pub_date: pubDate, platforms };
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const required = ['version', 'repository', 'tag', 'artifact', 'signature', 'output'];
@@ -59,15 +75,13 @@ function main() {
   const signature = validateSignature(fs.readFileSync(path.resolve(args.signature), 'utf8').trim());
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex');
   const url = `https://github.com/${args.repository}/releases/download/${args.tag}/${encodeURIComponent(asset)}`;
-  const platform = { url, signature, sha256 };
-  const manifest = {
+  const manifest = buildManifest({
     version: args.version,
-    pub_date: args['pub-date'] || new Date().toISOString(),
-    platforms: {
-      'darwin-aarch64-app': platform,
-      'darwin-aarch64': { ...platform },
-    },
-  };
+    pubDate: args['pub-date'] || new Date().toISOString(),
+    url,
+    signature,
+    sha256,
+  });
 
   const output = path.resolve(args.output);
   fs.mkdirSync(path.dirname(output), { recursive: true });
@@ -75,5 +89,9 @@ function main() {
   console.log(`wrote ${output} (${sha256})`);
 }
 
-try { main(); }
-catch (error) { console.error(`latest.json generation failed: ${error.message}`); process.exit(1); }
+if (require.main === module) {
+  try { main(); }
+  catch (error) { console.error(`latest.json generation failed: ${error.message}`); process.exit(1); }
+}
+
+module.exports = { buildManifest, MACOS_TARGETS };

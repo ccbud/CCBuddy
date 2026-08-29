@@ -262,12 +262,21 @@ struct SelfCheckBundleSnapshot: Equatable, Sendable {
     let architecture: String
 }
 
+/// One Mach-O slice of the bundled helper.
+///
+/// A universal helper is two published downloads joined by lipo, so the file as a whole has a
+/// digest that nobody upstream ever published and that could not be pinned. Each slice, on the
+/// other hand, is exactly the bytes that were downloaded.
+struct SelfCheckMachOSlice: Equatable, Sendable {
+    let architecture: String
+    let sha256: String
+}
+
 struct SelfCheckBifrostSnapshot: Equatable, Sendable {
     let exists: Bool
     let isRegularFile: Bool
     let executable: Bool
-    let architecture: String?
-    let sha256: String?
+    let slices: [SelfCheckMachOSlice]
 }
 
 struct SelfCheckConfigSnapshot: Equatable, Sendable {
@@ -392,8 +401,12 @@ struct SelfCheckDependencies {
 
 @MainActor
 struct SelfCheckRunner {
-    nonisolated static let expectedBifrostSHA256 =
-        "422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263"
+    /// The published digest of each slice, matching the pins in `native/Scripts/verify-bifrost.sh`.
+    /// A release carries both so that Intel Macs have a build to update to.
+    nonisolated static let expectedBifrostSliceSHA256: [String: String] = [
+        "arm64": "422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263",
+        "x86_64": "50523247a6e5016bd3da29aeb0efea11e8ec6a01edd8b2b8b14bf4b6344afc07",
+    ]
 
     var dependencies: SelfCheckDependencies
 
@@ -523,7 +536,8 @@ struct SelfCheckRunner {
                 && !(snapshot.bundleIdentifier ?? "").isEmpty
                 && !(snapshot.shortVersion ?? "").isEmpty
                 && !(snapshot.buildVersion ?? "").isEmpty
-                && snapshot.architecture == "arm64"
+                // Either slice of the universal build is a valid thing to be running.
+                && ["arm64", "x86_64"].contains(snapshot.architecture)
             required.append(check(
                 id: "main_bundle",
                 passed: passed,
@@ -546,20 +560,29 @@ struct SelfCheckRunner {
                 deadline: deadline,
                 operation: dependencies.bifrostProbe
             )
+            let digests = Dictionary(
+                snapshot.slices.map { ($0.architecture, $0.sha256) },
+                uniquingKeysWith: { first, _ in first }
+            )
             let passed = snapshot.exists && snapshot.isRegularFile && snapshot.executable
-                && snapshot.architecture == "arm64"
-                && snapshot.sha256 == Self.expectedBifrostSHA256
+                && snapshot.slices.count == Self.expectedBifrostSliceSHA256.count
+                && digests == Self.expectedBifrostSliceSHA256
+            var values = [
+                "exists": String(snapshot.exists),
+                "regularFile": String(snapshot.isRegularFile),
+                "executable": String(snapshot.executable),
+                "architectures": snapshot.slices.isEmpty
+                    ? "missing"
+                    : snapshot.slices.map(\.architecture).sorted().joined(separator: "+"),
+            ]
+            for slice in snapshot.slices { values["sha256.\(slice.architecture)"] = slice.sha256 }
             required.append(check(
                 id: "bundled_bifrost",
                 passed: passed,
-                detail: passed ? "bundled bifrost-http matches the pinned arm64 artifact" : "bundled bifrost-http failed integrity checks",
-                values: [
-                    "exists": String(snapshot.exists),
-                    "regularFile": String(snapshot.isRegularFile),
-                    "executable": String(snapshot.executable),
-                    "architecture": snapshot.architecture ?? "missing",
-                    "sha256": snapshot.sha256 ?? "missing",
-                ],
+                detail: passed
+                    ? "bundled bifrost-http matches the pinned universal artifact"
+                    : "bundled bifrost-http failed integrity checks",
+                values: values,
                 redactor: redactor
             ))
         } catch {
@@ -1107,7 +1130,7 @@ private final class SelfCheckSendableBox<Value>: @unchecked Sendable {
     }
 }
 
-private enum SelfCheckSystemProbe {
+enum SelfCheckSystemProbe {
     static func bundle(_ bundle: Bundle) -> SelfCheckBundleSnapshot {
         SelfCheckBundleSnapshot(
             isMainApplicationBundle: bundle.bundleURL.pathExtension == "app"
@@ -1125,8 +1148,7 @@ private enum SelfCheckSystemProbe {
                 exists: false,
                 isRegularFile: false,
                 executable: false,
-                architecture: nil,
-                sha256: nil
+                slices: []
             )
         }
         let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -1134,19 +1156,108 @@ private enum SelfCheckSystemProbe {
         let executable = fileManager.isExecutableFile(atPath: file.path)
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
-        let header = try handle.read(upToCount: 8) ?? Data()
-        try handle.seek(toOffset: 0)
-        var digest = SHA256()
-        while let chunk = try handle.read(upToCount: 1 * 1_024 * 1_024), !chunk.isEmpty {
-            digest.update(data: chunk)
-        }
         return SelfCheckBifrostSnapshot(
             exists: true,
             isRegularFile: regular,
             executable: executable,
-            architecture: machOArchitecture(header),
-            sha256: digest.finalize().map { String(format: "%02x", $0) }.joined()
+            slices: (try? machOSlices(in: handle)) ?? []
         )
+    }
+
+    /// Digests any Mach-O file one architecture at a time. Exposed so the fat-header walk can be
+    /// tested against real universal and thin binaries rather than only through a packaged app.
+    static func machOSlices(at url: URL) throws -> [SelfCheckMachOSlice] {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        return try machOSlices(in: handle)
+    }
+
+    /// Digests the helper one architecture at a time.
+    ///
+    /// A fat header is stored big-endian regardless of the host, and its entries are the only
+    /// record of where each slice begins and ends. A thin file is reported as the single slice it
+    /// is, so a local single-architecture build still produces a comparable answer.
+    private static func machOSlices(in handle: FileHandle) throws -> [SelfCheckMachOSlice] {
+        try handle.seek(toOffset: 0)
+        let header = try handle.read(upToCount: 8) ?? Data()
+        guard header.count == 8 else { return [] }
+        let magic = header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+
+        switch magic {
+        case FAT_MAGIC, FAT_CIGAM, FAT_MAGIC_64, FAT_CIGAM_64:
+            let is64 = magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64
+            let count = header
+                .withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) }
+                .bigEndian
+            // A plausible ceiling. A fat header claiming millions of slices is a malformed file,
+            // not something to allocate for.
+            guard count > 0, count <= 32 else { return [] }
+
+            let entrySize = is64 ? 32 : 20
+            var slices: [SelfCheckMachOSlice] = []
+            for index in 0..<Int(count) {
+                try handle.seek(toOffset: UInt64(8 + index * entrySize))
+                guard let entry = try handle.read(upToCount: entrySize), entry.count == entrySize
+                else { return [] }
+                let cpu = entry.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.bigEndian
+                let offset: UInt64
+                let size: UInt64
+                if is64 {
+                    offset = entry
+                        .withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt64.self) }
+                        .bigEndian
+                    size = entry
+                        .withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 16, as: UInt64.self) }
+                        .bigEndian
+                } else {
+                    offset = UInt64(
+                        entry
+                            .withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }
+                            .bigEndian
+                    )
+                    size = UInt64(
+                        entry
+                            .withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self) }
+                            .bigEndian
+                    )
+                }
+                guard let name = architectureName(cpu_type_t(bitPattern: cpu)) else { return [] }
+                slices.append(SelfCheckMachOSlice(
+                    architecture: name,
+                    sha256: try digest(handle, from: offset, count: size)
+                ))
+            }
+            return slices
+
+        case UInt32(MH_MAGIC), UInt32(MH_MAGIC_64), UInt32(MH_CIGAM), UInt32(MH_CIGAM_64):
+            guard let name = machOArchitecture(header) else { return [] }
+            try handle.seek(toOffset: 0)
+            let size = try handle.seekToEnd()
+            return [SelfCheckMachOSlice(
+                architecture: name,
+                sha256: try digest(handle, from: 0, count: size)
+            )]
+
+        default:
+            return []
+        }
+    }
+
+    private static func digest(
+        _ handle: FileHandle,
+        from offset: UInt64,
+        count: UInt64
+    ) throws -> String {
+        try handle.seek(toOffset: offset)
+        var remaining = count
+        var digest = SHA256()
+        while remaining > 0 {
+            let wanted = Int(min(remaining, 1 * 1_024 * 1_024))
+            guard let chunk = try handle.read(upToCount: wanted), !chunk.isEmpty else { break }
+            digest.update(data: chunk)
+            remaining -= UInt64(chunk.count)
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func configRoundTrip(
@@ -1349,10 +1460,14 @@ private enum SelfCheckSystemProbe {
         case UInt32(MH_CIGAM), UInt32(MH_CIGAM_64): normalizedCPU = cpu.byteSwapped
         default: return nil
         }
-        switch cpu_type_t(bitPattern: normalizedCPU) {
-        case CPU_TYPE_ARM64: return "arm64"
-        case CPU_TYPE_X86_64: return "x86_64"
-        default: return "unknown"
+        return architectureName(cpu_type_t(bitPattern: normalizedCPU)) ?? "unknown"
+    }
+
+    private static func architectureName(_ cpu: cpu_type_t) -> String? {
+        switch cpu {
+        case CPU_TYPE_ARM64: "arm64"
+        case CPU_TYPE_X86_64: "x86_64"
+        default: nil
         }
     }
 
