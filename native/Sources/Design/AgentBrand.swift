@@ -33,16 +33,31 @@ enum AgentBrand {
     }
 
     /// Resolution order matches Wake: monochrome marks pick their ink from the effective appearance.
+    ///
+    /// Held once per asset. Every row of the session stream draws one of these, and reading the
+    /// file and decoding the image on each redraw is what made the list scroll stiffly — the marks
+    /// are a handful of small PNGs that never change while the app runs.
     static func image(for source: HistorySource, dark: Bool) -> NSImage? {
         let mark = mark(for: source)
         guard let asset = mark.asset else { return nil }
         let name = mark.monochrome && !dark ? "\(asset)-light" : asset
-        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
-        }
-        guard let fallback = Bundle.main.url(forResource: asset, withExtension: "png") else { return nil }
-        return NSImage(contentsOf: fallback)
+
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cached = imageCache[name] { return cached.image }
+        let loaded = load(named: name) ?? load(named: asset)
+        imageCache[name] = CachedMark(image: loaded)
+        return loaded
+    }
+
+    private struct CachedMark { let image: NSImage? }
+
+    private static let cacheLock = NSLock()
+    private nonisolated(unsafe) static var imageCache: [String: CachedMark] = [:]
+
+    private static func load(named name: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png") else { return nil }
+        return NSImage(contentsOf: url)
     }
 }
 

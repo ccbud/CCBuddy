@@ -61,17 +61,29 @@ enum ConversationPresentation {
     static func messageAnchor(_ index: Int) -> String { "conversation.message.\(index)" }
     static let bottomAnchor = "conversation.timeline.bottom"
 
+    /// Reused rather than rebuilt. Building a `DateFormatter` is expensive enough that one per row
+    /// — the session stream asks for a tooltip date on every row it draws — shows up as stutter
+    /// while scrolling.
     private static func dateFormatter(
         dateStyle: DateFormatter.Style,
         timeStyle: DateFormatter.Style,
         language: AppLanguage?
     ) -> DateFormatter {
+        let locale = language?.locale ?? .current
+        let key = "\(dateStyle.rawValue)-\(timeStyle.rawValue)-\(locale.identifier)"
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        if let cached = formatterCache[key] { return cached }
         let formatter = DateFormatter()
-        formatter.locale = language?.locale ?? .current
+        formatter.locale = locale
         formatter.dateStyle = dateStyle
         formatter.timeStyle = timeStyle
+        formatterCache[key] = formatter
         return formatter
     }
+
+    private static let formatterLock = NSLock()
+    private nonisolated(unsafe) static var formatterCache: [String: DateFormatter] = [:]
 }
 
 extension HistorySessionMetadata {

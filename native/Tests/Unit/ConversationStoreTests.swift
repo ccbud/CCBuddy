@@ -327,6 +327,44 @@ final class ConversationPresentationParityTests: XCTestCase {
 }
 
 @MainActor
+final class BrandMarkCacheTests: XCTestCase {
+    /// Every row of the session stream draws one of these. Reading the file and decoding the image
+    /// on each redraw is what made the list scroll stiffly, so the cache is pinned here.
+    func testTheSameMarkIsHandedOutRatherThanReloaded() {
+        let first = AgentBrand.image(for: .claude, dark: true)
+        let second = AgentBrand.image(for: .claude, dark: true)
+
+        XCTAssertNotNil(first)
+        XCTAssertTrue(first === second, "a mark must be decoded once, not once per row")
+    }
+
+    func testLightAndDarkInksAreCachedApart() {
+        let dark = AgentBrand.image(for: .grok, dark: true)
+        let light = AgentBrand.image(for: .grok, dark: false)
+
+        XCTAssertNotNil(dark)
+        XCTAssertNotNil(light)
+        XCTAssertFalse(
+            dark === light,
+            "the monochrome marks ship in two inks and must not share one cache entry"
+        )
+    }
+
+    func testAFormatterIsReusedForTheSameStyleAndLocale() {
+        let first = ConversationPresentation.absoluteDate(Date(), language: .simplifiedChinese)
+        let second = ConversationPresentation.absoluteDate(Date(), language: .simplifiedChinese)
+
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(first.count, second.count)
+        XCTAssertNotEqual(
+            ConversationPresentation.absoluteDate(Date(), language: .english),
+            first,
+            "caching must key on the locale, not hand every language the first formatter built"
+        )
+    }
+}
+
+@MainActor
 final class TranscriptProjectionIdentityTests: XCTestCase {
     private func block(_ id: String, text: String) -> HistoryContentBlock {
         .init(type: "tool_result", toolUseID: id, content: .string(text))

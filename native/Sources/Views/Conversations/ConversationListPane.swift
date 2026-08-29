@@ -11,9 +11,13 @@ struct ConversationListPane: View {
     @State private var announcesIndexChanges = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            listHeader
-            listContent
+        // Derived once per pass. As a computed property it was filtered and sorted three times over
+        // on every redraw — once for the header's count, once to ask whether it was empty, once to
+        // draw it — which on a thousand sessions is felt as stutter while scrolling.
+        let sessions = flatSessions
+        return VStack(spacing: 0) {
+            listHeader(sessions)
+            listContent(sessions)
         }
         .conversationRailMaterial()
         .onAppear {
@@ -51,7 +55,7 @@ struct ConversationListPane: View {
         .accessibilityIdentifier("conversation.list")
     }
 
-    private var listHeader: some View {
+    private func listHeader(_ sessions: [HistorySessionMetadata]) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(workbench.contextTitle(
                 projects: store.projects,
@@ -61,7 +65,7 @@ struct ConversationListPane: View {
                 .font(.ccTitle())
                 .tracking(-0.35)
                 .lineLimit(1)
-            CCBadge(text: "\(flatSessions.count)")
+            CCBadge(text: "\(sessions.count)")
             Spacer(minLength: 0)
             indexingStatus
             ColumnToggle(
@@ -131,7 +135,7 @@ struct ConversationListPane: View {
         }
     }
 
-    @ViewBuilder private var listContent: some View {
+    @ViewBuilder private func listContent(_ sessions: [HistorySessionMetadata]) -> some View {
         switch store.listState {
         case .idle where store.projects.isEmpty,
              .loading where store.projects.isEmpty:
@@ -147,7 +151,7 @@ struct ConversationListPane: View {
                     .accessibilityIdentifier("conversation.list.retry")
             }
         default:
-            if flatSessions.isEmpty {
+            if sessions.isEmpty {
                 ConversationListState(
                     symbol: store.listQuery.isEmpty ? "bubble.left.and.text.bubble.right" : "magnifyingglass",
                     title: emptyTitle,
@@ -157,7 +161,7 @@ struct ConversationListPane: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(flatSessions, id: \.conversationListIdentity) { session in
+                        ForEach(sessions, id: \.conversationListIdentity) { session in
                             ConversationSessionRow(
                                 metadata: session,
                                 selected: store.selectedFile.map(ConversationFilter.fileKey)

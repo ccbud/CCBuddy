@@ -9,6 +9,7 @@ import SwiftUI
 struct AppShellView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.appLanguage) private var appLanguage
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var conversationWorkbench = ConversationWorkbenchState()
     @StateObject private var columns = ColumnLayout()
     @State private var searchPaletteVisible = false
@@ -27,6 +28,14 @@ struct AppShellView: View {
             }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // A destination used to be replaced between one frame and the next, which reads as
+                // a jolt rather than a change of place. A short crossfade is enough to connect the
+                // two; anything longer would put the interface between the user and their click.
+                .transition(.opacity)
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.16),
+                    value: model.selected
+                )
                 // With the rail away the traffic lights sit over the destination, so the control
                 // that brings it back waits just past them — the same edge it left from.
                 .overlay(alignment: .topLeading) {

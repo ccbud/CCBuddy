@@ -112,6 +112,7 @@ struct SidebarRow: View {
     let action: () -> Void
 
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         lead: SidebarRowLead,
@@ -157,6 +158,9 @@ struct SidebarRow: View {
             .padding(.trailing, Space.sm)
             .frame(maxWidth: .infinity, minHeight: nested ? Metrics.subRowHeight : Metrics.rowHeight)
             .background(rowBackground)
+            // The wash moves with the pointer and the selection instead of snapping between them.
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: selected)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: hovering)
             .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
             .contentShape(Rectangle())
             .padding(.leading, nested ? Rail.subIndent : 0)
