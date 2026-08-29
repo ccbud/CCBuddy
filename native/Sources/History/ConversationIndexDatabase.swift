@@ -858,120 +858,116 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     /// full VACUUM; pending bits make repeated unchanged scans no-ops, and maintenance never
     /// advances generation.
     func finishFullScanMaintenance(
-        isCancelled: ConversationIndexScanCancellation = { false }
+        isCancelled: @escaping ConversationIndexScanCancellation = { false }
     ) throws {
-        try withoutActuallyEscaping(isCancelled) { escapableIsCancelled in
-            try withLock {
-                let cancellation = SQLiteCancellationContext(
-                    isCancelled: escapableIsCancelled
-                )
-                try cancellation.check()
-                let maintenancePending = try int64Value(
-                    "SELECT maintenance_pending FROM conversation_catalog_state WHERE singleton = 1"
+        try withLock {
+            let cancellation = SQLiteCancellationContext(isCancelled: isCancelled)
+            try cancellation.check()
+            let maintenancePending = try int64Value(
+                "SELECT maintenance_pending FROM conversation_catalog_state WHERE singleton = 1"
+            ) != 0
+            let oneTimeCompactionPending = try int64Value(
+                "SELECT one_time_compaction_pending FROM conversation_catalog_state "
+                    + "WHERE singleton = 1"
+            ) != 0
+            guard maintenancePending || oneTimeCompactionPending else { return }
+
+            // FTS rebuild and compaction can temporarily need another database-sized copy.
+            // Low disk is a normal condition for a disposable cache: leave the retry marker
+            // set and keep serving bounded fallback search instead of risking ENOSPC.
+            guard hasCapacityForMaintenance() else { return }
+
+            if trigramFTSAvailable {
+                let dirty = try int64Value(
+                    "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
                 ) != 0
-                let oneTimeCompactionPending = try int64Value(
-                    "SELECT one_time_compaction_pending FROM conversation_catalog_state "
-                        + "WHERE singleton = 1"
-                ) != 0
-                guard maintenancePending || oneTimeCompactionPending else { return }
-
-                // FTS rebuild and compaction can temporarily need another database-sized copy.
-                // Low disk is a normal condition for a disposable cache: leave the retry marker
-                // set and keep serving bounded fallback search instead of risking ENOSPC.
-                guard hasCapacityForMaintenance() else { return }
-
-                if trigramFTSAvailable {
-                    let dirty = try int64Value(
-                        "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
-                    ) != 0
-                    if dirty {
-                        try executeCancellableMaintenance(
-                            "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                                + "VALUES ('rebuild')",
-                            cancellation: cancellation
-                        )
-                        try markFTSState(dirty: false)
-                        try cancellation.check()
-                    }
-                }
-
-                if oneTimeCompactionPending {
-                    // New catalogs are created with incremental auto-vacuum and reclaim pages on
-                    // every pass below. A catalog created before that, however, cannot be switched:
-                    // `PRAGMA auto_vacuum` is a documented no-op on an existing non-empty database,
-                    // which also makes `incremental_vacuum` inert there. The intended "transition to
-                    // bounded cleanup" therefore never happened on exactly the files it was written
-                    // for — a real catalog measured 2.4 GB of freelist inside a 3.8 GB file.
-                    //
-                    // VACUUM is the only operation that both rewrites the file and commits the new
-                    // mode. It is expensive, so it runs once, only when the waste is large enough to
-                    // be worth an exclusive writer, and only behind `hasCapacityForMaintenance()`,
-                    // which already reserves twice the file size for exactly this copy.
-                    try execute("PRAGMA auto_vacuum = INCREMENTAL")
-                    if try int64Value("PRAGMA auto_vacuum") == 0, try wastesEnoughToVacuum() {
-                        try execute("VACUUM")
-                    }
-                    try execute(
-                        "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
-                            + "WHERE singleton = 1"
-                    )
-                    try cancellation.check()
-                }
-
-                if trigramFTSAvailable {
+                if dirty {
                     try executeCancellableMaintenance(
                         "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                            + "VALUES ('optimize')",
+                            + "VALUES ('rebuild')",
                         cancellation: cancellation
                     )
+                    try markFTSState(dirty: false)
                     try cancellation.check()
                 }
-                try executeCancellableMaintenance(
-                    "PRAGMA optimize",
-                    cancellation: cancellation
-                )
-                try cancellation.check()
-                // This also reclaims pages freed by the FTS optimize which follows a successful
-                // one-time VACUUM. It is bounded on every subsequent maintenance pass.
-                try executeCancellableMaintenance(
-                    "PRAGMA incremental_vacuum(8192)",
-                    cancellation: cancellation
-                )
-                try cancellation.check()
-                guard try checkpointWALTruncating(cancellation: cancellation) else {
-                    try cancellation.check()
-                    return
-                }
+            }
 
+            if oneTimeCompactionPending {
+                // New catalogs are created with incremental auto-vacuum and reclaim pages on
+                // every pass below. A catalog created before that, however, cannot be switched:
+                // `PRAGMA auto_vacuum` is a documented no-op on an existing non-empty database,
+                // which also makes `incremental_vacuum` inert there. The intended "transition to
+                // bounded cleanup" therefore never happened on exactly the files it was written
+                // for — a real catalog measured 2.4 GB of freelist inside a 3.8 GB file.
+                //
+                // VACUUM is the only operation that both rewrites the file and commits the new
+                // mode. It is expensive, so it runs once, only when the waste is large enough to
+                // be worth an exclusive writer, and only behind `hasCapacityForMaintenance()`,
+                // which already reserves twice the file size for exactly this copy.
+                try execute("PRAGMA auto_vacuum = INCREMENTAL")
+                if try int64Value("PRAGMA auto_vacuum") == 0, try wastesEnoughToVacuum() {
+                    try execute("VACUUM")
+                }
                 try execute(
-                    "UPDATE conversation_catalog_state SET maintenance_pending = 0, "
-                        + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                    "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
+                        + "WHERE singleton = 1"
                 )
-                do {
-                    guard try checkpointWALTruncating(cancellation: cancellation) else {
-                        // An independent reader raced the final state write. Restore the retry
-                        // marker; the next successful full scan can finish truncation.
-                        try execute(
-                            "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
-                                + "one_time_compaction_pending = 0 WHERE singleton = 1"
-                        )
-                        try cancellation.check()
-                        return
-                    }
-                } catch {
-                    // The completion marker itself may be in the WAL when truncation is cancelled
-                    // or fails. Restore the ordinary retry bit for every checkpoint error so a
-                    // transient I/O/locking failure cannot silently suppress future maintenance.
-                    let checkpointError = error
+                try cancellation.check()
+            }
+
+            if trigramFTSAvailable {
+                try executeCancellableMaintenance(
+                    "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
+                        + "VALUES ('optimize')",
+                    cancellation: cancellation
+                )
+                try cancellation.check()
+            }
+            try executeCancellableMaintenance(
+                "PRAGMA optimize",
+                cancellation: cancellation
+            )
+            try cancellation.check()
+            // This also reclaims pages freed by the FTS optimize which follows a successful
+            // one-time VACUUM. It is bounded on every subsequent maintenance pass.
+            try executeCancellableMaintenance(
+                "PRAGMA incremental_vacuum(8192)",
+                cancellation: cancellation
+            )
+            try cancellation.check()
+            guard try checkpointWALTruncating(cancellation: cancellation) else {
+                try cancellation.check()
+                return
+            }
+
+            try execute(
+                "UPDATE conversation_catalog_state SET maintenance_pending = 0, "
+                    + "one_time_compaction_pending = 0 WHERE singleton = 1"
+            )
+            do {
+                guard try checkpointWALTruncating(cancellation: cancellation) else {
+                    // An independent reader raced the final state write. Restore the retry
+                    // marker; the next successful full scan can finish truncation.
                     try execute(
                         "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
                             + "one_time_compaction_pending = 0 WHERE singleton = 1"
                     )
-                    if checkpointError is CancellationError { throw CancellationError() }
-                    throw checkpointError
+                    try cancellation.check()
+                    return
                 }
-                try hardenPermissions()
+            } catch {
+                // The completion marker itself may be in the WAL when truncation is cancelled
+                // or fails. Restore the ordinary retry bit for every checkpoint error so a
+                // transient I/O/locking failure cannot silently suppress future maintenance.
+                let checkpointError = error
+                try execute(
+                    "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
+                        + "one_time_compaction_pending = 0 WHERE singleton = 1"
+                )
+                if checkpointError is CancellationError { throw CancellationError() }
+                throw checkpointError
             }
+            try hardenPermissions()
         }
     }
 

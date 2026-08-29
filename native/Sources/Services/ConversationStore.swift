@@ -994,7 +994,7 @@ final class ConversationStore: ObservableObject {
         jumpRequest = nil
     }
 
-    func refreshSelectedFileIfChanged() async {
+    func refreshSelectedFileIfChanged(respectingLoadBudget: Bool = false) async {
         guard let file = selectedFile?.standardizedFileURL else { return }
         let inspector = fileInspector
         let worker = Task.detached(priority: .utility) {
@@ -1032,13 +1032,14 @@ final class ConversationStore: ObservableObject {
             return
         }
         guard current != previous else { return }
-        // Following a live session means re-reading and re-parsing the whole transcript, and a
-        // long one costs seconds of CPU and hundreds of megabytes of short-lived objects. Reading
-        // it again the instant it changes turns a busy agent into a permanent full-core reparse
-        // loop, so the follow rate is bounded by what the last read actually cost. `observed`
-        // stays behind until the read happens, which makes the next poll retry.
-        guard Date().timeIntervalSince(lastDetailLoadFinishedAt ?? .distantPast)
-            >= lastDetailLoadDuration * Self.liveFollowLoadBudgetRatio else { return }
+        if respectingLoadBudget {
+            // Polling a live session means re-reading and re-parsing the whole transcript, and a
+            // long one costs seconds of CPU and hundreds of megabytes of short-lived objects.
+            // Bound background follow by what the last read cost. Explicit refreshes remain
+            // immediate; `observed` stays behind here so the next poll retries.
+            guard Date().timeIntervalSince(lastDetailLoadFinishedAt ?? .distantPast)
+                >= lastDetailLoadDuration * Self.liveFollowLoadBudgetRatio else { return }
+        }
         observedModificationDate = current
 
         detailWorker?.cancel()
@@ -1870,7 +1871,7 @@ final class ConversationStore: ObservableObject {
                     break
                 }
                 guard !Task.isCancelled, self.isActive else { break }
-                await self.refreshSelectedFileIfChanged()
+                await self.refreshSelectedFileIfChanged(respectingLoadBudget: true)
             }
         }
     }
