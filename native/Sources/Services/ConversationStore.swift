@@ -1172,6 +1172,24 @@ final class ConversationStore: ObservableObject {
         actionIsError = false
     }
 
+    /// Puts the review request on the clipboard instead of handing it to an app.
+    ///
+    /// Only two desktop apps register a scheme we can address; this is how the same request reaches
+    /// a third, or the web client, or a terminal the user already has open.
+    func copyReplayPrompt(
+        for destination: ConversationReplayDestination,
+        language: AppLanguage = .simplifiedChinese
+    ) {
+        guard let session = activeTranscript else { return }
+        pathCopier(ConversationReplayLink.clipboardText(
+            for: destination,
+            session: session,
+            language: language
+        ))
+        actionMessage = "已复制复盘提示词与文件清单"
+        actionIsError = false
+    }
+
     func updateSelectedMetadata(title: String, tags: [String]) async {
         guard !isMutating, let metadata = selectedMetadata, let mutationService else { return }
         isMutating = true

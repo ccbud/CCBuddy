@@ -86,4 +86,54 @@ final class ConversationResumeTests: XCTestCase {
             ConversationResume.installedTerminals.contains(ConversationResume.preferredTerminal)
         )
     }
+
+    // MARK: - Finding the CLI
+
+    /// A configured zsh writes its prompt's escape sequences onto stdout, so `command -v` came back
+    /// as an OSC-7 sequence with the path glued to the end. Nothing started with a slash, the parse
+    /// returned nil, and "continue in terminal" claimed a CLI in ~/.local/bin was not installed.
+    func testAPathIsFoundEvenWhenTheShellDecoratedItsOutput() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-resume-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binary = root.appendingPathComponent("codex")
+        FileManager.default.createFile(
+            atPath: binary.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o755]
+        )
+
+        let decorated = "\u{1B}]7;file://host/Users/me\u{07}\u{1B}[0m\(binary.path)\n"
+
+        XCTAssertEqual(ConversationResume.executablePath(inShellOutput: decorated), binary.path)
+    }
+
+    func testOutputWithoutAnExecutablePathResolvesToNothing() {
+        XCTAssertNil(ConversationResume.executablePath(inShellOutput: ""))
+        XCTAssertNil(ConversationResume.executablePath(inShellOutput: "codex not found\n"))
+        XCTAssertNil(
+            ConversationResume.executablePath(inShellOutput: "/tmp/definitely-not-here-\(UUID())")
+        )
+    }
+
+    func testTheUsualInstallDirectoriesAreSearchedBeforeAskingAShell() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-home-\(UUID().uuidString)", isDirectory: true)
+        let bin = home.appendingPathComponent(".local/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let binary = bin.appendingPathComponent("claude")
+        FileManager.default.createFile(
+            atPath: binary.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o755]
+        )
+
+        XCTAssertEqual(
+            ConversationResume.knownLocation(of: "claude", homeDirectory: home),
+            binary.path
+        )
+        XCTAssertNil(ConversationResume.knownLocation(of: "no-such-cli-\(UUID())", homeDirectory: home))
+    }
 }

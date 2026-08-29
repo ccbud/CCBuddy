@@ -29,6 +29,89 @@ final class ConversationReplayTests: XCTestCase {
         )
     }
 
+    /// Cowork reads the attachment list only on a link that declares where it came from. Without
+    /// this the app opened with the review prompt and none of the transcripts it asks about, and
+    /// nothing anywhere said so.
+    func testClaudeLinkDeclaresItsExternalOrigin() throws {
+        let url = try XCTUnwrap(
+            ConversationReplayLink.makeURL(destination: .claude, session: Self.fixtureSession())
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "src" })?.value, "external")
+    }
+
+    /// A Codex rollout lives in an archive folder, not in the project it is about.
+    func testChatGPTLinkOpensTheSessionsOwnWorkingDirectoryWhenItStillExists() throws {
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-replay-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        var session = Self.fixtureSession()
+        session.metadata.file = URL(fileURLWithPath: "/tmp/codex-archive/2026/rollout.jsonl")
+        session.subagents = [:]
+        session.metadata.cwd = workspace.path
+
+        let url = try XCTUnwrap(
+            ConversationReplayLink.makeURL(destination: .chatGPT, session: session)
+        )
+        let path = try XCTUnwrap(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "path" })?.value
+        )
+
+        XCTAssertEqual(path, workspace.path)
+    }
+
+    func testChatGPTLinkFallsBackToTheTranscriptFolderWhenTheWorkingDirectoryIsGone() throws {
+        var session = Self.fixtureSession()
+        session.metadata.cwd = "/tmp/a directory that was deleted \(UUID().uuidString)"
+
+        let url = try XCTUnwrap(
+            ConversationReplayLink.makeURL(destination: .chatGPT, session: session)
+        )
+        let path = try XCTUnwrap(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "path" })?.value
+        )
+
+        XCTAssertEqual(path, "/tmp/Replay & Review")
+    }
+
+    func testTheClipboardFallbackCarriesThePromptAndEveryTranscriptPath() {
+        let session = Self.fixtureSession()
+
+        let text = ConversationReplayLink.clipboardText(for: .claude, session: session)
+
+        XCTAssertTrue(text.hasPrefix(ConversationReplayLink.prompt(for: .claude, language: .simplifiedChinese)))
+        for file in ConversationReplayLink.transcriptFiles(in: session) {
+            XCTAssertTrue(text.contains(file.path), "Missing \(file.path)")
+        }
+    }
+
+    func testCopyingTheReviewRequestReportsItRatherThanOpeningAnything() async {
+        let session = Self.fixtureSession()
+        var copied: [String] = []
+        let store = ConversationStore(
+            repository: ReplayRepository(session: session),
+            fileInspector: ReplayFileInspector(date: session.metadata.lastActivity),
+            pathCopier: { copied.append($0) },
+            replayURLLauncher: { _ in
+                XCTFail("copying must not open an app")
+                return false
+            }
+        )
+
+        await store.select(session.metadata)
+        store.copyReplayPrompt(for: .chatGPT)
+
+        XCTAssertEqual(copied.count, 1)
+        XCTAssertTrue(copied.first?.contains("/tmp/Replay & Review/main session.jsonl") == true)
+        XCTAssertEqual(store.actionMessage, "已复制复盘提示词与文件清单")
+        XCTAssertFalse(store.actionIsError)
+    }
+
     func testChatGPTLinkUsesTranscriptWorkspaceAndListsEveryFile() throws {
         let session = Self.fixtureSession()
 

@@ -125,33 +125,124 @@ enum ConversationResume {
     private static let cacheQueue = DispatchQueue(label: "dev.ccbud.resume-cli-cache")
     nonisolated(unsafe) private static var resolvedBinaries: [String: String?] = [:]
 
-    /// GUI apps do not inherit a login shell's PATH, so `claude` installed by a version manager is
-    /// invisible to `Process` unless we ask an interactive login shell where it lives.
+    /// GUI apps do not inherit a login shell's PATH, so a CLI installed by a version manager is
+    /// invisible to `Process` unless we go looking for it.
+    ///
+    /// The obvious places are tried first, because they cost a `stat` and cover every common
+    /// installer. Only then is a shell asked — and a *login* shell rather than an interactive one:
+    /// an interactive zsh runs the prompt's startup files, which on a configured machine write
+    /// terminal escape sequences onto stdout. That is what broke this: `command -v codex` came back
+    /// as an OSC-7 sequence with the path glued to the end of it, no line started with a slash, and
+    /// "在终端继续" reported that a CLI sitting in ~/.local/bin could not be found.
     static func resolveBinary(_ name: String) -> String? {
         if let cached = cacheQueue.sync(execute: { resolvedBinaries[name] }) { return cached }
 
+        let resolved = knownLocation(of: name) ?? shellLocation(of: name)
+        cacheQueue.sync { resolvedBinaries[name] = resolved }
+        return resolved
+    }
+
+    static func knownLocation(
+        of name: String,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let directories = [
+            homeDirectory.appendingPathComponent(".local/bin").path,
+            homeDirectory.appendingPathComponent(".bun/bin").path,
+            homeDirectory.appendingPathComponent(".volta/bin").path,
+            homeDirectory.appendingPathComponent(".cargo/bin").path,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+        ]
+        for directory in directories {
+            let candidate = (directory as NSString).appendingPathComponent(name)
+            if fileManager.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private static func shellLocation(of name: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lic", "command -v \(name) 2>/dev/null"]
+        // `-l` without `-i`: a login shell reads the same PATH exports without starting a prompt.
+        process.arguments = ["-lc", "command -v \(name) 2>/dev/null"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
-        var resolved: String?
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            let path = String(decoding: data, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .components(separatedBy: "\n")
-                .last(where: { $0.hasPrefix("/") })
-            if let path, FileManager.default.isExecutableFile(atPath: path) { resolved = path }
+            return executablePath(inShellOutput: String(decoding: data, as: UTF8.self))
         } catch {
-            resolved = nil
+            return nil
         }
-        cacheQueue.sync { resolvedBinaries[name] = resolved }
-        return resolved
+    }
+
+    /// Pulls a usable path out of shell output that may still carry escape sequences.
+    static func executablePath(
+        inShellOutput output: String,
+        fileManager: FileManager = .default
+    ) -> String? {
+        for line in output.components(separatedBy: .newlines).reversed() {
+            let cleaned = stripControlSequences(line).trimmingCharacters(in: .whitespaces)
+            guard let slash = cleaned.firstIndex(of: "/") else { continue }
+            let path = String(cleaned[slash...])
+            if fileManager.isExecutableFile(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    /// Removes ANSI/OSC sequences and any other control characters a prompt may have emitted.
+    ///
+    /// The two families end differently, and treating them alike is what makes a stripper eat the
+    /// wrong half: a CSI sequence stops at its first final byte, while an OSC one runs until a BEL
+    /// or a string terminator and may contain letters, slashes and a whole URL on the way.
+    private static func stripControlSequences(_ value: String) -> String {
+        var result = ""
+        let scalars = Array(value.unicodeScalars)
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            guard scalar == "\u{1B}" else {
+                if scalar.properties.generalCategory != .control {
+                    result.unicodeScalars.append(scalar)
+                }
+                index += 1
+                continue
+            }
+
+            index += 1
+            guard index < scalars.count else { break }
+            let introducer = scalars[index]
+            index += 1
+            switch introducer {
+            case "]":
+                while index < scalars.count {
+                    let next = scalars[index]
+                    index += 1
+                    if next == "\u{07}" || next == "\u{9C}" { break }
+                    // ESC \ — the two-character string terminator.
+                    if next == "\u{1B}", index < scalars.count, scalars[index] == "\\" {
+                        index += 1
+                        break
+                    }
+                }
+            case "[":
+                // Parameter and intermediate bytes, then one final byte in 0x40...0x7E.
+                while index < scalars.count {
+                    let next = scalars[index]
+                    index += 1
+                    if (0x40...0x7E).contains(next.value) { break }
+                }
+            default:
+                break  // A two-character escape; the introducer was the whole of it.
+            }
+        }
+        return result
     }
 
     // MARK: - Composition
@@ -178,7 +269,8 @@ enum ConversationResume {
     @discardableResult
     static func resume(
         metadata: HistorySessionMetadata,
-        in terminal: TerminalApp? = nil
+        in terminal: TerminalApp? = nil,
+        clipboard: (String) -> Void = copyToClipboard
     ) -> Outcome {
         let host = terminal ?? preferredTerminal
         guard let dialect = dialect(for: metadata.source, sessionID: metadata.sessionID) else {
@@ -209,7 +301,7 @@ enum ConversationResume {
         )
 
         if dialect.requiresWorkingDirectory && !directoryUsable {
-            copyToClipboard(command)
+            clipboard(command)
             return Outcome(
                 succeeded: false,
                 command: command,
@@ -304,7 +396,7 @@ enum ConversationResume {
         guard process.terminationStatus == 0 else { throw LaunchError.failed }
     }
 
-    private static func copyToClipboard(_ value: String) {
+    static func copyToClipboard(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
     }
