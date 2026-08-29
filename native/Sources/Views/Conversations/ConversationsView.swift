@@ -129,15 +129,15 @@ struct ConversationsView: View {
     }
 
     private func columnStack(fitting available: CGFloat) -> some View {
-        let fit = ColumnLayout.columnsThatFit(
+        let fit = ColumnLayout.resolved(
             available: available,
             streamWidth: columns.streamWidth,
             inspectorWidth: columns.inspectorWidth,
             wantsStream: columns.streamVisible,
             wantsInspector: columns.inspectorVisible && store.selectedMetadata != nil
         )
-        let streamFits = fit.stream
-        let inspectorFits = fit.inspector
+        let streamFits = fit.streamVisible
+        let inspectorFits = fit.inspectorVisible
 
         return HStack(spacing: 0) {
             if streamFits {
@@ -146,7 +146,7 @@ struct ConversationsView: View {
                     workbench: workbench,
                     columns: columns
                 )
-                .frame(width: columns.streamWidth)
+                .frame(width: fit.streamWidth)
 
                 ColumnDivider(
                     column: ColumnLayout.stream,
@@ -194,7 +194,7 @@ struct ConversationsView: View {
                     collapsed: false,
                     toggleCollapsed: { columns.toggleInspector() }
                 )
-                .frame(width: columns.inspectorWidth)
+                .frame(width: fit.inspectorWidth)
                 .frame(maxHeight: .infinity)
             }
         }

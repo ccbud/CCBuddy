@@ -13,9 +13,15 @@ final class ColumnLayout: ObservableObject {
         let `default`: CGFloat
     }
 
-    static let rail = Column(key: "layout.rail.width", range: 180...380, default: Metrics.sidebarWidth)
-    static let stream = Column(key: "layout.stream.width", range: 260...560, default: Metrics.streamWidth)
-    static let inspector = Column(key: "layout.inspector.width", range: 240...420, default: 288)
+    nonisolated static let rail = Column(
+        key: "layout.rail.width", range: 180...380, default: 224
+    )
+    nonisolated static let stream = Column(
+        key: "layout.stream.width", range: 260...560, default: 336
+    )
+    nonisolated static let inspector = Column(
+        key: "layout.inspector.width", range: 240...420, default: 288
+    )
 
     @Published var railWidth: CGFloat { didSet { store.set(railWidth, forKey: Self.rail.key) } }
     @Published var streamWidth: CGFloat { didSet { store.set(streamWidth, forKey: Self.stream.key) } }
@@ -92,14 +98,21 @@ final class ColumnLayout: ObservableObject {
 
     func toggleInspector() { inspectorVisible.toggle() }
 
-    /// A column that would leave the transcript unreadable is not shown at all.
+    /// What the columns actually get, given the space there is.
     ///
-    /// Four columns in a narrow window squeezed the reading column to about two hundred points:
-    /// the prose wrapped two characters to a line, the metadata chips broke mid-word, and the
-    /// overview was pushed past the window edge with its values cut in half. Space runs out from
-    /// the trailing edge inwards — the overview yields first, then the stream — because the
-    /// transcript is the thing being read.
-    nonisolated static func columnsThatFit(
+    /// The stored widths are what the user dragged; these are what fits today. Space is taken back
+    /// in the order it is least missed: the overview narrows first, then the stream, each only as
+    /// far as its own minimum. A column is dropped only when even the minimums cannot leave the
+    /// transcript something to read in — the first version of this dropped the whole overview when
+    /// the reading column came out four points short, which is not a trade anyone would choose.
+    struct Resolved: Equatable {
+        var streamVisible: Bool
+        var streamWidth: CGFloat
+        var inspectorVisible: Bool
+        var inspectorWidth: CGFloat
+    }
+
+    nonisolated static func resolved(
         available: CGFloat,
         streamWidth: CGFloat,
         inspectorWidth: CGFloat,
@@ -107,19 +120,52 @@ final class ColumnLayout: ObservableObject {
         wantsInspector: Bool,
         minimumReading: CGFloat = 380,
         dividerWidth: CGFloat = 1
-    ) -> (stream: Bool, inspector: Bool) {
-        guard available > 0 else { return (wantsStream, wantsInspector) }
-        var stream = wantsStream
-        var inspector = wantsInspector
-        func remaining() -> CGFloat {
+    ) -> Resolved {
+        var result = Resolved(
+            streamVisible: wantsStream,
+            streamWidth: streamWidth,
+            inspectorVisible: wantsInspector,
+            inspectorWidth: inspectorWidth
+        )
+        guard available > 0 else { return result }
+
+        func reading() -> CGFloat {
             var used: CGFloat = 0
-            if stream { used += streamWidth + dividerWidth }
-            if inspector { used += inspectorWidth + dividerWidth }
+            if result.streamVisible { used += result.streamWidth + dividerWidth }
+            if result.inspectorVisible { used += result.inspectorWidth + dividerWidth }
             return available - used
         }
-        if inspector, remaining() < minimumReading { inspector = false }
-        if stream, remaining() < minimumReading { stream = false }
-        return (stream, inspector)
+
+        // Returns the narrowed width rather than taking it `inout`: the closure below reads the
+        // same value it would be writing, which is an exclusivity violation at runtime.
+        func squeezed(_ width: CGFloat, floor: CGFloat) -> CGFloat {
+            let deficit = minimumReading - reading()
+            guard deficit > 0 else { return width }
+            return max(floor, width - deficit)
+        }
+
+        if result.inspectorVisible {
+            result.inspectorWidth = squeezed(
+                result.inspectorWidth, floor: inspector.range.lowerBound
+            )
+        }
+        if result.streamVisible {
+            result.streamWidth = squeezed(result.streamWidth, floor: stream.range.lowerBound)
+        }
+        if result.inspectorVisible, reading() < minimumReading {
+            result.inspectorVisible = false
+            result.inspectorWidth = inspectorWidth
+            // The stream can have its own width back now that the overview stepped aside.
+            result.streamWidth = streamWidth
+            if result.streamVisible {
+                result.streamWidth = squeezed(result.streamWidth, floor: stream.range.lowerBound)
+            }
+        }
+        if result.streamVisible, reading() < minimumReading {
+            result.streamVisible = false
+            result.streamWidth = streamWidth
+        }
+        return result
     }
 
     /// Narrower than this and a transcript stops being prose. Repeated as the default above
