@@ -43,7 +43,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let initial = try scanner.scanAll()
@@ -74,6 +75,80 @@ final class ConversationIndexScannerTests: XCTestCase {
         XCTAssertGreaterThan(dependencyChange.generation, warm.generation)
         XCTAssertEqual(scanner.manifests.count, 2)
         XCTAssertTrue(scanner.watchRoots.map(\.path).contains(sidecar.path))
+    }
+
+    func testTranscriptStillBeingWrittenIsNotReparsedOnEveryAppend() throws {
+        let environment = try makeEnvironment("scanner-reparse-spacing")
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let live = try makeCandidate(
+            environment,
+            name: "live.jsonl",
+            format: .claude,
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let registry = ScannerTestRegistry(candidates: [live])
+        let loader = ScannerTestLoader(
+            configuration: environment.configuration,
+            registry: registry
+        )
+        let database = try ConversationIndexDatabase(file: environment.database)
+        let scanner = ConversationIndexScanner(
+            configuration: environment.configuration,
+            catalog: database,
+            loader: loader,
+            registry: registry,
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .standard
+        )
+
+        let initial = try scanner.scanAll()
+        XCTAssertEqual(initial.parsed, 1)
+        XCTAssertEqual(initial.deferred, 0)
+        XCTAssertNil(scanner.deferredReparse)
+
+        // A CLI mid-conversation appends to its own transcript every couple of seconds. Reading
+        // and re-tokenizing the whole file for each of those is what used to burn a core and grow
+        // the process without bound.
+        registry.setImpact(candidates: [live], requiresDiscovery: false)
+        try Data("live.jsonl plus an appended turn".utf8).write(to: live.file)
+        loader.resetObservations()
+        let hot = try scanner.scan(changedPaths: [live.file], forceDiscovery: false)
+        XCTAssertEqual(hot.parsed, 0)
+        XCTAssertEqual(hot.deferred, 1)
+        XCTAssertEqual(hot.completed, 1, "A postponed transcript must not stall scan progress")
+        XCTAssertTrue(loader.loadPaths.isEmpty)
+        XCTAssertEqual(hot.generation, initial.generation)
+        XCTAssertEqual(
+            scanner.deferredReparse?.paths.map(\.standardizedFileURL.path),
+            [live.file.standardizedFileURL.path]
+        )
+        XCTAssertEqual(
+            try database.candidateDocuments(for: "live.jsonl").documents.count,
+            1,
+            "Postponing must keep the previous revision searchable, not drop it"
+        )
+
+        // The user's own mutations are barriers and are never postponed.
+        loader.resetObservations()
+        let forced = try scanner.scan(
+            changedPaths: [live.file],
+            forceDiscovery: false,
+            forceReparse: true
+        )
+        XCTAssertEqual(forced.parsed, 1)
+        XCTAssertEqual(forced.deferred, 0)
+        XCTAssertEqual(loader.loadPaths, [live.file.standardizedFileURL.path])
+        XCTAssertGreaterThan(forced.generation, initial.generation)
+        XCTAssertNil(scanner.deferredReparse)
+    }
+
+    func testReparseSpacingScalesWithTranscriptSizeAndStaysBounded() {
+        let spacing = ConversationIndexReparseSpacing.standard
+        XCTAssertEqual(spacing.interval(forSizeBytes: 0), 2)
+        XCTAssertEqual(spacing.interval(forSizeBytes: 1_048_576), 2, accuracy: 0.001)
+        XCTAssertEqual(spacing.interval(forSizeBytes: 22 * 1_048_576), 22, accuracy: 0.001)
+        XCTAssertEqual(spacing.interval(forSizeBytes: 4 * 1_073_741_824), 60)
+        XCTAssertEqual(ConversationIndexReparseSpacing.immediate.interval(forSizeBytes: .max), 0)
     }
 
     func testColdFullScanPublishesActiveQuickMetadataBeforeOtherScopesAndFullParse() throws {
@@ -116,7 +191,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: catalog,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let progress = ScannerProgressProbe()
 
@@ -161,7 +237,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let recovered = try scanner.scanAll()
@@ -203,7 +280,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let failed = try scanner.scanAll()
@@ -270,7 +348,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let result = try scanner.scanAll()
@@ -299,7 +378,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: registry
             ),
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let result = try scanner.scanAll()
@@ -352,7 +432,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: aliasRegistry
             ),
             registry: aliasRegistry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         XCTAssertEqual(try aliasScanner.scanAll().parsed, 1)
         let originalFingerprint = try XCTUnwrap(database.entry(for: transcript)?.fingerprint)
@@ -382,7 +463,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: canonicalRegistry
             ),
             registry: canonicalRegistry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let migrated = try canonicalScanner.scanAll()
@@ -422,7 +504,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         _ = try scanner.scanAll()
 
@@ -478,7 +561,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         let initial = try scanner.scanAll()
@@ -526,7 +610,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let cancellation = ScannerCancellationProbe()
         let progress = ScannerProgressProbe()
@@ -570,7 +655,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: catalog,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         XCTAssertThrowsError(try scanner.scanAll(
@@ -619,7 +705,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let coordinator = ConversationCatalogCoordinator(
             configuration: environment.configuration,
@@ -673,7 +760,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: registry
             ),
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
 
         _ = try scanner.scanAll()
@@ -708,7 +796,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let coordinator = ConversationCatalogCoordinator(
             configuration: environment.configuration,
@@ -810,7 +899,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: registry
             ),
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let coordinator = ConversationCatalogCoordinator(
             configuration: environment.configuration,
@@ -846,7 +936,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: registry
             ),
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let starter = WatcherStartProbe()
         let coordinator = ConversationCatalogCoordinator(
@@ -903,7 +994,8 @@ final class ConversationIndexScannerTests: XCTestCase {
                 registry: registry
             ),
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let coordinator = ConversationCatalogCoordinator(
             configuration: environment.configuration,
@@ -970,7 +1062,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             catalog: database,
             loader: loader,
             registry: registry,
-            availability: ConversationIndexFileSystemAvailability()
+            availability: ConversationIndexFileSystemAvailability(),
+            reparseSpacing: .immediate
         )
         let coordinator = ConversationCatalogCoordinator(
             configuration: environment.configuration,

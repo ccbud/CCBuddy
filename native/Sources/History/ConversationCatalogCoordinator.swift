@@ -96,6 +96,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
     private var currentEvent: ConversationCatalogScanEvent?
     private var currentEventSequence: UInt64 = 0
     private var observerScheduledEventSequence: UInt64?
+    private var deferredReparseToken: UUID?
 
     init(
         configuration: HistoryConfiguration,
@@ -198,6 +199,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         eventObserverIdentifier = nil
         currentEvent = nil
         observerScheduledEventSequence = nil
+        deferredReparseToken = nil
         let watcher = self.watcher
         self.watcher = nil
         watchedRootPaths.removeAll()
@@ -208,14 +210,17 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         drainObserverQueue()
     }
 
-    /// Synchronous barrier used after imports and destructive mutations.
+    /// Synchronous barrier used after imports and destructive mutations. A caller acting on the
+    /// user's own edit is promised a current catalog when it returns, so it never inherits the
+    /// spacing that protects the machine from a producer writing in a loop.
     func reconcileNow() throws {
         try onWorkerQueue {
             let identifier = currentRunIdentifier
             _ = try runScan(identifier: identifier) { progress, isCancelled in
                 try scanner.scanAll(
                     onProgress: progress,
-                    isCancelled: isCancelled
+                    isCancelled: isCancelled,
+                    forceReparse: true
                 )
             }
         }
@@ -232,7 +237,8 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
                     changedPaths: paths,
                     forceDiscovery: false,
                     onProgress: progress,
-                    isCancelled: isCancelled
+                    isCancelled: isCancelled,
+                    forceReparse: true
                 )
             }
         }
@@ -397,6 +403,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             publish(.finished(result), identifier: identifier)
             database.scheduleDeferredMaintenance()
             if rootsChanged { queueVerification(identifier: identifier) }
+            scheduleDeferredReparse(identifier: identifier)
             return result
         } catch {
             if let identifier, isCurrent(identifier) {
@@ -408,6 +415,51 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             }
             throw error
         }
+    }
+
+    /// Finishes the full parses the scanner postponed while a producer was writing.
+    ///
+    /// Without this, a transcript whose last append arrived inside its spacing window would keep
+    /// the metadata the quick pass published but never regain searchable text for its final turns:
+    /// no further file-system event is coming once the CLI exits. Rescheduling replaces the
+    /// previous timer, so a busy producer costs one pending retry rather than one per event.
+    private func scheduleDeferredReparse(identifier: UUID) {
+        guard let deferred = scanner.deferredReparse else {
+            stateLock.lock()
+            deferredReparseToken = nil
+            stateLock.unlock()
+            return
+        }
+        let token = UUID()
+        stateLock.lock()
+        deferredReparseToken = token
+        stateLock.unlock()
+
+        let delay = max(0.25, deferred.earliestDeadline.timeIntervalSinceNow)
+        workerQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.isCurrent(identifier), self.isDeferredReparseCurrent(token) else {
+                return
+            }
+            do {
+                _ = try self.runScan(identifier: identifier) { progress, isCancelled in
+                    try self.scanner.scan(
+                        changedPaths: deferred.paths,
+                        forceDiscovery: false,
+                        onProgress: progress,
+                        isCancelled: isCancelled
+                    )
+                }
+            } catch {
+                // `runScan` publishes a terminal error if this lifecycle is still active. The next
+                // watcher event or activation reconciles again.
+            }
+        }
+    }
+
+    private func isDeferredReparseCurrent(_ token: UUID) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return deferredReparseToken == token
     }
 
     /// Manifests discovered by the first scan can add dependencies outside the configured trees,

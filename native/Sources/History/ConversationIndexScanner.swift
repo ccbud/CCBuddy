@@ -7,11 +7,54 @@ struct ConversationIndexScanResult: Equatable, Sendable {
     var unchanged: Int = 0
     var removed: Int = 0
     var failed: Int = 0
+    /// Transcripts whose full re-index was postponed because the same file was fully parsed very
+    /// recently. Their rows stay visible and searchable at the previous revision; the coordinator
+    /// re-runs them once the file settles.
+    var deferred: Int = 0
     var generation: Int64 = 0
 
     var hasChanges: Bool { metadataPublished > 0 || parsed > 0 || removed > 0 }
 
-    var completed: Int { parsed + unchanged + failed }
+    var completed: Int { parsed + unchanged + failed + deferred }
+}
+
+/// Transcripts still owing a full parse, and the moment the earliest of them may be re-read.
+struct ConversationIndexDeferredReparse: Equatable, Sendable {
+    var paths: [URL]
+    var earliestDeadline: Date
+}
+
+/// Shortest spacing between two full parses of the same transcript.
+///
+/// Indexing a transcript means reading it whole, parsing every record, and replacing the session's
+/// entire text in the trigram index. A CLI that is mid-conversation appends to its transcript every
+/// couple of seconds, and each of those appends used to buy a complete re-index of the file it
+/// landed in — a few kilobytes of new text costing tens of megabytes of parsing and twice that in
+/// index churn, indefinitely, for as long as the agent ran. Spacing scales with the file so a small
+/// transcript still feels immediate while a large one cannot monopolize the machine; quick metadata
+/// keeps the session list live in between.
+struct ConversationIndexReparseSpacing: Equatable, Sendable {
+    var minimum: TimeInterval
+    var maximum: TimeInterval
+    var secondsPerByte: Double
+
+    static let standard = ConversationIndexReparseSpacing(
+        minimum: 2,
+        maximum: 60,
+        secondsPerByte: 1.0 / 1_048_576
+    )
+
+    /// For callers which must observe a change immediately, such as tests.
+    static let immediate = ConversationIndexReparseSpacing(
+        minimum: 0,
+        maximum: 0,
+        secondsPerByte: 0
+    )
+
+    func interval(forSizeBytes sizeBytes: UInt64) -> TimeInterval {
+        guard maximum > 0 else { return 0 }
+        return min(maximum, max(minimum, Double(sizeBytes) * secondsPerByte))
+    }
 }
 
 typealias ConversationIndexScanProgress = @Sendable (ConversationIndexScanResult) -> Void
@@ -211,7 +254,11 @@ final class ConversationIndexScanner: @unchecked Sendable {
     private let fileManager: FileManager
     private let scanLock = NSLock()
 
+    private let reparseSpacing: ConversationIndexReparseSpacing
+
     private var manifestsByPath: [String: ConversationDependencyManifest] = [:]
+    private var fullyParsedAt: [String: Date] = [:]
+    private var deferredReparseDeadlines: [String: Date] = [:]
     private var lastGeneration: Int64
 
     init(
@@ -219,10 +266,12 @@ final class ConversationIndexScanner: @unchecked Sendable {
         database: ConversationIndexDatabase,
         qoderReader: QoderFileReader = .shared,
         registry: ConversationSourceAdapterRegistry = .init(),
-        fileManager: FileManager = FileManager()
+        fileManager: FileManager = FileManager(),
+        reparseSpacing: ConversationIndexReparseSpacing = .standard
     ) {
         self.configuration = configuration
         catalog = database
+        self.reparseSpacing = reparseSpacing
         loader = HistorySessionLoader(
             configuration: configuration,
             qoderReader: qoderReader,
@@ -240,10 +289,12 @@ final class ConversationIndexScanner: @unchecked Sendable {
         loader: any HistorySessionLoading,
         registry: ConversationSourceAdapterRegistry = .init(),
         availability: (any ConversationIndexScopeAvailabilityChecking)? = nil,
-        fileManager: FileManager = FileManager()
+        fileManager: FileManager = FileManager(),
+        reparseSpacing: ConversationIndexReparseSpacing = .standard
     ) {
         self.configuration = configuration
         catalog = database
+        self.reparseSpacing = reparseSpacing
         self.loader = loader
         self.registry = registry
         self.availability = availability
@@ -258,10 +309,12 @@ final class ConversationIndexScanner: @unchecked Sendable {
         loader: any HistorySessionLoading,
         registry: any ConversationIndexSourceRegistering,
         availability: any ConversationIndexScopeAvailabilityChecking,
-        fileManager: FileManager = FileManager()
+        fileManager: FileManager = FileManager(),
+        reparseSpacing: ConversationIndexReparseSpacing = .standard
     ) {
         self.configuration = configuration
         self.catalog = catalog
+        self.reparseSpacing = reparseSpacing
         self.loader = loader
         self.registry = registry
         self.availability = availability
@@ -288,14 +341,30 @@ final class ConversationIndexScanner: @unchecked Sendable {
         withScanLock { lastGeneration }
     }
 
+    /// Transcripts whose full re-index is still owed, with the earliest moment one may be re-read.
+    /// The coordinator uses this to finish the work a busy producer kept postponing.
+    var deferredReparse: ConversationIndexDeferredReparse? {
+        withScanLock {
+            guard let earliest = deferredReparseDeadlines.values.min() else { return nil }
+            return ConversationIndexDeferredReparse(
+                paths: deferredReparseDeadlines.keys.sorted().map {
+                    URL(fileURLWithPath: $0)
+                },
+                earliestDeadline: earliest
+            )
+        }
+    }
+
     func scanAll(
         onProgress: ConversationIndexScanProgress? = nil,
-        isCancelled: ConversationIndexScanCancellation = { false }
+        isCancelled: ConversationIndexScanCancellation = { false },
+        forceReparse: Bool = false
     ) throws -> ConversationIndexScanResult {
         try withScanLock {
             try scanAllWithoutLock(
                 onProgress: onProgress,
-                isCancelled: isCancelled
+                isCancelled: isCancelled,
+                forceReparse: forceReparse
             )
         }
     }
@@ -307,21 +376,24 @@ final class ConversationIndexScanner: @unchecked Sendable {
         changedPaths: [URL],
         forceDiscovery: Bool = false,
         onProgress: ConversationIndexScanProgress? = nil,
-        isCancelled: ConversationIndexScanCancellation = { false }
+        isCancelled: ConversationIndexScanCancellation = { false },
+        forceReparse: Bool = false
     ) throws -> ConversationIndexScanResult {
         try withScanLock {
             try scanChangedPathsWithoutLock(
                 changedPaths.map(\.standardizedFileURL),
                 forceDiscovery: forceDiscovery,
                 onProgress: onProgress,
-                isCancelled: isCancelled
+                isCancelled: isCancelled,
+                forceReparse: forceReparse
             )
         }
     }
 
     private func scanAllWithoutLock(
         onProgress: ConversationIndexScanProgress?,
-        isCancelled: ConversationIndexScanCancellation
+        isCancelled: ConversationIndexScanCancellation,
+        forceReparse: Bool
     ) throws -> ConversationIndexScanResult {
         try Self.checkCancellation(isCancelled)
         let discovery = beginDiscovery()
@@ -351,7 +423,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
             entriesByPath: &entriesByPath,
             result: &result,
             onProgress: onProgress,
-            isCancelled: isCancelled
+            isCancelled: isCancelled,
+            forceReparse: forceReparse
         )
         try reconcile(
             discovery,
@@ -371,7 +444,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
         _ changedPaths: [URL],
         forceDiscovery: Bool,
         onProgress: ConversationIndexScanProgress?,
-        isCancelled: ConversationIndexScanCancellation
+        isCancelled: ConversationIndexScanCancellation,
+        forceReparse: Bool
     ) throws -> ConversationIndexScanResult {
         try Self.checkCancellation(isCancelled)
         let knownManifests = manifestsByPath.values.sorted {
@@ -425,7 +499,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
             entriesByPath: &entriesByPath,
             result: &result,
             onProgress: onProgress,
-            isCancelled: isCancelled
+            isCancelled: isCancelled,
+            forceReparse: forceReparse
         )
         if let discovery {
             try reconcile(
@@ -472,17 +547,36 @@ final class ConversationIndexScanner: @unchecked Sendable {
         entriesByPath: inout [String: ConversationIndexEntry],
         result: inout ConversationIndexScanResult,
         onProgress: ConversationIndexScanProgress?,
-        isCancelled: ConversationIndexScanCancellation
+        isCancelled: ConversationIndexScanCancellation,
+        forceReparse: Bool
     ) throws {
         for candidate in candidates {
             try Self.checkCancellation(isCancelled)
             let path = Self.path(of: candidate)
             let entry = entriesByPath[path]
-            if let preflight = preflight(candidate, entry: entry),
+            let preflight = preflight(candidate, entry: entry)
+            if let preflight,
                entry?.fingerprint == preflight.fingerprint,
                entry?.scope == candidate.directory.id {
                 manifestsByPath[path] = preflight.manifest
+                deferredReparseDeadlines.removeValue(forKey: path)
                 result.unchanged += 1
+                onProgress?(result)
+                continue
+            }
+
+            // A transcript this scanner parsed moments ago is still indexed at that revision, so
+            // postponing keeps it visible and searchable rather than dropping anything. Only a
+            // caller which is acting on a user's explicit mutation bypasses the spacing.
+            if !forceReparse, let deadline = reparseDeadline(
+                path: path,
+                sizeBytes: preflight?.fingerprint.sizeBytes ?? entry?.fingerprint.sizeBytes
+            ) {
+                // The manifest is current even though the parse is not, so dependency watch roots
+                // and the next event's impact calculation stay accurate while we wait.
+                if let preflight { manifestsByPath[path] = preflight.manifest }
+                deferredReparseDeadlines[path] = deadline
+                result.deferred += 1
                 onProgress?(result)
                 continue
             }
@@ -524,9 +618,20 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 indexedAt: Date()
             )
             manifestsByPath[path] = loaded.manifest
+            fullyParsedAt[path] = Date()
+            deferredReparseDeadlines.removeValue(forKey: path)
             result.parsed += 1
             onProgress?(result)
         }
+    }
+
+    /// The moment this transcript may be fully parsed again, or nil when it may be parsed now.
+    private func reparseDeadline(path: String, sizeBytes: UInt64?) -> Date? {
+        guard let parsedAt = fullyParsedAt[path] else { return nil }
+        let deadline = parsedAt.addingTimeInterval(
+            reparseSpacing.interval(forSizeBytes: sizeBytes ?? 0)
+        )
+        return deadline > Date() ? deadline : nil
     }
 
     /// Mirrors Wake's quickMeta contract: changed candidates become visible in bounded batches
@@ -676,6 +781,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
             for path in reconciliation.removedPaths {
                 entriesByPath.removeValue(forKey: path)
                 manifestsByPath.removeValue(forKey: path)
+                fullyParsedAt.removeValue(forKey: path)
+                deferredReparseDeadlines.removeValue(forKey: path)
             }
             if !reconciliation.removedPaths.isEmpty { onProgress?(result) }
         }
@@ -704,6 +811,8 @@ final class ConversationIndexScanner: @unchecked Sendable {
             for path in reconciliation.removedPaths {
                 entriesByPath.removeValue(forKey: path)
                 manifestsByPath.removeValue(forKey: path)
+                fullyParsedAt.removeValue(forKey: path)
+                deferredReparseDeadlines.removeValue(forKey: path)
             }
             if !reconciliation.removedPaths.isEmpty { onProgress?(result) }
         }

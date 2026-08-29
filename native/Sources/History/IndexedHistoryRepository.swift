@@ -120,44 +120,62 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
         // Scan activity-ordered canonical sessions and return the first matching transcript per
         // session. The scan window matches the stream's window so search can never claim fewer
         // results than the list is already showing.
+        //
+        // Candidates are located by identity and their transcripts are read one at a time. Asking
+        // the catalog for the matching documents themselves made a single keystroke materialize
+        // every transcript that matched — the whole indexed corpus for a common word — first
+        // inside SQLite and then again as Swift strings.
         let sessions = try listSessions(limit: ConversationCatalogLimits.searchScan)
         let filter = activeFilter
-        let batch = try database.candidateDocuments(
+        let batch = try database.candidateDocumentReferences(
             for: query,
             scope: filter.scope,
-            deleted: filter.deleted,
-            limit: nil
+            deleted: filter.deleted
         )
-        var documentsByPath: [String: [ConversationIndexDocument]] = [:]
-        for candidate in batch.documents {
-            documentsByPath[candidate.entry.sourcePath, default: []].append(candidate.document)
+        var referencesByPath: [String: [ConversationIndexDocumentReference]] = [:]
+        for reference in batch.references {
+            referencesByPath[reference.sessionPath, default: []].append(reference)
         }
 
         var hits: [HistorySearchHit] = []
         for metadata in sessions {
             let path = ConversationIndexDatabase.normalizedPath(metadata.file)
-            let documents = documentsByPath[path, default: []].sorted(by: Self.documentComesFirst)
-            guard let match = documents.lazy.compactMap({ document -> HistorySearchHit? in
-                guard let range = document.text.range(of: query, options: [.caseInsensitive]) else {
-                    return nil
-                }
-                let offset = range.lowerBound.utf16Offset(in: document.text)
-                let span = Self.span(at: offset, in: document.messageSpans)
-                return HistorySearchHit(
-                    sessionID: metadata.sessionID,
-                    file: metadata.file,
-                    source: metadata.source,
-                    agent: document.transcriptID,
-                    agentType: document.agentType,
-                    sequence: span?.sequence,
-                    snippet: Self.snippet(in: document.text, around: range, context: 56),
-                    count: Self.occurrenceCount(of: query, in: document.text)
-                )
-            }).first else { continue }
-            hits.append(match)
+            guard let references = referencesByPath[path] else { continue }
+            for reference in references.sorted(
+                by: ConversationIndexDatabase.referenceComesFirst
+            ) {
+                guard let document = try database.document(id: reference.documentID),
+                      let hit = Self.hit(for: metadata, in: document, query: query) else { continue }
+                hits.append(hit)
+                break
+            }
             if hits.count == limit { break }
         }
         return hits
+    }
+
+    private static func hit(
+        for metadata: HistorySessionMetadata,
+        in document: ConversationIndexDocument,
+        query: String
+    ) -> HistorySearchHit? {
+        // FTS and the short-query fallback are candidate generators; only this literal match
+        // decides whether the transcript is really a result.
+        guard let range = document.text.range(of: query, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let offset = range.lowerBound.utf16Offset(in: document.text)
+        let span = Self.span(at: offset, in: document.messageSpans)
+        return HistorySearchHit(
+            sessionID: metadata.sessionID,
+            file: metadata.file,
+            source: metadata.source,
+            agent: document.transcriptID,
+            agentType: document.agentType,
+            sequence: span?.sequence,
+            snippet: Self.snippet(in: document.text, around: range, context: 56),
+            count: Self.occurrenceCount(of: query, in: document.text)
+        )
     }
 
     func getSession(file: URL) throws -> HistorySession {
@@ -236,14 +254,6 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
 
     private var allowedScopeIDs: Set<String> {
         Set(configuration.historyDirs + ["__imported__"])
-    }
-
-    private static func documentComesFirst(
-        _ lhs: ConversationIndexDocument,
-        _ rhs: ConversationIndexDocument
-    ) -> Bool {
-        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
-        return lhs.transcriptID < rhs.transcriptID
     }
 
     private static func span(

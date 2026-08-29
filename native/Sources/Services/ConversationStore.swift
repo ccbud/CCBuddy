@@ -597,6 +597,11 @@ final class ConversationStore: ObservableObject {
     private let pathCopier: (String) -> Void
     private let replayURLLauncher: (URL) -> Bool
     private let noticeLifetime: (Bool) -> TimeInterval
+    /// Live follow spends at most one part in `1 + ratio` of a core on re-reading a transcript.
+    static let liveFollowLoadBudgetRatio: TimeInterval = 5
+    private var lastDetailLoadDuration: TimeInterval = 0
+    private var lastDetailLoadFinishedAt: Date?
+
     private var actionMessageDismissal: Task<Void, Never>?
     private var deferredTranscriptWorker: Task<Void, Never>?
     private var actionMessageGeneration: UInt64 = 0
@@ -1027,6 +1032,13 @@ final class ConversationStore: ObservableObject {
             return
         }
         guard current != previous else { return }
+        // Following a live session means re-reading and re-parsing the whole transcript, and a
+        // long one costs seconds of CPU and hundreds of megabytes of short-lived objects. Reading
+        // it again the instant it changes turns a busy agent into a permanent full-core reparse
+        // loop, so the follow rate is bounded by what the last read actually cost. `observed`
+        // stays behind until the read happens, which makes the next poll retry.
+        guard Date().timeIntervalSince(lastDetailLoadFinishedAt ?? .distantPast)
+            >= lastDetailLoadDuration * Self.liveFollowLoadBudgetRatio else { return }
         observedModificationDate = current
 
         detailWorker?.cancel()
@@ -1735,6 +1747,7 @@ final class ConversationStore: ObservableObject {
     ) async {
         let provider = repository
         let inspector = fileInspector
+        let startedAt = Date()
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             let value = try provider.getSession(file: file)
@@ -1745,6 +1758,8 @@ final class ConversationStore: ObservableObject {
 
         do {
             let value = try await worker.value
+            lastDetailLoadDuration = Date().timeIntervalSince(startedAt)
+            lastDetailLoadFinishedAt = Date()
             guard !Task.isCancelled,
                   detailGeneration == generation,
                   selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }

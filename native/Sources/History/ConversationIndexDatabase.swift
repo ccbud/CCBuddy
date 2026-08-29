@@ -155,6 +155,28 @@ struct ConversationIndexCandidateBatch: Equatable, Sendable {
     var usedFallback: Bool
 }
 
+/// A search candidate identified without reading the transcript it points at.
+///
+/// The catalog stores one aggregate document per transcript, so `search_text` is by far the
+/// largest column in the database — hundreds of megabytes on a normal multi-month library.
+/// Selecting it for every candidate made one query cost the size of the whole library rather than
+/// the size of the result: SQLite had to hold every matching row to satisfy the ordering, and the
+/// caller then materialized the same text again as Swift strings. Candidates are therefore located
+/// by identity first, and only the documents actually needed are read back, one at a time.
+struct ConversationIndexDocumentReference: Equatable, Sendable {
+    var documentID: Int64
+    var sessionPath: String
+    var transcriptID: String
+    var agentType: String?
+    var sortOrder: Int
+    var lastActivity: Date
+}
+
+struct ConversationIndexCandidateReferenceBatch: Equatable, Sendable {
+    var references: [ConversationIndexDocumentReference]
+    var usedFallback: Bool
+}
+
 struct ConversationIndexReconciliation: Equatable, Sendable {
     var removedPaths: [String]
     var generation: Int64
@@ -662,6 +684,30 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         try documents(forPath: Self.normalizedPath(file))
     }
 
+    /// Reads one transcript located by `candidateDocumentReferences`. Search calls this per
+    /// candidate and releases the result before moving on, so a query costs one transcript rather
+    /// than every transcript that matched.
+    func document(id: Int64) throws -> ConversationIndexDocument? {
+        try withReadLock { connection in
+            let statement = try prepare(
+                Self.documentSelect + " WHERE d.id = ? LIMIT 1",
+                bindings: [.integer(id)],
+                connection: connection
+            )
+            defer { sqlite3_finalize(statement) }
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("read document", status, connection: connection)
+            }
+            do {
+                return try decodeDocument(statement, offset: 0)
+            } catch ConversationIndexDatabaseError.corruptRow(_) {
+                return nil
+            }
+        }
+    }
+
     func documents(forPath path: String) throws -> [ConversationIndexDocument] {
         try withReadLock { connection in
             let statement = try prepare(
@@ -687,20 +733,25 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Returns documents which may contain a literal query. FTS safely narrows queries whose
-    /// every whitespace-delimited segment is at least three characters; short queries and hosts
-    /// without the trigram tokenizer use a bound `instr` expression instead.
-    func candidateDocuments(
+    /// Returns the identity of documents which may contain a literal query. FTS safely narrows
+    /// queries whose every whitespace-delimited segment is at least three characters; short
+    /// queries and hosts without the trigram tokenizer use a bound `instr` expression instead.
+    ///
+    /// Callers read the transcripts they still need through `document(id:)`. That keeps peak
+    /// memory at one transcript instead of the entire matching corpus.
+    func candidateDocumentReferences(
         for rawQuery: String,
         scope: String? = nil,
         source: HistorySource? = nil,
-        deleted: Bool? = false,
-        limit: Int? = nil
-    ) throws -> ConversationIndexCandidateBatch {
+        deleted: Bool? = false
+    ) throws -> ConversationIndexCandidateReferenceBatch {
         try withReadLock { connection in
             let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !query.isEmpty, limit.map({ $0 > 0 }) ?? true else {
-                return ConversationIndexCandidateBatch(documents: [], usedFallback: false)
+            guard !query.isEmpty else {
+                return ConversationIndexCandidateReferenceBatch(
+                    references: [],
+                    usedFallback: false
+                )
             }
 
             let segments = query.split(whereSeparator: \.isWhitespace).map(String.init)
@@ -715,13 +766,12 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 && !query.unicodeScalars.contains(where: { $0.value == 0 })
             if canUseFTS {
                 do {
-                    return ConversationIndexCandidateBatch(
-                        documents: try queryCandidateDocuments(
+                    return ConversationIndexCandidateReferenceBatch(
+                        references: try queryCandidateReferences(
                             query: query,
                             scope: scope,
                             source: source,
                             deleted: deleted,
-                            limit: limit,
                             useFTS: true,
                             connection: connection
                         ),
@@ -732,19 +782,65 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     // SQLite runtime. The ordinary document table is always a safe fallback.
                 }
             }
-            return ConversationIndexCandidateBatch(
-                documents: try queryCandidateDocuments(
+            return ConversationIndexCandidateReferenceBatch(
+                references: try queryCandidateReferences(
                     query: query,
                     scope: scope,
                     source: source,
                     deleted: deleted,
-                    limit: limit,
                     useFTS: false,
                     connection: connection
                 ),
                 usedFallback: true
             )
         }
+    }
+
+    /// Convenience over `candidateDocumentReferences` for callers which want whole documents in
+    /// catalog order. Each transcript is read individually and a bad row is skipped without
+    /// consuming the caller's budget, so `limit` still describes usable candidates.
+    func candidateDocuments(
+        for rawQuery: String,
+        scope: String? = nil,
+        source: HistorySource? = nil,
+        deleted: Bool? = false,
+        limit: Int? = nil
+    ) throws -> ConversationIndexCandidateBatch {
+        guard limit.map({ $0 > 0 }) ?? true else {
+            return ConversationIndexCandidateBatch(documents: [], usedFallback: false)
+        }
+        let batch = try candidateDocumentReferences(
+            for: rawQuery,
+            scope: scope,
+            source: source,
+            deleted: deleted
+        )
+        var documents: [ConversationIndexDocumentCandidate] = []
+        for reference in batch.references.sorted(by: Self.referenceComesFirst) {
+            guard let entry = try entry(forPath: reference.sessionPath),
+                  let document = try document(id: reference.documentID) else { continue }
+            documents.append(
+                ConversationIndexDocumentCandidate(entry: entry, document: document)
+            )
+            if let limit, documents.count == limit { break }
+        }
+        return ConversationIndexCandidateBatch(
+            documents: documents,
+            usedFallback: batch.usedFallback
+        )
+    }
+
+    /// Catalog order for search candidates, matching the ordering the query used to ask SQLite
+    /// for: newest session first, then transcript order. The trailing path key only makes ties
+    /// between distinct sessions deterministic; SQLite left that case unspecified.
+    static func referenceComesFirst(
+        _ lhs: ConversationIndexDocumentReference,
+        _ rhs: ConversationIndexDocumentReference
+    ) -> Bool {
+        if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
+        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+        if lhs.transcriptID != rhs.transcriptID { return lhs.transcriptID < rhs.transcriptID }
+        return lhs.sessionPath < rhs.sessionPath
     }
 
     /// Invalidates canonical list projection without touching transcript documents or FTS rows.
@@ -932,7 +1028,11 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         try execute("PRAGMA foreign_keys = ON")
         try execute("PRAGMA journal_mode = WAL")
         try execute("PRAGMA synchronous = NORMAL")
-        try execute("PRAGMA temp_store = MEMORY")
+        // Not MEMORY. Every temporary b-tree, sorter overflow and VACUUM working copy is sized by
+        // the catalog, and this one is gigabytes on a normal library — holding any of that in RAM
+        // trades a disposable cache for the user's memory. Spilling only starts above the page
+        // cache, so ordinary reads are unaffected.
+        try execute("PRAGMA temp_store = FILE")
     }
 
     private func initializeSchema() throws {
@@ -1156,15 +1256,20 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    private func queryCandidateDocuments(
+    /// Deliberately selects no transcript text and imposes no ordering.
+    ///
+    /// `search_text` is the one unbounded column in the catalog, and an `ORDER BY` over it forces
+    /// SQLite to hold every matching row at once — on a real library that is hundreds of megabytes
+    /// for a single keystroke, and the caller re-sorts the candidates anyway. Rows here are small
+    /// and fixed size, so the whole candidate set costs a few hundred kilobytes.
+    private func queryCandidateReferences(
         query: String,
         scope: String?,
         source: HistorySource?,
         deleted: Bool?,
-        limit: Int?,
         useFTS: Bool,
         connection: OpaquePointer
-    ) throws -> [ConversationIndexDocumentCandidate] {
+    ) throws -> [ConversationIndexDocumentReference] {
         var bindings: [SQLiteValue] = []
         var conditions: [String] = []
         let from: String
@@ -1202,17 +1307,14 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
 
         let sql = """
-            SELECT s.source_path, s.scope, s.file_mtime, s.file_size,
-                   s.dependency_fingerprint, s.metadata_json, s.indexed_at,
-                   d.transcript_id, d.agent_type, d.sort_order, d.search_text,
-                   d.message_spans_json
+            SELECT d.id, d.session_path, d.transcript_id, d.agent_type, d.sort_order,
+                   s.last_activity
             \(from)
             WHERE \(conditions.joined(separator: " AND "))
-            ORDER BY s.last_activity DESC, d.sort_order, d.transcript_id
             """
         let statement = try prepare(sql, bindings: bindings, connection: connection)
         defer { sqlite3_finalize(statement) }
-        var result: [ConversationIndexDocumentCandidate] = []
+        var result: [ConversationIndexDocumentReference] = []
         while true {
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return result }
@@ -1223,15 +1325,18 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     connection: connection
                 )
             }
-            do {
-                result.append(ConversationIndexDocumentCandidate(
-                    entry: try decodeEntry(statement, offset: 0),
-                    document: try decodeDocument(statement, offset: 7)
-                ))
-                if let limit, result.count == limit { return result }
-            } catch ConversationIndexDatabaseError.corruptRow(_) {
+            guard let sessionPath = try? textColumn(statement, 1, field: "session_path"),
+                  let transcriptID = try? textColumn(statement, 2, field: "transcript_id") else {
                 continue
             }
+            result.append(ConversationIndexDocumentReference(
+                documentID: sqlite3_column_int64(statement, 0),
+                sessionPath: sessionPath,
+                transcriptID: transcriptID,
+                agentType: optionalTextColumn(statement, 3),
+                sortOrder: Int(sqlite3_column_int64(statement, 4)),
+                lastActivity: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+            ))
         }
     }
 
