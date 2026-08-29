@@ -553,9 +553,25 @@ final class ConversationStore: ObservableObject {
     /// collect tool results and flattened every content block into a fresh array just to read ids.
     /// On a session with seventeen thousand messages that is hundreds of megabytes allocated per
     /// keystroke, which is how the process reached ten gigabytes and more.
-    struct TranscriptProjection: Equatable, Sendable {
-        var toolResults: [String: HistoryContentBlock] = [:]
-        var pairedToolResultIDs: Set<String> = []
+    /// A reference type on purpose. Passed into every message row by value, the dictionary and the
+    /// set were deep-compared by SwiftUI on each transaction — block by block, string by string —
+    /// which is where the interface spent most of its main thread on a long transcript. One object
+    /// per transcript means those comparisons are a pointer check.
+    final class TranscriptProjection: Equatable, Sendable {
+        let toolResults: [String: HistoryContentBlock]
+        let pairedToolResultIDs: Set<String>
+
+        init(
+            toolResults: [String: HistoryContentBlock] = [:],
+            pairedToolResultIDs: Set<String> = []
+        ) {
+            self.toolResults = toolResults
+            self.pairedToolResultIDs = pairedToolResultIDs
+        }
+
+        static func == (lhs: TranscriptProjection, rhs: TranscriptProjection) -> Bool {
+            lhs === rhs
+        }
     }
 
     @Published private(set) var transcriptProjection = TranscriptProjection()
@@ -1395,7 +1411,10 @@ final class ConversationStore: ObservableObject {
 
     private func refreshTranscriptProjection() {
         guard let transcript = activeTranscript else {
-            if transcriptProjection != TranscriptProjection() { transcriptProjection = .init() }
+            if !transcriptProjection.toolResults.isEmpty
+                || !transcriptProjection.pairedToolResultIDs.isEmpty {
+                transcriptProjection = TranscriptProjection()
+            }
             return
         }
         transcriptProjection = TranscriptProjection(

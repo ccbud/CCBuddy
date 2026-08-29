@@ -101,8 +101,7 @@ private struct TranscriptProofSheet: View {
                 message: message("user", [.init(type: "text", text: "把索引限制从 600 提到全量，顺便看看空闲页为什么不回收。")]),
                 messageIndex: 0,
                 sourceRawValue: HistorySource.claude.rawValue,
-                toolResults: [:],
-                pairedToolResultIDs: [],
+                projection: .init(),
                 searchQuery: "",
                 isCurrentSearchMatch: false,
                 fontSize: 13
@@ -114,8 +113,7 @@ private struct TranscriptProofSheet: View {
                 ]),
                 messageIndex: 1,
                 sourceRawValue: HistorySource.claude.rawValue,
-                toolResults: [:],
-                pairedToolResultIDs: [],
+                projection: .init(),
                 searchQuery: "",
                 isCurrentSearchMatch: false,
                 fontSize: 13
@@ -138,8 +136,12 @@ private struct TranscriptProofSheet: View {
                 ], sidechain: true),
                 messageIndex: 2,
                 sourceRawValue: HistorySource.codex.rawValue,
-                toolResults: [:],
-                pairedToolResultIDs: [],
+                projection: .init(
+                    toolResults: [
+                        "call-1": .init(type: "tool_result", toolUseID: "call-1", content: .string("39647")),
+                    ],
+                    pairedToolResultIDs: ["call-1", "call-2"]
+                ),
                 searchQuery: "",
                 isCurrentSearchMatch: false,
                 fontSize: 13

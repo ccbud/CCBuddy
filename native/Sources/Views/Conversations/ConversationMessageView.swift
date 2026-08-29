@@ -7,8 +7,10 @@ struct ConversationMessageView: View {
     let message: HistoryMessage
     let messageIndex: Int
     let sourceRawValue: String
-    let toolResults: [String: HistoryContentBlock]
-    let pairedToolResultIDs: Set<String>
+    let projection: ConversationStore.TranscriptProjection
+
+    private var toolResults: [String: HistoryContentBlock] { projection.toolResults }
+    private var pairedToolResultIDs: Set<String> { projection.pairedToolResultIDs }
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat

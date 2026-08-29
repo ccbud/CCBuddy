@@ -327,6 +327,57 @@ final class ConversationPresentationParityTests: XCTestCase {
 }
 
 @MainActor
+final class TranscriptProjectionIdentityTests: XCTestCase {
+    private func block(_ id: String, text: String) -> HistoryContentBlock {
+        .init(type: "tool_result", toolUseID: id, content: .string(text))
+    }
+
+    /// The projection is handed to every message row. As a value it was deep-compared by SwiftUI on
+    /// each transaction — block by block, string by string — which is where the interface spent
+    /// most of its main thread on a long transcript. Identity is what makes that comparison free,
+    /// so it is pinned here rather than left to whoever next edits the type.
+    func testTwoProjectionsWithTheSameContentsAreStillDistinct() {
+        let contents = ["a": block("a", text: String(repeating: "x", count: 4_096))]
+        let first = ConversationStore.TranscriptProjection(
+            toolResults: contents,
+            pairedToolResultIDs: ["a"]
+        )
+        let second = ConversationStore.TranscriptProjection(
+            toolResults: contents,
+            pairedToolResultIDs: ["a"]
+        )
+
+        XCTAssertNotEqual(first, second, "equality must not walk the contents")
+        XCTAssertEqual(first, first)
+    }
+
+    func testAnEmptyProjectionIsNotEqualToAnotherEmptyOne() {
+        XCTAssertNotEqual(
+            ConversationStore.TranscriptProjection(),
+            ConversationStore.TranscriptProjection()
+        )
+    }
+
+    func testTheStoreHandsOutOneProjectionPerTranscript() async {
+        let store = ConversationStore(
+            repository: FakeIndexedConversationRepository(
+                topologySignature: "projection",
+                projectsByScope: ["all": []]
+            ),
+            searchDelayNanoseconds: 0
+        )
+
+        let first = store.transcriptProjection
+        let second = store.transcriptProjection
+
+        XCTAssertTrue(
+            first === second,
+            "reading it twice must not build it twice, or every read invalidates the view"
+        )
+    }
+}
+
+@MainActor
 final class ConversationNoticeLifetimeTests: XCTestCase {
     private func store(lifetime: @escaping (Bool) -> TimeInterval) -> ConversationStore {
         ConversationStore(

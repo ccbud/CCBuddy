@@ -427,8 +427,8 @@ struct ConversationTimelinePane: View {
     private func timeline(_ session: HistorySession) -> some View {
         // Taken from the store, which computes them once per transcript. Rebuilding them here meant
         // walking every message on every redraw.
-        let results = store.transcriptProjection.toolResults
-        let pairedIDs = store.transcriptProjection.pairedToolResultIDs
+        let projection = store.transcriptProjection
+        let pairedIDs = projection.pairedToolResultIDs
         let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
             ? store.detailMatches[store.detailMatchIndex].messageIndex
             : nil
@@ -445,8 +445,7 @@ struct ConversationTimelinePane: View {
                                 message: message,
                                 messageIndex: index,
                                 sourceRawValue: session.metadata.source.rawValue,
-                                toolResults: results,
-                                pairedToolResultIDs: pairedIDs,
+                                projection: projection,
                                 searchQuery: store.detailQuery,
                                 isCurrentSearchMatch: currentMatch == index,
                                 fontSize: CGFloat(fontSize ?? 13)
