@@ -123,7 +123,7 @@ struct WindowConfigurator: NSViewRepresentable {
         guard AppModel.uiVisualFixture(environment: ProcessInfo.processInfo.environment) == .legacySmoke
         else { return }
 
-        let target = NSSize(width: 1_180, height: 760)
+        let target = NSSize(width: 1_280, height: 800)
         let widthDelta = target.width - window.frame.width
         let heightDelta = target.height - window.frame.height
         guard abs(widthDelta) > 0.25 || abs(heightDelta) > 0.25 else { return }

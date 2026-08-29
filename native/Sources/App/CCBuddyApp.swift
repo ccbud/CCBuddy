@@ -17,7 +17,11 @@ struct CCBuddyApp: App {
                 LiveApplicationRoot(appDelegate: appDelegate)
             }
         }
-        .defaultSize(width: 1180, height: 760)
+        // Wide enough for all four columns at the widths they were designed at: 224 rail, 336
+        // stream, 288 overview and a 380-point column left to read in. At the old 1180 they fitted
+        // only by taking three points off the stream, which is a poor first impression of a layout
+        // that is meant to be roomy.
+        .defaultSize(width: 1280, height: 800)
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         // Shortcuts are declared here rather than on a hidden zero-sized Button: a scene command is

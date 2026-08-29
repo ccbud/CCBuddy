@@ -428,9 +428,11 @@ final class CCBuddyUITests: XCTestCase {
             app.descendants(matching: .any)["conversation.message.0"].waitForExistence(timeout: 10),
             "Selecting the fast metadata row must load the full conversation detail"
         )
-        // Resuming in a terminal is the header's one primary action now; analysing the transcript in
-        // a chat client moved into the overflow menu, which is where this asserts it still is.
+        // The header names two actions: continue the session, or hand it to another agent to read.
+        // Analysis spent a release in the overflow with no label, which is how its links came to be
+        // broken without anyone noticing; it is a control you can see from here on.
         XCTAssertTrue(app.buttons["conversation.action.resume"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["conversation.action.analyze"].exists)
         // Captured before the surface assertions so a failure ships the frame it was measuring.
         keepMainContentScreenshot(named: "wake-conversation-detail", shell: shell)
         assertOpaqueConversationTopSurfaces(in: window)
@@ -643,11 +645,11 @@ final class CCBuddyUITests: XCTestCase {
         // in that band (see the top-surface samples below), not by an accessibility frame: SwiftUI
         // reports overlay frames clipped to the safe area even when the layer beneath them extends
         // past it, so this measured a title bar's height of inset while the band rendered correctly.
-        XCTAssertEqual(windowFrame.width, 1_180, accuracy: 0.5)
+        XCTAssertEqual(windowFrame.width, 1_280, accuracy: 0.5)
         let hostingScreen = NSScreen.screens.first { $0.visibleFrame.intersects(windowFrame) }
             ?? NSScreen.main
-        let availableContentHeight = hostingScreen.map { max(0, $0.visibleFrame.height) } ?? 760
-        XCTAssertEqual(windowFrame.height, min(760, availableContentHeight), accuracy: 4)
+        let availableContentHeight = hostingScreen.map { max(0, $0.visibleFrame.height) } ?? 800
+        XCTAssertEqual(windowFrame.height, min(800, availableContentHeight), accuracy: 4)
         let visualTokens = app.staticTexts["providers.usage.tokens"]
         XCTAssertTrue(visualTokens.waitForExistence(timeout: 5))
         let usageLoaded = XCTNSPredicateExpectation(

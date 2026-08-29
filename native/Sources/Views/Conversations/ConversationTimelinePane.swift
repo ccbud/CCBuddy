@@ -16,10 +16,7 @@ struct ConversationTimelinePane: View {
         VStack(spacing: 0) {
             if let metadata = store.selectedMetadata {
                 sessionHeader(metadata)
-                if store.transcriptTabs.count > 1 {
-                    transcriptTabs
-                }
-                toolbar
+                secondaryBar
             } else {
                 WindowDragRegion()
                     .frame(height: 52)
@@ -49,73 +46,58 @@ struct ConversationTimelinePane: View {
         )
     }
 
-    /// Three bands, in Wake's order: who produced the session, what it is called and what you can
-    /// do with it, then the facts about it.
+    /// Two bands: the title with everything you can do to it, then one caption line of facts.
     ///
-    /// The last band is a tight 4pt group deliberately set 8pt below the title. Spreading those
-    /// lines evenly makes them read as four unrelated blocks rather than one caption.
+    /// It used to be four — provenance, title, folder, statistics — each on its own row, with the
+    /// transcript tabs and the search field below that again. Six rows of chrome stood between
+    /// opening a session and reading its first message, and on a narrow column the wrapping made it
+    /// worse rather than better. The provenance now rides beside the title, and the folder joins the
+    /// statistics on a single line that truncates in the middle rather than wrapping.
     private func sessionHeader(_ metadata: HistorySessionMetadata) -> some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(alignment: .leading, spacing: Space.xs + 2) {
+            HStack(alignment: .center, spacing: Space.sm) {
+                AgentBrandMark(source: metadata.source, size: 16)
+                sessionTitle(metadata)
+                Spacer(minLength: Space.sm)
+                actionButtons
+            }
+
             HStack(spacing: Space.xs + 2) {
-                AgentBrandMark(source: metadata.source, size: 15)
-                Text(ConversationPresentation.sourceName(rawValue: metadata.source.rawValue))
                 if !metadata.project.isEmpty {
                     metadataBadge(metadata.project)
                 }
                 if let branch = metadata.gitBranch, !branch.isEmpty {
                     Label(branch, systemImage: "arrow.triangle.branch")
                         .lineLimit(1)
+                        .layoutPriority(1)
                 }
-                Spacer(minLength: 0)
-            }
-            .font(.ccLabel())
-            .foregroundStyle(Theme.mutedForeground)
-
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: Space.lg) {
-                    sessionTitle(metadata)
-                    Spacer(minLength: Space.sm)
-                    actionButtons
+                if let model = metadata.model, !model.isEmpty {
+                    metadataBadge(model)
                 }
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    sessionTitle(metadata)
-                    HStack {
-                        Spacer(minLength: 0)
-                        actionButtons
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: Space.xs) {
                 if let cwd = metadata.cwd, !cwd.isEmpty {
                     Label(cwd, systemImage: "folder")
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(cwd)
                 }
-
-                HStack(spacing: Space.xs + 2) {
-                    if let model = metadata.model, !model.isEmpty {
-                        metadataBadge(model)
-                    }
-                    Text(headerStatistics(metadata).joined(separator: " · "))
-                        .lineLimit(1)
-                    if !metadata.tags.isEmpty {
-                        ForEach(metadata.tags.prefix(2), id: \.self) { tag in
-                            metadataBadge(tag)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    Text(ConversationPresentation.relativeDate(metadata.lastActivity, language: appLanguage))
-                        .help(ConversationPresentation.absoluteDate(metadata.lastActivity, language: appLanguage))
+                Text(headerStatistics(metadata).joined(separator: " · "))
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                ForEach(metadata.tags.prefix(2), id: \.self) { tag in
+                    metadataBadge(tag)
                 }
+                Spacer(minLength: Space.xs)
+                Text(ConversationPresentation.relativeDate(metadata.lastActivity, language: appLanguage))
+                    .lineLimit(1)
+                    .layoutPriority(2)
+                    .help(ConversationPresentation.absoluteDate(metadata.lastActivity, language: appLanguage))
             }
             .font(.ccLabel())
             .foregroundStyle(Theme.mutedForeground)
         }
         .padding(.horizontal, Space.lg)
         .padding(.top, Metrics.titleBarHeight - Space.sm)
-        .padding(.bottom, Space.md)
+        .padding(.bottom, Space.sm)
         .background(WindowDragRegion())
     }
 
@@ -146,6 +128,24 @@ struct ConversationTimelinePane: View {
             values.append("\(ConversationPresentation.credits(credits)) credits")
         }
         return values
+    }
+
+    /// Which transcript you are reading, and how to find something in it — one row, not two.
+    ///
+    /// These are the same kind of thing: neither acts on the session, both only change what the
+    /// pane below shows. The tabs take the left because they name the thing; search takes the right
+    /// because it is a tool, and it keeps the row when a session has no subagents to switch between.
+    private var secondaryBar: some View {
+        HStack(spacing: Space.sm) {
+            if store.transcriptTabs.count > 1 {
+                transcriptTabs
+            }
+            Spacer(minLength: Space.xs)
+            searchControls
+        }
+        .padding(.horizontal, Space.lg)
+        .padding(.bottom, Space.sm + 2)
+        .accessibilityIdentifier("conversation.toolbar")
     }
 
     private var transcriptTabs: some View {
@@ -192,11 +192,8 @@ struct ConversationTimelinePane: View {
             .fixedSize()
             .help(activeSubagent?.description ?? appLanguage.localized("子代理"))
             .accessibilityIdentifier("conversation.transcript.subagents")
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.bottom, Space.sm)
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityIdentifier("conversation.transcript.tabs")
     }
 
@@ -231,7 +228,7 @@ struct ConversationTimelinePane: View {
         return String(repeating: "› ", count: depth - 1)
     }
 
-    private var toolbar: some View {
+    private var searchControls: some View {
         HStack(spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -247,7 +244,7 @@ struct ConversationTimelinePane: View {
                 .accessibilityIdentifier("conversation.detail.search")
             }
             .padding(.horizontal, Space.sm + 1)
-            .frame(minWidth: 120, maxWidth: 260, minHeight: Metrics.controlHeight)
+            .frame(minWidth: 110, idealWidth: 200, maxWidth: 260, minHeight: Metrics.controlHeight)
             .background(Theme.fill)
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
 
@@ -272,35 +269,30 @@ struct ConversationTimelinePane: View {
                     store.updateDetailQuery("")
                 }
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.bottom, Space.sm + 2)
-        .accessibilityIdentifier("conversation.toolbar")
     }
 
-    /// One primary action, two icon affordances, everything else in the overflow menu.
+    /// Two named actions, three affordances, everything else in the overflow.
     ///
-    /// "Continue in terminal" earns the primary slot because it is the reason to look a session up
-    /// in the first place. The two analysis actions used to sit here as equally weighted labeled
-    /// buttons, which left the header with three competing calls to action and no obvious next step.
+    /// The pair a session is looked up for is "continue it" and "have something read it", so both
+    /// are now controls you can see: the first as the clay primary, the second as a labelled menu
+    /// beside it. Analysis used to be two unnamed lines buried in the overflow, which is why nobody
+    /// noticed that its links had stopped working. Each of them carries its variants — which
+    /// terminal, which reviewer — in an attached chevron rather than in the overflow, so the
+    /// overflow is left holding only the things that act on the file.
     private var actionButtons: some View {
         HStack(spacing: Space.xs) {
-            if let metadata = store.selectedMetadata,
-               ConversationResume.isSupported(metadata.source),
-               !store.isTrash {
-                Button {
-                    store.resumeSelected()
-                } label: {
-                    Label(appLanguage.localized("在终端继续"), systemImage: "terminal")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Space.xs) {
+                    resumeControl(compact: false)
+                    analysisMenu(compact: false)
                 }
-                .buttonStyle(CCButtonStyle(role: .primary, size: 27))
-                .help(appLanguage.localized(
-                    "在 \(ConversationResume.preferredTerminal.displayName) 中继续这个会话"
-                ))
-                .accessibilityIdentifier("conversation.action.resume")
+                HStack(spacing: Space.xs) {
+                    resumeControl(compact: true)
+                    analysisMenu(compact: true)
+                }
             }
+            .fixedSize()
 
             if store.isTrash {
                 toolbarButton("arrow.uturn.backward", label: "恢复", identifier: "conversation.action.restore") {
@@ -337,29 +329,21 @@ struct ConversationTimelinePane: View {
                 .accessibilityIdentifier("conversation.action.pin")
             }
 
-            toolbarButton("sidebar.right", label: "会话概览", identifier: "conversation.action.overview") {
+            Button {
                 columns.toggleInspector()
+            } label: {
+                Image(systemName: "sidebar.right")
             }
+            .buttonStyle(CCIconButtonStyle(
+                size: 27,
+                symbolSize: Typography.caption,
+                tint: columns.inspectorVisible ? Theme.accentText : Theme.mutedForeground
+            ))
+            .help(appLanguage.localized("会话概览"))
+            .accessibilityLabel(appLanguage.localized("会话概览"))
+            .accessibilityIdentifier("conversation.action.overview")
 
             Menu {
-                if let metadata = store.selectedMetadata,
-                   ConversationResume.isSupported(metadata.source) {
-                    ForEach(ConversationResume.installedTerminals) { terminal in
-                        Button(appLanguage.localized("在 \(terminal.displayName) 中继续")) {
-                            store.resumeSelected(in: terminal)
-                        }
-                    }
-                    Divider()
-                }
-                Button("用 Claude 分析会话") {
-                    store.replaySelected(in: .claude, language: appLanguage)
-                }
-                .accessibilityIdentifier("conversation.action.replay.claude")
-                Button("用 ChatGPT 分析会话") {
-                    store.replaySelected(in: .chatGPT, language: appLanguage)
-                }
-                .accessibilityIdentifier("conversation.action.replay.chatgpt")
-                Divider()
                 Button("编辑标题与标签…") { showingMetadataEditor = true }
                 Button("复制会话路径") { store.copySelectedPath() }
                 Button("在 Finder 中显示") { store.revealSelectedInFinder() }
@@ -390,6 +374,108 @@ struct ConversationTimelinePane: View {
             .accessibilityIdentifier("conversation.action.more")
         }
         .disabled(store.isMutating)
+    }
+
+    /// Resume in the preferred terminal, with the other installed terminals under the chevron.
+    @ViewBuilder private func resumeControl(compact: Bool) -> some View {
+        if let metadata = store.selectedMetadata,
+           ConversationResume.isSupported(metadata.source),
+           !store.isTrash {
+            let terminal = ConversationResume.preferredTerminal
+            HStack(spacing: 1) {
+                Button {
+                    store.resumeSelected()
+                } label: {
+                    if compact {
+                        Image(systemName: "terminal")
+                            .frame(width: 15)
+                    } else {
+                        Label(appLanguage.localized("在终端继续"), systemImage: "terminal")
+                    }
+                }
+                .buttonStyle(CCButtonStyle(role: .primary, size: 27))
+                .help(appLanguage.localized("在 \(terminal.displayName) 中继续这个会话"))
+                .accessibilityLabel(appLanguage.localized("在终端继续"))
+                .accessibilityIdentifier("conversation.action.resume")
+
+                if ConversationResume.installedTerminals.count > 1 {
+                    Menu {
+                        ForEach(ConversationResume.installedTerminals) { candidate in
+                            Button(appLanguage.localized("在 \(candidate.displayName) 中继续")) {
+                                store.resumeSelected(in: candidate)
+                            }
+                        }
+                    } label: {
+                        splitChevron(tint: Theme.onAccent, background: Theme.accent)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help(appLanguage.localized("选择终端"))
+                    .accessibilityIdentifier("conversation.action.resume.terminals")
+                }
+            }
+        }
+    }
+
+    /// Hand the transcript — and every subagent transcript with it — to another agent to review.
+    @ViewBuilder private func analysisMenu(compact: Bool) -> some View {
+        if store.selectedMetadata != nil {
+            Menu {
+                Button("用 Claude 分析会话") {
+                    store.replaySelected(in: .claude, language: appLanguage)
+                }
+                .accessibilityIdentifier("conversation.action.replay.claude")
+                Button("用 ChatGPT 分析会话") {
+                    store.replaySelected(in: .chatGPT, language: appLanguage)
+                }
+                .accessibilityIdentifier("conversation.action.replay.chatgpt")
+                Divider()
+                // Not every reviewer registers a URL scheme, and a link can only ever reach the two
+                // that do. This one reaches the rest.
+                Button("复制复盘提示词") {
+                    store.copyReplayPrompt(for: .claude, language: appLanguage)
+                }
+                .accessibilityIdentifier("conversation.action.replay.copy")
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: Typography.caption, weight: .medium))
+                    if !compact {
+                        Text(appLanguage.localized("分析"))
+                            .font(.ccBody(.medium))
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .opacity(0.7)
+                }
+                .foregroundStyle(Theme.foreground)
+                .padding(.horizontal, compact ? Space.sm : Space.md)
+                .frame(height: 27)
+                .background(Theme.fillSubtle)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                        .strokeBorder(Theme.separator, lineWidth: 1)
+                }
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(appLanguage.localized("交给另一个 agent 复盘这段会话"))
+            .accessibilityIdentifier("conversation.action.analyze")
+        }
+    }
+
+    private func splitChevron(tint: Color, background: Color) -> some View {
+        Image(systemName: "chevron.down")
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: 18, height: 27)
+            .background(background)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder private var detail: some View {
