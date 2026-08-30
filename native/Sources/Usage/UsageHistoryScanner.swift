@@ -86,7 +86,17 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
     }
 
     private func bump(_ event: UsageHistoryEvent, into days: inout [String: UsageHistoryDay]) {
-        let key = UsageHistoryQuery.dayKey(for: event.timestamp, calendar: calendar)
+        // One calendar query per record. This fold visits every cached record on every scan, so a
+        // second `calendar.component(.hour, ...)` call doubled the dominant per-record cost.
+        let components = calendar.dateComponents(
+            [.year, .month, .day, .hour],
+            from: event.timestamp
+        )
+        let key = UsageHistoryQuery.dayKey(
+            year: components.year ?? 1970,
+            month: components.month ?? 1,
+            day: components.day ?? 1
+        )
         var day = days[key] ?? UsageHistoryDay()
         day.requests += 1
         day.tokens += event.total
@@ -97,8 +107,7 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
         if let model = event.model {
             day.models[model, default: 0] += event.total
         }
-        let hour = calendar.component(.hour, from: event.timestamp)
-        day.hours[hour, default: 0] += event.total
+        day.hours[components.hour ?? 0, default: 0] += event.total
         days[key] = day
     }
 
@@ -109,30 +118,80 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
     private func claudeRecords(in file: URL, visited: inout Set<String>) -> [ClaudeRecord] {
         let key = UsageHistoryRecordCache.key(for: file)
         visited.insert(key)
-        guard let cache = recordCache, let identity = UsageHistoryFileIdentity.of(file) else {
+        let parseAll = { () -> [ClaudeRecord] in
             var parsed: [ClaudeRecord] = []
-            forEachUsageLine(in: file) { line in
+            self.forEachUsageLine(in: file) { line in
                 if let record = Self.parseClaude(line) { parsed.append(record) }
             }
             return parsed
         }
+        guard let cache = recordCache, let identity = UsageHistoryFileIdentity.of(file) else {
+            return parseAll()
+        }
         if let cached = cache.records(for: file, identity: identity) {
             return cached.claude.map(Self.record(from:))
         }
-        var parsed: [ClaudeRecord] = []
-        forEachUsageLine(in: file) { line in
-            if let record = Self.parseClaude(line) { parsed.append(record) }
+
+        // Qoder transcripts flow through the permission-aware reader; keep them on the plain
+        // full-parse path rather than teaching the continuation about a second data source.
+        guard !QoderFileReader.isQoderDataPath(file),
+              let data = try? Data(contentsOf: file, options: [.mappedIfSafe]) else {
+            let parsed = parseAll()
+            cache.store(
+                UsageHistoryFileRecords(
+                    modifiedAt: identity.modifiedAt,
+                    sizeBytes: identity.sizeBytes,
+                    claude: parsed.map(Self.cached(from:)),
+                    codex: []
+                ),
+                for: file
+            )
+            return parsed
+        }
+
+        let boundary = Self.parsedLineBoundary(of: data)
+        if Self.unterminatedTailIsCompleteLine(data, boundary: boundary) {
+            var parsed: [ClaudeRecord] = []
+            Self.forEachLossyLine(in: data) { line in
+                if let record = Self.parseClaude(line) { parsed.append(record) }
+            }
+            cache.store(
+                UsageHistoryFileRecords(
+                    modifiedAt: identity.modifiedAt,
+                    sizeBytes: identity.sizeBytes,
+                    claude: parsed.map(Self.cached(from:)),
+                    codex: []
+                ),
+                for: file
+            )
+            return parsed
+        }
+
+        var records: [UsageHistoryCachedClaudeRecord] = []
+        if let prior = cache.entry(for: file),
+           let resumeFrom = Self.continuationOffset(of: data, prior: prior, boundary: boundary),
+           prior.codexCarry == nil {
+            records = prior.claude
+            Self.forEachLossyLine(in: data.subdata(in: resumeFrom..<boundary)) { line in
+                if let record = Self.parseClaude(line) { records.append(Self.cached(from: record)) }
+            }
+        } else {
+            Self.forEachLossyLine(in: data.subdata(in: 0..<boundary)) { line in
+                if let record = Self.parseClaude(line) { records.append(Self.cached(from: record)) }
+            }
         }
         cache.store(
             UsageHistoryFileRecords(
                 modifiedAt: identity.modifiedAt,
                 sizeBytes: identity.sizeBytes,
-                claude: parsed.map(Self.cached(from:)),
-                codex: []
+                claude: records,
+                codex: [],
+                parsedBytes: Int64(boundary),
+                tailChecksum: Self.tailChecksum(of: data, through: boundary)
             ),
             for: file
         )
-        return parsed
+        return records.map(Self.record(from:))
     }
 
     private func codexEvents(in file: URL, visited: inout Set<String>) -> [CodexEvent] {
@@ -144,17 +203,135 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
         if let cached = cache.records(for: file, identity: identity) {
             return cached.codex.map(Self.event(from:))
         }
-        let parsed = Self.parseCodex(file)
+        guard let data = try? Data(contentsOf: file, options: [.mappedIfSafe]) else {
+            return []
+        }
+
+        let boundary = Self.parsedLineBoundary(of: data)
+        if Self.unterminatedTailIsCompleteLine(data, boundary: boundary) {
+            var state = Self.initialCodexState(for: file)
+            let parsed = Self.parseCodex(data, state: &state)
+            cache.store(
+                UsageHistoryFileRecords(
+                    modifiedAt: identity.modifiedAt,
+                    sizeBytes: identity.sizeBytes,
+                    claude: [],
+                    codex: parsed.map(Self.cached(from:))
+                ),
+                for: file
+            )
+            return parsed
+        }
+
+        var events: [UsageHistoryCachedCodexEvent]
+        var state: CodexParseState
+        if let prior = cache.entry(for: file),
+           let carry = prior.codexCarry,
+           let resumeFrom = Self.continuationOffset(of: data, prior: prior, boundary: boundary) {
+            state = Self.codexState(from: carry)
+            events = prior.codex
+            let appended = Self.parseCodex(
+                data.subdata(in: resumeFrom..<boundary),
+                state: &state
+            )
+            events.append(contentsOf: appended.map(Self.cached(from:)))
+        } else {
+            state = Self.initialCodexState(for: file)
+            events = Self.parseCodex(data.subdata(in: 0..<boundary), state: &state)
+                .map(Self.cached(from:))
+        }
         cache.store(
             UsageHistoryFileRecords(
                 modifiedAt: identity.modifiedAt,
                 sizeBytes: identity.sizeBytes,
                 claude: [],
-                codex: parsed.map(Self.cached(from:))
+                codex: events,
+                parsedBytes: Int64(boundary),
+                tailChecksum: Self.tailChecksum(of: data, through: boundary),
+                codexCarry: Self.carry(from: state)
             ),
             for: file
         )
-        return parsed
+        return events.map(Self.event(from:))
+    }
+
+    /// Byte offset just past the last newline: the region whose lines are complete. Anything after
+    /// it is a line still being written; parsing it would consume a fragment and permanently skip
+    /// the completed record on the next pass.
+    private static func parsedLineBoundary(of data: Data) -> Int {
+        guard let last = data.lastIndex(of: 0x0A) else { return 0 }
+        return last + 1
+    }
+
+    /// A file whose final line is complete JSON but carries no terminator (some imports end this
+    /// way, and nothing ever appends to them) must keep the legacy whole-file semantics: boundary
+    /// bookkeeping would exclude that line from the cached records forever. A fragment mid-write
+    /// fails the JSON parse and stays safely on the continuation path.
+    private static func unterminatedTailIsCompleteLine(_ data: Data, boundary: Int) -> Bool {
+        guard boundary < data.count else { return false }
+        let tail = String(decoding: data[boundary...], as: UTF8.self)
+        return parseObject(tail) != nil
+    }
+
+    /// Where an append-only continuation may resume, or nil when the file must be fully reparsed.
+    /// The proof is the checksum: if the bytes immediately before the previously parsed boundary
+    /// changed, the file was rewritten rather than appended to.
+    private static func continuationOffset(
+        of data: Data,
+        prior: UsageHistoryFileRecords,
+        boundary: Int
+    ) -> Int? {
+        guard let parsedBytes = prior.parsedBytes, parsedBytes > 0,
+              let checksum = prior.tailChecksum,
+              let resumeFrom = Int(exactly: parsedBytes),
+              resumeFrom <= boundary,
+              tailChecksum(of: data, through: resumeFrom) == checksum else { return nil }
+        return resumeFrom
+    }
+
+    private static func tailChecksum(of data: Data, through boundary: Int) -> UInt64? {
+        guard boundary > 0, boundary <= data.count else { return nil }
+        let start = max(0, boundary - 256)
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in data[start..<boundary] {
+            hash ^= UInt64(byte)
+            hash &*= 0x0000_0100_0000_01B3
+        }
+        return hash
+    }
+
+    private static func codexState(from carry: UsageHistoryCodexParseCarry) -> CodexParseState {
+        CodexParseState(
+            skippingReplay: carry.skippingReplay,
+            replaySecond: carry.replaySecond,
+            currentModel: carry.currentModel,
+            previousTotals: carry.previousTotals.map {
+                CodexUsage(
+                    input: $0.input,
+                    cached: $0.cached,
+                    output: $0.output,
+                    reasoning: $0.reasoning,
+                    total: $0.total
+                )
+            }
+        )
+    }
+
+    private static func carry(from state: CodexParseState) -> UsageHistoryCodexParseCarry {
+        UsageHistoryCodexParseCarry(
+            skippingReplay: state.skippingReplay,
+            replaySecond: state.replaySecond,
+            currentModel: state.currentModel,
+            previousTotals: state.previousTotals.map {
+                UsageHistoryCachedCodexUsage(
+                    input: $0.input,
+                    cached: $0.cached,
+                    output: $0.output,
+                    reasoning: $0.reasoning,
+                    total: $0.total
+                )
+            }
+        )
     }
 
     private static func cached(from record: ClaudeRecord) -> UsageHistoryCachedClaudeRecord {
@@ -361,14 +538,46 @@ private extension UsageHistoryScanner {
         ["msg_ccbud", "chatcmpl-ccbud", "resp_ccbud"].contains(id)
     }
 
-    static func parseCodex(_ file: URL) -> [CodexEvent] {
-        let replaySecond = isCodexSubagent(file) ? codexReplaySecond(file) : nil
-        var skippingReplay = replaySecond != nil
+    /// The per-line parser's cross-line state. A rollout is a running log: `turn_context` sets the
+    /// model for later token lines, deltas are derived from the previous cumulative totals, and a
+    /// subagent replay prefix is skipped by timestamp. Resuming a parse mid-file is only correct
+    /// with exactly this state from the byte it stopped at.
+    struct CodexParseState: Sendable {
+        var skippingReplay: Bool
+        var replaySecond: String?
         var currentModel: String?
         var previousTotals: CodexUsage?
-        var events: [CodexEvent] = []
+    }
 
-        forEachLossyLine(in: file) { line in
+    static func initialCodexState(for file: URL) -> CodexParseState {
+        let replaySecond = isCodexSubagent(file) ? codexReplaySecond(file) : nil
+        return CodexParseState(
+            skippingReplay: replaySecond != nil,
+            replaySecond: replaySecond,
+            currentModel: nil,
+            previousTotals: nil
+        )
+    }
+
+    static func parseCodex(_ file: URL) -> [CodexEvent] {
+        guard let data = try? Data(contentsOf: file, options: [.mappedIfSafe]) else { return [] }
+        var state = initialCodexState(for: file)
+        return parseCodex(data, state: &state)
+    }
+
+    static func parseCodex(_ data: Data, state: inout CodexParseState) -> [CodexEvent] {
+        let replaySecond = state.replaySecond
+        var skippingReplay = state.skippingReplay
+        var currentModel = state.currentModel
+        var previousTotals = state.previousTotals
+        var events: [CodexEvent] = []
+        defer {
+            state.skippingReplay = skippingReplay
+            state.currentModel = currentModel
+            state.previousTotals = previousTotals
+        }
+
+        forEachLossyLine(in: data) { line in
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
 

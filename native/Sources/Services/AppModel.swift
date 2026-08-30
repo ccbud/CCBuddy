@@ -212,6 +212,9 @@ final class AppModel: ObservableObject {
     private let configMutationGate = AppModelConfigMutationGate()
     private var usageHistoryWatcher: UsageHistoryWatcher?
     private var usageHistoryInvalidationTask: Task<Void, Never>?
+    private var usageHistoryRefreshQueued = false
+    private var usageHistoryRefreshWantsInvalidate = false
+    private var lastInvalidatingUsageRefreshAt: Date?
     private var usageHistoryGeneration = UUID()
     private var publishedUsageHistorySignature: String?
     private var usageHistoryWatchSignature: String?
@@ -643,13 +646,16 @@ final class AppModel: ObservableObject {
                   usageHistoryConfiguration.cacheSignature == signature,
                   !isShuttingDown else { return }
             let activeProviderID = config.activeProvider?.id
-            usageHistorySummaries = summaries.mapValues { summary in
+            let resolved = summaries.mapValues { summary in
                 summary.resolvingFavoriteProvider(
                     providers: config.providers,
                     activeProviderID: activeProviderID
                 )
             }
-            usageHistoryState = .loaded
+            // A publish here re-renders every observer of the model. Between two appends the
+            // aggregates are frequently identical, so equality is checked first.
+            if usageHistorySummaries != resolved { usageHistorySummaries = resolved }
+            if usageHistoryState != .loaded { usageHistoryState = .loaded }
         } catch is CancellationError {
             return
         } catch {
@@ -1547,6 +1553,7 @@ final class AppModel: ObservableObject {
         usageHistoryWatchSignature = nil
         monitorStore.shutdown()
         conversationStore.deactivate()
+        usageHistoryService.flushRecordCache()
         await usageHistoryService.invalidate()
         await pluginManager.shutdown()
         await supervisor.stop()
@@ -1678,21 +1685,48 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// Fewest scans that still keep the numbers honest.
+    ///
+    /// The previous shape cancelled whatever was in flight and started over on every file-system
+    /// event. With agents appending to their transcripts every few seconds, scans were killed
+    /// mid-corpus and restarted from scratch indefinitely: the record cache was never committed,
+    /// the summaries never updated, and one core stayed busy re-reading the same megabytes. One
+    /// serialized worker lets each scan finish; changes that arrive meanwhile coalesce into a
+    /// single follow-up, spaced so a chatty producer costs bounded background work.
+    static let minimumInvalidatingUsageRefreshInterval: TimeInterval = 10
+
     private func scheduleUsageHistoryRefresh(
         invalidate: Bool,
         delayNanoseconds: UInt64 = 350_000_000
     ) {
         guard !isShuttingDown else { return }
-        usageHistoryInvalidationTask?.cancel()
+        usageHistoryRefreshQueued = true
+        usageHistoryRefreshWantsInvalidate = usageHistoryRefreshWantsInvalidate || invalidate
+        guard usageHistoryInvalidationTask == nil else { return }
         usageHistoryInvalidationTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            if delayNanoseconds > 0 {
-                do { try await Task.sleep(nanoseconds: delayNanoseconds) }
-                catch { return }
+            defer { self?.usageHistoryInvalidationTask = nil }
+            while let self, !Task.isCancelled, !self.isShuttingDown,
+                  self.usageHistoryRefreshQueued {
+                if delayNanoseconds > 0 {
+                    do { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                    catch { return }
+                }
+                if self.usageHistoryRefreshWantsInvalidate,
+                   let last = self.lastInvalidatingUsageRefreshAt {
+                    let wait = Self.minimumInvalidatingUsageRefreshInterval
+                        - Date().timeIntervalSince(last)
+                    if wait > 0 {
+                        do { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                        catch { return }
+                    }
+                }
+                guard !Task.isCancelled, !self.isShuttingDown else { return }
+                self.usageHistoryRefreshQueued = false
+                let shouldInvalidate = self.usageHistoryRefreshWantsInvalidate
+                self.usageHistoryRefreshWantsInvalidate = false
+                if shouldInvalidate { self.lastInvalidatingUsageRefreshAt = Date() }
+                await self.refreshUsageHistory(invalidate: shouldInvalidate)
             }
-            guard !Task.isCancelled else { return }
-            await refreshUsageHistory(invalidate: invalidate)
-            if !Task.isCancelled { usageHistoryInvalidationTask = nil }
         }
     }
 

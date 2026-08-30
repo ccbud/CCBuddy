@@ -624,6 +624,8 @@ final class ConversationStore: ObservableObject {
     private var detailWorker: Task<HistorySession, Error>?
     private var pollingTask: Task<Void, Never>?
     private var indexRetryTask: Task<Void, Never>?
+    private var revisionReloadTask: Task<Void, Never>?
+    private var lastRevisionReloadAt: Date?
 
     /// AppModel owns persisted history scope. Imports request `__imported__` through this hook,
     /// while ordinary mutations can stay entirely inside the store.
@@ -756,6 +758,8 @@ final class ConversationStore: ObservableObject {
         detailWorker?.cancel()
         pollingTask?.cancel()
         indexRetryTask?.cancel()
+        revisionReloadTask?.cancel()
+        revisionReloadTask = nil
     }
 
     func configure(config: AppConfig, importsRoot: URL? = nil) {
@@ -849,6 +853,8 @@ final class ConversationStore: ObservableObject {
         searchWorker?.cancel()
         detailWorker?.cancel()
         indexRetryTask?.cancel()
+        revisionReloadTask?.cancel()
+        revisionReloadTask = nil
         indexRetryTask = nil
         isSearchingContent = false
         indexingState = .idle
@@ -875,6 +881,8 @@ final class ConversationStore: ObservableObject {
         }
 
         indexRetryTask?.cancel()
+        revisionReloadTask?.cancel()
+        revisionReloadTask = nil
         let observation = indexObservationGeneration
         if projects.isEmpty { listState = .loading }
         indexingState = .scanning(completed: 0, total: 0)
@@ -1550,6 +1558,8 @@ final class ConversationStore: ObservableObject {
     private func stopIndexing() {
         indexObservationGeneration = UUID()
         indexRetryTask?.cancel()
+        revisionReloadTask?.cancel()
+        revisionReloadTask = nil
         indexRetryTask = nil
         (repository as? any ConversationIndexedHistoryProviding)?.stopIndexing()
     }
@@ -1568,16 +1578,18 @@ final class ConversationStore: ObservableObject {
         generation: UUID
     ) {
         guard isActive, indexObservationGeneration == generation else { return }
-        catalogWatcherState = event.watcherState
+        if catalogWatcherState != event.watcherState {
+            catalogWatcherState = event.watcherState
+        }
 
         switch event.phase {
         case .started:
-            indexingState = .scanning(completed: event.completed, total: event.total)
+            setIndexingState(.scanning(completed: event.completed, total: event.total))
             if observedIndexRevision == nil { observedIndexRevision = event.revision }
             if projects.isEmpty, case .failed = listState { listState = .loading }
 
         case .progress:
-            indexingState = .scanning(completed: event.completed, total: event.total)
+            setIndexingState(.scanning(completed: event.completed, total: event.total))
             receiveIndexRevision(event.revision)
 
         case .finished:
@@ -1587,14 +1599,44 @@ final class ConversationStore: ObservableObject {
             } else if event.failed > 0 {
                 publishIndexIncomplete("\(event.failed) 个会话无法读取，已跳过")
             } else {
-                indexingState = .idle
+                setIndexingState(.idle)
             }
         }
+    }
+
+    /// While an agent is writing, every appended turn advances the catalog revision. Reloading per
+    /// revision meant re-reading and re-publishing the whole session list — and re-running any
+    /// active content search — several times a second, indefinitely; the interface spent its time
+    /// re-rendering an essentially unchanged list. The first revision still reloads immediately so
+    /// a single change feels instant; a burst coalesces into one trailing reload.
+    static let catalogReloadSpacing: TimeInterval = 1.5
+
+    private func setIndexingState(_ value: ConversationIndexingState) {
+        guard indexingState != value else { return }
+        indexingState = value
     }
 
     private func receiveIndexRevision(_ revision: Int64) {
         guard isActive, observedIndexRevision != revision else { return }
         observedIndexRevision = revision
+        guard revisionReloadTask == nil else { return }
+        let elapsed = lastRevisionReloadAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        if elapsed >= Self.catalogReloadSpacing {
+            performRevisionReload()
+            return
+        }
+        let wait = Self.catalogReloadSpacing - elapsed
+        revisionReloadTask = Task { @MainActor [weak self] in
+            defer { self?.revisionReloadTask = nil }
+            do { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            catch { return }
+            guard let self, self.isActive, !Task.isCancelled else { return }
+            self.performRevisionReload()
+        }
+    }
+
+    private func performRevisionReload() {
+        lastRevisionReloadAt = Date()
         requestReload()
         let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty { updateListQuery(listQuery) }
@@ -1650,7 +1692,9 @@ final class ConversationStore: ObservableObject {
     private func beginListLoad() -> UUID {
         listWorker?.cancel()
         listGeneration = UUID()
-        listState = .loading
+        // A background refresh over a populated list is not a loading transition the user should
+        // see (or pay two renders for); only an empty surface earns the spinner state.
+        if projects.isEmpty { listState = .loading }
         return listGeneration
     }
 
@@ -1685,15 +1729,17 @@ final class ConversationStore: ObservableObject {
             let snapshot = try await worker.value
             guard !Task.isCancelled, listGeneration == generation else { return }
             let value = snapshot.projects
-            projects = value
-            scopeSnapshot = snapshot.scopes
-            listState = .loaded
+            // Each publish re-renders every observer of this store. Under a live agent most
+            // refreshes carry an identical list, so equality is checked before publishing.
+            if projects != value { projects = value }
+            if scopeSnapshot != snapshot.scopes { scopeSnapshot = snapshot.scopes }
+            if listState != .loaded { listState = .loaded }
             if let selectedFile {
                 if let refreshed = value.lazy.flatMap(\.sessions).first(where: {
                     ConversationFilter.fileKey($0.file)
                         == ConversationFilter.fileKey(selectedFile)
                 }) {
-                    selectedMetadata = refreshed
+                    if selectedMetadata != refreshed { selectedMetadata = refreshed }
                 } else {
                     // A selection can race a scope switch or disappear during reconciliation.
                     // Do not retain actions for a file which is no longer part of this view.
@@ -1886,6 +1932,8 @@ final class ConversationStore: ObservableObject {
         searchWorker?.cancel()
         detailWorker?.cancel()
         indexRetryTask?.cancel()
+        revisionReloadTask?.cancel()
+        revisionReloadTask = nil
         listTask = nil
         listWorker = nil
         searchTask = nil

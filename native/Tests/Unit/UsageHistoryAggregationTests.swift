@@ -361,6 +361,21 @@ final class UsageHistoryAggregationTests: XCTestCase {
         return root
     }
 
+    /// The key format is load-bearing (range filtering sorts and parses it), and the fast path
+    /// must match what the locale-formatted implementation produced for every component width.
+    func testDayKeyZeroPadsAndRoundTrips() {
+        XCTAssertEqual(UsageHistoryQuery.dayKey(year: 2026, month: 3, day: 7), "2026-03-07")
+        XCTAssertEqual(UsageHistoryQuery.dayKey(year: 2026, month: 12, day: 31), "2026-12-31")
+        XCTAssertEqual(UsageHistoryQuery.dayKey(year: 800, month: 1, day: 1), "0800-01-01")
+        let date = Self.date("2026-07-01T00:30:00Z")
+        let key = UsageHistoryQuery.dayKey(for: date, calendar: Self.utcCalendar)
+        XCTAssertEqual(key, "2026-07-01")
+        XCTAssertEqual(
+            UsageHistoryQuery.date(forDayKey: key, calendar: Self.utcCalendar),
+            Self.date("2026-07-01T00:00:00Z")
+        )
+    }
+
     private static var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "en_US_POSIX")

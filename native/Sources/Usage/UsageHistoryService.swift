@@ -72,13 +72,22 @@ enum UsageHistoryQuery {
 
     static func dayKey(for date: Date, calendar: Calendar) -> String {
         let components = calendar.dateComponents([.year, .month, .day], from: date)
-        return String(
-            format: "%04d-%02d-%02d",
-            locale: Locale(identifier: "en_US_POSIX"),
-            components.year ?? 1970,
-            components.month ?? 1,
-            components.day ?? 1
+        return dayKey(
+            year: components.year ?? 1970,
+            month: components.month ?? 1,
+            day: components.day ?? 1
         )
+    }
+
+    /// Zero-padded by hand. `String(format:locale:)` resolves a localized `CFNumberFormatter` —
+    /// a full ICU pattern compile — on every call, and this runs once per usage record: on a
+    /// multi-month library that alone kept a core busy for the whole scan.
+    static func dayKey(year: Int, month: Int, day: Int) -> String {
+        var value = String(min(max(year, 0), 9999))
+        while value.count < 4 { value = "0" + value }
+        return value
+            + (month < 10 ? "-0" : "-") + String(min(max(month, 0), 99))
+            + (day < 10 ? "-0" : "-") + String(min(max(day, 0), 99))
     }
 
     static func date(forDayKey key: String, calendar: Calendar) -> Date? {
@@ -229,6 +238,7 @@ actor UsageHistoryService {
     }
 
     private let scanner: any UsageHistoryScanning
+    private nonisolated let recordCache: UsageHistoryRecordCache?
     private let calendar: Calendar
     private var cachedSignature: String?
     private var cachedDays: [String: UsageHistoryDay] = [:]
@@ -242,10 +252,20 @@ actor UsageHistoryService {
         recordCacheRoot: URL? = nil
     ) {
         self.calendar = calendar
-        self.scanner = scanner ?? UsageHistoryScanner(
-            calendar: calendar,
-            recordCache: UsageHistoryRecordCache(applicationDataRoot: recordCacheRoot)
-        )
+        if let scanner {
+            self.scanner = scanner
+            recordCache = nil
+        } else {
+            let cache = UsageHistoryRecordCache(applicationDataRoot: recordCacheRoot)
+            self.scanner = UsageHistoryScanner(calendar: calendar, recordCache: cache)
+            recordCache = cache
+        }
+    }
+
+    /// Persists the record cache's deferred state without entering the actor, so shutdown cannot
+    /// block behind a scan.
+    nonisolated func flushRecordCache() {
+        recordCache?.flush()
     }
 
     func summary(

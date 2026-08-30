@@ -234,6 +234,15 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private let metadataDecoder: JSONDecoder
     private var trigramFTSAvailable = false
 
+    /// Decoded metadata keyed by row identity. Every list refresh — and the scope counts beside
+    /// it — decodes the metadata blob of every session row; while an agent is appending, those
+    /// refreshes arrive continuously and only the live session's row has actually changed. A row
+    /// is rewritten exclusively through the upsert in `replace`/`replaceMetadata`, which always
+    /// stamps a fresh `indexed_at`, so (path, indexed_at) proves the cached decode is current.
+    private let metadataDecodeCacheLock = NSLock()
+    private var metadataDecodeCache: [String: (indexedAt: Double, metadata: HistorySessionMetadata)] = [:]
+    private static let metadataDecodeCacheLimit = 20_000
+
     init(file: URL) throws {
         guard file.isFileURL else {
             throw ConversationIndexDatabaseError.invalidDatabaseURL(file)
@@ -1346,14 +1355,23 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         guard fileSize >= 0 else {
             throw ConversationIndexDatabaseError.corruptRow("negative file size for \(path)")
         }
-        let metadataData = try blobColumn(statement, offset + 5, field: "metadata_json")
+        let indexedAtSeconds = sqlite3_column_double(statement, offset + 6)
         let metadata: HistorySessionMetadata
-        do {
-            metadata = try metadataDecoder.decode(HistorySessionMetadata.self, from: metadataData)
-        } catch {
-            throw ConversationIndexDatabaseError.corruptRow(
-                "metadata JSON for \(path): \(error.localizedDescription)"
-            )
+        if let cached = cachedMetadata(path: path, indexedAt: indexedAtSeconds) {
+            metadata = cached
+        } else {
+            let metadataData = try blobColumn(statement, offset + 5, field: "metadata_json")
+            do {
+                metadata = try metadataDecoder.decode(
+                    HistorySessionMetadata.self,
+                    from: metadataData
+                )
+            } catch {
+                throw ConversationIndexDatabaseError.corruptRow(
+                    "metadata JSON for \(path): \(error.localizedDescription)"
+                )
+            }
+            storeCachedMetadata(metadata, path: path, indexedAt: indexedAtSeconds)
         }
         return ConversationIndexEntry(
             sourcePath: path,
@@ -1366,8 +1384,30 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 sizeBytes: UInt64(fileSize),
                 dependencyFingerprint: optionalTextColumn(statement, offset + 4)
             ),
-            indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, offset + 6))
+            indexedAt: Date(timeIntervalSince1970: indexedAtSeconds)
         )
+    }
+
+    private func cachedMetadata(path: String, indexedAt: Double) -> HistorySessionMetadata? {
+        metadataDecodeCacheLock.lock()
+        defer { metadataDecodeCacheLock.unlock() }
+        guard let cached = metadataDecodeCache[path], cached.indexedAt == indexedAt else {
+            return nil
+        }
+        return cached.metadata
+    }
+
+    private func storeCachedMetadata(
+        _ metadata: HistorySessionMetadata,
+        path: String,
+        indexedAt: Double
+    ) {
+        metadataDecodeCacheLock.lock()
+        defer { metadataDecodeCacheLock.unlock() }
+        if metadataDecodeCache.count >= Self.metadataDecodeCacheLimit {
+            metadataDecodeCache.removeAll(keepingCapacity: true)
+        }
+        metadataDecodeCache[path] = (indexedAt, metadata)
     }
 
     private func decodeDocument(
