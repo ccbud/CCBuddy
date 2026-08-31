@@ -1,7 +1,7 @@
 {
   "name": "ccbud",
-  "version": "1.3.9",
-  "description": "CC Buddy — Coding CLI Buddy. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider (one-click switching, model mapping) and browses your Claude Code & Codex session history.",
+  "version": "2.0.0",
+  "description": "CC Buddy — a native macOS companion that proxies Claude Code to Anthropic-compatible providers and browses Claude Code and Codex session history.",
   "author": {
     "name": "loadchange",
     "email": "soocto@gmail.com"
@@ -15,16 +15,11 @@
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
     "sync:shared": "node -e \"require('fs').cpSync('src/shared','src/renderer/shared',{recursive:true})\"",
     "sync:clarity": "node scripts/sync-clarity.js",
-    "tauri": "tauri",
     "release": "node scripts/release.js",
-    "start": "tauri dev",
-    "dev": "tauri dev",
+    "release:check": "node scripts/release-version.js check",
+    "native:release:unsigned": "native/Scripts/validate-local-release.sh",
     "test": "node test/run.js",
-    "update:cask": "node scripts/update-cask.js",
-    "dist": "tauri build",
-    "dist:mac": "tauri build",
-    "dist:win": "tauri build",
-    "dist:linux": "tauri build"
+    "update:cask": "node scripts/update-cask.js"
   },
   "devDependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",

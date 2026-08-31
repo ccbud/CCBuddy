@@ -1,0 +1,950 @@
+import AppKit
+import XCTest
+
+final class CCBuddyUITests: XCTestCase {
+    private var app: XCUIApplication!
+    private var isolatedHome: URL!
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        isolatedHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-xcui-home-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: isolatedHome, withIntermediateDirectories: true)
+        app = makeIsolatedApplication()
+        terminateAppIfRunning()
+        app.launchEnvironment["CCBUD_MONITOR_UI_FIXTURE"] = "1"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+    }
+
+    override func tearDownWithError() throws {
+        if let app, app.state != .notRunning {
+            app.terminate()
+            _ = app.wait(for: .notRunning, timeout: 8)
+        }
+        app = nil
+        if let isolatedHome { try? FileManager.default.removeItem(at: isolatedHome) }
+        isolatedHome = nil
+    }
+
+    private func makeIsolatedApplication() -> XCUIApplication {
+        let application = XCUIApplication()
+        application.launchEnvironment["CCBUD_UI_TESTING"] = "1"
+        application.launchEnvironment["CCBUD_HOME"] = isolatedHome.path
+        application.launchEnvironment["CCBUD_UI_LANGUAGE"] = "zh"
+        return application
+    }
+
+    func testMainNavigationAndProviderEditor() {
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        // The shell appearing does not mean the destination inside it has laid out yet; asking
+        // with `exists` immediately after made this a race.
+        XCTAssertTrue(app.otherElements["providers.hero"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.groups["provider.p1"].waitForExistence(timeout: 2))
+
+        for destination in ["plugins", "monitor", "settings", "providers"] {
+            app.buttons["sidebar.\(destination)"].click()
+        }
+        app.buttons["conversation.library.all"].click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 2))
+        app.buttons["sidebar.providers"].click()
+
+        app.buttons["providers.add"].click()
+        XCTAssertTrue(app.otherElements["provider.editor"].waitForExistence(timeout: 2))
+    }
+
+    func testPluginManagementSurfaceLoads() {
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let plugins = app.buttons["sidebar.plugins"]
+        XCTAssertTrue(plugins.waitForExistence(timeout: 2))
+        plugins.click()
+
+        XCTAssertTrue(app.otherElements["view.plugins"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.otherElements["plugins.hero"].exists)
+        XCTAssertTrue(app.otherElements["plugins.empty"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["plugins.install-git"].exists)
+        XCTAssertTrue(app.buttons["plugins.install-local"].exists)
+    }
+
+    func testProviderHeroReadsFullHistoryUsageInsteadOfMonitorBuffer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-usage-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = #"{"timestamp":"\#(timestamp)","requestId":"ui-request","message":{"id":"ui-message","model":"claude-ui-history","usage":{"input_tokens":12,"output_tokens":3}}}"#
+            + "\n"
+        try Data(line.utf8).write(to: project.appendingPathComponent("session.jsonl"))
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchEnvironment["CCBUD_UI_GATEWAY_RUNNING"] = "1"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let tokens = app.staticTexts["providers.usage.tokens"]
+        XCTAssertTrue(tokens.waitForExistence(timeout: 5))
+        XCTAssertEqual(tokens.value as? String, "15")
+        XCTAssertEqual(
+            app.staticTexts["providers.usage.requests"].value as? String,
+            "1 次请求"
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["providers.usage.sparkline"].exists,
+            "History heatmap values must feed the hero sparkline"
+        )
+    }
+
+    func testMenuBarStatusAndPanelReadLocalizedHistoryUsage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-menubar-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = #"{"timestamp":"\#(timestamp)","requestId":"ui-menubar-request","message":{"id":"ui-menubar-message","model":"claude-ui-history","usage":{"input_tokens":12,"output_tokens":3}}}"#
+            + "\n"
+        try Data(line.utf8).write(to: project.appendingPathComponent("session.jsonl"))
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchEnvironment["CCBUD_UI_GATEWAY_RUNNING"] = "1"
+        app.launchEnvironment["CCBUD_UI_TRAY_USAGE"] = "1"
+        app.launchEnvironment["CCBUD_UI_TRAY_RANGE"] = "7d"
+        app.launchEnvironment["CCBUD_UI_LANGUAGE"] = "en"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let status = app.descendants(matching: .statusItem)["menubar.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(status.label, "CC Buddy menu bar")
+        let loaded = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "7 days 15 tokens"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 5), .completed)
+
+        status.click()
+        let content = app.descendants(matching: .any)["menubar.content"]
+        XCTAssertTrue(content.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["menubar.overview"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["menubar.heatmap"].exists)
+        XCTAssertTrue(app.buttons["menubar.gateway"].exists)
+        XCTAssertEqual(app.buttons["menubar.main"].label, "Main window")
+        XCTAssertEqual(app.buttons["menubar.quit"].label, "Quit")
+
+        let models = app.buttons["menubar.section.models"]
+        XCTAssertTrue(models.waitForExistence(timeout: 2))
+        XCTAssertEqual(models.label, "Model")
+        models.click()
+        let modelUsage = app.staticTexts
+            .matching(NSPredicate(format: "value BEGINSWITH %@", "claude-ui-history"))
+            .firstMatch
+        XCTAssertTrue(modelUsage.waitForExistence(timeout: 2))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(content.waitForExistence(timeout: 1))
+    }
+
+    func testMenuBarRightClickShowsLocalizedContextMenuAndOpensMainWindow() throws {
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_GATEWAY_RUNNING"] = "1"
+        app.launchEnvironment["CCBUD_UI_LANGUAGE"] = "en"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+
+        let shell = app.otherElements["app.shell"]
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
+        let status = app.descendants(matching: .statusItem)["menubar.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+
+        let closeButton = app.windows.firstMatch.buttons[XCUIIdentifierCloseWindow]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 2))
+        closeButton.click()
+        XCTAssertTrue(shell.waitForNonExistence(timeout: 2))
+
+        status.rightClick()
+        let statusItem = app.menuItems["menubar.menu.status"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 2))
+        XCTAssertEqual(statusItem.label, "Gateway running · GLM")
+        XCTAssertFalse(statusItem.isEnabled)
+        XCTAssertEqual(app.menuItems["menubar.menu.gateway"].label, "Stop service")
+        XCTAssertEqual(app.menuItems["menubar.menu.check-update"].label, "Check for updates…")
+        XCTAssertEqual(app.menuItems["menubar.menu.quit"].label, "Quit CC Buddy")
+
+        let openMain = app.menuItems["menubar.menu.open"]
+        XCTAssertEqual(openMain.label, "Open main window")
+        openMain.click()
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
+    }
+
+    func testProviderRowDeleteActionDoesNotAlsoSelectTheRow() {
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_GATEWAY_RUNNING"] = "1"
+        app.launchEnvironment["CCBUD_UI_SECOND_PROVIDER"] = "1"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let delete = app.buttons["provider.p2.delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 3))
+        delete.click()
+
+        XCTAssertTrue(app.buttons["删除"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.buttons["切换"].exists)
+        let localizedCancel = app.buttons["取消"]
+        let defaultCancel = app.buttons["Cancel"]
+        XCTAssertTrue(
+            localizedCancel.waitForExistence(timeout: 1)
+                || defaultCancel.waitForExistence(timeout: 1)
+        )
+    }
+
+    func testEndpointAndExportCopyWriteExpectedClipboardContents() {
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_GATEWAY_RUNNING"] = "1"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let pasteboard = NSPasteboard.general
+        let originalItems = snapshotPasteboard(pasteboard)
+        defer { restorePasteboard(originalItems, to: pasteboard) }
+
+        pasteboard.clearContents()
+        let providerEndpoint = app.buttons["providers.endpoint"]
+        XCTAssertTrue(providerEndpoint.waitForExistence(timeout: 2))
+        providerEndpoint.click()
+        XCTAssertTrue(waitForPasteboard { $0 == "http://localhost:8788" })
+
+        app.buttons["sidebar.settings"].click()
+        XCTAssertTrue(app.otherElements["settings.pane.gateway"].waitForExistence(timeout: 2))
+
+        pasteboard.clearContents()
+        let endpointCopy = app.buttons["settings.gateway.endpoint.copy"]
+        XCTAssertTrue(endpointCopy.waitForExistence(timeout: 2))
+        endpointCopy.click()
+        XCTAssertTrue(waitForPasteboard { $0 == "http://localhost:8788" })
+
+        pasteboard.clearContents()
+        let exportsCopy = app.buttons["settings.gateway.exports.copy"]
+        XCTAssertTrue(exportsCopy.waitForExistence(timeout: 2))
+        exportsCopy.click()
+        XCTAssertTrue(waitForPasteboard {
+            $0 == "export ANTHROPIC_BASE_URL=http://localhost:8788/anthropic\n"
+                + "export ANTHROPIC_AUTH_TOKEN=ccbud-local"
+        })
+    }
+
+    func testMonitorInspectorTabsRawCopySearchPrivacyAndExpand() {
+        let pasteboard = NSPasteboard.general
+        let originalItems = snapshotPasteboard(pasteboard)
+        defer { restorePasteboard(originalItems, to: pasteboard) }
+
+        // Window restoration can remember the app's menu-bar-only state. Reopening is the same
+        // user path as clicking the dock icon and asks AppDelegate to present the main window.
+        app.activate()
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        app.buttons["sidebar.monitor"].click()
+
+        let row = app.buttons["monitor.request.ui-monitor-translated"]
+        XCTAssertTrue(row.waitForExistence(timeout: 2))
+        row.click()
+
+        let clientRequestTab = app.buttons["monitor.detail.tab.clientRequest"]
+        XCTAssertTrue(clientRequestTab.waitForExistence(timeout: 2))
+        for tab in ["clientRequest", "upstreamRequest", "upstreamResponse", "clientResponse"] {
+            XCTAssertTrue(app.buttons["monitor.detail.tab.\(tab)"].exists)
+        }
+        XCTAssertFalse(app.buttons["monitor.detail.tab.request"].exists)
+
+        app.buttons["monitor.detail.tab.upstreamRequest"].click()
+        app.buttons["monitor.detail.presentation.raw"].click()
+
+        let search = app.searchFields["monitor.detail.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        search.click()
+        search.typeText("needle")
+        let count = app.staticTexts["monitor.detail.search.count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 1))
+        let countUpdated = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "1/1"),
+            object: count
+        )
+        // The count is debounced behind the search field, so a loaded machine needs more than the
+        // two seconds this used to allow.
+        XCTAssertEqual(XCTWaiter.wait(for: [countUpdated], timeout: 8), .completed)
+
+        pasteboard.clearContents()
+        app.buttons["monitor.detail.copy"].click()
+        XCTAssertTrue(waitForPasteboard { value in
+            value.contains("••••••（已隐藏）") && !value.contains("ui-secret-token")
+        })
+
+        app.buttons["monitor.detail.privacy"].click()
+        pasteboard.clearContents()
+        app.buttons["monitor.detail.copy"].click()
+        XCTAssertTrue(waitForPasteboard { value in
+            value == #"{"authorization":"Bearer ui-secret-token","prompt":"Needle secret"}"#
+        })
+
+        let expand = app.buttons["monitor.detail.expand"]
+        XCTAssertTrue(expand.exists)
+        expand.click()
+        XCTAssertEqual(expand.label, "恢复抽屉宽度")
+        app.buttons["monitor.detail.close"].click()
+        XCTAssertFalse(clientRequestTab.waitForExistence(timeout: 0.5))
+    }
+
+    func testConfiguredLocalesLocalizeNavigationAndProviderHeroWithScreenshots() {
+        let fixtures: [(String, [String], String)] = [
+            ("zh", ["服务", "插件", "监控", "设置"], "启动服务"),
+            ("zh-TW", ["服務", "外掛", "監控", "設定"], "啟動服務"),
+            ("ja", ["サービス", "プラグイン", "モニター", "設定"], "サービスを起動"),
+            ("ko", ["서비스", "플러그인", "모니터", "설정"], "서비스 시작"),
+            ("en", ["Services", "Plugins", "Monitor", "Settings"], "Start service"),
+        ]
+        // Sessions is no longer a destination row — the resident library below is the session
+        // destination — so the rail's localized rows are the three gateway pages and the footer
+        // gear that opens Settings.
+        let identifiers = ["providers", "plugins", "monitor", "settings"]
+
+        for (language, labels, action) in fixtures {
+            terminateAppIfRunning()
+            app = makeIsolatedApplication()
+            app.launchEnvironment["CCBUD_UI_LANGUAGE"] = language
+            app.launchArguments += [
+                "-ApplePersistenceIgnoreState", "YES",
+                "-NSQuitAlwaysKeepsWindows", "NO",
+            ]
+            app.launch()
+
+            XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5), language)
+            for (identifier, label) in zip(identifiers, labels) {
+                XCTAssertEqual(app.buttons["sidebar.\(identifier)"].label, label, language)
+            }
+            XCTAssertEqual(app.buttons["providers.connect"].label, action, language)
+
+            let attachment = XCTAttachment(screenshot: app.screenshot())
+            attachment.name = "providers-\(language)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
+    func testWakeConversationWorkbenchVisualStates() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-wake-workbench-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_VISUAL_FIXTURE"] = "legacy-smoke"
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchEnvironment["CCBUD_UI_LANGUAGE"] = "zh"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+
+        let shell = app.otherElements["app.shell"]
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists)
+        app.buttons["conversation.library.all"].click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            app.staticTexts["没有可读取的本地会话"].waitForExistence(timeout: 8),
+            "The empty library must settle before the first workbench screenshot"
+        )
+        assertOpaqueConversationTopSurfaces(in: window)
+        assertWakeConversationColumns(in: window)
+        keepMainContentScreenshot(named: "wake-conversation-empty", shell: shell)
+
+        let timestamp = "2026-01-01T00:00:00.000Z"
+        let lines = [
+            #"{"type":"user","uuid":"wake-user","timestamp":"\#(timestamp)","sessionId":"wake-session","cwd":"/workspace/wake","message":{"role":"user","content":"hello from the Wake workbench"},"__ccbud__":{"title":"Wake session","tagList":["visual"]}}"#,
+            #"{"type":"assistant","uuid":"wake-assistant","timestamp":"\#(timestamp)","requestId":"wake-request","sessionId":"wake-session","cwd":"/workspace/wake","message":{"id":"wake-message","role":"assistant","model":"glm-5.2","content":[{"type":"text","text":"conversation detail loaded"}],"usage":{"input_tokens":10,"output_tokens":4}}}"#,
+        ]
+        let sessionFile = project.appendingPathComponent("wake-session.jsonl")
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: sessionFile)
+
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 2))
+        let refreshReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+            object: refresh
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshReady], timeout: 5), .completed)
+        refresh.click()
+        let session = app.buttons["conversation.session.disk:wake-session"]
+        XCTAssertTrue(
+            session.waitForExistence(timeout: 10),
+            "A refreshed metadata row must become visible without opening the transcript"
+        )
+        let hittable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"),
+            object: session
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed)
+        assertOpaqueConversationTopSurfaces(in: window)
+        assertWakeConversationColumns(in: window)
+        keepMainContentScreenshot(named: "wake-conversation-list", shell: shell)
+
+        session.click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["conversation.message.0"].waitForExistence(timeout: 10),
+            "Selecting the fast metadata row must load the full conversation detail"
+        )
+        // The header names two actions: continue the session, or hand it to another agent to read.
+        // Analysis spent a release in the overflow with no label, which is how its links came to be
+        // broken without anyone noticing; it is a control you can see from here on.
+        XCTAssertTrue(app.buttons["conversation.action.resume"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["conversation.action.analyze"].exists)
+        // Captured before the surface assertions so a failure ships the frame it was measuring.
+        keepMainContentScreenshot(named: "wake-conversation-detail", shell: shell)
+        assertOpaqueConversationTopSurfaces(in: window)
+        assertWakeConversationColumns(in: window)
+
+        // Opened last: a menu paints over the columns the surface samples above measure.
+        // A SwiftUI `Menu` surfaces as a pop-up button rather than a plain button, and one inside a
+        // window that is not key reports itself unhittable on a headless runner — hence the
+        // coordinate click, which asks for the point rather than the element's own permission.
+        // Everything else the header can do now lives behind this control. Its contents are not
+        // asserted from here: a SwiftUI `Menu` only publishes its items once AppKit has actually
+        // opened the menu, which a headless runner would not do however the click was delivered.
+        // `ConversationReplayTests` covers what those items invoke.
+        let overflow = app.descendants(matching: .any)["conversation.action.more"]
+        XCTAssertTrue(overflow.waitForExistence(timeout: 3))
+        XCTAssertTrue(overflow.isEnabled)
+    }
+
+    func testLibraryGroupsCollapseAndComeBack() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-rail-groups-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let timestamp = "2026-01-01T00:00:00.000Z"
+        let lines = [
+            #"{"type":"user","uuid":"rail-user","timestamp":"\#(timestamp)","sessionId":"rail-session","cwd":"/workspace/rail","message":{"role":"user","content":"hello"},"__ccbud__":{"title":"Rail session"}}"#,
+            #"{"type":"assistant","uuid":"rail-assistant","timestamp":"\#(timestamp)","requestId":"rail-request","sessionId":"rail-session","cwd":"/workspace/rail","message":{"id":"rail-message","role":"assistant","model":"glm-5.2","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":4,"output_tokens":2}}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8)
+            .write(to: project.appendingPathComponent("rail-session.jsonl"))
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_VISUAL_FIXTURE"] = "legacy-smoke"
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 5))
+        refresh.click()
+
+        let agent = app.buttons["conversation.library.agent.disk"]
+        // The rail derives a row identifier from the working directory by replacing everything
+        // that is not alphanumeric; spelled out here because a UI test cannot see app internals.
+        let projectRow = app.buttons["conversation.library.project._workspace_rail"]
+        XCTAssertTrue(agent.waitForExistence(timeout: 10))
+        XCTAssertTrue(projectRow.waitForExistence(timeout: 10))
+
+        let agentsHead = app.buttons["conversation.library.group.agents"]
+        let projectsHead = app.buttons["conversation.library.group.projects"]
+        XCTAssertTrue(agentsHead.exists)
+        XCTAssertTrue(projectsHead.exists)
+
+        // Collapsing has to remove the rows, not merely stop tracking them: in a lazy container
+        // they kept their height and drew nothing, which reads as a broken rail.
+        agentsHead.click()
+        XCTAssertTrue(agent.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(projectRow.exists, "collapsing one group must leave the other alone")
+
+        projectsHead.click()
+        XCTAssertTrue(projectRow.waitForNonExistence(timeout: 3))
+
+        agentsHead.click()
+        XCTAssertTrue(agent.waitForExistence(timeout: 3))
+        projectsHead.click()
+        XCTAssertTrue(projectRow.waitForExistence(timeout: 3))
+
+        // The rows are the real thing, not just present: the one that comes back still selects.
+        projectRow.click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
+    }
+
+    func testColumnsCollapseAndResize() {
+        XCTAssertTrue(app.otherElements["app.shell"].waitForExistence(timeout: 5))
+        let railRow = app.buttons["conversation.library.all"]
+        XCTAssertTrue(railRow.waitForExistence(timeout: 5))
+
+        // The rail's control keeps its identity when it moves to the destination's title band, so
+        // the same query puts the column away and brings it back.
+        let railToggle = app.buttons["layout.toggle.rail"]
+        XCTAssertTrue(railToggle.exists)
+        railToggle.click()
+        XCTAssertTrue(railRow.waitForNonExistence(timeout: 3))
+
+        let restore = app.buttons["layout.toggle.rail"]
+        XCTAssertTrue(restore.waitForExistence(timeout: 3), "a column you cannot restore is a trap")
+        restore.click()
+        XCTAssertTrue(railRow.waitForExistence(timeout: 3))
+
+        railRow.click()
+        // The column publishes itself as a container, which is not an `otherElement`; the rest of
+        // the suite asks for it the same way.
+        let stream = app.descendants(matching: .any)["conversation.list"]
+        XCTAssertTrue(stream.waitForExistence(timeout: 5))
+        let originalWidth = stream.frame.width
+        XCTAssertGreaterThan(originalWidth, 0)
+
+        let divider = app.descendants(matching: .any)["layout.divider.stream"]
+        XCTAssertTrue(divider.waitForExistence(timeout: 3))
+        // Measured against the column, not the one-point rule: an offset multiplied out of a
+        // one-point element moves the pointer by almost nothing.
+        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: stream.coordinate(withNormalizedOffset: CGVector(dx: 1.3, dy: 0.5))
+            )
+        let widened = XCTNSPredicateExpectation(
+            predicate: NSPredicate { element, _ in
+                guard let element = element as? XCUIElement else { return false }
+                return element.frame.width > originalWidth + 10
+            },
+            object: stream
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [widened], timeout: 3),
+            .completed,
+            "dragging the rule between two columns has to move it"
+        )
+
+        app.buttons["layout.toggle.stream"].click()
+        XCTAssertTrue(stream.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["layout.toggle.stream"].waitForExistence(timeout: 3))
+    }
+
+    func testDeterministicVisualParityScreenshots() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ccbud-ui-visual-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let timestamp = "2026-01-01T00:00:00.000Z"
+        let transcriptLines = [
+            #"{"type":"user","uuid":"visual-user","timestamp":"\#(timestamp)","sessionId":"visual-session","cwd":"/workspace/project","message":{"role":"user","content":"hello **world**"},"__ccbud__":{"title":"Test session","tagList":["x"]}}"#,
+            #"{"type":"assistant","uuid":"visual-assistant","timestamp":"\#(timestamp)","requestId":"visual-request","sessionId":"visual-session","cwd":"/workspace/project","message":{"id":"visual-message","role":"assistant","model":"glm-5.2","content":[{"type":"thinking","thinking":"thinking hard"},{"type":"text","text":"hi there"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la","description":"list"}}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+            #"{"type":"user","uuid":"visual-result","timestamp":"\#(timestamp)","sessionId":"visual-session","cwd":"/workspace/project","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"total 0"}]}}"#,
+        ]
+        // The legacy bridge reports a 12,345-token / 42-request aggregate independently from
+        // its three-message history detail. Non-transcript records let the real native usage
+        // scanner reproduce that aggregate without adding fake messages to the conversation UI.
+        // The day layout also exercises the real query path for the popover's frozen metrics.
+        // The selected-range records cover a current three-day run and four isolated future
+        // fixture days. The latter are intentional because the legacy seven-day payload has seven
+        // active days and a three-day current streak, a combination that cannot be represented
+        // using only the seven calendar days ending today. A separate nine-day run older than the
+        // 30-day hero range establishes the longest streak without changing its 12,345 / 42 total.
+        let usageDayOffsets = [-2, -1, 0, 2, 4, 6, 8]
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let usageFormatter = ISO8601DateFormatter()
+        usageFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func usageTimestamp(dayOffset: Int) -> String {
+            let day = calendar.date(byAdding: .day, value: dayOffset, to: today) ?? today
+            let hour = calendar.date(byAdding: .hour, value: 14, to: day) ?? day
+            return usageFormatter.string(from: hour)
+        }
+        let usageLines = (0..<42).map { index in
+            let input = index == 41 ? 291 : 294
+            let dayOffset = usageDayOffsets[index % usageDayOffsets.count]
+            let timestamp = usageTimestamp(dayOffset: dayOffset)
+            return #"{"type":"progress","timestamp":"\#(timestamp)","requestId":"visual-usage-\#(index)","message":{"id":"visual-usage-message-\#(index)","role":"assistant","model":"glm-5.2","usage":{"input_tokens":\#(input),"output_tokens":0}}}"#
+        }
+        let longestStreakLines = Array(-50 ... -42).enumerated().map { index, dayOffset in
+            let timestamp = usageTimestamp(dayOffset: dayOffset)
+            return #"{"type":"progress","timestamp":"\#(timestamp)","requestId":"visual-streak-\#(index)","message":{"id":"visual-streak-message-\#(index)","role":"assistant","model":"<synthetic>","usage":{"input_tokens":1,"output_tokens":0}}}"#
+        }
+        let lines = transcriptLines + usageLines + longestStreakLines
+        let sessionFile = project.appendingPathComponent("visual-session.jsonl")
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: sessionFile)
+        let fixtureDate = Date(timeIntervalSince1970: 1_767_225_600)
+        try FileManager.default.setAttributes(
+            [.creationDate: fixtureDate, .modificationDate: fixtureDate],
+            ofItemAtPath: sessionFile.path
+        )
+
+        terminateAppIfRunning()
+        app = makeIsolatedApplication()
+        app.launchEnvironment["CCBUD_UI_VISUAL_FIXTURE"] = "legacy-smoke"
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = root.path
+        app.launchEnvironment["CCBUD_UI_GATEWAY_RUNNING"] = "1"
+        app.launchEnvironment["CCBUD_UI_TRAY_RANGE"] = "7d"
+        app.launchEnvironment["CCBUD_UI_LANGUAGE"] = "zh"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSQuitAlwaysKeepsWindows", "NO",
+        ]
+        app.launch()
+        app.activate()
+
+        let shell = app.otherElements["app.shell"]
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists)
+        let windowFrame = window.frame
+        let closeButton = window.buttons[XCUIIdentifierCloseWindow]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            closeButton.frame.minX - windowFrame.minX,
+            20,
+            accuracy: 1,
+            "The traffic-light cluster should retain Wake's 20-point leading inset"
+        )
+        // Whether the opaque shell reaches under the title bar is settled by sampling the pixels
+        // in that band (see the top-surface samples below), not by an accessibility frame: SwiftUI
+        // reports overlay frames clipped to the safe area even when the layer beneath them extends
+        // past it, so this measured a title bar's height of inset while the band rendered correctly.
+        XCTAssertEqual(windowFrame.width, 1_280, accuracy: 0.5)
+        let hostingScreen = NSScreen.screens.first { $0.visibleFrame.intersects(windowFrame) }
+            ?? NSScreen.main
+        let availableContentHeight = hostingScreen.map { max(0, $0.visibleFrame.height) } ?? 800
+        XCTAssertEqual(windowFrame.height, min(800, availableContentHeight), accuracy: 4)
+        let visualTokens = app.staticTexts["providers.usage.tokens"]
+        XCTAssertTrue(visualTokens.waitForExistence(timeout: 5))
+        let usageLoaded = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "12K"),
+            object: visualTokens
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [usageLoaded], timeout: 5), .completed)
+        XCTAssertEqual(app.staticTexts["providers.usage.requests"].value as? String, "42 次请求")
+        keepMainContentScreenshot(named: "native-visual-providers", shell: shell)
+
+        app.buttons["sidebar.plugins"].click()
+        XCTAssertTrue(app.otherElements["view.plugins"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.otherElements["plugin.demo"].waitForExistence(timeout: 3))
+        keepMainContentScreenshot(named: "native-visual-plugins", shell: shell)
+
+        app.buttons["conversation.library.all"].click()
+        XCTAssertTrue(app.otherElements["conversations.view"].waitForExistence(timeout: 3))
+        let session = app.buttons["conversation.session.disk:visual-session"]
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        assertOpaqueConversationTopSurfaces(in: window)
+        keepMainContentScreenshot(named: "native-visual-conversations-list", shell: shell)
+        let conversationsView = app.otherElements["conversations.view"]
+        if !conversationsView.exists {
+            app.buttons["conversation.library.all"].click()
+            XCTAssertTrue(conversationsView.waitForExistence(timeout: 3))
+        }
+        let currentSession = app.buttons["conversation.session.disk:visual-session"]
+        XCTAssertTrue(currentSession.waitForExistence(timeout: 5))
+        let sessionHittable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"),
+            object: currentSession
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [sessionHittable], timeout: 5), .completed)
+        let conversationList = app.descendants(matching: .any)["conversation.list"]
+        XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            conversationList.frame.minX - windowFrame.minX,
+            224,
+            accuracy: 1,
+            "Wake's conversation library sidebar must remain 224 points wide"
+        )
+        XCTAssertEqual(
+            conversationList.frame.width,
+            336,
+            accuracy: 1,
+            "Wake's session stream must remain 336 points wide"
+        )
+        let visibleSessionFrame = currentSession.frame
+            .intersection(conversationList.frame)
+            .intersection(windowFrame)
+        XCTAssertFalse(visibleSessionFrame.isNull)
+        XCTAssertGreaterThan(visibleSessionFrame.width, 0)
+        XCTAssertGreaterThan(visibleSessionFrame.height, 0)
+        currentSession.click()
+        XCTAssertTrue(app.otherElements["conversation.timeline"].waitForExistence(timeout: 5))
+        keepMainContentScreenshot(named: "native-visual-conversation-detail", shell: shell)
+
+        app.buttons["sidebar.monitor"].click()
+        XCTAssertTrue(app.otherElements["view.monitor"].waitForExistence(timeout: 2))
+        keepMainContentScreenshot(named: "native-visual-monitor", shell: shell)
+
+        app.buttons["sidebar.settings"].click()
+        XCTAssertTrue(app.otherElements["view.settings"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.otherElements["settings.pane.gateway"].exists)
+        keepMainContentScreenshot(named: "native-visual-settings-gateway", shell: shell)
+        app.buttons["settings.nav.general"].click()
+        XCTAssertTrue(app.otherElements["settings.pane.general"].waitForExistence(timeout: 2))
+        keepMainContentScreenshot(named: "native-visual-settings-general", shell: shell)
+        app.buttons["settings.nav.about"].click()
+        XCTAssertTrue(app.otherElements["settings.pane.about"].waitForExistence(timeout: 2))
+        keepMainContentScreenshot(named: "native-visual-settings-update", shell: shell)
+
+        let status = app.descendants(matching: .statusItem)["menubar.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
+        status.click()
+        let menuBarContent = app.descendants(matching: .any)["menubar.content"]
+        XCTAssertTrue(menuBarContent.waitForExistence(timeout: 3))
+        let expectedMetrics = [
+            "用量，12K",
+            "请求，42",
+            "活跃天，7",
+            "服务，GLM",
+            "连续，3 天",
+            "最长，9 天",
+            "峰值，14时",
+            "模型，glm-5.2",
+        ]
+        for value in expectedMetrics {
+            let metric = menuBarContent.staticTexts
+                .matching(NSPredicate(format: "value == %@", value))
+                .firstMatch
+            XCTAssertTrue(
+                metric.exists,
+                "Missing deterministic legacy popover metric: \(value)"
+            )
+        }
+        // `menubar.content` includes the half-point overlay stroke (425×345 points). The panel is
+        // the actual legacy comparison boundary and remains exactly 424×344 points.
+        let menuBarPanel = app.descendants(matching: .any)["menubar.panel"]
+        XCTAssertTrue(menuBarPanel.exists)
+        XCTAssertEqual(menuBarPanel.frame.width, 424, accuracy: 0.5)
+        XCTAssertEqual(menuBarPanel.frame.height, 344, accuracy: 0.5)
+        keepScreenshot(named: "native-visual-popover", of: menuBarPanel)
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    private func waitForPasteboard(
+        timeout: TimeInterval = 2,
+        predicate: (String) -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let value = NSPasteboard.general.string(forType: .string), predicate(value) {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        } while Date() < deadline
+        return false
+    }
+
+    private struct PasteboardEntry {
+        let type: NSPasteboard.PasteboardType
+        let data: Data
+    }
+
+    private typealias PasteboardSnapshot = [[PasteboardEntry]]
+
+    private func snapshotPasteboard(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
+        (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in
+                item.data(forType: type).map { PasteboardEntry(type: type, data: Data($0)) }
+            }
+        }
+    }
+
+    private func restorePasteboard(
+        _ snapshot: PasteboardSnapshot,
+        to pasteboard: NSPasteboard
+    ) {
+        pasteboard.clearContents()
+        let items = snapshot.compactMap { entries -> NSPasteboardItem? in
+            guard !entries.isEmpty else { return nil }
+            let item = NSPasteboardItem()
+            for entry in entries {
+                item.setData(Data(entry.data), forType: entry.type)
+            }
+            return item
+        }
+        if !items.isEmpty { pasteboard.writeObjects(items) }
+    }
+
+    private func keepScreenshot(named name: String, of element: XCUIElement) {
+        let attachment = XCTAttachment(screenshot: element.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func assertOpaqueConversationTopSurfaces(in window: XCUIElement) {
+        let screenshot = window.screenshot()
+        guard let bitmap = NSBitmapImageRep(data: screenshot.pngRepresentation) else {
+            XCTFail("Could not decode the window screenshot for top-surface assertions")
+            return
+        }
+
+        let frame = window.frame
+        guard frame.width > 0, frame.height > 0,
+              bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else {
+            XCTFail("Window screenshot has invalid dimensions")
+            return
+        }
+
+        // The three columns must still be told apart by tone alone in the title-bar band, which is
+        // also what proves the opaque shell reaches under it. Values are Theme.sidebar, Theme.list
+        // and Theme.background.
+        let samples: [(name: String, point: CGPoint, expectedRGB: UInt32)] = [
+            ("sidebar", CGPoint(x: 112, y: 12), 0xEDEBE4),
+            ("conversation list", CGPoint(x: 392, y: 12), 0xF7F5F0),
+            ("conversation detail", CGPoint(x: 870, y: 12), 0xF1EFE9),
+        ]
+        let xScale = CGFloat(bitmap.pixelsWide) / frame.width
+        let yScale = CGFloat(bitmap.pixelsHigh) / frame.height
+        let componentTolerance = CGFloat(8) / 255
+
+        for sample in samples {
+            let pixelX = min(
+                bitmap.pixelsWide - 1,
+                max(0, Int((sample.point.x * xScale).rounded(.down)))
+            )
+            // `colorAt(x:y:)` already counts rows from the top of the image, so flipping here read
+            // the bottom of the window instead: the two flat columns looked identical either way,
+            // and the detail column quietly reported its reading card rather than its top band.
+            let pixelY = min(
+                bitmap.pixelsHigh - 1,
+                max(0, Int((sample.point.y * yScale).rounded(.down)))
+            )
+            guard let color = bitmap.colorAt(x: pixelX, y: pixelY),
+                  let sRGB = color.usingColorSpace(.sRGB) else {
+                XCTFail("Could not read the \(sample.name) top-surface pixel")
+                continue
+            }
+
+            let expectedRed = CGFloat((sample.expectedRGB >> 16) & 0xFF) / 255
+            let expectedGreen = CGFloat((sample.expectedRGB >> 8) & 0xFF) / 255
+            let expectedBlue = CGFloat(sample.expectedRGB & 0xFF) / 255
+            XCTAssertEqual(
+                sRGB.alphaComponent,
+                1,
+                accuracy: 0.02,
+                "The \(sample.name) top surface must be opaque"
+            )
+            XCTAssertEqual(
+                sRGB.redComponent,
+                expectedRed,
+                accuracy: componentTolerance,
+                "Unexpected \(sample.name) top-surface red component"
+            )
+            XCTAssertEqual(
+                sRGB.greenComponent,
+                expectedGreen,
+                accuracy: componentTolerance,
+                "Unexpected \(sample.name) top-surface green component"
+            )
+            XCTAssertEqual(
+                sRGB.blueComponent,
+                expectedBlue,
+                accuracy: componentTolerance,
+                "Unexpected \(sample.name) top-surface blue component"
+            )
+        }
+    }
+
+    private func assertWakeConversationColumns(in window: XCUIElement) {
+        let conversationList = app.descendants(matching: .any)["conversation.list"]
+        XCTAssertTrue(conversationList.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            conversationList.frame.minX - window.frame.minX,
+            224,
+            accuracy: 1,
+            "Wake's conversation library sidebar must remain 224 points wide"
+        )
+        XCTAssertEqual(
+            conversationList.frame.width,
+            336,
+            accuracy: 1,
+            "Wake's session stream must remain 336 points wide"
+        )
+    }
+
+    /// `app.shell` is deliberately a tiny, non-blocking accessibility marker. Its screen origin
+    /// identifies the first opaque app pixel, including the integrated title-bar surface, while
+    /// retaining normal XCUI hit-testing for all controls.
+    private func keepMainContentScreenshot(named name: String, shell: XCUIElement) {
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists)
+        let screenshot = window.screenshot()
+        guard let bitmap = NSBitmapImageRep(data: screenshot.pngRepresentation),
+              let source = bitmap.cgImage else {
+            XCTFail("Could not decode the window screenshot")
+            return
+        }
+
+        let windowFrame = window.frame
+        let topInset = max(0, shell.frame.minY - windowFrame.minY)
+        let scale = windowFrame.width > 0 ? CGFloat(source.width) / windowFrame.width : 1
+        let topPixels = min(source.height - 1, max(0, Int((topInset * scale).rounded())))
+        let cropRect = CGRect(
+            x: 0,
+            y: topPixels,
+            width: source.width,
+            height: source.height - topPixels
+        )
+        guard let cropped = source.cropping(to: cropRect) else {
+            XCTFail("Could not crop the window screenshot to the app shell")
+            return
+        }
+        let image = NSImage(
+            cgImage: cropped,
+            size: NSSize(
+                width: windowFrame.width,
+                height: max(1, windowFrame.height - topInset)
+            )
+        )
+        let attachment = XCTAttachment(image: image, quality: .original)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func terminateAppIfRunning() {
+        guard app.state != .notRunning else { return }
+        app.terminate()
+        XCTAssertTrue(
+            app.wait(for: .notRunning, timeout: 8),
+            "Previous CC Buddy process did not finish its asynchronous shutdown"
+        )
+    }
+}
