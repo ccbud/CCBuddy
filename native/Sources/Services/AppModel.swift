@@ -59,12 +59,13 @@ final class AppModel: ObservableObject {
     static let themeModeDefaultsKey = "ccbud-theme"
 
     enum Destination: String, CaseIterable, Identifiable {
-        case providers, plugins, conversations, timeline, monitor, settings
+        case providers, plugins, skills, conversations, timeline, monitor, settings
         var id: String { rawValue }
         var title: String {
             switch self {
             case .providers: "服务"
             case .plugins: "插件"
+            case .skills: "Skills"
             case .conversations: "会话"
             case .timeline: "时间线"
             case .monitor: "监控"
@@ -75,6 +76,7 @@ final class AppModel: ObservableObject {
             switch self {
             case .providers: "square.grid.2x2"
             case .plugins: "puzzlepiece.extension"
+            case .skills: "square.stack.3d.up"
             case .conversations: "bubble.left"
             case .timeline: "calendar"
             case .monitor: "chart.line.uptrend.xyaxis"
@@ -179,6 +181,7 @@ final class AppModel: ObservableObject {
 
     let monitorStore: MonitorStore
     let conversationStore: ConversationStore
+    let skillsStore: SkillsStore
     let usageHistoryService: UsageHistoryService
 
     private let repository: ConfigRepository
@@ -340,6 +343,20 @@ final class AppModel: ObservableObject {
             port: 8_788,
             credentials: supervisor.managementCredentials
         ), requestActivity: supervisor.requestActivity)
+        let configuredSkillsRoot: URL
+        if let configured = environment["CCBUD_HOME"]?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !configured.isEmpty, NSString(string: configured).isAbsolutePath {
+            configuredSkillsRoot = URL(fileURLWithPath: configured, isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+                .standardizedFileURL
+        } else {
+            configuredSkillsRoot = LiveSkillsService.defaultRootURL
+        }
+        skillsStore = SkillsStore(
+            service: LiveSkillsService(root: configuredSkillsRoot),
+            initialRoot: configuredSkillsRoot
+        )
         var initialConfig: AppConfig
         var initialConfigError: String?
         if runtimeMode == .uiTesting {

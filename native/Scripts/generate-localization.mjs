@@ -9,7 +9,7 @@ const nativeRoot = path.resolve(scriptDirectory, "..");
 const dictionaryRoot = path.resolve(nativeRoot, "../src/shared/i18n");
 const outputRoot = path.join(nativeRoot, "Resources");
 const overridePath = path.join(scriptDirectory, "native-localization-overrides.json");
-const parts = ["app", "conv", "ops", "settings"];
+const parts = ["app", "conv", "ops", "settings", "skills"];
 const locales = {
   en: "en",
   ja: "ja",

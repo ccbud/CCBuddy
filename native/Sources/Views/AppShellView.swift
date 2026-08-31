@@ -125,6 +125,8 @@ struct AppShellView: View {
             TimelineView(store: model.conversationStore)
         case .plugins:
             PluginsView()
+        case .skills:
+            SkillsView(store: model.skillsStore)
         case .settings:
             SettingsView()
         }

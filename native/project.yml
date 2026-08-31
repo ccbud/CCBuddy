@@ -27,6 +27,10 @@ targets:
         group: Resources
         createIntermediateGroups: false
         buildPhase: resources
+      - path: ../THIRD_PARTY_NOTICES.md
+        group: Resources
+        createIntermediateGroups: false
+        buildPhase: resources
       - path: ../build/icon.png
         group: Resources
         createIntermediateGroups: false
