@@ -12,7 +12,7 @@
     "url": "https://github.com/ccbud/ccbud.git"
   },
   "scripts": {
-    "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
+    "build:css": "tailwindcss --cwd src/renderer -i input.css -o styles.css",
     "sync:shared": "node -e \"require('fs').cpSync('src/shared','src/renderer/shared',{recursive:true})\"",
     "sync:clarity": "node scripts/sync-clarity.js",
     "tauri": "tauri",

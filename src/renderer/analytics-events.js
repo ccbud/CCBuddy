@@ -102,15 +102,16 @@
     if (e.target && e.target.nodeType === 1) track('drag:' + descriptor(e.target));
   }, true);
 
-  // Committed control changes: checkbox/radio state and enum select values are safe;
-  // for anything free-form only the field identity is reported.
+  // Committed control changes: checkbox/radio state and unmasked enum select values are safe;
+  // masked views can contain user-authored option values, so only field identity is reported.
   document.addEventListener('change', function (e) {
     var t = e.target;
     if (!t || t.nodeType !== 1) return;
     var name = t.id || t.name || descriptor(t);
+    var masked = t.closest && t.closest('[data-clarity-mask="true"]');
     var suffix = '';
     if (t.type === 'checkbox' || t.type === 'radio') suffix = t.checked ? ':on' : ':off';
-    else if (t.tagName === 'SELECT') suffix = ':' + String(t.value).slice(0, 32);
+    else if (t.tagName === 'SELECT' && !masked) suffix = ':' + String(t.value).slice(0, 32);
     track('change:' + name + suffix);
     if (t.id === 'fLang') tag('lang', t.value);
   }, true);

@@ -16,6 +16,7 @@ mod provider_test;
 mod replay;
 mod selfcheck;
 mod selfcheck_js;
+mod skills;
 mod update;
 mod util;
 mod window;
@@ -56,6 +57,11 @@ pub(crate) use selfcheck::{
     selfcheck_report, selfcheck_routing,
 };
 pub(crate) use selfcheck_js::{POPOVER_SELFCHECK_JS, SELFCHECK_JS};
+pub(crate) use skills::{
+    skills_delete, skills_detail, skills_import_git, skills_import_local, skills_list,
+    skills_open_root, skills_pick_local, skills_read_file, skills_refresh, skills_scan_local,
+    skills_set_tags, skills_status, skills_sync, skills_tools, skills_unsync, skills_update,
+};
 pub(crate) use update::{
     update_apply, update_check, update_download, update_set_auto, update_state,
 };
