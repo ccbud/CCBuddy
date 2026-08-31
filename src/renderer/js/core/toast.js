@@ -11,6 +11,10 @@ function ensureToastHost() {
   if (!host) {
     host = document.createElement('div');
     host.id = 'toastHost';
+    host.setAttribute('role', 'status');
+    host.setAttribute('aria-live', 'polite');
+    host.setAttribute('aria-atomic', 'false');
+    host.setAttribute('aria-relevant', 'additions text');
     // Toast text can carry backend error strings (paths, upstream URLs) — keep it out of Clarity replays.
     host.setAttribute('data-clarity-mask', 'true');
     host.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;';
@@ -23,8 +27,9 @@ export function showToast(text, type, opts) {
   opts = opts || {};
   const host = ensureToastHost();
   const bg = type === 'ok' ? 'var(--green)' : type === 'err' ? 'var(--red)' : 'var(--primary)';
-  const el = document.createElement('div');
-  el.style.cssText = `pointer-events:auto;max-width:min(520px,90vw);padding:10px 16px;border-radius:10px;background:${bg};color:#fff;font-size:13px;font-weight:600;line-height:1.5;word-break:break-word;cursor:pointer;box-shadow:0 8px 28px rgba(17,24,39,0.22);animation:panelIn 0.18s cubic-bezier(0.23,1,0.32,1);`;
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.style.cssText = `pointer-events:auto;max-width:min(520px,90vw);padding:10px 16px;border:0;border-radius:10px;background:${bg};color:#fff;font-family:inherit;font-size:13px;font-weight:600;line-height:1.5;text-align:left;word-break:break-word;cursor:pointer;box-shadow:0 8px 28px rgba(17,24,39,0.22);animation:panelIn 0.18s cubic-bezier(0.23,1,0.32,1);`;
   el.textContent = text;
   const dismiss = () => {
     if (el._gone) return;

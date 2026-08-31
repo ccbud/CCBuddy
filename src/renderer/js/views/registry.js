@@ -12,6 +12,7 @@ import { api } from '../core/bridge.js';
 
 const LOADERS = {
   plugins: () => import('./plugins/index.js'),
+  skills: () => import('./skills/index.js'),
   monitor: () => import('./monitor/index.js'),
   settings: () => import('./settings/index.js'),
   conversations: () => import('./conversations/index.js'),
@@ -38,6 +39,7 @@ export function prefetchView(name) { ensureView(name).catch(() => {}); }
 const viewIds = {
   providers: 'view-providers',
   plugins: 'view-plugins',
+  skills: 'view-skills',
   monitor: 'view-monitor',
   conversations: 'view-conversations',
   settings: 'view-settings',
@@ -87,7 +89,7 @@ export async function switchView(view) {
     if (api.setSettingsMode) api.setSettingsMode(view === 'settings');
     // 对话 needs the wide 3-column layout (min 1300); other views can be narrower (900) so a wide
     // window doesn't leave big side gaps. Switching to 对话 auto-grows the window to ≥1300.
-    if (api.setViewMinWidth) api.setViewMinWidth(view === 'conversations' ? 1300 : 900);
+    if (api.setViewMinWidth) api.setViewMinWidth(view === 'conversations' ? 1300 : view === 'skills' ? 1100 : 900);
   };
 
   if (currentEl && currentEl !== target) {

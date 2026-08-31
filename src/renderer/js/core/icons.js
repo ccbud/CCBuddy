@@ -21,6 +21,8 @@ export const icons = {
 
   plugins: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7h3a2 2 0 0 1 2 2v3h-1.5a1.5 1.5 0 1 0 0 3H19v3a2 2 0 0 1-2 2h-3v-1.5a1.5 1.5 0 1 0-3 0V20H8a2 2 0 0 1-2-2v-3H4.5a1.5 1.5 0 1 1 0-3H6V9a2 2 0 0 1 2-2h3V5.5a1.5 1.5 0 1 1 3 0V7z"/></svg>',
 
+  skills: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.7 13.5 4.5 8 7.3 2.5 4.5 8 1.7Z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="m2.5 7.3 5.5 2.8 5.5-2.8M2.5 10.1 8 12.9l5.5-2.8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+
   plus: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
 
   chevronLeft: '<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M7.5 2L4 6l3.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
