@@ -1,0 +1,57 @@
+{
+  "spec": "ccbud-plugin/1",
+  "id": "fixture-plugin",
+  "name": "Fixture Plugin",
+  "version": "1.2.3",
+  "description": "A native plugin-core fixture.",
+  "icon": "icon.svg",
+  "source": {
+    "git": "https://github.com/ccbud/fixture-plugin.git",
+    "branch": "main",
+    "build": "make dist"
+  },
+  "runtime": {
+    "exec": {
+      "darwin-arm64": "bin/darwin-arm64/fixture-plugin",
+      "darwin-amd64": "bin/darwin-amd64/fixture-plugin"
+    },
+    "args": ["serve", "--port", "{port}", "--home", "{home}"]
+  },
+  "endpoint": {
+    "protocol": "openai-responses",
+    "basePath": "/v1",
+    "healthPath": "/healthz",
+    "readyTimeoutMs": 8000
+  },
+  "auth": {
+    "statusPath": "/v1/plugin/auth"
+  },
+  "models": [
+    { "alias": "fixture-primary", "upstream": "vendor-primary" },
+    { "alias": "fixture-light", "upstream": "vendor-light" }
+  ],
+  "modelMapping": {
+    "primary": "fixture-primary",
+    "light": "fixture-light"
+  },
+  "ui": {
+    "actions": [
+      {
+        "id": "settings",
+        "label": "Settings",
+        "kind": "form",
+        "submitPath": "/v1/plugin/action/settings",
+        "loadPath": "/v1/plugin/action/settings/load",
+        "fields": [
+          { "key": "port", "label": "Port", "type": "number", "min": 1, "max": 65535 }
+        ]
+      },
+      {
+        "id": "docs",
+        "label": "Docs",
+        "kind": "link",
+        "url": "https://example.com/plugin-docs"
+      }
+    ]
+  }
+}

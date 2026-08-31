@@ -1,80 +1,123 @@
 #!/usr/bin/env node
 'use strict';
 
-/*
- * One-shot release. Bumps the version in ALL THREE files Tauri needs
- *   - package.json
- *   - src-tauri/tauri.conf.json   (tauri-action reads this for the git tag v<version>)
- *   - src-tauri/Cargo.toml        ([package] version)
- * then commits `v<version>` and pushes main — which triggers the CI pipeline
- * (cargo test -> build 4 platforms -> sign + notarize -> publish Release + latest.json -> homebrew).
- *
- * Usage:
- *   npm run release -- 1.1.1            # bump, commit, push (ships it)
- *   npm run release -- 1.1.1 --no-push  # bump + commit only, you push when ready
- */
+/* Prepare one synchronized release commit and the tag that starts release.yml. */
 
-const fs = require('fs');
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const version = process.argv[2];
 const noPush = process.argv.includes('--no-push');
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const XCODEGEN_VERSION = '2.46.0';
 
-if (!/^\d+\.\d+\.\d+$/.test(version || '')) {
-  console.error('Usage: npm run release -- <x.y.z> [--no-push]   e.g. npm run release -- 1.1.1');
+const requestedVersion = SEMVER_RE.exec(version || '');
+if (!requestedVersion || BigInt(requestedVersion[1]) < 2n) {
+  console.error('Usage: npm run release -- <x.y.z> [--no-push]   e.g. npm run release -- 2.0.1');
   process.exit(1);
 }
 
-const sh = (c) => execSync(c, { encoding: 'utf8' }).trim();
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    stdio: options.capture ? 'pipe' : 'inherit',
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0 && !options.allowFailure) {
+    throw new Error(`${command} ${args.join(' ')} failed with status ${result.status}`);
+  }
+  return options.capture ? (result.stdout || '').trim() : result.status;
+}
+
+const git = (args, options) => run('git', args, options);
+const fail = (message) => { console.error(`✗ ${message}`); process.exit(1); };
+
+function parseVersionTag(tag) {
+  const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag);
+  return match ? match.slice(1).map(BigInt) : null;
+}
+
+function compareVersionParts(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] < right[index]) return -1;
+    if (left[index] > right[index]) return 1;
+  }
+  return 0;
+}
 
 // Guards: only release from a clean main, so stray edits never ride along into a release.
-if (sh('git rev-parse --abbrev-ref HEAD') !== 'main') {
-  console.error('✗ releases must run from the main branch');
-  process.exit(1);
-}
-if (sh('git status --porcelain')) {
-  console.error('✗ working tree not clean — commit or stash first');
-  process.exit(1);
-}
-
-const current = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
-console.log(`bumping ${current} → ${version}`);
-
-// Each file: replace its version token; bail loudly if the pattern didn't match (format drifted).
-const bump = (path, re) => {
-  const before = fs.readFileSync(path, 'utf8');
-  const after = before.replace(re, (_, a, b) => `${a}${version}${b}`);
-  if (after === before) {
-    console.error(`✗ no version field matched in ${path} — not bumped`);
-    process.exit(1);
+try {
+  if (git(['branch', '--show-current'], { capture: true }) !== 'main') {
+    fail('releases must run from the main branch');
   }
-  fs.writeFileSync(path, after);
-};
-bump('package.json', /("version":\s*")[\d.]+(")/);
-bump('src-tauri/tauri.conf.json', /("version":\s*")[\d.]+(")/);
-bump('src-tauri/Cargo.toml', /(name = "app"\r?\nversion = ")[\d.]+(")/);
-
-// Verify all three landed on the SAME version before committing.
-const got = {
-  'package.json': JSON.parse(fs.readFileSync('package.json', 'utf8')).version,
-  'tauri.conf.json': JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version,
-  'Cargo.toml': (fs.readFileSync('src-tauri/Cargo.toml', 'utf8').match(/name = "app"\r?\nversion = "([\d.]+)"/) || [])[1],
-};
-for (const [f, v] of Object.entries(got)) {
-  if (v !== version) {
-    console.error(`✗ ${f} = ${v}, expected ${version}`);
-    process.exit(1);
+  if (git(['status', '--porcelain'], { capture: true })) {
+    fail('working tree not clean — commit or stash first');
   }
-}
-console.log(`✓ bumped to ${version}  (package.json · tauri.conf.json · Cargo.toml)`);
 
-execSync('git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml');
-execSync(`git commit -m "v${version}"`, { stdio: 'inherit' });
+  git(['fetch', '--prune', '--tags', 'origin']);
+  const head = git(['rev-parse', 'HEAD'], { capture: true });
+  const originMain = git(['rev-parse', '--verify', 'refs/remotes/origin/main'], { capture: true });
+  if (head !== originMain) {
+    fail('local main must exactly match origin/main before preparing a release');
+  }
 
-if (noPush) {
-  console.log(`\nCommitted but not pushed (--no-push). Release with:  git push origin main`);
-} else {
-  execSync('git push origin main', { stdio: 'inherit' });
-  console.log(`\n✓ pushed — CI is building + signing + publishing v${version}.`);
-  console.log(`  Watch:  gh run watch "$(gh run list --workflow=release.yml -L1 --json databaseId --jq '.[0].databaseId')"`);
+  const tag = `v${version}`;
+  if (git(['show-ref', '--verify', '--quiet', `refs/tags/${tag}`], { allowFailure: true }) === 0) {
+    fail(`${tag} already exists locally`);
+  }
+  const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/${tag}`], { capture: true });
+  if (remoteTag) fail(`${tag} already exists on origin`);
+
+  const exactTags = new Set(git(['tag', '--list'], { capture: true }).split(/\r?\n/));
+  const remoteTags = git(['ls-remote', '--tags', '--refs', 'origin'], { capture: true });
+  for (const line of remoteTags.split(/\r?\n/)) {
+    const reference = line.split(/\s+/)[1] || '';
+    if (reference.startsWith('refs/tags/')) exactTags.add(reference.slice('refs/tags/'.length));
+  }
+  exactTags.delete('');
+  const targetParts = requestedVersion.slice(1).map(BigInt);
+  const blockingTags = [...exactTags]
+    .map((candidate) => ({ candidate, parts: parseVersionTag(candidate) }))
+    .filter(({ parts }) => parts && compareVersionParts(targetParts, parts) <= 0)
+    .sort((left, right) => compareVersionParts(left.parts, right.parts));
+  if (blockingTags.length > 0) {
+    fail(`${tag} must be greater than existing tag ${blockingTags[blockingTags.length - 1].candidate}`);
+  }
+
+  const xcodegenVersion = run('xcodegen', ['--version'], { capture: true });
+  if (xcodegenVersion !== `Version: ${XCODEGEN_VERSION}`) {
+    fail(`XcodeGen ${XCODEGEN_VERSION} is required (found ${xcodegenVersion || '<unknown>'})`);
+  }
+
+  run(process.execPath, ['scripts/release-version.js', 'set', version]);
+  run('xcodegen', ['generate', '--spec', 'native/project.yml', '--project', 'native']);
+  run(process.execPath, ['scripts/release-version.js', 'check', version]);
+
+  git(['add',
+    'package.json', 'package-lock.json',
+    'src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock',
+    'native/project.yml', 'native/CCBuddy.xcodeproj',
+  ]);
+  if (git(['diff', '--cached', '--quiet'], { allowFailure: true }) !== 0) {
+    git(['commit', '-m', `release: ${tag}`]);
+  } else {
+    console.log(`✓ all version sources already match ${version}; tagging the current commit`);
+  }
+
+  run('xcodegen', ['generate', '--spec', 'native/project.yml', '--project', 'native']);
+  run(process.execPath, ['scripts/release-version.js', 'check', version]);
+  if (git(['status', '--porcelain', '--', 'native/CCBuddy.xcodeproj'], { capture: true })) {
+    fail('XcodeGen output changed after the release commit');
+  }
+  git(['tag', '-a', tag, '-m', `CC Buddy ${tag}`]);
+
+  if (noPush) {
+    console.log(`\n✓ prepared and tagged locally. Publish with: git push --atomic origin main ${tag}`);
+  } else {
+    git(['push', '--atomic', 'origin', 'main', tag]);
+    console.log(`\n✓ pushed ${tag}; the tag-triggered release workflow is starting.`);
+    console.log('  Watch: gh run list --workflow=release.yml --limit 1');
+  }
+} catch (error) {
+  fail(error.message);
 }
