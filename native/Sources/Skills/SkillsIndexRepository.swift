@@ -46,6 +46,18 @@ struct SkillsIndexRepository {
     }
 
     func save(root: URL, document: SkillIndexDocument) throws {
+        try write(root: root, document: document, invokeBeforeCommit: true)
+    }
+
+    func restore(root: URL, document: SkillIndexDocument) throws {
+        try write(root: root, document: document, invokeBeforeCommit: false)
+    }
+
+    private func write(
+        root: URL,
+        document: SkillIndexDocument,
+        invokeBeforeCommit: Bool
+    ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data: Data
@@ -66,7 +78,7 @@ struct SkillsIndexRepository {
 
         let temporary = try writeTemporary(root: root, data: data)
         do {
-            try beforeCommit()
+            if invokeBeforeCommit { try beforeCommit() }
             try validateOwnedRegularFile(
                 temporary.url,
                 identity: temporary.identity,

@@ -4,6 +4,7 @@ pub fn delete(root: &Path, home: &Path, id: &str) -> Result<bool, String> {
     let _guard = super::index::operation_lock();
     let root = super::paths::ensure_root_at(root)?;
     let mut index = super::index::load(&root)?;
+    let previous_index = index.clone();
     super::catalog::reconcile(&root, &mut index)?;
     super::paths::validate_id(id)?;
     let path = root.join(id);
@@ -22,9 +23,12 @@ pub fn delete(root: &Path, home: &Path, id: &str) -> Result<bool, String> {
         }
     }
     index.skills.remove(id);
+    if let Err(error) = transaction.validate_for_commit() {
+        return Err(super::target_tx::rollback_error(transaction, error));
+    }
     if let Err(error) = super::index::save(&root, &index) {
         return Err(super::target_tx::rollback_error(transaction, error));
     }
-    transaction.commit();
+    super::target_tx::commit_after_index_save(transaction, &root, &previous_index)?;
     Ok(existed)
 }

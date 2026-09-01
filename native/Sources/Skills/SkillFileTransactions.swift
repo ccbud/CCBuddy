@@ -1,14 +1,32 @@
 import CryptoKit
+import Darwin
 import Foundation
+
+private func moveSkillEntryExclusively(from source: URL, to destination: URL) throws {
+    guard Darwin.renamex_np(source.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
 
 struct SkillTargetOwnership: Equatable {
     var identity: String
     var digest: String?
 }
 
+struct SkillTargetFingerprint: Equatable {
+    var identity: String
+    var kind: String
+    var contentDigest: String
+
+    var token: String {
+        let value = Data("\(identity)\u{0}\(kind)\u{0}\(contentDigest)".utf8)
+        return SHA256.hash(data: value).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 enum SkillExpectedTargetState: Equatable {
     case missing
-    case present(identity: String)
+    case present(SkillTargetFingerprint)
 }
 
 final class SkillFileSwap {
@@ -19,8 +37,12 @@ final class SkillFileSwap {
     private let fileManager: FileManager
     private var backup: URL?
     private var backupIdentity: String?
+    private let commitCleanupQuarantine: URL?
+    private let rollbackQuarantine: URL?
     private let removeCurrent: Bool
-    private let validateCurrent: (() throws -> Void)?
+    private let validateBackup: ((URL) throws -> Void)?
+    private let validateCurrent: ((URL) throws -> Void)?
+    private let validateRestored: (() throws -> Void)?
     private var rolledBack = false
 
     init(
@@ -28,31 +50,86 @@ final class SkillFileSwap {
         target: URL,
         backup: URL?,
         backupIdentity: String? = nil,
+        commitCleanupQuarantine: URL? = nil,
+        rollbackQuarantine: URL? = nil,
         removeCurrent: Bool,
         actualMode: SkillSyncMode,
         fileManager: FileManager,
-        validateCurrent: (() throws -> Void)? = nil
+        validateBackup: ((URL) throws -> Void)? = nil,
+        validateCurrent: ((URL) throws -> Void)? = nil,
+        validateRestored: (() throws -> Void)? = nil
     ) {
         self.root = root
         self.target = target
         self.backup = backup
         self.backupIdentity = backupIdentity
+        self.commitCleanupQuarantine = commitCleanupQuarantine
+        self.rollbackQuarantine = rollbackQuarantine
         self.removeCurrent = removeCurrent
         self.actualMode = actualMode
         self.fileManager = fileManager
+        self.validateBackup = validateBackup
         self.validateCurrent = validateCurrent
+        self.validateRestored = validateRestored
     }
 
-    func commit() {
+    func validateCommit() throws {
+        if let backup {
+            guard let backupIdentity,
+                  try SkillPathSafety.entryIdentity(at: backup) == backupIdentity
+            else {
+                throw SkillPathSafety.failure("Backup changed before commit: \(backup.path)")
+            }
+            try validateBackup?(backup)
+        }
+        if removeCurrent {
+            guard let validateCurrent else {
+                throw SkillPathSafety.failure("Cannot verify target before commit: \(target.path)")
+            }
+            try validateCurrent(target)
+        } else if try SkillPathSafety.entryKind(at: target) != .missing {
+            throw SkillPathSafety.failure("Target reappeared before commit: \(target.path)")
+        }
+    }
+
+    func finalizeCommit() {
         guard let backup,
               let backupIdentity,
-              (try? SkillPathSafety.entryIdentity(at: backup)) == backupIdentity
+              let commitCleanupQuarantine
         else { return }
         do {
-            try SkillPathSafety.removeDirectChild(root: root, child: backup, fileManager: fileManager)
+            try moveSkillEntryExclusively(from: backup, to: commitCleanupQuarantine)
+        } catch {
+            return
+        }
+
+        do {
+            guard try SkillPathSafety.entryIdentity(at: commitCleanupQuarantine) == backupIdentity else {
+                throw SkillPathSafety.failure(
+                    "Backup changed before cleanup: \(commitCleanupQuarantine.path)"
+                )
+            }
+            try validateBackup?(commitCleanupQuarantine)
+        } catch {
+            try? moveSkillEntryExclusively(from: commitCleanupQuarantine, to: backup)
+            return
+        }
+
+        do {
+            guard try SkillPathSafety.entryIdentity(at: commitCleanupQuarantine) == backupIdentity else {
+                return
+            }
+            try SkillPathSafety.removeDirectChild(
+                root: root,
+                child: commitCleanupQuarantine,
+                fileManager: fileManager
+            )
             self.backup = nil
             self.backupIdentity = nil
-        } catch {}
+        } catch {
+            // The file transaction is already committed. Preserve the quarantined backup when
+            // cleanup cannot be proven safe instead of attempting an incomplete rollback.
+        }
     }
 
     func rollback() throws {
@@ -63,30 +140,69 @@ final class SkillFileSwap {
             else {
                 throw SkillPathSafety.failure("Backup changed before rollback: \(backup.path)")
             }
+            try validateBackup?(backup)
         }
+        var quarantinedCurrent: (url: URL, identity: String)?
         if removeCurrent {
-            guard let validateCurrent else {
+            guard let validateCurrent, let rollbackQuarantine else {
                 throw SkillPathSafety.failure("Cannot verify target before rollback: \(target.path)")
             }
-            try validateCurrent()
-            try SkillPathSafety.removeDirectChild(root: root, child: target, fileManager: fileManager)
+            var movedToQuarantine = false
+            do {
+                try moveSkillEntryExclusively(from: target, to: rollbackQuarantine)
+                movedToQuarantine = true
+                let identity = try SkillPathSafety.entryIdentity(at: rollbackQuarantine)
+                quarantinedCurrent = (rollbackQuarantine, identity)
+                try validateCurrent(rollbackQuarantine)
+            } catch {
+                let originalError = error
+                if movedToQuarantine {
+                    do {
+                        try moveSkillEntryExclusively(
+                            from: rollbackQuarantine,
+                            to: target
+                        )
+                    } catch {
+                        throw SkillPathSafety.failure(
+                            "\(skillErrorMessage(originalError)); cannot restore changed target: "
+                                + skillErrorMessage(error)
+                        )
+                    }
+                }
+                throw originalError
+            }
         } else if try SkillPathSafety.entryKind(at: target) != .missing {
             throw SkillPathSafety.failure("Target reappeared during rollback: \(target.path)")
         }
         if let backup {
             let expectedIdentity = backupIdentity
             do {
-                try fileManager.moveItem(at: backup, to: target)
+                try moveSkillEntryExclusively(from: backup, to: target)
                 guard let expectedIdentity,
                       try SkillPathSafety.entryIdentity(at: target) == expectedIdentity
                 else {
                     throw SkillPathSafety.failure("Restored target identity changed: \(target.path)")
                 }
+                try validateRestored?()
                 self.backup = nil
                 backupIdentity = nil
             } catch {
                 throw SkillPathSafety.failure("Cannot restore target \(target.path): \(error.localizedDescription)")
             }
+        }
+        if let quarantinedCurrent {
+            guard try SkillPathSafety.entryIdentity(at: quarantinedCurrent.url)
+                == quarantinedCurrent.identity
+            else {
+                throw SkillPathSafety.failure(
+                    "Rollback quarantine changed: \(quarantinedCurrent.url.path)"
+                )
+            }
+            try SkillPathSafety.removeDirectChild(
+                root: root,
+                child: quarantinedCurrent.url,
+                fileManager: fileManager
+            )
         }
         rolledBack = true
     }
@@ -104,9 +220,18 @@ final class SkillFileTransaction {
         swaps.append(swap)
     }
 
-    func commit() {
-        swaps.forEach { $0.commit() }
+    func validateCommit() throws {
+        for swap in swaps { try swap.validateCommit() }
+    }
+
+    func finalizeCommit() {
+        swaps.forEach { $0.finalizeCommit() }
         finished = true
+    }
+
+    func commit() throws {
+        try validateCommit()
+        finalizeCommit()
     }
 
     func rollback() throws {
@@ -217,16 +342,25 @@ struct SkillFileTransactions {
         case .file, .other:
             throw unmanagedTarget(target)
         }
-        return .present(identity: identity)
+        let fingerprint = try targetFingerprint(at: target)
+        guard fingerprint.identity == identity else { throw unmanagedTarget(target) }
+        return .present(fingerprint)
     }
 
     func currentTargetState(at target: URL) throws -> SkillExpectedTargetState {
         switch try SkillPathSafety.entryKind(at: target) {
         case .missing:
             return .missing
-        case .file, .directory, .symlink, .other:
-            return .present(identity: try SkillPathSafety.entryIdentity(at: target))
+        case .file, .directory, .symlink:
+            return .present(try targetFingerprint(at: target))
+        case .other:
+            throw SkillPathSafety.failure("Target has an unsupported filesystem type: \(target.path)")
         }
+    }
+
+    func fingerprintToken(for state: SkillExpectedTargetState) -> String? {
+        guard case .present(let fingerprint) = state else { return nil }
+        return fingerprint.token
     }
 
     func availableID(root: URL, preferred: String) throws -> String {
@@ -256,6 +390,16 @@ struct SkillFileTransactions {
         let source = try validateSource(source)
         let stage = try SkillPathSafety.uniqueHidden(root: root, kind: "sync-stage", makeUUID: makeUUID)
         let backup = try SkillPathSafety.uniqueHidden(root: root, kind: "sync-backup", makeUUID: makeUUID)
+        let commitCleanupQuarantine = try SkillPathSafety.uniqueHidden(
+            root: root,
+            kind: "commit-cleanup",
+            makeUUID: makeUUID
+        )
+        let rollbackQuarantine = try SkillPathSafety.uniqueHidden(
+            root: root,
+            kind: "rollback-current",
+            makeUUID: makeUUID
+        )
         let actualMode: SkillSyncMode
         do {
             actualMode = try createStaged(source: source, stage: stage, mode: mode)
@@ -278,46 +422,65 @@ struct SkillFileTransactions {
             throw error
         }
         do {
-            try beforeMove(target)
             try validateExpectedState(expectedState, at: target)
+            try beforeMove(target)
         } catch {
             try? removeOwnedEntry(root: root, child: stage, identity: stagedIdentity)
             throw error
         }
-        let replacedIdentity: String?
+        let replacedFingerprint: SkillTargetFingerprint?
         switch expectedState {
         case .missing:
-            replacedIdentity = nil
-        case .present(let identity):
-            replacedIdentity = identity
+            replacedFingerprint = nil
+        case .present(let fingerprint):
+            replacedFingerprint = fingerprint
         }
-        let hadTarget = replacedIdentity != nil
+        let replacedIdentity = replacedFingerprint?.identity
+        let hadTarget = replacedFingerprint != nil
         if hadTarget {
+            var movedToBackup = false
+            var movedBackupIdentity: String?
             do {
-                try fileManager.moveItem(at: target, to: backup)
-                guard let replacedIdentity,
-                      try SkillPathSafety.entryIdentity(at: backup) == replacedIdentity
-                else {
-                    throw SkillPathSafety.failure("Backed-up target identity changed: \(target.path)")
-                }
+                try moveSkillEntryExclusively(from: target, to: backup)
+                movedToBackup = true
+                movedBackupIdentity = try SkillPathSafety.entryIdentity(at: backup)
+                try validateExpectedState(expectedState, at: backup)
             } catch {
+                let originalMessage = error.localizedDescription
+                var restoreMessage = ""
+                if movedToBackup {
+                    do {
+                        guard let movedBackupIdentity else {
+                            throw SkillPathSafety.failure("Cannot identify the moved target")
+                        }
+                        try restoreMovedEntry(
+                            backup,
+                            identity: movedBackupIdentity,
+                            to: target
+                        )
+                    } catch {
+                        restoreMessage = "; restore failed: \(error.localizedDescription)"
+                    }
+                }
                 try? removeOwnedEntry(
                     root: root,
                     child: stage,
                     identity: installedOwnership.identity
                 )
-                throw SkillPathSafety.failure("Cannot back up target \(target.path): \(error.localizedDescription)")
+                throw SkillPathSafety.failure(
+                    "Cannot back up target \(target.path): \(originalMessage)\(restoreMessage)"
+                )
             }
         }
         do {
-            try fileManager.moveItem(at: stage, to: target)
+            try moveSkillEntryExclusively(from: stage, to: target)
         } catch {
             var restoreMessage = ""
-            if let replacedIdentity {
+            if replacedFingerprint != nil {
                 do {
                     try restoreBackup(
                         backup,
-                        identity: replacedIdentity,
+                        expectedState: expectedState,
                         to: target
                     )
                 } catch {
@@ -349,15 +512,23 @@ struct SkillFileTransactions {
             target: target,
             backup: hadTarget ? backup : nil,
             backupIdentity: replacedIdentity,
+            commitCleanupQuarantine: hadTarget ? commitCleanupQuarantine : nil,
+            rollbackQuarantine: rollbackQuarantine,
             removeCurrent: true,
             actualMode: actualMode,
             fileManager: fileManager,
-            validateCurrent: {
+            validateBackup: replacedFingerprint == nil ? nil : { candidate in
+                try validateExpectedState(expectedState, at: candidate)
+            },
+            validateCurrent: { candidate in
                 try validateInstalledTarget(
-                    target: target,
+                    target: candidate,
                     mode: actualMode,
                     ownership: installedOwnership
                 )
+            },
+            validateRestored: replacedFingerprint == nil ? nil : {
+                try validateExpectedState(expectedState, at: target)
             }
         )
     }
@@ -370,26 +541,58 @@ struct SkillFileTransactions {
         guard target.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL else {
             throw SkillPathSafety.failure("Target is outside \(root.path)")
         }
-        try beforeMove(target)
         try validateExpectedState(expectedState, at: target)
-        guard case .present(let targetIdentity) = expectedState else { return nil }
+        try beforeMove(target)
+        guard case .present(let targetFingerprint) = expectedState else { return nil }
         let backup = try SkillPathSafety.uniqueHidden(root: root, kind: "remove-backup", makeUUID: makeUUID)
+        let commitCleanupQuarantine = try SkillPathSafety.uniqueHidden(
+            root: root,
+            kind: "commit-cleanup",
+            makeUUID: makeUUID
+        )
+        var movedToBackup = false
+        var movedBackupIdentity: String?
         do {
-            try fileManager.moveItem(at: target, to: backup)
-            guard try SkillPathSafety.entryIdentity(at: backup) == targetIdentity else {
-                throw SkillPathSafety.failure("Staged removal identity changed: \(target.path)")
-            }
+            try moveSkillEntryExclusively(from: target, to: backup)
+            movedToBackup = true
+            movedBackupIdentity = try SkillPathSafety.entryIdentity(at: backup)
+            try validateExpectedState(expectedState, at: backup)
         } catch {
-            throw SkillPathSafety.failure("Cannot stage removal \(target.path): \(error.localizedDescription)")
+            let originalMessage = error.localizedDescription
+            var restoreMessage = ""
+            if movedToBackup {
+                do {
+                    guard let movedBackupIdentity else {
+                        throw SkillPathSafety.failure("Cannot identify the moved target")
+                    }
+                    try restoreMovedEntry(
+                        backup,
+                        identity: movedBackupIdentity,
+                        to: target
+                    )
+                } catch {
+                    restoreMessage = "; restore failed: \(error.localizedDescription)"
+                }
+            }
+            throw SkillPathSafety.failure(
+                "Cannot stage removal \(target.path): \(originalMessage)\(restoreMessage)"
+            )
         }
         return SkillFileSwap(
             root: root,
             target: target,
             backup: backup,
-            backupIdentity: targetIdentity,
+            backupIdentity: targetFingerprint.identity,
+            commitCleanupQuarantine: commitCleanupQuarantine,
             removeCurrent: false,
             actualMode: .copy,
-            fileManager: fileManager
+            fileManager: fileManager,
+            validateBackup: { candidate in
+                try validateExpectedState(expectedState, at: candidate)
+            },
+            validateRestored: {
+                try validateExpectedState(expectedState, at: target)
+            }
         )
     }
 
@@ -475,16 +678,181 @@ struct SkillFileTransactions {
         try SkillPathSafety.removeDirectChild(root: root, child: child, fileManager: fileManager)
     }
 
-    private func restoreBackup(_ backup: URL, identity: String, to target: URL) throws {
+    private func restoreBackup(
+        _ backup: URL,
+        expectedState: SkillExpectedTargetState,
+        to target: URL
+    ) throws {
         guard try SkillPathSafety.entryKind(at: target) == .missing,
-              try SkillPathSafety.entryIdentity(at: backup) == identity
+              case .present = expectedState
         else {
             throw SkillPathSafety.failure("Cannot safely restore target \(target.path)")
         }
-        try fileManager.moveItem(at: backup, to: target)
+        try validateExpectedState(expectedState, at: backup)
+        try moveSkillEntryExclusively(from: backup, to: target)
+        try validateExpectedState(expectedState, at: target)
+    }
+
+    private func restoreMovedEntry(_ backup: URL, identity: String, to target: URL) throws {
+        let backupParent = backup.deletingLastPathComponent().standardizedFileURL
+        let targetParent = target.deletingLastPathComponent().standardizedFileURL
+        guard backupParent == targetParent,
+              try SkillPathSafety.entryKind(at: target) == .missing,
+              try SkillPathSafety.entryIdentity(at: backup) == identity
+        else {
+            throw SkillPathSafety.failure("Cannot safely restore moved target \(target.path)")
+        }
+        try moveSkillEntryExclusively(from: backup, to: target)
         guard try SkillPathSafety.entryIdentity(at: target) == identity else {
             throw SkillPathSafety.failure("Restored target identity changed: \(target.path)")
         }
+    }
+
+    private func targetFingerprint(at target: URL) throws -> SkillTargetFingerprint {
+        let kind = try SkillPathSafety.entryKind(at: target)
+        guard kind == .directory || kind == .file || kind == .symlink else {
+            throw SkillPathSafety.failure("Target cannot be safely fingerprinted: \(target.path)")
+        }
+        let identity = try SkillPathSafety.entryIdentity(at: target)
+        let kindName: String
+        let contentDigest: String
+        switch kind {
+        case .directory:
+            kindName = "directory"
+            contentDigest = try directoryFingerprintDigest(target)
+        case .file:
+            kindName = "file"
+            contentDigest = try fileFingerprintDigest(target)
+        case .symlink:
+            kindName = "symlink"
+            let destination = try fileManager.destinationOfSymbolicLink(atPath: target.path)
+            contentDigest = digest(Data(destination.utf8))
+        case .missing, .other:
+            throw SkillPathSafety.failure("Target cannot be safely fingerprinted: \(target.path)")
+        }
+        guard try SkillPathSafety.entryKind(at: target) == kind,
+              try SkillPathSafety.entryIdentity(at: target) == identity
+        else {
+            throw unmanagedTarget(target)
+        }
+        return SkillTargetFingerprint(
+            identity: identity,
+            kind: kindName,
+            contentDigest: contentDigest
+        )
+    }
+
+    private func directoryFingerprintDigest(_ root: URL) throws -> String {
+        guard try SkillPathSafety.entryKind(at: root) == .directory else {
+            throw SkillPathSafety.failure("Target is not a real directory: \(root.path)")
+        }
+        var hasher = SHA256()
+        var entries = 0
+        var bytes: UInt64 = 0
+        try updateFingerprintDigest(
+            root: root,
+            directory: root,
+            depth: 0,
+            entries: &entries,
+            bytes: &bytes,
+            hasher: &hasher
+        )
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func updateFingerprintDigest(
+        root: URL,
+        directory: URL,
+        depth: Int,
+        entries: inout Int,
+        bytes: inout UInt64,
+        hasher: inout SHA256
+    ) throws {
+        guard depth <= 64 else {
+            throw SkillPathSafety.failure("Target directory nesting is too deep")
+        }
+        let children = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for child in children {
+            entries += 1
+            guard entries <= maximumEntries else {
+                throw SkillPathSafety.failure("Target contains too many files")
+            }
+            let relative = String(
+                child.standardizedFileURL.path.dropFirst(root.standardizedFileURL.path.count + 1)
+            )
+            let kind = try SkillPathSafety.entryKind(at: child)
+            let identity = try SkillPathSafety.entryIdentity(at: child)
+            switch kind {
+            case .directory:
+                hasher.update(data: digestHeader(kind: "directory", path: relative, size: nil))
+                try updateFingerprintDigest(
+                    root: root,
+                    directory: child,
+                    depth: depth + 1,
+                    entries: &entries,
+                    bytes: &bytes,
+                    hasher: &hasher
+                )
+            case .file:
+                let attributes = try fileManager.attributesOfItem(atPath: child.path)
+                let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+                let (total, overflow) = bytes.addingReportingOverflow(size)
+                guard !overflow, total <= maximumBytes else {
+                    throw SkillPathSafety.failure("Target is larger than 512 MiB")
+                }
+                bytes = total
+                hasher.update(data: digestHeader(kind: "file", path: relative, size: size))
+                try updateFileBytes(child, hasher: &hasher)
+            case .symlink:
+                let destination = try fileManager.destinationOfSymbolicLink(atPath: child.path)
+                let data = Data(destination.utf8)
+                let (total, overflow) = bytes.addingReportingOverflow(UInt64(data.count))
+                guard !overflow, total <= maximumBytes else {
+                    throw SkillPathSafety.failure("Target is larger than 512 MiB")
+                }
+                bytes = total
+                hasher.update(data: digestHeader(
+                    kind: "symlink",
+                    path: relative,
+                    size: UInt64(data.count)
+                ))
+                hasher.update(data: data)
+            case .missing, .other:
+                throw SkillPathSafety.failure("Target contains an unsupported entry: \(child.path)")
+            }
+            guard try SkillPathSafety.entryKind(at: child) == kind,
+                  try SkillPathSafety.entryIdentity(at: child) == identity
+            else {
+                throw unmanagedTarget(child)
+            }
+        }
+    }
+
+    private func fileFingerprintDigest(_ file: URL) throws -> String {
+        let attributes = try fileManager.attributesOfItem(atPath: file.path)
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        guard size <= maximumBytes else {
+            throw SkillPathSafety.failure("Target is larger than 512 MiB")
+        }
+        var hasher = SHA256()
+        hasher.update(data: digestHeader(kind: "file", path: "", size: size))
+        try updateFileBytes(file, hasher: &hasher)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func updateFileBytes(_ file: URL, hasher: inout SHA256) throws {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        while let chunk = try handle.read(upToCount: 1_024 * 1_024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+    }
+
+    private func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func directoryDigest(_ root: URL, ignoringGitDirectories: Bool) throws -> String {

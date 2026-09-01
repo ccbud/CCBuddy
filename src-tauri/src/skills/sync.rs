@@ -1,4 +1,4 @@
-use super::model::TargetMeta;
+use super::model::{SkillsSyncErrorDto, SyncConflictDto, TargetMeta};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -9,43 +9,66 @@ pub fn sync_targets(
     requested_mode: Option<&str>,
     home: &Path,
     targets: &mut Vec<TargetMeta>,
-) -> Result<super::target_tx::SyncTransaction, String> {
+    authorizing: &[SyncConflictDto],
+) -> Result<super::target_tx::SyncTransaction, SkillsSyncErrorDto> {
     let mode = normalize_mode(requested_mode.unwrap_or("auto"))?;
-    let mut keys = dedup(keys);
+    let mut keys = super::sync_plan::dedup(keys);
     keys.sort_by_key(|key| key != "cursor");
-    preflight_targets(id, &keys, home, targets)?;
+    let original_targets = targets.clone();
+    let mut execution_ownership = original_targets.clone();
+    super::sync_plan::preflight_targets(id, &keys, home, &execution_ownership, authorizing)?;
     let mut outcomes: HashMap<PathBuf, String> = HashMap::new();
     let mut transaction = super::target_tx::SyncTransaction::new();
-    for key in keys {
+    for key in keys.iter().cloned() {
         let root = super::tools::target_root(home, &key)?;
         std::fs::create_dir_all(&root)
             .map_err(|e| format!("create tool skills directory {}: {e}", root.display()))?;
-        let root = root
-            .canonicalize()
-            .map_err(|e| format!("resolve tool skills directory: {e}"))?;
+        let root = super::sync_plan::resolved_root(home, &key)?;
         let target = root.join(id);
         let actual = if let Some(existing) = outcomes.get(&target) {
             existing.clone()
         } else {
-            let tracked = targets.iter().any(|item| Path::new(&item.path) == target);
-            if path_exists(&target)? && !tracked {
-                return abort(
-                    transaction,
-                    format!(
-                        "target already exists and is unmanaged: {}",
-                        target.display()
-                    ),
-                );
-            }
-            let swap =
-                match super::target_tx::prepare(source, &root, &target, effective_mode(&key, mode))
-                {
-                    Ok(value) => value,
-                    Err(error) => return abort(transaction, error),
-                };
+            let expectation = match super::sync_plan::target_expectation(
+                id,
+                &target,
+                &keys,
+                home,
+                &execution_ownership,
+                authorizing,
+            ) {
+                Ok(value) => value,
+                Err(error) => return super::sync_abort::abort(transaction, error),
+            };
+            let swap = match super::target_prepare::prepare(
+                source,
+                &root,
+                &target,
+                effective_mode(&key, mode),
+                &expectation,
+            ) {
+                Ok(value) => value,
+                Err(super::target_prepare::PrepareError::Changed) => {
+                    return super::sync_abort::abort_confirmation(
+                        transaction,
+                        id,
+                        &keys,
+                        home,
+                        &original_targets,
+                    );
+                }
+                Err(super::target_prepare::PrepareError::Failed(message)) => {
+                    return super::sync_abort::abort(transaction, message.into());
+                }
+            };
             let actual = swap.actual_mode.clone();
             transaction.push(swap);
             outcomes.insert(target.clone(), actual.clone());
+            execution_ownership.push(TargetMeta {
+                key: key.clone(),
+                path: target.to_string_lossy().to_string(),
+                sync_mode: actual.clone(),
+                status: "ok".into(),
+            });
             actual
         };
         targets.retain(|item| item.key != key);
@@ -60,46 +83,13 @@ pub fn sync_targets(
     Ok(transaction)
 }
 
-fn preflight_targets(
-    id: &str,
-    keys: &[String],
-    home: &Path,
-    targets: &[TargetMeta],
-) -> Result<(), String> {
-    for key in keys {
-        let root = super::tools::target_root(home, key)?;
-        let root = if path_exists(&root)? {
-            if !root.is_dir() {
-                return Err(format!(
-                    "tool skills path is not a directory: {}",
-                    root.display()
-                ));
-            }
-            root.canonicalize()
-                .map_err(|e| format!("resolve tool skills directory: {e}"))?
-        } else {
-            root
-        };
-        let target = root.join(id);
-        if std::fs::symlink_metadata(&target).is_ok()
-            && !targets.iter().any(|item| Path::new(&item.path) == target)
-        {
-            return Err(format!(
-                "target already exists and is unmanaged: {}",
-                target.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub fn unsync_targets(
     id: &str,
     keys: &[String],
     home: &Path,
     targets: &mut Vec<TargetMeta>,
 ) -> Result<super::target_tx::SyncTransaction, String> {
-    let wanted: HashSet<String> = dedup(keys).into_iter().collect();
+    let wanted: HashSet<String> = super::sync_plan::dedup(keys).into_iter().collect();
     for key in &wanted {
         super::tools::find(key).ok_or_else(|| format!("unknown skill tool: {key}"))?;
     }
@@ -164,7 +154,7 @@ pub(super) fn checked_target_root(
     home: &Path,
 ) -> Result<PathBuf, String> {
     let root = super::tools::target_root(home, &target.key)?;
-    let root = if path_exists(&root)? {
+    let root = if super::sync_plan::path_exists(&root)? {
         root.canonicalize()
             .map_err(|e| format!("resolve tool target: {e}"))?
     } else {
@@ -189,27 +179,4 @@ pub(super) fn normalize_mode(mode: &str) -> Result<&str, String> {
         "auto" | "copy" | "symlink" => Ok(mode),
         _ => Err(format!("unsupported sync mode: {mode}")),
     }
-}
-
-fn dedup(keys: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    keys.iter()
-        .filter(|key| seen.insert((*key).clone()))
-        .cloned()
-        .collect()
-}
-
-fn path_exists(path: &Path) -> Result<bool, String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(format!("inspect {}: {error}", path.display())),
-    }
-}
-
-fn abort(
-    transaction: super::target_tx::SyncTransaction,
-    error: String,
-) -> Result<super::target_tx::SyncTransaction, String> {
-    Err(super::target_tx::rollback_error(transaction, error))
 }

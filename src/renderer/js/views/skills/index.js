@@ -5,6 +5,7 @@ import { showToast } from '../../core/toast.js';
 import { skillsApi } from './api.js';
 import { confirmAction, formDialog, localize, pageState, setActiveNav, template } from './layout.js';
 import { canUpdate, setSnapshot, skillsState } from './state.js';
+import { authorizeSyncOperations as authorizeSync, syncAuthorizedOperation as syncAuthorized } from './sync-conflicts.js';
 
 const loaders = {
   library: () => import('./library.js'), add: () => import('./add.js'),
@@ -109,9 +110,10 @@ async function run(task, successKey) {
 const settleBatch = (items, mutate) => Promise.allSettled(items.map((item, index) => Promise.resolve().then(() => mutate(item, index))));
 
 function showBatchResult(outcomes, successKey) {
-  const failed = outcomes.filter((item) => item.status === 'rejected');
-  if (!failed.length) { if (successKey) showToast(I18n.t(successKey), 'ok'); return; }
-  const summary = I18n.t('skills.toast.batchResult', { success: outcomes.length - failed.length, failed: failed.length });
+  const failed = outcomes.filter((item) => item.status === 'rejected' && !item.reason?.syncCancelled);
+  const completed = outcomes.filter((item) => item.status === 'fulfilled');
+  if (!failed.length) { if (successKey && (!outcomes.length || completed.length)) showToast(I18n.t(successKey), 'ok'); return; }
+  const summary = I18n.t('skills.toast.batchResult', { success: completed.length, failed: failed.length });
   showToast(`${summary} ${errorText(failed[0].reason)}`, 'err');
 }
 
@@ -158,7 +160,9 @@ async function syncSkills(ids, targetKeys, mode = 'auto') {
   const available = skillsState.tools.filter((tool) => tool.detected && tool.enabled).map((tool) => tool.key);
   const keys = targetKeys == null ? available : [...new Set(targetKeys)].filter(Boolean);
   if (!ids.length || !keys.length) { showToast(I18n.t('skills.library.noTargets'), 'err'); return; }
-  await runBatch(ids, (id) => skillsApi.sync(id, keys, mode), 'skills.toast.synced');
+  const operations = ids.map((id) => ({ id, targetKeys: keys, mode }));
+  const authorized = await authorizeSync(operations, skillsState.tools, changeBusy); if (!authorized) return;
+  await runBatch(authorized, (operation) => syncAuthorized(operation, skillsState.tools), 'skills.toast.synced');
 }
 
 async function unsyncSkills(ids, targetKeys) {
@@ -173,6 +177,8 @@ async function unsyncSkills(ids, targetKeys) {
 const context = {
   state: skillsState, api: skillsApi, render: renderPage, reload, navigate, openDetail,
   run, runBatch, settleBatch, showBatchResult, editTags, deleteSkills, updateSkills, syncSkills, unsyncSkills,
+  authorizeSyncOperations: (operations) => authorizeSync(operations, skillsState.tools, changeBusy),
+  syncAuthorizedOperation: (operation) => syncAuthorized(operation, skillsState.tools),
   localize, toast: showToast, focusHeading,
   routeStamp: () => routeToken,
   isCurrentDetail: (id, stamp) => stamp === routeToken && skillsState.detailId === id

@@ -162,6 +162,19 @@ final class SkillsServiceTests: XCTestCase {
         let unmanaged = layout.home.appendingPathComponent(".config/agents/skills/\(skill.id)")
         try FileManager.default.createDirectory(at: unmanaged, withIntermediateDirectories: true)
         try Data("keep".utf8).write(to: unmanaged.appendingPathComponent("user.txt"))
+        let cursorRoot = layout.home.appendingPathComponent(".cursor/skills", isDirectory: true)
+        let index = layout.root.appendingPathComponent(".ccbud-index.json")
+        let indexBeforePreview = try Data(contentsOf: index)
+
+        let conflicts = try await service.syncConflicts(
+            id: skill.id,
+            toolKeys: ["cursor", "amp"]
+        )
+        XCTAssertEqual(conflicts.count, 1)
+        XCTAssertEqual(conflicts.first?.path.standardizedFileURL, unmanaged.standardizedFileURL)
+        XCTAssertEqual(conflicts.first?.toolKeys, ["amp"])
+        XCTAssertEqual(try Data(contentsOf: index), indexBeforePreview)
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: cursorRoot), .missing)
 
         do {
             _ = try await service.sync(
@@ -170,12 +183,257 @@ final class SkillsServiceTests: XCTestCase {
                 mode: .copy
             )
             XCTFail("Unmanaged targets should reject the entire operation")
+        } catch let error as SkillSyncConfirmationRequired {
+            XCTAssertEqual(error.conflicts, conflicts)
         } catch {
-            XCTAssertTrue(skillErrorMessage(error).contains("unmanaged"))
+            XCTFail("Expected typed confirmation requirement, got: \(skillErrorMessage(error))")
         }
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: layout.home.appendingPathComponent(".cursor/skills/\(skill.id)").path
-        ))
+        XCTAssertEqual(try Data(contentsOf: index), indexBeforePreview)
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: cursorRoot), .missing)
         XCTAssertTrue(FileManager.default.fileExists(atPath: unmanaged.appendingPathComponent("user.txt").path))
+    }
+
+    func testAuthorizedSyncReplacesUnmanagedDirectory() async throws {
+        let layout = try SkillsTestLayout(label: "authorized-directory")
+        defer { layout.remove() }
+        let source = layout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: source, value: "managed")
+        let service = layout.service()
+        let skill = try await service.importLocal(from: source)
+        let target = layout.home.appendingPathComponent(".config/agents/skills/\(skill.id)")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("user data".utf8).write(to: target.appendingPathComponent("user.txt"))
+
+        let conflicts = try await service.syncConflicts(id: skill.id, toolKeys: ["amp"])
+        XCTAssertEqual(conflicts.count, 1)
+        let synced = try await service.sync(
+            id: skill.id,
+            toolKeys: ["amp"],
+            mode: .copy,
+            authorizing: conflicts
+        )
+
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: target), .directory)
+        XCTAssertEqual(try testSkillValue(at: target), "managed")
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: target.appendingPathComponent("user.txt")), .missing)
+        XCTAssertEqual(synced.targets.map(\.key), ["amp"])
+        XCTAssertNotNil(synced.targets.first?.managedIdentity)
+        XCTAssertNotNil(synced.targets.first?.managedDigest)
+        XCTAssertFalse(hasSkillsTransactionArtifacts(in: target.deletingLastPathComponent()))
+    }
+
+    func testSharedUnmanagedTargetProducesOneConflictAndOneReplacement() async throws {
+        let layout = try SkillsTestLayout(label: "shared-confirmation")
+        defer { layout.remove() }
+        let source = layout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: source, value: "shared")
+        let probe = SkillsFileMoveProbe()
+        let service = layout.service(beforeFileMove: { probe.record($0) })
+        let skill = try await service.importLocal(from: source)
+        let target = layout.home.appendingPathComponent(".config/agents/skills/\(skill.id)")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("user data".utf8).write(to: target.appendingPathComponent("user.txt"))
+
+        let conflicts = try await service.syncConflicts(
+            id: skill.id,
+            toolKeys: ["kimi_cli", "amp"]
+        )
+        let conflict = try XCTUnwrap(conflicts.first)
+        XCTAssertEqual(conflicts.count, 1)
+        XCTAssertEqual(conflict.path.standardizedFileURL, target.standardizedFileURL)
+        XCTAssertEqual(conflict.toolKeys, ["amp", "kimi_cli"])
+
+        let synced = try await service.sync(
+            id: skill.id,
+            toolKeys: ["kimi_cli", "amp"],
+            mode: .copy,
+            authorizing: conflicts
+        )
+
+        XCTAssertEqual(probe.count(for: target), 1)
+        XCTAssertEqual(synced.targets.map(\.key), ["amp", "kimi_cli"])
+        XCTAssertEqual(Set(synced.targets.map { $0.path.standardizedFileURL }), [target.standardizedFileURL])
+        XCTAssertEqual(Set(synced.targets.compactMap(\.managedIdentity)).count, 1)
+        XCTAssertEqual(Set(synced.targets.compactMap(\.managedDigest)).count, 1)
+        XCTAssertEqual(try testSkillValue(at: target), "shared")
+    }
+
+    func testAuthorizedSyncRejectsStaleFingerprintWithTypedConflict() async throws {
+        let layout = try SkillsTestLayout(label: "stale-confirmation")
+        defer { layout.remove() }
+        let source = layout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: source, value: "managed")
+        let service = layout.service()
+        let skill = try await service.importLocal(from: source)
+        let target = layout.home.appendingPathComponent(".config/agents/skills/\(skill.id)")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let userFile = target.appendingPathComponent("user.txt")
+        try Data("before".utf8).write(to: userFile)
+        let identity = try SkillPathSafety.entryIdentity(at: target)
+        let conflicts = try await service.syncConflicts(id: skill.id, toolKeys: ["amp"])
+        let staleConflict = try XCTUnwrap(conflicts.first)
+
+        try Data("after".utf8).write(to: userFile)
+        XCTAssertEqual(try SkillPathSafety.entryIdentity(at: target), identity)
+        do {
+            _ = try await service.sync(
+                id: skill.id,
+                toolKeys: ["amp"],
+                mode: .copy,
+                authorizing: conflicts
+            )
+            XCTFail("A stale authorization token must not replace the target")
+        } catch let error as SkillSyncConfirmationRequired {
+            let current = try XCTUnwrap(error.conflicts.first)
+            XCTAssertEqual(error.conflicts.count, 1)
+            XCTAssertEqual(current.path.standardizedFileURL, target.standardizedFileURL)
+            XCTAssertNotEqual(current.fingerprintToken, staleConflict.fingerprintToken)
+        } catch {
+            XCTFail("Expected a refreshed typed conflict, got: \(skillErrorMessage(error))")
+        }
+        XCTAssertEqual(try String(contentsOf: userFile, encoding: .utf8), "after")
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: target.appendingPathComponent("SKILL.md")), .missing)
+        let snapshot = try await service.snapshot()
+        XCTAssertTrue(snapshot.skills.first?.targets.isEmpty == true)
+    }
+
+    func testStaleAuthorizationReturnsEveryCurrentConflictForOneStepReconfirmation() async throws {
+        let layout = try SkillsTestLayout(label: "stale-multiple-confirmations")
+        defer { layout.remove() }
+        let source = layout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: source, value: "managed")
+        let service = layout.service()
+        let skill = try await service.importLocal(from: source)
+        let cursor = layout.home.appendingPathComponent(".cursor/skills/\(skill.id)")
+        let amp = layout.home.appendingPathComponent(".config/agents/skills/\(skill.id)")
+        for target in [cursor, amp] {
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try Data("before".utf8).write(to: target.appendingPathComponent("user.txt"))
+        }
+        let original = try await service.syncConflicts(
+            id: skill.id,
+            toolKeys: ["cursor", "amp"]
+        )
+        XCTAssertEqual(original.count, 2)
+        let originalTokens = Dictionary(uniqueKeysWithValues: original.map {
+            ($0.path.standardizedFileURL.path, $0.fingerprintToken)
+        })
+
+        try Data("after".utf8).write(to: amp.appendingPathComponent("user.txt"))
+        let refreshed: [SkillSyncConflict]
+        do {
+            _ = try await service.sync(
+                id: skill.id,
+                toolKeys: ["cursor", "amp"],
+                mode: .copy,
+                authorizing: original
+            )
+            XCTFail("One stale token must require confirmation for the complete current conflict set")
+            return
+        } catch let error as SkillSyncConfirmationRequired {
+            refreshed = error.conflicts
+        } catch {
+            XCTFail("Expected refreshed typed conflicts, got: \(skillErrorMessage(error))")
+            return
+        }
+
+        XCTAssertEqual(refreshed.count, 2)
+        let refreshedTokens = Dictionary(uniqueKeysWithValues: refreshed.map {
+            ($0.path.standardizedFileURL.path, $0.fingerprintToken)
+        })
+        XCTAssertEqual(refreshedTokens[cursor.standardizedFileURL.path], originalTokens[cursor.standardizedFileURL.path])
+        XCTAssertNotEqual(refreshedTokens[amp.standardizedFileURL.path], originalTokens[amp.standardizedFileURL.path])
+        XCTAssertEqual(
+            try String(contentsOf: cursor.appendingPathComponent("user.txt"), encoding: .utf8),
+            "before"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: amp.appendingPathComponent("user.txt"), encoding: .utf8),
+            "after"
+        )
+
+        let synced = try await service.sync(
+            id: skill.id,
+            toolKeys: ["cursor", "amp"],
+            mode: .copy,
+            authorizing: refreshed
+        )
+        XCTAssertEqual(synced.targets.map(\.key), ["amp", "cursor"])
+        XCTAssertEqual(try testSkillValue(at: cursor), "managed")
+        XCTAssertEqual(try testSkillValue(at: amp), "managed")
+    }
+
+    func testAuthorizedSyncReplacesUnmanagedFileAndSymlink() async throws {
+        let fileLayout = try SkillsTestLayout(label: "authorized-file")
+        defer { fileLayout.remove() }
+        let fileSource = fileLayout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: fileSource, value: "from file")
+        let fileService = fileLayout.service()
+        let fileSkill = try await fileService.importLocal(from: fileSource)
+        let fileTarget = fileLayout.home.appendingPathComponent(".cursor/skills/\(fileSkill.id)")
+        try FileManager.default.createDirectory(
+            at: fileTarget.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("unmanaged file".utf8).write(to: fileTarget)
+        let fileConflicts = try await fileService.syncConflicts(id: fileSkill.id, toolKeys: ["cursor"])
+        XCTAssertEqual(fileConflicts.count, 1)
+
+        _ = try await fileService.sync(
+            id: fileSkill.id,
+            toolKeys: ["cursor"],
+            mode: .copy,
+            authorizing: fileConflicts
+        )
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: fileTarget), .directory)
+        XCTAssertEqual(try testSkillValue(at: fileTarget), "from file")
+
+        let linkLayout = try SkillsTestLayout(label: "authorized-link")
+        defer { linkLayout.remove() }
+        let linkSource = linkLayout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: linkSource, value: "from link")
+        let linkService = linkLayout.service()
+        let linkSkill = try await linkService.importLocal(from: linkSource)
+        let linkTarget = linkLayout.home.appendingPathComponent(".config/agents/skills/\(linkSkill.id)")
+        let destination = linkLayout.sandbox.appendingPathComponent("user-destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("preserve".utf8).write(to: destination.appendingPathComponent("user.txt"))
+        try FileManager.default.createDirectory(
+            at: linkTarget.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: linkTarget, withDestinationURL: destination)
+        let linkConflicts = try await linkService.syncConflicts(id: linkSkill.id, toolKeys: ["amp"])
+        XCTAssertEqual(linkConflicts.count, 1)
+
+        _ = try await linkService.sync(
+            id: linkSkill.id,
+            toolKeys: ["amp"],
+            mode: .copy,
+            authorizing: linkConflicts
+        )
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: linkTarget), .directory)
+        XCTAssertEqual(try testSkillValue(at: linkTarget), "from link")
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("user.txt"), encoding: .utf8),
+            "preserve"
+        )
+    }
+}
+
+private final class SkillsFileMoveProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    func record(_ target: URL) {
+        lock.lock()
+        counts[target.standardizedFileURL.path, default: 0] += 1
+        lock.unlock()
+    }
+
+    func count(for target: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts[target.standardizedFileURL.path, default: 0]
     }
 }

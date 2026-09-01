@@ -125,7 +125,7 @@ pub fn run() {
             update_state, update_check, update_download, update_apply, update_set_auto,
             skills_list, skills_status, skills_detail, skills_read_file, skills_tools,
             skills_pick_local, skills_scan_local, skills_import_local, skills_import_git,
-            skills_refresh, skills_update, skills_delete, skills_sync, skills_unsync,
+            skills_refresh, skills_update, skills_delete, skills_sync_conflicts, skills_sync, skills_unsync,
             skills_set_tags, skills_open_root,
             selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_export, selfcheck_import, selfcheck_popover
         ])

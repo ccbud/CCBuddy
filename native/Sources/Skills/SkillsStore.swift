@@ -1,6 +1,12 @@
 import Combine
 import Foundation
 
+enum SkillsSyncAttempt {
+    case succeeded
+    case confirmationRequired([SkillSyncConflict])
+    case failed
+}
+
 @MainActor
 final class SkillsStore: ObservableObject {
     @Published private(set) var snapshot: SkillsSnapshot
@@ -110,12 +116,45 @@ final class SkillsStore: ObservableObject {
         let succeeded = await mutate(skillID: id) { [service] in
             _ = try await service.remove(id: id)
         }
-        if succeeded, selectedDetail?.skill.id == id { selectedDetail = nil }
+        if succeeded.succeeded, selectedDetail?.skill.id == id { selectedDetail = nil }
     }
 
-    func sync(id: String, toolKeys: [String], mode: SkillSyncMode = .auto) async {
-        await mutate(skillID: id) { [service] in
-            _ = try await service.sync(id: id, toolKeys: toolKeys, mode: mode)
+    func syncConflicts(id: String, toolKeys: [String]) async -> [SkillSyncConflict]? {
+        beginOperation(skillID: id)
+        defer { endOperation(skillID: id) }
+        do {
+            let conflicts = try await service.syncConflicts(id: id, toolKeys: toolKeys)
+            errorMessage = nil
+            return conflicts
+        } catch {
+            errorMessage = skillErrorMessage(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func sync(
+        id: String,
+        toolKeys: [String],
+        mode: SkillSyncMode = .auto,
+        authorizing conflicts: [SkillSyncConflict] = []
+    ) async -> SkillsSyncAttempt {
+        let result = await mutate(skillID: id) { [service] in
+            _ = try await service.sync(
+                id: id,
+                toolKeys: toolKeys,
+                mode: mode,
+                authorizing: conflicts
+            )
+        }
+        switch result {
+        case .succeeded:
+            return .succeeded
+        case .failed(let error as SkillSyncConfirmationRequired):
+            errorMessage = nil
+            return .confirmationRequired(error.conflicts)
+        case .failed:
+            return .failed
         }
     }
 
@@ -143,11 +182,21 @@ final class SkillsStore: ObservableObject {
         errorMessage = nil
     }
 
+    private enum MutationResult {
+        case succeeded
+        case failed(Error)
+
+        var succeeded: Bool {
+            if case .succeeded = self { return true }
+            return false
+        }
+    }
+
     @discardableResult
     private func mutate(
         skillID: String?,
         operation: () async throws -> Void
-    ) async -> Bool {
+    ) async -> MutationResult {
         beginOperation(skillID: skillID)
         defer { endOperation(skillID: skillID) }
         do {
@@ -169,10 +218,10 @@ final class SkillsStore: ObservableObject {
                     selectedDetail = nil
                 }
             }
-            return true
+            return .succeeded
         } catch {
             errorMessage = skillErrorMessage(error)
-            return false
+            return .failed(error)
         }
     }
 

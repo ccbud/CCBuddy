@@ -40,6 +40,20 @@ pub fn skill_dir_at(root: &Path, id: &str) -> Result<PathBuf, String> {
 
 pub fn existing_skill_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
     let root = ensure_root_at(root)?;
+    existing_skill_dir_at(&root, id)
+}
+
+pub fn existing_skill_dir_readonly(root: &Path, id: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|_| format!("skill not found: {id}"))?;
+    if !root.is_dir() {
+        return Err(format!("skill not found: {id}"));
+    }
+    existing_skill_dir_at(&root, id)
+}
+
+fn existing_skill_dir_at(root: &Path, id: &str) -> Result<PathBuf, String> {
     let path = skill_dir_at(&root, id)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|_| format!("skill not found: {id}"))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
@@ -48,7 +62,7 @@ pub fn existing_skill_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("resolve skill {id}: {e}"))?;
-    if canonical.parent() != Some(root.as_path()) || !regular_file(&canonical.join("SKILL.md")) {
+    if canonical.parent() != Some(root) || !regular_file(&canonical.join("SKILL.md")) {
         return Err(format!("invalid skill directory: {id}"));
     }
     Ok(canonical)

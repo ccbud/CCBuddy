@@ -21,16 +21,45 @@ pub fn operation_lock() -> MutexGuard<'static, ()> {
 pub fn load(root: &Path) -> Result<SkillsIndex, String> {
     let path = root.join(INDEX_NAME);
     recover_backup(root)?;
-    if let Ok(meta) = std::fs::symlink_metadata(&path) {
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err("skills index is not a regular file".into());
+    load_index_file(&path, "skills index")
+}
+
+pub fn load_readonly(root: &Path) -> Result<SkillsIndex, String> {
+    let path = root.join(INDEX_NAME);
+    match read_index_file(&path, "skills index")? {
+        Some(raw) => decode_index(&path, raw),
+        None => {
+            let backup = root.join(BACKUP_NAME);
+            match read_index_file(&backup, "skills index backup")? {
+                Some(raw) => decode_index(&backup, raw),
+                None => Ok(SkillsIndex::default()),
+            }
         }
     }
-    let raw = match std::fs::read(&path) {
-        Ok(value) => value,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SkillsIndex::default()),
-        Err(e) => return Err(format!("read skills index {}: {e}", path.display())),
-    };
+}
+
+fn load_index_file(path: &Path, label: &str) -> Result<SkillsIndex, String> {
+    match read_index_file(path, label)? {
+        Some(raw) => decode_index(path, raw),
+        None => Ok(SkillsIndex::default()),
+    }
+}
+
+fn read_index_file(path: &Path, label: &str) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {}
+        Ok(_) => return Err(format!("{label} is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("inspect {label}: {error}")),
+    }
+    match std::fs::read(path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read {label} {}: {error}", path.display())),
+    }
+}
+
+fn decode_index(path: &Path, raw: Vec<u8>) -> Result<SkillsIndex, String> {
     if raw.len() > 8 * 1024 * 1024 {
         return Err("skills index is unexpectedly large".into());
     }

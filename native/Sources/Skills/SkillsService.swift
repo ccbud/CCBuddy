@@ -249,6 +249,65 @@ actor LiveSkillsService: SkillsManaging {
         )
     }
 
+    func saveIndexAndCommit(
+        root: URL,
+        previousIndex: SkillIndexDocument,
+        updatedIndex: SkillIndexDocument,
+        transactions: [SkillFileTransaction]
+    ) throws {
+        do {
+            try indexRepository.save(root: root, document: updatedIndex)
+        } catch {
+            throw rollbackTransactions(transactions, original: error)
+        }
+
+        do {
+            for transaction in transactions { try transaction.validateCommit() }
+        } catch {
+            var message = "Cannot commit Skills file transaction: \(skillErrorMessage(error))"
+            do {
+                try rollbackTransactions(transactions)
+            } catch {
+                message += "; target recovery failed: \(skillErrorMessage(error))"
+            }
+            do {
+                try indexRepository.restore(root: root, document: previousIndex)
+            } catch {
+                message += "; index recovery failed: \(skillErrorMessage(error))"
+            }
+            throw SkillPathSafety.failure(message)
+        }
+
+        transactions.forEach { $0.finalizeCommit() }
+    }
+
+    private func rollbackTransactions(
+        _ transactions: [SkillFileTransaction],
+        original: Error
+    ) -> SkillsServiceError {
+        var message = skillErrorMessage(original)
+        do {
+            try rollbackTransactions(transactions)
+        } catch {
+            message += "; rollback failed: \(skillErrorMessage(error))"
+        }
+        return SkillPathSafety.failure(message)
+    }
+
+    private func rollbackTransactions(_ transactions: [SkillFileTransaction]) throws {
+        var failures: [String] = []
+        for transaction in transactions.reversed() {
+            do {
+                try transaction.rollback()
+            } catch {
+                failures.append(skillErrorMessage(error))
+            }
+        }
+        if !failures.isEmpty {
+            throw SkillPathSafety.failure(failures.joined(separator: "; "))
+        }
+    }
+
     func ensureRoot() throws -> URL {
         try SkillPathSafety.ensureRoot(configuredRoot, fileManager: fileManager)
     }

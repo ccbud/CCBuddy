@@ -138,6 +138,29 @@ struct SkillsServiceError: Error, LocalizedError, Equatable, Sendable {
     var errorDescription: String? { message }
 }
 
+struct SkillSyncConflict: Identifiable, Equatable, Hashable, Sendable {
+    var id: String { "\(skillID):\(path.standardizedFileURL.path)" }
+
+    let skillID: String
+    let path: URL
+    let toolKeys: [String]
+    let fingerprintToken: String
+}
+
+struct SkillSyncConfirmationRequired: Error, LocalizedError, Equatable, Sendable {
+    let conflicts: [SkillSyncConflict]
+
+    var errorDescription: String? {
+        guard let first = conflicts.first else {
+            return "Sync requires confirmation"
+        }
+        if conflicts.count == 1 {
+            return "Target already exists and requires confirmation before it can be replaced: \(first.path.path)"
+        }
+        return "\(conflicts.count) targets already exist and require confirmation before they can be replaced"
+    }
+}
+
 struct SkillIndexDocument: Codable {
     var version: Int
     var skills: [String: SkillIndexEntry]
@@ -218,8 +241,20 @@ protocol SkillsManaging: Sendable {
     func refreshUpdates(id: String?) async throws -> SkillsSnapshot
     func update(id: String) async throws -> ManagedSkill
     func remove(id: String) async throws -> Bool
-    func sync(id: String, toolKeys: [String], mode: SkillSyncMode) async throws -> ManagedSkill
+    func syncConflicts(id: String, toolKeys: [String]) async throws -> [SkillSyncConflict]
+    func sync(
+        id: String,
+        toolKeys: [String],
+        mode: SkillSyncMode,
+        authorizing: [SkillSyncConflict]
+    ) async throws -> ManagedSkill
     func unsync(id: String, toolKeys: [String]) async throws -> ManagedSkill
     func setTags(id: String, tags: [String]) async throws -> ManagedSkill
     func rootURL() async -> URL
+}
+
+extension SkillsManaging {
+    func sync(id: String, toolKeys: [String], mode: SkillSyncMode) async throws -> ManagedSkill {
+        try await sync(id: id, toolKeys: toolKeys, mode: mode, authorizing: [])
+    }
 }

@@ -45,8 +45,15 @@ function values(form) {
 async function applyOptions(installed, opts, ctx) {
   const list = Array.isArray(installed) ? installed : installed ? [installed] : [];
   const outcomes = [];
+  let authorized = [];
+  if (list.length && opts.targets.length) {
+    const operations = list.map((skill) => ({ id: skill.id, targetKeys: opts.targets, mode: opts.mode }));
+    authorized = await ctx.authorizeSyncOperations(operations);
+    if (!authorized) return { list, outcomes };
+  }
   if (opts.tags.length) outcomes.push(...await ctx.settleBatch(list, (skill) => ctx.api.setTags(skill.id, opts.tags)));
-  if (opts.targets.length) outcomes.push(...await ctx.settleBatch(list, (skill) => ctx.api.sync(skill.id, opts.targets, opts.mode)));
+  if (opts.targets.length) outcomes.push(...await ctx.settleBatch(authorized, (operation) =>
+    ctx.syncAuthorizedOperation(operation)));
   return { list, outcomes };
 }
 

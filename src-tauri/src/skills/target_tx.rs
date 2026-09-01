@@ -5,6 +5,17 @@ pub struct SyncTransaction {
     finished: bool,
 }
 
+pub struct CommitFailure {
+    transaction: SyncTransaction,
+    message: String,
+}
+
+impl CommitFailure {
+    pub fn into_parts(self) -> (SyncTransaction, String) {
+        (self.transaction, self.message)
+    }
+}
+
 impl SyncTransaction {
     pub fn new() -> Self {
         Self {
@@ -17,11 +28,30 @@ impl SyncTransaction {
         self.swaps.push(swap);
     }
 
-    pub fn commit(mut self) {
+    pub fn append(&mut self, mut other: SyncTransaction) {
+        self.swaps.append(&mut other.swaps);
+        other.finished = true;
+    }
+
+    pub fn validate_for_commit(&self) -> Result<(), String> {
+        for swap in &self.swaps {
+            swap.validate_for_commit()?;
+        }
+        Ok(())
+    }
+
+    pub fn commit(mut self) -> Result<(), CommitFailure> {
+        if let Err(message) = self.validate_for_commit() {
+            return Err(CommitFailure {
+                transaction: self,
+                message,
+            });
+        }
         for swap in &mut self.swaps {
             swap.commit();
         }
         self.finished = true;
+        Ok(())
     }
 
     pub fn rollback(mut self) -> Result<(), String> {
@@ -31,6 +61,9 @@ impl SyncTransaction {
     }
 
     fn rollback_inner(&mut self) -> Result<(), String> {
+        for swap in self.swaps.iter().rev() {
+            swap.validate_for_rollback()?;
+        }
         let mut errors = Vec::new();
         for swap in self.swaps.iter_mut().rev() {
             if let Err(error) = swap.rollback() {
@@ -54,40 +87,30 @@ impl Drop for SyncTransaction {
 }
 
 pub struct TargetSwap {
-    root: PathBuf,
-    target: PathBuf,
-    backup: Option<PathBuf>,
-    remove_current: bool,
-    rolled_back: bool,
+    pub(super) root: PathBuf,
+    pub(super) target: PathBuf,
+    pub(super) backup: Option<PathBuf>,
+    pub(super) backup_guard: Option<super::model::SyncConflictDto>,
+    pub(super) current_guard: TargetStateGuard,
+    pub(super) remove_current: bool,
+    pub(super) rolled_back: bool,
     pub actual_mode: String,
 }
 
-impl TargetSwap {
-    fn commit(&mut self) {
-        if let Some(backup) = self.backup.take() {
-            let _ = super::paths::remove_direct_child(&self.root, &backup);
-        }
-    }
+pub(super) enum TargetStateGuard {
+    Missing,
+    Present(super::model::SyncConflictDto),
+}
 
-    fn rollback(&mut self) -> Result<(), String> {
-        if self.rolled_back {
-            return Ok(());
-        }
-        if self.remove_current {
-            super::paths::remove_direct_child(&self.root, &self.target)?;
-        } else if std::fs::symlink_metadata(&self.target).is_ok() {
-            return Err(format!(
-                "target reappeared during rollback: {}",
-                self.target.display()
-            ));
-        }
-        if let Some(backup) = &self.backup {
-            std::fs::rename(backup, &self.target)
-                .map_err(|e| format!("restore target {}: {e}", self.target.display()))?;
-            self.backup = None;
-        }
-        self.rolled_back = true;
-        Ok(())
+pub(super) fn validate_guard(
+    expected: &super::model::SyncConflictDto,
+    logical_target: &Path,
+    state_path: &Path,
+    label: &str,
+) -> Result<(), String> {
+    match super::target_fingerprint::matches_confirmation(expected, logical_target, state_path)? {
+        true => Ok(()),
+        false => Err(format!("{label} changed during synchronization")),
     }
 }
 
@@ -97,50 +120,21 @@ pub fn prepare(
     target: &Path,
     mode: &str,
 ) -> Result<TargetSwap, String> {
-    if target.parent() != Some(root) {
-        return Err(format!("target is outside {}", root.display()));
-    }
-    let stage = super::transfer::unique_hidden(root, "sync-stage");
-    let backup = super::transfer::unique_hidden(root, "sync-backup");
-    let actual_mode = match create_staged(source, &stage, mode) {
-        Ok(actual) => actual,
-        Err(error) => {
-            let _ = super::paths::remove_direct_child(root, &stage);
-            return Err(error);
-        }
-    };
-    let had_target = match std::fs::symlink_metadata(target) {
-        Ok(_) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            let _ = super::paths::remove_direct_child(root, &stage);
-            return Err(format!("inspect target {}: {error}", target.display()));
-        }
-    };
-    if had_target {
-        if let Err(error) = std::fs::rename(target, &backup) {
-            let _ = super::paths::remove_direct_child(root, &stage);
-            return Err(format!("backup target {}: {error}", target.display()));
-        }
-    }
-    if let Err(error) = std::fs::rename(&stage, target) {
-        let restore = had_target.then(|| std::fs::rename(&backup, target));
-        let _ = super::paths::remove_direct_child(root, &stage);
-        return match restore {
-            Some(Err(restore)) => Err(format!(
-                "replace target {}: {error}; restore failed: {restore}",
+    super::target_prepare::prepare(
+        source,
+        root,
+        target,
+        mode,
+        &super::target_prepare::Expectation::Unchecked,
+    )
+    .map_err(|error| match error {
+        super::target_prepare::PrepareError::Changed => {
+            format!(
+                "target changed during synchronization: {}",
                 target.display()
-            )),
-            _ => Err(format!("replace target {}: {error}", target.display())),
-        };
-    }
-    Ok(TargetSwap {
-        root: root.to_path_buf(),
-        target: target.to_path_buf(),
-        backup: had_target.then_some(backup),
-        remove_current: true,
-        rolled_back: false,
-        actual_mode,
+            )
+        }
+        super::target_prepare::PrepareError::Failed(message) => message,
     })
 }
 
@@ -153,13 +147,22 @@ pub fn prepare_remove(root: &Path, target: &Path) -> Result<Option<TargetSwap>, 
         Err(error) => return Err(format!("inspect target {}: {error}", target.display())),
         Ok(_) => {}
     }
+    let backup_guard = super::target_fingerprint::capture_state(target, target)?;
     let backup = super::transfer::unique_hidden(root, "remove-backup");
-    std::fs::rename(target, &backup)
+    super::target_stage::install_noreplace(target, &backup)
         .map_err(|e| format!("stage removal {}: {e}", target.display()))?;
+    if let Err(error) = validate_guard(&backup_guard, target, &backup, "removal backup") {
+        if std::fs::symlink_metadata(target).is_err() {
+            let _ = super::target_stage::install_noreplace(&backup, target);
+        }
+        return Err(error);
+    }
     Ok(Some(TargetSwap {
         root: root.to_path_buf(),
         target: target.to_path_buf(),
         backup: Some(backup),
+        backup_guard: Some(backup_guard),
+        current_guard: TargetStateGuard::Missing,
         remove_current: false,
         rolled_back: false,
         actual_mode: String::new(),
@@ -173,33 +176,23 @@ pub fn rollback_error(transaction: SyncTransaction, error: String) -> String {
     }
 }
 
-fn create_staged(source: &Path, stage: &Path, mode: &str) -> Result<String, String> {
-    if mode == "copy" {
-        super::transfer::copy_directory(source, stage)?;
-        return Ok("copy".into());
-    }
-    match create_symlink(source, stage) {
-        Ok(()) => Ok("symlink".into()),
-        Err(error) if mode == "auto" => {
-            if let Some(root) = stage.parent() {
-                let _ = super::paths::remove_direct_child(root, stage);
+pub fn commit_after_index_save(
+    transaction: SyncTransaction,
+    root: &Path,
+    previous_index: &super::model::SkillsIndex,
+) -> Result<(), String> {
+    match transaction.commit() {
+        Ok(()) => Ok(()),
+        Err(failure) => {
+            let (transaction, message) = failure.into_parts();
+            let mut failures = vec![message];
+            if let Err(error) = transaction.rollback() {
+                failures.push(format!("rollback failed: {error}"));
             }
-            super::transfer::copy_directory(source, stage)
-                .map_err(|copy| format!("symlink failed ({error}); copy failed ({copy})"))?;
-            Ok("copy".into())
+            if let Err(error) = super::index::save(root, previous_index) {
+                failures.push(format!("restore skills index failed: {error}"));
+            }
+            Err(failures.join("; "))
         }
-        Err(error) => Err(error),
     }
-}
-
-#[cfg(unix)]
-fn create_symlink(source: &Path, target: &Path) -> Result<(), String> {
-    std::os::unix::fs::symlink(source, target)
-        .map_err(|e| format!("create symlink {}: {e}", target.display()))
-}
-
-#[cfg(windows)]
-fn create_symlink(source: &Path, target: &Path) -> Result<(), String> {
-    std::os::windows::fs::symlink_dir(source, target)
-        .map_err(|e| format!("create directory link {}: {e}", target.display()))
 }

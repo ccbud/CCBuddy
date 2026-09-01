@@ -110,6 +110,35 @@ pub struct SkillsStatusDto {
     pub synced_count: usize,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SyncConflictDto {
+    pub skill_id: String,
+    pub path: String,
+    pub keys: Vec<String>,
+    pub fingerprint_token: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum SkillsSyncErrorDto {
+    ConfirmationRequired { conflicts: Vec<SyncConflictDto> },
+    Failed { message: String },
+}
+
+impl From<String> for SkillsSyncErrorDto {
+    fn from(message: String) -> Self {
+        Self::Failed { message }
+    }
+}
+
+impl From<&str> for SkillsSyncErrorDto {
+    fn from(message: &str) -> Self {
+        Self::Failed {
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ToolDto {
     pub key: String,

@@ -9,6 +9,14 @@ mod remove;
 mod resync;
 mod scan;
 mod sync;
+mod sync_abort;
+mod sync_plan;
+mod target_fingerprint;
+mod target_identity;
+mod target_prepare;
+mod target_prepare_hooks;
+mod target_rollback;
+mod target_stage;
 mod target_tx;
 mod tool_specs_a;
 mod tool_specs_b;
@@ -18,6 +26,12 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_commit_guards;
+#[cfg(test)]
+mod tests_conflict_guards;
+#[cfg(test)]
+mod tests_conflicts;
+#[cfg(test)]
 mod tests_safety;
 #[cfg(test)]
 mod tests_tx;
@@ -26,7 +40,10 @@ mod tests_tx_commit;
 #[cfg(test)]
 mod tests_validation;
 
-pub use model::{LocalCandidateDto, SkillDetailDto, SkillDto, SkillsStatusDto, ToolDto};
+pub use model::{
+    LocalCandidateDto, SkillDetailDto, SkillDto, SkillsStatusDto, SkillsSyncErrorDto,
+    SyncConflictDto, ToolDto,
+};
 
 pub fn root() -> Result<std::path::PathBuf, String> {
     paths::root()
@@ -72,8 +89,17 @@ pub fn delete(id: &str) -> Result<bool, String> {
     remove::delete(&root()?, &paths::home_dir()?, id)
 }
 
-pub fn sync(id: &str, keys: Vec<String>, mode: Option<&str>) -> Result<SkillDto, String> {
-    ops::sync(&root()?, &paths::home_dir()?, id, keys, mode)
+pub fn sync(
+    id: &str,
+    keys: Vec<String>,
+    mode: Option<&str>,
+    authorizing: Vec<SyncConflictDto>,
+) -> Result<SkillDto, SkillsSyncErrorDto> {
+    ops::sync(&root()?, &paths::home_dir()?, id, keys, mode, authorizing)
+}
+
+pub fn sync_conflicts(id: &str, keys: Vec<String>) -> Result<Vec<SyncConflictDto>, String> {
+    ops::sync_conflicts(&root()?, &paths::home_dir()?, id, keys)
 }
 
 pub fn unsync(id: &str, keys: Vec<String>) -> Result<SkillDto, String> {

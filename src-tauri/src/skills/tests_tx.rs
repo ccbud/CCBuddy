@@ -62,13 +62,29 @@ fn failed_copy_cleans_stage_and_can_be_retried() {
     let managed = root.join(&skill.id);
     std::os::unix::fs::symlink(source.join("value.txt"), managed.join("bad-link")).unwrap();
 
-    assert!(ops::sync(&root, &home, &skill.id, vec!["amp".into()], Some("copy")).is_err());
+    assert!(ops::sync(
+        &root,
+        &home,
+        &skill.id,
+        vec!["amp".into()],
+        Some("copy"),
+        vec![],
+    )
+    .is_err());
     let target_root = home.join(".config/agents/skills");
     assert!(!target_root.join(&skill.id).exists());
     assert!(!has_staging(&target_root));
 
     std::fs::remove_file(managed.join("bad-link")).unwrap();
-    let retried = ops::sync(&root, &home, &skill.id, vec!["amp".into()], Some("copy")).unwrap();
+    let retried = ops::sync(
+        &root,
+        &home,
+        &skill.id,
+        vec!["amp".into()],
+        Some("copy"),
+        vec![],
+    )
+    .unwrap();
     assert_eq!(retried.targets[0].sync_mode, "copy");
 }
 
@@ -93,6 +109,7 @@ fn later_target_failure_rolls_back_an_earlier_target() {
         &skill.id,
         vec!["cursor".into(), "amp".into()],
         Some("copy"),
+        vec![],
     );
     std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.is_err());
@@ -116,6 +133,7 @@ fn cursor_always_uses_a_real_copy() {
         &skill.id,
         vec!["cursor".into()],
         Some("symlink"),
+        vec![],
     )
     .unwrap();
     let target = home.join(".cursor/skills").join(&skill.id);

@@ -96,6 +96,7 @@ pub fn update_source(root: &Path, home: &Path, id: &str) -> Result<SkillDto, Str
     let _guard = super::index::operation_lock();
     let root = super::paths::ensure_root_at(root)?;
     let mut index = super::index::load(&root)?;
+    let previous_index = index.clone();
     super::catalog::reconcile(&root, &mut index)?;
     let original = index
         .skills
@@ -136,21 +137,15 @@ pub fn update_source(root: &Path, home: &Path, id: &str) -> Result<SkillDto, Str
     meta.updated_at = super::scan::modified_ms(&destination.join("SKILL.md"));
     meta.status = "ok".into();
     let transaction = super::resync::all(&destination, id, home, &mut meta.targets);
-    if let Err(error) = super::index::save(&root, &index) {
-        return Err(rollback_update(transaction, central_transaction, error));
+    central_transaction.append(transaction);
+    if let Err(error) = central_transaction.validate_for_commit() {
+        return Err(super::target_tx::rollback_error(central_transaction, error));
     }
-    transaction.commit();
-    central_transaction.commit();
+    if let Err(error) = super::index::save(&root, &index) {
+        return Err(super::target_tx::rollback_error(central_transaction, error));
+    }
+    super::target_tx::commit_after_index_save(central_transaction, &root, &previous_index)?;
     super::catalog::dto_by_id(&root, &index, id)
-}
-
-fn rollback_update(
-    targets: super::target_tx::SyncTransaction,
-    central: super::target_tx::SyncTransaction,
-    error: String,
-) -> String {
-    let error = super::target_tx::rollback_error(targets, error);
-    super::target_tx::rollback_error(central, error)
 }
 
 fn relative_subdir(root: &Path, source: &Path) -> Result<String, String> {

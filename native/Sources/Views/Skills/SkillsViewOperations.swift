@@ -121,10 +121,41 @@ extension SkillsView {
         guard !availableSkills.isEmpty, !toolKeys.isEmpty else { return }
         batchErrorMessage = nil
         Task {
-            _ = await runBatch(availableSkills) { skill in
-                await store.sync(id: skill.id, toolKeys: toolKeys, mode: mode)
+            let plans = uniqueSkills(availableSkills).map {
+                SkillsSyncPlan(skill: $0, syncKeys: toolKeys, removeKeys: [], mode: mode)
             }
+            reportBatchErrors(await requestSync(plans))
         }
+    }
+
+    func queueBulkSync(
+        _ skills: [ManagedSkill],
+        keys: [String],
+        mode: SkillSyncMode
+    ) {
+        deferredBulkSync = SkillsDeferredBulkSync(skills: skills, keys: keys, mode: mode)
+    }
+
+    func performDeferredBulkSync() {
+        guard let request = deferredBulkSync else { return }
+        deferredBulkSync = nil
+        syncNow(request.skills, keys: request.keys, mode: request.mode)
+    }
+
+    func confirmOverwrite() {
+        guard let context = overwriteContext else { return }
+        overwriteContext = nil
+        batchErrorMessage = nil
+        Task {
+            reportBatchErrors(await executeSync(
+                context.plans,
+                authorizing: context.conflicts
+            ))
+        }
+    }
+
+    func cancelOverwrite() {
+        overwriteContext = nil
     }
 
     func applyDetailSyncSettings(
@@ -138,22 +169,14 @@ extension SkillsView {
         guard !syncKeys.isEmpty || !removeKeys.isEmpty else { return }
         batchErrorMessage = nil
         Task {
-            var combined = SkillsBatchResult(succeeded: 0, errors: [])
-            if !removeKeys.isEmpty {
-                let result = await runBatch([skill], reportErrors: false) { skill in
-                    await store.unsync(id: skill.id, toolKeys: removeKeys)
-                }
-                combined.succeeded += result.succeeded
-                combined.errors.append(contentsOf: result.errors)
-            }
-            if !syncKeys.isEmpty {
-                let result = await runBatch([skill], reportErrors: false) { skill in
-                    await store.sync(id: skill.id, toolKeys: syncKeys, mode: mode)
-                }
-                combined.succeeded += result.succeeded
-                combined.errors.append(contentsOf: result.errors)
-            }
-            reportBatchErrors(combined)
+            reportBatchErrors(await requestSync([
+                SkillsSyncPlan(
+                    skill: skill,
+                    syncKeys: syncKeys,
+                    removeKeys: removeKeys,
+                    mode: mode
+                )
+            ]))
         }
     }
 
@@ -333,12 +356,16 @@ private extension SkillsView {
             combined.errors.append(contentsOf: result.errors)
         }
         if !toolKeys.isEmpty {
-            let result = await runBatch(
-                skills.filter { !$0.isSourceUnavailable },
-                reportErrors: false
-            ) { skill in
-                await store.sync(id: skill.id, toolKeys: toolKeys, mode: mode)
-            }
+            let result = await requestSync(
+                uniqueSkills(skills.filter { !$0.isSourceUnavailable }).map {
+                    SkillsSyncPlan(
+                        skill: $0,
+                        syncKeys: toolKeys,
+                        removeKeys: [],
+                        mode: mode
+                    )
+                }
+            )
             combined.succeeded += result.succeeded
             combined.errors.append(contentsOf: result.errors)
         }
@@ -427,6 +454,97 @@ private extension SkillsView {
         return result
     }
 
+    func requestSync(_ plans: [SkillsSyncPlan]) async -> SkillsBatchResult {
+        let plans = normalizedSyncPlans(plans)
+        guard !plans.isEmpty else { return SkillsBatchResult(succeeded: 0, errors: []) }
+        var ready: [SkillsSyncPlan] = []
+        var conflicts: [SkillSyncConflict] = []
+        var result = SkillsBatchResult(succeeded: 0, errors: [])
+
+        for plan in plans {
+            if !plan.syncKeys.isEmpty {
+                store.clearError()
+                guard let found = await store.syncConflicts(
+                    id: plan.skill.id,
+                    toolKeys: plan.syncKeys
+                ) else {
+                    result.errors.append(
+                        "\(plan.skill.name): \(store.errorMessage ?? appLanguage.localized("无法检查同步目标"))"
+                    )
+                    continue
+                }
+                conflicts.append(contentsOf: found)
+            }
+            ready.append(plan)
+        }
+
+        let uniqueConflicts = uniqueSyncConflicts(conflicts)
+        if !uniqueConflicts.isEmpty {
+            overwriteContext = SkillsOverwriteContext(
+                plans: ready,
+                conflicts: uniqueConflicts
+            )
+            return result
+        }
+
+        let executed = await executeSync(ready, authorizing: [])
+        result.succeeded += executed.succeeded
+        result.errors.append(contentsOf: executed.errors)
+        return result
+    }
+
+    func executeSync(
+        _ plans: [SkillsSyncPlan],
+        authorizing conflicts: [SkillSyncConflict]
+    ) async -> SkillsBatchResult {
+        var result = SkillsBatchResult(succeeded: 0, errors: [])
+        var pendingPlans: [SkillsSyncPlan] = []
+        var pendingConflicts: [SkillSyncConflict] = []
+
+        for plan in normalizedSyncPlans(plans) {
+            if !plan.syncKeys.isEmpty {
+                store.clearError()
+                switch await store.sync(
+                    id: plan.skill.id,
+                    toolKeys: plan.syncKeys,
+                    mode: plan.mode,
+                    authorizing: conflicts
+                ) {
+                case .succeeded:
+                    result.succeeded += 1
+                case .confirmationRequired(let updatedConflicts):
+                    pendingPlans.append(plan)
+                    pendingConflicts.append(contentsOf: updatedConflicts)
+                    continue
+                case .failed:
+                    result.errors.append(
+                        "\(plan.skill.name): \(store.errorMessage ?? appLanguage.localized("同步失败"))"
+                    )
+                    continue
+                }
+            }
+
+            if !plan.removeKeys.isEmpty {
+                store.clearError()
+                await store.unsync(id: plan.skill.id, toolKeys: plan.removeKeys)
+                if let message = store.errorMessage {
+                    result.errors.append("\(plan.skill.name): \(message)")
+                } else {
+                    result.succeeded += 1
+                }
+            }
+        }
+
+        let uniquePendingConflicts = uniqueSyncConflicts(pendingConflicts)
+        if !uniquePendingConflicts.isEmpty {
+            overwriteContext = SkillsOverwriteContext(
+                plans: pendingPlans,
+                conflicts: uniquePendingConflicts
+            )
+        }
+        return result
+    }
+
     func reportBatchErrors(_ result: SkillsBatchResult) {
         guard let firstError = result.errors.first else { return }
         let summary = appLanguage.localized(
@@ -448,5 +566,29 @@ private extension SkillsView {
     func uniqueSkills(_ skills: [ManagedSkill]) -> [ManagedSkill] {
         var seen = Set<String>()
         return skills.filter { seen.insert($0.id).inserted }
+    }
+
+    func normalizedSyncPlans(_ plans: [SkillsSyncPlan]) -> [SkillsSyncPlan] {
+        var seen = Set<String>()
+        return plans.compactMap { plan in
+            guard seen.insert(plan.skill.id).inserted else { return nil }
+            let syncKeys = uniqueValues(plan.syncKeys)
+            let syncing = Set(syncKeys)
+            let removeKeys = uniqueValues(plan.removeKeys).filter { !syncing.contains($0) }
+            guard !syncKeys.isEmpty || !removeKeys.isEmpty else { return nil }
+            return SkillsSyncPlan(
+                skill: plan.skill,
+                syncKeys: syncKeys,
+                removeKeys: removeKeys,
+                mode: plan.mode
+            )
+        }
+    }
+
+    func uniqueSyncConflicts(_ conflicts: [SkillSyncConflict]) -> [SkillSyncConflict] {
+        var seen = Set<String>()
+        return conflicts.filter {
+            seen.insert("\($0.skillID)\u{0}\($0.path.standardizedFileURL.path)").inserted
+        }
     }
 }

@@ -1,4 +1,7 @@
-use crate::skills::{LocalCandidateDto, SkillDetailDto, SkillDto, SkillsStatusDto, ToolDto};
+use crate::skills::{
+    LocalCandidateDto, SkillDetailDto, SkillDto, SkillsStatusDto, SkillsSyncErrorDto,
+    SyncConflictDto, ToolDto,
+};
 
 #[tauri::command]
 pub(crate) async fn skills_list() -> Result<Vec<SkillDto>, String> {
@@ -89,16 +92,28 @@ pub(crate) async fn skills_delete(id: String) -> Result<bool, String> {
 
 #[tauri::command]
 #[allow(non_snake_case)]
+pub(crate) async fn skills_sync_conflicts(
+    id: String,
+    targetKeys: Vec<String>,
+) -> Result<Vec<SyncConflictDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::skills::sync_conflicts(&id, targetKeys))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
 pub(crate) async fn skills_sync(
     id: String,
     targetKeys: Vec<String>,
     mode: Option<String>,
-) -> Result<SkillDto, String> {
+    authorizing: Vec<SyncConflictDto>,
+) -> Result<SkillDto, SkillsSyncErrorDto> {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::skills::sync(&id, targetKeys, mode.as_deref())
+        crate::skills::sync(&id, targetKeys, mode.as_deref(), authorizing)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|error| SkillsSyncErrorDto::from(error.to_string()))?
 }
 
 #[tauri::command]

@@ -15,6 +15,25 @@ struct SkillsSyncContext: Identifiable {
     let skills: [ManagedSkill]
 }
 
+struct SkillsSyncPlan {
+    let skill: ManagedSkill
+    let syncKeys: [String]
+    let removeKeys: [String]
+    let mode: SkillSyncMode
+}
+
+struct SkillsOverwriteContext: Identifiable {
+    let id = UUID()
+    let plans: [SkillsSyncPlan]
+    let conflicts: [SkillSyncConflict]
+}
+
+struct SkillsDeferredBulkSync {
+    let skills: [ManagedSkill]
+    let keys: [String]
+    let mode: SkillSyncMode
+}
+
 struct SkillsDeleteContext: Identifiable {
     let id = UUID()
     let skills: [ManagedSkill]
@@ -42,6 +61,8 @@ struct SkillsView: View {
     @State var detailSelection: SkillsDetailSelection?
     @State var tagsContext: SkillsTagsContext?
     @State var syncContext: SkillsSyncContext?
+    @State var overwriteContext: SkillsOverwriteContext?
+    @State var deferredBulkSync: SkillsDeferredBulkSync?
     @State var deleteContext: SkillsDeleteContext?
     @State var batchErrorMessage: String?
     @State var deferredDetailAction: SkillsDeferredDetailAction?
@@ -93,6 +114,12 @@ struct SkillsView: View {
                 unsync: unsync,
                 delete: deferDeletionFromDetail
             )
+            .modifier(SkillsOverwriteConfirmationModifier(
+                context: $overwriteContext,
+                active: true,
+                confirm: confirmOverwrite,
+                cancel: cancelOverwrite
+            ))
         }
         .sheet(item: $tagsContext) { context in
             SkillsTagEditorSheet(
@@ -102,9 +129,9 @@ struct SkillsView: View {
                 apply: { setTags($0, for: context.skills) }
             )
         }
-        .sheet(item: $syncContext) { context in
+        .sheet(item: $syncContext, onDismiss: performDeferredBulkSync) { context in
             SkillsBulkSyncSheet(skills: context.skills, tools: store.snapshot.tools) {
-                syncNow(context.skills, keys: $0, mode: $1)
+                queueBulkSync(context.skills, keys: $0, mode: $1)
             }
         }
         .confirmationDialog(
@@ -120,6 +147,12 @@ struct SkillsView: View {
         } message: {
             Text(deleteMessage)
         }
+        .modifier(SkillsOverwriteConfirmationModifier(
+            context: $overwriteContext,
+            active: detailSelection == nil && tagsContext == nil && syncContext == nil,
+            confirm: confirmOverwrite,
+            cancel: cancelOverwrite
+        ))
         .overlay(alignment: .topTrailing) {
             if store.isBusy {
                 ProgressView()
@@ -172,6 +205,52 @@ struct SkillsView: View {
         case .tags: tags
         case .tools: tools
         case .updates: updates
+        }
+    }
+}
+
+private struct SkillsOverwriteConfirmationModifier: ViewModifier {
+    @Binding var context: SkillsOverwriteContext?
+    let active: Bool
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    @Environment(\.appLanguage) private var appLanguage
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            appLanguage.localized("覆盖现有 Skill？"),
+            isPresented: Binding(
+                get: { active && context != nil },
+                set: { if !$0 { cancel() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(appLanguage.localized("覆盖并同步"), role: .destructive, action: confirm)
+            Button(appLanguage.localized("取消"), role: .cancel, action: cancel)
+        } message: {
+            Text(overwriteMessage)
+        }
+    }
+
+    private var overwriteMessage: String {
+        guard let context else { return "" }
+        let paths = uniquePaths(context.conflicts).joined(separator: "\n")
+        if context.conflicts.count == 1 {
+            return appLanguage.localized(
+                "目标位置已存在同名 Skill，覆盖后原内容将被替换：\n\(paths)"
+            )
+        }
+        return appLanguage.localized(
+            "发现 \(context.conflicts.count) 个未受管理的同名 Skills，覆盖后原内容将被替换：\n\(paths)"
+        )
+    }
+
+    private func uniquePaths(_ conflicts: [SkillSyncConflict]) -> [String] {
+        var seen = Set<String>()
+        return conflicts.compactMap { conflict in
+            let path = conflict.path.standardizedFileURL.path
+            return seen.insert(path).inserted ? path : nil
         }
     }
 }

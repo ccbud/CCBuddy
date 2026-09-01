@@ -98,6 +98,7 @@ dependencies = [
  "chrono",
  "flate2",
  "futures-util",
+ "libc",
  "llm-connector",
  "log",
  "notify-debouncer-mini",

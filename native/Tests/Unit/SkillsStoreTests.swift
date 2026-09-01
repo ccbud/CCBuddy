@@ -6,9 +6,12 @@ actor SkillsStoreFakeService: SkillsManaging {
     let root: URL
     let skill: ManagedSkill
     let candidate: SkillLocalCandidate
+    let syncConflict: SkillSyncConflict?
+    private var authorizedSyncCount = 0
 
-    init(root: URL) {
+    init(root: URL, syncConflict: SkillSyncConflict? = nil) {
         self.root = root
+        self.syncConflict = syncConflict
         skill = ManagedSkill(
             id: "demo",
             name: "Demo",
@@ -48,8 +51,26 @@ actor SkillsStoreFakeService: SkillsManaging {
     func refreshUpdates(id: String?) -> SkillsSnapshot { SkillsSnapshot(root: root, skills: [skill], tools: []) }
     func update(id: String) throws -> ManagedSkill { throw unsupported() }
     func sync(id: String, toolKeys: [String], mode: SkillSyncMode) throws -> ManagedSkill { throw unsupported() }
+    func syncConflicts(id: String, toolKeys: [String]) async -> [SkillSyncConflict] {
+        syncConflict.map { [$0] } ?? []
+    }
+    func sync(
+        id: String,
+        toolKeys: [String],
+        mode: SkillSyncMode,
+        authorizing: [SkillSyncConflict]
+    ) async throws -> ManagedSkill {
+        guard let syncConflict else { throw unsupported() }
+        guard authorizing.contains(syncConflict) else {
+            throw SkillSyncConfirmationRequired(conflicts: [syncConflict])
+        }
+        authorizedSyncCount += 1
+        return skill
+    }
     func unsync(id: String, toolKeys: [String]) throws -> ManagedSkill { throw unsupported() }
     func setTags(id: String, tags: [String]) throws -> ManagedSkill { throw unsupported() }
+
+    func successfulAuthorizedSyncs() -> Int { authorizedSyncCount }
 
     private func unsupported() -> SkillsServiceError {
         SkillsServiceError(message: "unsupported")
@@ -132,5 +153,46 @@ final class SkillsStoreTests: XCTestCase {
             SkillsSyncPanel.keysToRemove(for: skill, selectedKeys: []),
             Set(["codex"])
         )
+    }
+
+    func testSyncSurfacesTypedConfirmationAndAcceptsExactAuthorization() async {
+        let root = URL(fileURLWithPath: "/tmp/skills-store-conflict", isDirectory: true)
+        let conflict = SkillSyncConflict(
+            skillID: "demo",
+            path: root.appendingPathComponent("target/demo", isDirectory: true),
+            toolKeys: ["codex"],
+            fingerprintToken: "fingerprint"
+        )
+        let service = SkillsStoreFakeService(root: root, syncConflict: conflict)
+        let store = SkillsStore(service: service, initialRoot: root)
+
+        await store.refresh()
+        let preview = await store.syncConflicts(id: "demo", toolKeys: ["codex"])
+        XCTAssertEqual(preview, [conflict])
+
+        switch await store.sync(id: "demo", toolKeys: ["codex"], mode: .copy) {
+        case .confirmationRequired(let conflicts):
+            XCTAssertEqual(conflicts, [conflict])
+        case .succeeded, .failed:
+            XCTFail("An unmanaged target must require confirmation")
+        }
+        XCTAssertNil(store.errorMessage)
+        XCTAssertFalse(store.isBusy)
+
+        switch await store.sync(
+            id: "demo",
+            toolKeys: ["codex"],
+            mode: .copy,
+            authorizing: [conflict]
+        ) {
+        case .succeeded:
+            break
+        case .confirmationRequired, .failed:
+            XCTFail("The exact conflict authorization should permit sync")
+        }
+        let successfulAuthorizedSyncs = await service.successfulAuthorizedSyncs()
+        XCTAssertEqual(successfulAuthorizedSyncs, 1)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertFalse(store.isBusy)
     }
 }

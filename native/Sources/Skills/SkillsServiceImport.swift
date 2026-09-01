@@ -8,7 +8,8 @@ extension LiveSkillsService {
     private func importLocalLocked(from source: URL) throws -> ManagedSkill {
         let root = try ensureRoot()
         let source = try transactions.validateSource(source)
-        var index = try indexRepository.load(root: root)
+        let previousIndex = try indexRepository.load(root: root)
+        var index = previousIndex
         _ = try reconcile(root: root, index: &index)
         if let existingID = index.skills.keys.sorted().first(where: { id in
             guard let entry = index.skills[id],
@@ -37,12 +38,12 @@ extension LiveSkillsService {
                 now: now
             )
         )
-        do {
-            try indexRepository.save(root: root, document: index)
-        } catch {
-            throw rollbackError(transaction, original: error)
-        }
-        transaction.commit()
+        try saveIndexAndCommit(
+            root: root,
+            previousIndex: previousIndex,
+            updatedIndex: index,
+            transactions: [transaction]
+        )
         return try makeSkill(id: id, root: root, index: index)
     }
 
@@ -65,7 +66,8 @@ extension LiveSkillsService {
         guard !candidates.isEmpty else {
             throw SkillPathSafety.failure("Git repository does not contain SKILL.md")
         }
-        var index = try indexRepository.load(root: root)
+        let previousIndex = try indexRepository.load(root: root)
+        var index = previousIndex
         _ = try reconcile(root: root, index: &index)
         let transaction = SkillFileTransaction()
         var ids: [String] = []
@@ -104,11 +106,15 @@ extension LiveSkillsService {
                 )
                 ids.append(id)
             }
-            try indexRepository.save(root: root, document: index)
+            try saveIndexAndCommit(
+                root: root,
+                previousIndex: previousIndex,
+                updatedIndex: index,
+                transactions: [transaction]
+            )
         } catch {
             throw rollbackError(transaction, original: error)
         }
-        transaction.commit()
         return try ids.map { try makeSkill(id: $0, root: root, index: index) }
     }
 
@@ -119,7 +125,8 @@ extension LiveSkillsService {
     private func updateLocked(id: String) throws -> ManagedSkill {
         let root = try ensureRoot()
         try SkillPathSafety.validateID(id)
-        var index = try indexRepository.load(root: root)
+        let previousIndex = try indexRepository.load(root: root)
+        var index = previousIndex
         _ = try reconcile(root: root, index: &index)
         guard var metadata = index.skills[id] else {
             throw SkillPathSafety.failure("Skill not found: \(id)")
@@ -193,20 +200,12 @@ extension LiveSkillsService {
             validatedPaths: validatedTargetPaths
         )
         index.skills[id] = metadata
-        do {
-            try indexRepository.save(root: root, document: index)
-        } catch {
-            var message = skillErrorMessage(error)
-            do { try targetTransaction.rollback() } catch {
-                message += "; target rollback failed: \(skillErrorMessage(error))"
-            }
-            do { try centralTransaction.rollback() } catch {
-                message += "; central rollback failed: \(skillErrorMessage(error))"
-            }
-            throw SkillPathSafety.failure(message)
-        }
-        targetTransaction.commit()
-        centralTransaction.commit()
+        try saveIndexAndCommit(
+            root: root,
+            previousIndex: previousIndex,
+            updatedIndex: index,
+            transactions: [centralTransaction, targetTransaction]
+        )
         return try makeSkill(id: id, root: root, index: index)
     }
 

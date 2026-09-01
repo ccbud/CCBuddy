@@ -218,6 +218,7 @@
 "断开接入" = "Disconnect";
 "断开中…" = "Disconnecting…";
 "发布记录" = "Releases";
+"发现 {count} 个未受管理的同名 Skills，覆盖后原内容将被替换：\n{paths}" = "Found {count} unmanaged Skills with the same names. Replacing them will overwrite their current contents:\n{paths}";
 "发现 v{version}。下载后会先验证发布者签名、应用签名和公证。" = "Version v{version} is available. The publisher signature, app signature, and notarization will be verified after download.";
 "发现候选 Skills" = "Discovered Skills";
 "发现新版本 {v}，需要重新安装。" = "Version {v} is available — please reinstall.";
@@ -249,6 +250,8 @@
 "复制脱敏内容（部分）" = "Copy redacted content (partial)";
 "复制网关地址" = "Copy gateway address";
 "复制原文" = "Copy original";
+"覆盖并同步" = "Replace and Sync";
+"覆盖现有 Skill？" = "Replace the existing Skill?";
 "该对话将被隐藏并移入回收站，之后可以在回收站中恢复。" = "This conversation will be hidden and moved to the recycle bin. You can restore it later.";
 "该服务的 API 协议；非 Anthropic 请求会被自动转换。" = "The provider's wire protocol; non-Anthropic requests are auto-translated.";
 "该请求的详情已不可用（仅保留最近 100 条转发的完整报文）。" = "This request’s detail is no longer available (only the last 100 forwards keep full payloads).";
@@ -280,6 +283,7 @@
 "更新网关访问令牌失败 · {error}；恢复先前状态失败：{recoveryError}" = "Could not update the gateway access token · {error}; restoring the previous state also failed: {recoveryError}";
 "更新于 {date}" = "Updated {date}";
 "工具" = "Tool";
+"工具：{tools}" = "Tools: {tools}";
 "工具管理" = "Tool management";
 "工具结果" = "Tool result";
 "工具失败" = "Tool failed";
@@ -358,6 +362,7 @@
 "加入故障转移队列失败" = "Could not add to the failover queue";
 "加载中…" = "Loading…";
 "监控" = "Monitor";
+"检测到 {count} 个同步目录已包含不受本应用管理的内容。继续操作会用所选 Skills 替换这些目录。" = "{count} sync folders already contain content that isn’t managed by this app. Continuing will replace them with the selected Skills.";
 "检测到未完成的 CLI 配置恢复记录：{paths}。请先按照 journal.json 恢复原始文件并移除恢复目录" = "Unfinished CLI configuration recovery records were found at: {paths}. Restore the original files using journal.json and remove the recovery directories before continuing";
 "检查 Git 来源的 Skills 是否有上游变更，并应用更新。" = "Check Git-based Skills for upstream changes and apply updates.";
 "检查更新" = "Check for updates";
@@ -449,6 +454,7 @@
 "默认" = "Default";
 "默认位置不可移除" = "The default location can't be removed";
 "目标工具" = "Target tools";
+"目标位置已存在同名 Skill，覆盖后原内容将被替换：\n{paths}" = "A Skill with the same name already exists at the target. Replacing it will overwrite its current contents:\n{paths}";
 "目录 / 会话" = "Directory / sessions";
 "目录不存在" = "Directory not found";
 "内容" = "Content";
@@ -628,6 +634,8 @@
 "索引只是原始会话文件的一份可重建副本。删除它不会影响任何 CLI 写下的会话；下次启动会重新扫描。" = "The index is only a rebuildable copy of the original session files. Deleting it affects nothing your CLIs wrote; the next launch scans again.";
 "特大" = "X-Large";
 "提示" = "Notice";
+"替换并同步" = "Replace and sync";
+"替换现有同步目录？" = "Replace existing sync folders?";
 "天" = "d";
 "添加" = "Add";
 "添加 Skill" = "Add Skill";
@@ -654,6 +662,7 @@
 "同步目标" = "Sync targets";
 "同步全部 Skills" = "Sync all Skills";
 "同步设置" = "Sync settings";
+"同步失败" = "Sync failed";
 "同步所选" = "Sync selected";
 "同步状态" = "Sync status";
 "图片" = "Image";
@@ -731,6 +740,7 @@
 "无法恢复先前的 Bifrost 服务" = "Could not restore the previous Bifrost service";
 "无法检查 CLI 配置恢复记录：{error}" = "Could not inspect CLI configuration recovery records: {error}";
 "无法检查会话文件：{error}" = "Could not inspect the conversation file: {error}";
+"无法检查同步目标" = "Unable to inspect sync targets";
 "无法解析 Bifrost 响应：{detail}" = "Could not decode the Bifrost response: {detail}";
 "无法扫描所选文件夹。" = "Couldn’t scan the selected folder.";
 "无法生成 {destination} 复盘链接" = "Could not create a {destination} replay link";

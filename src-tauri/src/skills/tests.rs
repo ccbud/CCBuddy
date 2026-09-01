@@ -89,6 +89,7 @@ fn shared_tool_directory_is_created_and_removed_once() {
         &skill.id,
         vec!["amp".into(), "kimi_cli".into()],
         Some("copy"),
+        vec![],
     )
     .unwrap();
     assert_eq!(synced.targets.len(), 2);

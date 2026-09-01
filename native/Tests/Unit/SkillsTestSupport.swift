@@ -54,9 +54,17 @@ func hasSkillsTransactionArtifacts(in root: URL) -> Bool {
     }
     return entries.contains { entry in
         entry.lastPathComponent.hasPrefix(".ccbud-sync-") ||
+            entry.lastPathComponent.hasPrefix(".ccbud-commit-cleanup-") ||
+            entry.lastPathComponent.hasPrefix(".ccbud-rollback-current-") ||
             entry.lastPathComponent.hasPrefix(".ccbud-remove-backup-") ||
             entry.lastPathComponent.hasPrefix(".ccbud-git-")
     }
+}
+
+func syncBackup(in root: URL) throws -> URL? {
+    try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        .first { $0.lastPathComponent.hasPrefix(".ccbud-sync-backup-") }
 }
 
 final class SkillsBeforeFileMoveMutationGate: @unchecked Sendable {
@@ -123,6 +131,34 @@ final class SkillsIndexMutationFailureGate: @unchecked Sendable {
         guard let action else { return }
         try action()
         throw SkillsServiceError(message: "Injected index commit failure after target mutation")
+    }
+}
+
+final class SkillsIndexMutationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable () throws -> Void)?
+    private var count = 0
+
+    func arm(action: @escaping @Sendable () throws -> Void) {
+        lock.lock()
+        self.action = action
+        count = 0
+        lock.unlock()
+    }
+
+    func beforeCommit() throws {
+        lock.lock()
+        let action = action
+        self.action = nil
+        count += 1
+        lock.unlock()
+        try action?()
+    }
+
+    var invocationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
     }
 }
 

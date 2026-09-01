@@ -5,29 +5,90 @@ private struct SkillSyncOutcome {
     var ownership: SkillTargetOwnership
 }
 
+private struct SkillSyncTargetRequest {
+    var target: URL
+    var toolKeys: [String]
+}
+
+private struct SkillSyncPreflight {
+    var expectedStates: [String: SkillExpectedTargetState]
+    var confirmationRequired: [SkillSyncConflict]
+}
+
 enum SkillRecordedTargetValidation {
     case valid(SkillExpectedTargetState)
     case invalid
 }
 
 extension LiveSkillsService {
-    func sync(id: String, toolKeys: [String], mode: SkillSyncMode) throws -> ManagedSkill {
-        try withProcessLock { try syncLocked(id: id, toolKeys: toolKeys, mode: mode) }
+    func syncConflicts(id: String, toolKeys: [String]) async throws -> [SkillSyncConflict] {
+        try withProcessLock {
+            guard !toolKeys.isEmpty else {
+                throw SkillPathSafety.failure("Select at least one target tool")
+            }
+            let root = try ensureRoot()
+            let source = try SkillPathSafety.existingSkillDirectory(root: root, id: id)
+            var index = try indexRepository.load(root: root)
+            _ = try reconcile(root: root, index: &index)
+            guard let metadata = index.skills[id] else {
+                throw SkillPathSafety.failure("Skill not found: \(id)")
+            }
+            let preflight = try syncPreflight(
+                source: source,
+                id: id,
+                keys: orderedUniqueKeys(toolKeys),
+                targets: metadata.targets,
+                authorizing: []
+            )
+            return preflight.confirmationRequired
+        }
     }
 
-    private func syncLocked(id: String, toolKeys: [String], mode: SkillSyncMode) throws -> ManagedSkill {
+    func sync(
+        id: String,
+        toolKeys: [String],
+        mode: SkillSyncMode,
+        authorizing: [SkillSyncConflict]
+    ) async throws -> ManagedSkill {
+        try withProcessLock {
+            try syncLocked(
+                id: id,
+                toolKeys: toolKeys,
+                mode: mode,
+                authorizing: authorizing
+            )
+        }
+    }
+
+    private func syncLocked(
+        id: String,
+        toolKeys: [String],
+        mode: SkillSyncMode,
+        authorizing: [SkillSyncConflict]
+    ) throws -> ManagedSkill {
         guard !toolKeys.isEmpty else {
             throw SkillPathSafety.failure("Select at least one target tool")
         }
         let root = try ensureRoot()
         let source = try SkillPathSafety.existingSkillDirectory(root: root, id: id)
-        var index = try indexRepository.load(root: root)
+        let previousIndex = try indexRepository.load(root: root)
+        var index = previousIndex
         _ = try reconcile(root: root, index: &index)
         guard var metadata = index.skills[id] else {
             throw SkillPathSafety.failure("Skill not found: \(id)")
         }
+        let originalTargets = metadata.targets
         let keys = orderedUniqueKeys(toolKeys)
-        try preflightTargets(source: source, id: id, keys: keys, targets: metadata.targets)
+        let preflight = try syncPreflight(
+            source: source,
+            id: id,
+            keys: keys,
+            targets: metadata.targets,
+            authorizing: authorizing
+        )
+        guard preflight.confirmationRequired.isEmpty else {
+            throw SkillSyncConfirmationRequired(conflicts: preflight.confirmationRequired)
+        }
         var outcomes: [String: SkillSyncOutcome] = [:]
         let transaction = SkillFileTransaction()
         do {
@@ -39,14 +100,9 @@ extension LiveSkillsService {
                 if let existing = outcomes[pathKey] {
                     outcome = existing
                 } else {
-                    let recorded = metadata.targets.filter {
-                        $0.path.standardizedFileURL.path == target.standardizedFileURL.path
+                    guard let expectedState = preflight.expectedStates[pathKey] else {
+                        throw SkillPathSafety.failure("Target path changed after sync preflight: \(target.path)")
                     }
-                    let expectedState = try validatedTargetState(
-                        source: source,
-                        target: target,
-                        recorded: recorded
-                    )
                     let swap = try transactions.prepareReplacement(
                         source: source,
                         root: targetRoot,
@@ -84,11 +140,39 @@ extension LiveSkillsService {
             }
             metadata.targets.sort { $0.key < $1.key }
             index.skills[id] = metadata
-            try indexRepository.save(root: root, document: index)
+            try saveIndexAndCommit(
+                root: root,
+                previousIndex: previousIndex,
+                updatedIndex: index,
+                transactions: [transaction]
+            )
         } catch {
-            throw rollbackError(transaction, original: error)
+            let originalError = error
+            do {
+                try transaction.rollback()
+            } catch {
+                throw SkillPathSafety.failure(
+                    "\(skillErrorMessage(originalError)); rollback failed: \(skillErrorMessage(error))"
+                )
+            }
+            let initiallyMissingPaths = Set(preflight.expectedStates.compactMap { path, state in
+                state == .missing ? path : nil
+            })
+            let refreshedPreflight = try syncPreflight(
+                source: source,
+                id: id,
+                keys: keys,
+                targets: originalTargets,
+                authorizing: authorizing,
+                unmanagedRecordedPaths: initiallyMissingPaths
+            )
+            guard refreshedPreflight.confirmationRequired.isEmpty else {
+                throw SkillSyncConfirmationRequired(
+                    conflicts: refreshedPreflight.confirmationRequired
+                )
+            }
+            throw originalError
         }
-        transaction.commit()
         return try makeSkill(id: id, root: root, index: index)
     }
 
@@ -98,7 +182,8 @@ extension LiveSkillsService {
 
     private func unsyncLocked(id: String, toolKeys: [String]) throws -> ManagedSkill {
         let root = try ensureRoot()
-        var index = try indexRepository.load(root: root)
+        let previousIndex = try indexRepository.load(root: root)
+        var index = previousIndex
         _ = try reconcile(root: root, index: &index)
         guard var metadata = index.skills[id] else {
             throw SkillPathSafety.failure("Skill not found: \(id)")
@@ -134,11 +219,15 @@ extension LiveSkillsService {
             }
             metadata.targets = remaining
             index.skills[id] = metadata
-            try indexRepository.save(root: root, document: index)
+            try saveIndexAndCommit(
+                root: root,
+                previousIndex: previousIndex,
+                updatedIndex: index,
+                transactions: [transaction]
+            )
         } catch {
             throw rollbackError(transaction, original: error)
         }
-        transaction.commit()
         return try makeSkill(id: id, root: root, index: index)
     }
 
@@ -149,7 +238,8 @@ extension LiveSkillsService {
     private func removeLocked(id: String) throws -> Bool {
         let root = try ensureRoot()
         try SkillPathSafety.validateID(id)
-        var index = try indexRepository.load(root: root)
+        let previousIndex = try indexRepository.load(root: root)
+        var index = previousIndex
         _ = try reconcile(root: root, index: &index)
         let central = root.appendingPathComponent(id, isDirectory: true)
         let existed = try SkillPathSafety.entryKind(at: central) != .missing || index.skills[id] != nil
@@ -175,11 +265,15 @@ extension LiveSkillsService {
                 transaction.append(swap)
             }
             index.skills.removeValue(forKey: id)
-            try indexRepository.save(root: root, document: index)
+            try saveIndexAndCommit(
+                root: root,
+                previousIndex: previousIndex,
+                updatedIndex: index,
+                transactions: [transaction]
+            )
         } catch {
             throw rollbackError(transaction, original: error)
         }
-        transaction.commit()
         return existed
     }
 
@@ -272,25 +366,63 @@ extension LiveSkillsService {
             : values
     }
 
-    private func preflightTargets(
+    private func syncPreflight(
         source: URL,
         id: String,
         keys: [String],
-        targets: [SkillTarget]
-    ) throws {
+        targets: [SkillTarget],
+        authorizing: [SkillSyncConflict],
+        unmanagedRecordedPaths: Set<String> = []
+    ) throws -> SkillSyncPreflight {
+        let authorized = Set(authorizing)
+        var expectedStates: [String: SkillExpectedTargetState] = [:]
+        var conflicts: [SkillSyncConflict] = []
+        for request in try syncTargetRequests(id: id, keys: keys) {
+            let target = request.target
+            let path = target.standardizedFileURL.path
+            let recorded = targets.filter {
+                $0.path.standardizedFileURL.path == path
+            }
+            let isUnmanaged = recorded.isEmpty || unmanagedRecordedPaths.contains(path)
+            let expectedState = try isUnmanaged
+                ? transactions.currentTargetState(at: target)
+                : validatedTargetState(source: source, target: target, recorded: recorded)
+            expectedStates[path] = expectedState
+            guard isUnmanaged,
+                  let fingerprintToken = transactions.fingerprintToken(for: expectedState)
+            else {
+                continue
+            }
+            let conflict = SkillSyncConflict(
+                skillID: id,
+                path: target.standardizedFileURL,
+                toolKeys: request.toolKeys.sorted(),
+                fingerprintToken: fingerprintToken
+            )
+            conflicts.append(conflict)
+        }
+        conflicts.sort { $0.path.path < $1.path.path }
+        let confirmationRequired = conflicts.allSatisfy { authorized.contains($0) }
+            ? []
+            : conflicts
+        return SkillSyncPreflight(
+            expectedStates: expectedStates,
+            confirmationRequired: confirmationRequired
+        )
+    }
+
+    private func syncTargetRequests(id: String, keys: [String]) throws -> [SkillSyncTargetRequest] {
+        var requests: [String: SkillSyncTargetRequest] = [:]
         for key in keys {
             let root = try resolvedTargetRoot(key: key, create: false)
-            let target = root.appendingPathComponent(id, isDirectory: true)
-            let recorded = targets.filter {
-                $0.path.standardizedFileURL.path == target.standardizedFileURL.path
+            let target = root.appendingPathComponent(id, isDirectory: true).standardizedFileURL
+            let path = target.path
+            if requests[path] == nil {
+                requests[path] = SkillSyncTargetRequest(target: target, toolKeys: [])
             }
-            if try SkillPathSafety.entryKind(at: target) != .missing {
-                guard !recorded.isEmpty else {
-                    throw SkillPathSafety.failure("Target already exists and is unmanaged: \(target.path)")
-                }
-                _ = try validatedTargetState(source: source, target: target, recorded: recorded)
-            }
+            requests[path]?.toolKeys.append(key)
         }
+        return requests.values.sorted { $0.target.path < $1.target.path }
     }
 
     private func resolvedTargetRoot(key: String, create: Bool) throws -> URL {

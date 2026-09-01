@@ -62,7 +62,10 @@ export const api = {
   skillsDelete: (id) => inv('skills_delete', { id }),
   skillsRefresh: (id) => inv('skills_refresh', { id: id == null ? null : id }),
   skillsUpdate: (id) => inv('skills_update', { id }),
-  skillsSync: (id, targetKeys, mode) => inv('skills_sync', { id, targetKeys, mode: mode || null }),
+  skillsSyncConflicts: (id, targetKeys) => inv('skills_sync_conflicts', { id, targetKeys }),
+  skillsSync: (id, targetKeys, mode, authorizing = []) => inv('skills_sync', {
+    id, targetKeys, mode: mode || null, authorizing,
+  }),
   skillsUnsync: (id, targetKeys) => inv('skills_unsync', { id, targetKeys }),
   skillsSetTags: (id, tags) => inv('skills_set_tags', { id, tags }),
   skillsOpenRoot: () => inv('skills_open_root'),

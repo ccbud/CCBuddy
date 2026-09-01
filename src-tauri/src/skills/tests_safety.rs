@@ -106,7 +106,8 @@ fn sync_preflight_prevents_partial_targets() {
         &home,
         &skill.id,
         vec!["amp".into(), "unknown".into()],
-        Some("copy")
+        Some("copy"),
+        vec![],
     )
     .is_err());
     let amp_target = home.join(".config/agents/skills").join(&skill.id);
@@ -119,7 +120,8 @@ fn sync_preflight_prevents_partial_targets() {
         &home,
         &skill.id,
         vec!["amp".into(), "cursor".into()],
-        Some("copy")
+        Some("copy"),
+        vec![],
     )
     .is_err());
     assert!(!amp_target.exists());

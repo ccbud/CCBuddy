@@ -66,7 +66,15 @@ fn fixture(label: &str) -> (TempDir, PathBuf, PathBuf, PathBuf, String) {
 #[test]
 fn update_save_failure_restores_targets_and_central() {
     let (_temp, root, home, source, id) = fixture("update-rollback");
-    ops::sync(&root, &home, &id, vec!["cursor".into()], Some("copy")).unwrap();
+    ops::sync(
+        &root,
+        &home,
+        &id,
+        vec!["cursor".into()],
+        Some("copy"),
+        vec![],
+    )
+    .unwrap();
     let target = home.join(".cursor/skills").join(&id);
     make_skill(&source, "after");
 
@@ -83,7 +91,15 @@ fn update_save_failure_restores_targets_and_central() {
 #[test]
 fn missing_central_update_rolls_back_and_can_recover() {
     let (_temp, root, home, source, id) = fixture("missing-update");
-    ops::sync(&root, &home, &id, vec!["cursor".into()], Some("copy")).unwrap();
+    ops::sync(
+        &root,
+        &home,
+        &id,
+        vec!["cursor".into()],
+        Some("copy"),
+        vec![],
+    )
+    .unwrap();
     let target = home.join(".cursor/skills").join(&id);
     paths::remove_direct_child(&root, &root.join(&id)).unwrap();
     make_skill(&source, "after");
@@ -131,6 +147,7 @@ fn unsync_save_failure_rolls_back_and_success_commits() {
         &id,
         vec!["cursor".into(), "amp".into()],
         Some("copy"),
+        vec![],
     )
     .unwrap();
     let cursor = home.join(".cursor/skills").join(&id);
@@ -151,7 +168,7 @@ fn unsync_save_failure_rolls_back_and_success_commits() {
 #[test]
 fn delete_save_failure_rolls_back_and_success_commits() {
     let (_temp, root, home, _source, id) = fixture("delete");
-    ops::sync(&root, &home, &id, vec!["amp".into()], Some("copy")).unwrap();
+    ops::sync(&root, &home, &id, vec!["amp".into()], Some("copy"), vec![]).unwrap();
     let central = root.join(&id);
     let target = home.join(".config/agents/skills").join(&id);
 
