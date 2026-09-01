@@ -47,6 +47,18 @@ pub fn version(metadata: &std::fs::Metadata) -> Vec<u8> {
     .into_bytes()
 }
 
+#[cfg(unix)]
+pub fn relocation_version(metadata: &std::fs::Metadata) -> Vec<u8> {
+    use std::os::unix::fs::MetadataExt;
+    format!(
+        "{}:{}:{}",
+        metadata.size(),
+        metadata.mtime(),
+        metadata.mtime_nsec()
+    )
+    .into_bytes()
+}
+
 #[cfg(windows)]
 pub fn version(metadata: &std::fs::Metadata) -> Vec<u8> {
     use std::os::windows::fs::MetadataExt;
@@ -59,6 +71,12 @@ pub fn version(metadata: &std::fs::Metadata) -> Vec<u8> {
     .into_bytes()
 }
 
+#[cfg(windows)]
+pub fn relocation_version(metadata: &std::fs::Metadata) -> Vec<u8> {
+    use std::os::windows::fs::MetadataExt;
+    format!("{}:{}", metadata.file_size(), metadata.last_write_time()).into_bytes()
+}
+
 #[cfg(not(any(unix, windows)))]
 pub fn version(metadata: &std::fs::Metadata) -> Vec<u8> {
     let modified = metadata
@@ -66,4 +84,9 @@ pub fn version(metadata: &std::fs::Metadata) -> Vec<u8> {
         .ok()
         .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok());
     format!("{}:{modified:?}", metadata.len()).into_bytes()
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn relocation_version(metadata: &std::fs::Metadata) -> Vec<u8> {
+    version(metadata)
 }

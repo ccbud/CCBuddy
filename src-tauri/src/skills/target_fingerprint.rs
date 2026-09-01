@@ -115,6 +115,7 @@ fn fingerprint_node(
     let relative = path.strip_prefix(root).unwrap_or(path);
     update_os(digest, relative.as_os_str());
     update_bytes(digest, &before_stable);
+    update_bytes(digest, &super::target_identity::relocation_version(&before));
 
     let file_type = before.file_type();
     if file_type.is_symlink() {
