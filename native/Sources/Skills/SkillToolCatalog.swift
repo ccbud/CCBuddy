@@ -29,7 +29,6 @@ enum SkillToolCatalog {
         .init(key: "continue", label: "Continue", skillsPath: ".continue/skills", detectionPath: ".continue", projectPath: ".continue/skills"),
         .init(key: "crush", label: "Crush", skillsPath: ".config/crush/skills", detectionPath: ".config/crush", projectPath: ".crush/skills"),
         .init(key: "junie", label: "Junie", skillsPath: ".junie/skills", detectionPath: ".junie", projectPath: ".junie/skills"),
-        .init(key: "iflow_cli", label: "iFlow CLI", skillsPath: ".iflow/skills", detectionPath: ".iflow", projectPath: ".iflow/skills"),
         .init(key: "kiro_cli", label: "Kiro CLI", skillsPath: ".kiro/skills", detectionPath: ".kiro", projectPath: ".kiro/skills"),
         .init(key: "kode", label: "Kode", skillsPath: ".kode/skills", detectionPath: ".kode", projectPath: ".kode/skills"),
         .init(key: "mcpjam", label: "MCPJam", skillsPath: ".mcpjam/skills", detectionPath: ".mcpjam", projectPath: ".mcpjam/skills"),

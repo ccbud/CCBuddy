@@ -120,6 +120,7 @@ extension LiveSkillsService {
         let root = try ensureRoot()
         try SkillPathSafety.validateID(id)
         var index = try indexRepository.load(root: root)
+        _ = try reconcile(root: root, index: &index)
         guard var metadata = index.skills[id] else {
             throw SkillPathSafety.failure("Skill not found: \(id)")
         }

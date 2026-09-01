@@ -64,6 +64,17 @@ final class SkillsGitTests: XCTestCase {
         XCTAssertEqual(try testSkillValue(at: layout.root.appendingPathComponent("git-skill")), "one")
         XCTAssertFalse(hasSkillsTransactionArtifacts(in: layout.root))
 
+        let repeated = try await service.importGit(from: source)
+        XCTAssertEqual(repeated.map(\.id), ["git-skill"])
+        let repeatedSnapshot = try await service.snapshot()
+        XCTAssertEqual(repeatedSnapshot.skills.map(\.id), ["git-skill"])
+        let indexData = try Data(contentsOf: layout.root.appendingPathComponent(".ccbud-index.json"))
+        let indexJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: indexData) as? [String: Any])
+        let indexedSkills = try XCTUnwrap(indexJSON["skills"] as? [String: Any])
+        let indexedSkill = try XCTUnwrap(indexedSkills["git-skill"] as? [String: Any])
+        XCTAssertEqual(indexedSkill["source_subdir"] as? String, "nested/skill")
+        XCTAssertEqual(indexedSkill["source_revision"] as? String, "aaaaaaaa")
+
         let current = try await service.refreshUpdates(id: "git-skill")
         XCTAssertEqual(current.skills.first?.status, "ok")
         runner.configure(revision: "bbbbbbbb", value: "two")

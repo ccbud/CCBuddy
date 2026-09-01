@@ -4,6 +4,7 @@ pub fn delete(root: &Path, home: &Path, id: &str) -> Result<bool, String> {
     let _guard = super::index::operation_lock();
     let root = super::paths::ensure_root_at(root)?;
     let mut index = super::index::load(&root)?;
+    super::catalog::reconcile(&root, &mut index)?;
     super::paths::validate_id(id)?;
     let path = root.join(id);
     let existed = std::fs::symlink_metadata(&path).is_ok() || index.skills.contains_key(id);

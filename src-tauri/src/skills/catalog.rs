@@ -108,6 +108,12 @@ pub fn set_tags(root: &Path, id: &str, values: Vec<String>) -> Result<SkillDto, 
 
 pub fn reconcile(root: &Path, index: &mut SkillsIndex) -> Result<bool, String> {
     let mut changed = false;
+    for meta in index.skills.values_mut() {
+        let target_count = meta.targets.len();
+        meta.targets
+            .retain(|target| super::tools::find(&target.key).is_some());
+        changed |= meta.targets.len() != target_count;
+    }
     for (id, path) in super::scan::central_dirs(root)? {
         if !index.skills.contains_key(&id) {
             index.skills.insert(

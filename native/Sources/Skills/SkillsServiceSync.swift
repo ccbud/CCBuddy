@@ -150,6 +150,7 @@ extension LiveSkillsService {
         let root = try ensureRoot()
         try SkillPathSafety.validateID(id)
         var index = try indexRepository.load(root: root)
+        _ = try reconcile(root: root, index: &index)
         let central = root.appendingPathComponent(id, isDirectory: true)
         let existed = try SkillPathSafety.entryKind(at: central) != .missing || index.skills[id] != nil
         let targets = index.skills[id]?.targets ?? []

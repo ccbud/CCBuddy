@@ -39,7 +39,7 @@ final class SkillsServiceTests: XCTestCase {
         XCTAssertEqual(detail.files.map(\.path), ["SKILL.md", "value.txt"])
         let snapshot = try await service.snapshot()
         XCTAssertEqual(snapshot.skills.count, 1)
-        XCTAssertEqual(snapshot.tools.count, 47)
+        XCTAssertEqual(snapshot.tools.count, 46)
         XCTAssertEqual(snapshot.tools.first?.key, "cursor")
         XCTAssertEqual(snapshot.tools.first?.defaultSyncMode, .copy)
         XCTAssertEqual(snapshot.summary.localCount, 1)
@@ -91,10 +91,30 @@ final class SkillsServiceTests: XCTestCase {
             mode: .symlink
         )
         XCTAssertEqual(synced.targets.count, 3)
+        let central = layout.root.appendingPathComponent(skill.id, isDirectory: true)
         let cursor = layout.home.appendingPathComponent(".cursor/skills/\(skill.id)")
         XCTAssertEqual(try SkillPathSafety.entryKind(at: cursor), .directory)
+        XCTAssertEqual(try testSkillValue(at: cursor), "sync")
         let shared = layout.home.appendingPathComponent(".config/agents/skills/\(skill.id)")
         XCTAssertEqual(try SkillPathSafety.entryKind(at: shared), .symlink)
+        for key in ["amp", "kimi_cli"] {
+            let target = try XCTUnwrap(synced.targets.first { $0.key == key })
+            XCTAssertEqual(target.path.standardizedFileURL, shared.standardizedFileURL)
+            XCTAssertEqual(target.syncMode, .symlink)
+        }
+        let rawDestination = try FileManager.default.destinationOfSymbolicLink(atPath: shared.path)
+        let linkDestination = NSString(string: rawDestination).isAbsolutePath
+            ? URL(fileURLWithPath: rawDestination)
+            : shared.deletingLastPathComponent().appendingPathComponent(rawDestination)
+        XCTAssertEqual(
+            linkDestination.standardizedFileURL.resolvingSymlinksInPath(),
+            central.standardizedFileURL.resolvingSymlinksInPath()
+        )
+
+        try Data("central-only".utf8).write(to: central.appendingPathComponent("value.txt"))
+        XCTAssertEqual(try testSkillValue(at: shared), "central-only")
+        XCTAssertEqual(try testSkillValue(at: cursor), "sync")
+        try Data("sync".utf8).write(to: central.appendingPathComponent("value.txt"))
 
         let partly = try await service.unsync(id: skill.id, toolKeys: ["amp"])
         XCTAssertEqual(partly.targets.map(\.key), ["cursor", "kimi_cli"])

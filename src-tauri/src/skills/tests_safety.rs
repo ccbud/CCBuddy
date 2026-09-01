@@ -37,6 +37,17 @@ fn make_skill(path: &Path, name: &str, body: &str) {
     std::fs::write(path.join("value.txt"), body).unwrap();
 }
 
+fn record_retired_target(root: &Path, id: &str, path: &Path) {
+    let mut value = index::load(root).unwrap();
+    value.skills.get_mut(id).unwrap().targets = vec![model::TargetMeta {
+        key: "retired_tool".into(),
+        path: path.to_string_lossy().to_string(),
+        sync_mode: "copy".into(),
+        status: "ok".into(),
+    }];
+    index::save(root, &value).unwrap();
+}
+
 #[test]
 fn index_replaces_existing_file_and_recovers_backup() {
     let temp = TempDir::new("index");
@@ -137,5 +148,61 @@ fn failed_revision_probe_cleans_git_checkout() {
             .file_name()
             .to_string_lossy()
             .starts_with(".ccbud-git-"))
+    );
+}
+
+#[test]
+fn list_persists_retired_target_removal_without_touching_physical_path() {
+    let temp = TempDir::new("retired-list");
+    let root = temp.0.join("root");
+    let home = temp.0.join("home");
+    let source = temp.0.join("source");
+    make_skill(&source, "Retired List", "managed");
+    let skill = install::import_local(&root, &source).unwrap();
+    let orphan = home.join(".retired/skills").join(&skill.id);
+    make_skill(&orphan, "Retired Physical", "keep");
+    record_retired_target(&root, &skill.id, &orphan);
+
+    let listed = catalog::list(&root).unwrap();
+    assert!(listed[0].targets.is_empty());
+    assert!(index::load(&root).unwrap().skills[&skill.id]
+        .targets
+        .is_empty());
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("value.txt")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
+fn update_and_delete_reconcile_retired_targets_without_touching_physical_path() {
+    let temp = TempDir::new("retired-mutations");
+    let root = temp.0.join("root");
+    let home = temp.0.join("home");
+    let source = temp.0.join("source");
+    make_skill(&source, "Retired Mutation", "before");
+    let skill = install::import_local(&root, &source).unwrap();
+    let orphan = home.join(".retired/skills").join(&skill.id);
+    make_skill(&orphan, "Retired Physical", "keep");
+    record_retired_target(&root, &skill.id, &orphan);
+    make_skill(&source, "Retired Mutation", "after");
+
+    let updated = install::update_source(&root, &home, &skill.id).unwrap();
+    assert!(updated.targets.is_empty());
+    assert_eq!(
+        catalog::read_file(&root, &skill.id, "value.txt").unwrap(),
+        "after"
+    );
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("value.txt")).unwrap(),
+        "keep"
+    );
+
+    record_retired_target(&root, &skill.id, &orphan);
+    assert!(remove::delete(&root, &home, &skill.id).unwrap());
+    assert!(!root.join(&skill.id).exists());
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("value.txt")).unwrap(),
+        "keep"
     );
 }

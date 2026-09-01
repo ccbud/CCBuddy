@@ -255,6 +255,15 @@ actor LiveSkillsService: SkillsManaging {
 
     func reconcile(root: URL, index: inout SkillIndexDocument) throws -> Bool {
         var changed = false
+        for id in Array(index.skills.keys) {
+            guard var entry = index.skills[id] else { continue }
+            let targetCount = entry.targets.count
+            entry.targets.removeAll { SkillToolCatalog.spec(for: $0.key) == nil }
+            if entry.targets.count != targetCount {
+                index.skills[id] = entry
+                changed = true
+            }
+        }
         for (id, path) in try scanner.centralDirectories(root: root) where index.skills[id] == nil {
             index.skills[id] = SkillIndexEntry(
                 sourceReference: path.path,

@@ -293,4 +293,66 @@ final class SkillsSafetyTests: XCTestCase {
         XCTAssertTrue(unsynced.targets.isEmpty)
         XCTAssertEqual(try SkillPathSafety.entryKind(at: target), .missing)
     }
+
+    func testSnapshotPersistsRetiredTargetMetadataRemovalWithoutTouchingPhysicalPath() async throws {
+        let layout = try SkillsTestLayout(label: "retired-snapshot")
+        defer { layout.remove() }
+        let source = layout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: source, name: "Retired Snapshot", value: "managed")
+        let service = layout.service()
+        let skill = try await service.importLocal(from: source)
+        let orphan = layout.home.appendingPathComponent(
+            ".retired/skills/\(skill.id)",
+            isDirectory: true
+        )
+        try makeTestSkill(at: orphan, name: "Retired Physical", value: "keep")
+        try recordRetiredTarget(skillID: skill.id, path: orphan, root: layout.root)
+
+        let snapshot = try await service.snapshot()
+        XCTAssertTrue(try XCTUnwrap(snapshot.skills.first).targets.isEmpty)
+        let persisted = try SkillsIndexRepository(fileManager: .default, beforeCommit: {})
+            .load(root: layout.root)
+        XCTAssertTrue(try XCTUnwrap(persisted.skills[skill.id]).targets.isEmpty)
+        XCTAssertEqual(try testSkillValue(at: orphan), "keep")
+    }
+
+    func testUpdateAndDeleteReconcileRetiredTargetsWithoutTouchingPhysicalPath() async throws {
+        let layout = try SkillsTestLayout(label: "retired-mutations")
+        defer { layout.remove() }
+        let source = layout.sandbox.appendingPathComponent("source", isDirectory: true)
+        try makeTestSkill(at: source, name: "Retired Mutation", value: "before")
+        let service = layout.service()
+        let skill = try await service.importLocal(from: source)
+        let orphan = layout.home.appendingPathComponent(
+            ".retired/skills/\(skill.id)",
+            isDirectory: true
+        )
+        try makeTestSkill(at: orphan, name: "Retired Physical", value: "keep")
+        try recordRetiredTarget(skillID: skill.id, path: orphan, root: layout.root)
+        try makeTestSkill(at: source, name: "Retired Mutation", value: "after")
+
+        let updated = try await service.update(id: skill.id)
+        XCTAssertTrue(updated.targets.isEmpty)
+        XCTAssertEqual(try testSkillValue(at: updated.path), "after")
+        XCTAssertEqual(try testSkillValue(at: orphan), "keep")
+
+        try recordRetiredTarget(skillID: skill.id, path: orphan, root: layout.root)
+        let removed = try await service.remove(id: skill.id)
+        XCTAssertTrue(removed)
+        XCTAssertEqual(try SkillPathSafety.entryKind(at: updated.path), .missing)
+        XCTAssertEqual(try testSkillValue(at: orphan), "keep")
+    }
+
+    private func recordRetiredTarget(skillID: String, path: URL, root: URL) throws {
+        let repository = SkillsIndexRepository(fileManager: .default, beforeCommit: {})
+        var document = try repository.load(root: root)
+        var entry = try XCTUnwrap(document.skills[skillID])
+        entry.targets = [SkillTarget(
+            key: "retired_tool",
+            path: path,
+            syncMode: .copy
+        )]
+        document.skills[skillID] = entry
+        try repository.save(root: root, document: document)
+    }
 }

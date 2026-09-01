@@ -96,6 +96,7 @@ pub fn update_source(root: &Path, home: &Path, id: &str) -> Result<SkillDto, Str
     let _guard = super::index::operation_lock();
     let root = super::paths::ensure_root_at(root)?;
     let mut index = super::index::load(&root)?;
+    super::catalog::reconcile(&root, &mut index)?;
     let original = index
         .skills
         .get(id)

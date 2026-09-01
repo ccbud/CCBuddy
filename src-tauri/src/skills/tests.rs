@@ -106,7 +106,7 @@ fn shared_tool_directory_is_created_and_removed_once() {
 fn tool_matrix_and_shared_project_semantics_match_source() {
     let temp = TempDir::new("tools");
     let tools = tools::list(temp.path());
-    assert_eq!(tools.len(), 47);
+    assert_eq!(tools.len(), 46);
     let cursor = tools.iter().find(|tool| tool.key == "cursor").unwrap();
     assert_eq!(cursor.project_path.as_deref(), Some(".agents/skills"));
     assert_eq!(cursor.sync_mode, "copy");

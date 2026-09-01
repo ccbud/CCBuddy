@@ -13,7 +13,7 @@ macro_rules! t {
 }
 
 #[rustfmt::skip]
-pub const TOOLS: [ToolSpec; 24] = [
+pub const TOOLS: [ToolSpec; 23] = [
     t!("cursor", "Cursor", ".cursor/skills", ".cursor", Some(".agents/skills")),
     t!("claude_code", "Claude Code", ".claude/skills", ".claude", Some(".claude/skills")),
     t!("codex", "Codex", ".codex/skills", ".codex", Some(".agents/skills")),
@@ -33,7 +33,6 @@ pub const TOOLS: [ToolSpec; 24] = [
     t!("continue", "Continue", ".continue/skills", ".continue", Some(".continue/skills")),
     t!("crush", "Crush", ".config/crush/skills", ".config/crush", Some(".crush/skills")),
     t!("junie", "Junie", ".junie/skills", ".junie", Some(".junie/skills")),
-    t!("iflow_cli", "iFlow CLI", ".iflow/skills", ".iflow", Some(".iflow/skills")),
     t!("kiro_cli", "Kiro CLI", ".kiro/skills", ".kiro", Some(".kiro/skills")),
     t!("kode", "Kode", ".kode/skills", ".kode", Some(".kode/skills")),
     t!("mcpjam", "MCPJam", ".mcpjam/skills", ".mcpjam", Some(".mcpjam/skills")),
