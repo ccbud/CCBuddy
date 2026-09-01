@@ -33,6 +33,26 @@ final class AppLocalizationTests: XCTestCase {
         XCTAssertEqual(AppLanguage.english.localized("model-id-does-not-translate"), "model-id-does-not-translate")
     }
 
+    func testNativeSkillsLabelsAndTemplatesKeepActionContextAndRuntimeValues() {
+        XCTAssertEqual(AppLanguage.english.localized("skills.nav.tools"), "Tools")
+        XCTAssertEqual(AppLanguage.english.localized("skills.action.update"), "Update")
+        XCTAssertEqual(AppLanguage.english.localized("skills.detail.files"), "Files")
+        XCTAssertEqual(
+            AppLanguage.english.localized("已选择 3 个工具 · 2 个标签"),
+            "3 tools · 2 tags selected"
+        )
+        XCTAssertEqual(AppLanguage.english.localized("更新 Skill formatter"), "Update Skill formatter")
+        XCTAssertEqual(AppLanguage.english.localized("更新 2026-08-31"), "Updated 2026-08-31")
+        XCTAssertEqual(
+            AppLanguage.traditionalChinese.localized("移除 Skill formatter 的同步"),
+            "移除 Skill formatter 的同步"
+        )
+        XCTAssertEqual(
+            AppLanguage.japanese.localized("成功 2 项，失败 1 项。"),
+            "成功 2 件、失敗 1 件。"
+        )
+    }
+
     func testDynamicUsageConversationLifecycleAndPluginTemplatesPreserveRuntimeValues() {
         XCTAssertEqual(
             AppLanguage.english.localized("15 次请求"),

@@ -14,6 +14,11 @@ export function injectIcons(root) {
   (root || document).querySelectorAll('[data-icon]').forEach((el) => {
     const name = el.dataset.icon;
     if (icons[name]) el.innerHTML = icons[name];
+    el.setAttribute('aria-hidden', 'true');
+    el.querySelectorAll('svg').forEach((svg) => {
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+    });
   });
 }
 

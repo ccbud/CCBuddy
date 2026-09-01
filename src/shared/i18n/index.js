@@ -15,31 +15,36 @@ var PARTS = {
     'en-app.js',
     'en-conv.js',
     'en-ops.js',
-    'en-settings.js'
+    'en-settings.js',
+    'en-skills.js'
   ],
   'zh': [
     'zh-app.js',
     'zh-conv.js',
     'zh-ops.js',
-    'zh-settings.js'
+    'zh-settings.js',
+    'zh-skills.js'
   ],
   'zh-TW': [
     'zh-TW-app.js',
     'zh-TW-conv.js',
     'zh-TW-ops.js',
-    'zh-TW-settings.js'
+    'zh-TW-settings.js',
+    'zh-TW-skills.js'
   ],
   'ja': [
     'ja-app.js',
     'ja-conv.js',
     'ja-ops.js',
-    'ja-settings.js'
+    'ja-settings.js',
+    'ja-skills.js'
   ],
   'ko': [
     'ko-app.js',
     'ko-conv.js',
     'ko-ops.js',
-    'ko-settings.js'
+    'ko-settings.js',
+    'ko-skills.js'
   ]
 };
 

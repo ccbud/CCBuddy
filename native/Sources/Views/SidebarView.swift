@@ -57,7 +57,7 @@ struct SidebarView: View {
     /// destination, always on screen, so a row that only re-selected it was a second door into the
     /// room you were already standing in. Settings is a scene reached from the footer gear and ⌘,.
     static let destinations: [AppModel.Destination] = [
-        .timeline, .providers, .monitor, .plugins,
+        .timeline, .providers, .monitor, .plugins, .skills,
     ]
 
     private var wordmark: some View {
