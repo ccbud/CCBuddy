@@ -6,21 +6,44 @@ impl TargetSwap {
         let Some(backup) = self.backup.clone() else {
             return;
         };
-        let cleanup = super::transfer::unique_hidden(&self.root, "commit-backup");
-        if super::target_stage::install_noreplace(&backup, &cleanup).is_err() {
-            return;
-        }
-        self.backup = Some(cleanup.clone());
         if self.validate_backup().is_err() {
-            if std::fs::symlink_metadata(&backup).is_err()
-                && super::target_stage::install_noreplace(&cleanup, &backup).is_ok()
-            {
-                self.backup = Some(backup);
-            }
             return;
         }
-        if super::paths::remove_direct_child(&self.root, &cleanup).is_ok() {
-            self.backup = None;
+        let Some(previous_guard) = self.backup_guard.clone() else {
+            return;
+        };
+        let cleanup = super::transfer::unique_hidden(&self.root, "commit-backup");
+        match super::target_fingerprint::relocate_noreplace(
+            &previous_guard,
+            &self.target,
+            &backup,
+            &cleanup,
+        ) {
+            Ok(refreshed) => {
+                self.backup = Some(cleanup.clone());
+                self.backup_guard = Some(refreshed);
+            }
+            Err(_) => {
+                if std::fs::symlink_metadata(&cleanup).is_ok() {
+                    self.backup = Some(cleanup);
+                    self.restore_commit_cleanup(&backup, &previous_guard);
+                }
+                return;
+            }
+        }
+        let Some(cleanup_guard) = self.backup_guard.clone() else {
+            self.restore_commit_cleanup(&backup, &previous_guard);
+            return;
+        };
+        match super::target_commit_cleanup::remove_guarded(
+            &self.root,
+            &self.target,
+            &cleanup,
+            &cleanup_guard,
+            "commit backup",
+        ) {
+            Ok(()) => self.backup = None,
+            Err(_) => self.restore_commit_cleanup(&backup, &previous_guard),
         }
     }
 
@@ -45,58 +68,96 @@ impl TargetSwap {
             self.validate_current()?;
             None
         };
-        if let Some(backup) = &self.backup {
+        if let Some(backup) = self.backup.clone() {
             if let Err(error) = self.validate_backup() {
-                self.restore_displaced(displaced.as_deref());
-                return Err(error);
+                let restored = self.restore_displaced(displaced.as_deref());
+                return Err(with_restore_error(error, restored));
             }
             if std::fs::symlink_metadata(&self.target).is_ok() {
-                self.restore_displaced(displaced.as_deref());
-                return Err(format!(
+                let error = format!(
                     "target reappeared during restore: {}",
                     self.target.display()
+                );
+                let restored = self.restore_displaced(displaced.as_deref());
+                return Err(with_restore_error(error, restored));
+            }
+            let Some(expected) = self.backup_guard.clone() else {
+                return Err("overwrite backup guard is missing".into());
+            };
+            if let Err(error) = super::target_fingerprint::relocate_noreplace(
+                &expected,
+                &self.target,
+                &backup,
+                &self.target,
+            ) {
+                let restored = self.restore_displaced(displaced.as_deref());
+                return Err(with_restore_error(
+                    format!("restore target {}: {error}", self.target.display()),
+                    restored,
                 ));
-            }
-            if let Err(error) = super::target_stage::install_noreplace(backup, &self.target) {
-                self.restore_displaced(displaced.as_deref());
-                return Err(format!("restore target {}: {error}", self.target.display()));
-            }
-            if let Some(expected) = &self.backup_guard {
-                if let Err(error) = validate_guard(
-                    expected,
-                    &self.target,
-                    &self.target,
-                    "restored overwrite target",
-                ) {
-                    return Err(error);
-                }
             }
             self.backup = None;
         }
         if let Some(displaced) = displaced {
-            self.validate_current_at(&displaced)?;
-            super::paths::remove_direct_child(&self.root, &displaced)?;
+            let guard = match &self.current_guard {
+                TargetStateGuard::Present(guard) => guard.clone(),
+                TargetStateGuard::Missing => {
+                    return Err("rollback cleanup guard is missing".into());
+                }
+            };
+            super::target_commit_cleanup::remove_guarded(
+                &self.root,
+                &self.target,
+                &displaced,
+                &guard,
+                "rollback target",
+            )?;
         }
         self.rolled_back = true;
         Ok(())
     }
 
-    fn displace_current(&self) -> Result<PathBuf, String> {
+    fn displace_current(&mut self) -> Result<PathBuf, String> {
+        self.validate_current()?;
+        let expected = match &self.current_guard {
+            TargetStateGuard::Present(expected) => expected.clone(),
+            TargetStateGuard::Missing => return Err("cannot displace a missing target".into()),
+        };
         let displaced = super::transfer::unique_hidden(&self.root, "rollback-current");
-        super::target_stage::install_noreplace(&self.target, &displaced)
-            .map_err(|error| format!("stage rollback target {}: {error}", self.target.display()))?;
-        if let Err(error) = self.validate_current_at(&displaced) {
-            self.restore_displaced(Some(&displaced));
-            return Err(error);
+        match super::target_fingerprint::relocate_noreplace(
+            &expected,
+            &self.target,
+            &self.target,
+            &displaced,
+        ) {
+            Ok(refreshed) => {
+                self.current_guard = TargetStateGuard::Present(refreshed);
+            }
+            Err(error) => return Err(error),
         }
         Ok(displaced)
     }
 
-    fn restore_displaced(&self, displaced: Option<&Path>) {
-        let Some(displaced) = displaced else { return };
-        if std::fs::symlink_metadata(&self.target).is_err() {
-            let _ = super::target_stage::install_noreplace(displaced, &self.target);
+    fn restore_displaced(&mut self, displaced: Option<&Path>) -> Result<(), String> {
+        let Some(displaced) = displaced else {
+            return Ok(());
+        };
+        self.validate_current_at(displaced)?;
+        let expected = match &self.current_guard {
+            TargetStateGuard::Present(expected) => expected.clone(),
+            TargetStateGuard::Missing => return Err("cannot restore a missing target".into()),
+        };
+        if std::fs::symlink_metadata(&self.target).is_ok() {
+            return Err(format!("target reappeared: {}", self.target.display()));
         }
+        self.current_guard =
+            TargetStateGuard::Present(super::target_fingerprint::relocate_noreplace(
+                &expected,
+                &self.target,
+                displaced,
+                &self.target,
+            )?);
+        Ok(())
     }
 
     pub(super) fn validate_backup(&self) -> Result<(), String> {
@@ -130,5 +191,12 @@ impl TargetSwap {
                 validate_guard(expected, &self.target, state_path, "sync target")
             }
         }
+    }
+}
+
+fn with_restore_error(error: String, restored: Result<(), String>) -> String {
+    match restored {
+        Ok(()) => error,
+        Err(restore) => format!("{error}; restore failed: {restore}"),
     }
 }

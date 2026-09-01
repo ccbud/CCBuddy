@@ -3,6 +3,11 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
 
+pub use super::target_confirmation::{
+    capture_state, confirmation_token, matches_confirmation, relocate_noreplace,
+    retoken_confirmation, revoke_confirmation,
+};
+
 const MAX_DEPTH: usize = 64;
 const MAX_ENTRIES: usize = 30_000;
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -13,67 +18,20 @@ struct Budget {
     bytes: u64,
 }
 
-pub fn confirmation_token(
-    skill_id: &str,
-    target: &Path,
-    keys: &[String],
-) -> Result<String, String> {
-    confirmation_token_at(skill_id, target, target, keys)
+pub(super) struct Tokens {
+    pub strict: String,
+    pub relocated: String,
 }
 
-pub fn matches_confirmation(
-    conflict: &super::model::SyncConflictDto,
-    logical_target: &Path,
-    state_path: &Path,
-) -> Result<bool, String> {
-    let token = confirmation_token_at(
-        &conflict.skill_id,
-        logical_target,
-        state_path,
-        &conflict.keys,
-    )?;
-    Ok(token == conflict.fingerprint_token)
-}
-
-pub fn retoken_confirmation(
-    conflict: &super::model::SyncConflictDto,
-    logical_target: &Path,
-    state_path: &Path,
-) -> Result<super::model::SyncConflictDto, String> {
-    let mut refreshed = conflict.clone();
-    refreshed.fingerprint_token = confirmation_token_at(
-        &conflict.skill_id,
-        logical_target,
-        state_path,
-        &conflict.keys,
-    )?;
-    Ok(refreshed)
-}
-
-pub fn capture_state(
-    logical_target: &Path,
-    state_path: &Path,
-) -> Result<super::model::SyncConflictDto, String> {
-    retoken_confirmation(
-        &super::model::SyncConflictDto {
-            skill_id: String::new(),
-            path: logical_target.to_string_lossy().to_string(),
-            keys: Vec::new(),
-            fingerprint_token: String::new(),
-        },
-        logical_target,
-        state_path,
-    )
-}
-
-fn confirmation_token_at(
+pub(super) fn calculate(
     skill_id: &str,
     logical_target: &Path,
     state_path: &Path,
     keys: &[String],
-) -> Result<String, String> {
+) -> Result<Tokens, String> {
     let mut digest = Sha1::new();
-    update_bytes(&mut digest, b"ccbud-skills-overwrite-v1");
+    let mut versions = Sha1::new();
+    update_bytes(&mut digest, b"ccbud-skills-overwrite-v2");
     update_bytes(&mut digest, skill_id.as_bytes());
     update_os(&mut digest, logical_target.as_os_str());
     for key in keys {
@@ -85,8 +43,17 @@ fn confirmation_token_at(
         0,
         &mut Budget::default(),
         &mut digest,
+        &mut versions,
     )?;
-    Ok(format!("v1:{:x}", digest.finalize()))
+    let relocated = digest.finalize();
+    let mut strict = Sha1::new();
+    update_bytes(&mut strict, b"ccbud-skills-overwrite-strict-v2");
+    update_bytes(&mut strict, &relocated[..]);
+    update_bytes(&mut strict, &versions.finalize()[..]);
+    Ok(Tokens {
+        strict: format!("{:x}", strict.finalize()),
+        relocated: format!("{relocated:x}"),
+    })
 }
 
 fn fingerprint_node(
@@ -95,6 +62,7 @@ fn fingerprint_node(
     depth: usize,
     budget: &mut Budget,
     digest: &mut Sha1,
+    versions: &mut Sha1,
 ) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Err(format!(
@@ -115,7 +83,8 @@ fn fingerprint_node(
     let relative = path.strip_prefix(root).unwrap_or(path);
     update_os(digest, relative.as_os_str());
     update_bytes(digest, &before_stable);
-    update_bytes(digest, &super::target_identity::relocation_version(&before));
+    update_os(versions, relative.as_os_str());
+    update_bytes(versions, &before_version);
 
     let file_type = before.file_type();
     if file_type.is_symlink() {
@@ -156,7 +125,7 @@ fn fingerprint_node(
         }
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
-            fingerprint_node(root, &entry.path(), depth + 1, budget, digest)?;
+            fingerprint_node(root, &entry.path(), depth + 1, budget, digest, versions)?;
         }
     } else {
         return Err(format!(

@@ -56,7 +56,29 @@ pub fn install_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
 
 #[cfg(target_os = "windows")]
 pub fn install_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
-    std::fs::rename(source, target)
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, target: *const u16, flags: u32) -> i32;
+    }
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) };
+    if result != 0 {
+        Ok(())
+    } else {
+        let error = std::io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(80) | Some(183)) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                error,
+            ))
+        } else {
+            Err(error)
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

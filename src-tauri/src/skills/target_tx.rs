@@ -50,6 +50,9 @@ impl SyncTransaction {
         for swap in &mut self.swaps {
             swap.commit();
         }
+        for swap in &self.swaps {
+            swap.release_guards();
+        }
         self.finished = true;
         Ok(())
     }
@@ -71,6 +74,9 @@ impl SyncTransaction {
             }
         }
         if errors.is_empty() {
+            for swap in &self.swaps {
+                swap.release_guards();
+            }
             Ok(())
         } else {
             Err(errors.join("; "))
@@ -82,6 +88,9 @@ impl Drop for SyncTransaction {
     fn drop(&mut self) {
         if !self.finished {
             let _ = self.rollback_inner();
+            for swap in &self.swaps {
+                swap.release_guards();
+            }
         }
     }
 }
@@ -149,14 +158,8 @@ pub fn prepare_remove(root: &Path, target: &Path) -> Result<Option<TargetSwap>, 
     }
     let backup_guard = super::target_fingerprint::capture_state(target, target)?;
     let backup = super::transfer::unique_hidden(root, "remove-backup");
-    super::target_stage::install_noreplace(target, &backup)
-        .map_err(|e| format!("stage removal {}: {e}", target.display()))?;
-    if let Err(error) = validate_guard(&backup_guard, target, &backup, "removal backup") {
-        if std::fs::symlink_metadata(target).is_err() {
-            let _ = super::target_stage::install_noreplace(&backup, target);
-        }
-        return Err(error);
-    }
+    let backup_guard =
+        super::target_fingerprint::relocate_noreplace(&backup_guard, target, target, &backup)?;
     Ok(Some(TargetSwap {
         root: root.to_path_buf(),
         target: target.to_path_buf(),

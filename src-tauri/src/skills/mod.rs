@@ -11,10 +11,15 @@ mod scan;
 mod sync;
 mod sync_abort;
 mod sync_plan;
+mod target_commit_cleanup;
+mod target_confirmation;
 mod target_fingerprint;
 mod target_identity;
+mod target_pin;
+mod target_pin_open;
 mod target_prepare;
 mod target_prepare_hooks;
+mod target_prepare_restore;
 mod target_rollback;
 mod target_stage;
 mod target_tx;
@@ -28,9 +33,13 @@ mod tests;
 #[cfg(test)]
 mod tests_commit_guards;
 #[cfg(test)]
+mod tests_confirmation;
+#[cfg(test)]
 mod tests_conflict_guards;
 #[cfg(test)]
 mod tests_conflicts;
+#[cfg(test)]
+mod tests_relocation_cleanup;
 #[cfg(test)]
 mod tests_safety;
 #[cfg(test)]

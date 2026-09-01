@@ -124,7 +124,7 @@ fn conflicts_deduplicate_shared_physical_target_without_writes() {
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].skill_id, id);
     assert_eq!(conflicts[0].keys, vec!["amp", "kimi_cli"]);
-    assert!(conflicts[0].fingerprint_token.starts_with("v1:"));
+    assert!(conflicts[0].fingerprint_token.starts_with("v3:"));
     let expected = target.parent().unwrap().canonicalize().unwrap().join(&id);
     assert_eq!(Path::new(&conflicts[0].path), expected);
     assert_eq!(std::fs::read(&index_path).unwrap(), index_before);

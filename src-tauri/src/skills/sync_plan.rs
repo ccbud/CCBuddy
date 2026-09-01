@@ -26,9 +26,11 @@ pub fn target_expectation(
     authorizing: &[SyncConflictDto],
 ) -> Result<super::target_prepare::Expectation, SkillsSyncErrorDto> {
     let conflicts = sync_conflicts(id, keys, home, targets).map_err(SkillsSyncErrorDto::from)?;
-    if !conflicts
-        .iter()
-        .all(|conflict| authorizing.contains(conflict))
+    if !conflicts.is_empty()
+        && (!external_authorizations(authorizing)
+            || !conflicts
+                .iter()
+                .all(|conflict| authorizing.contains(conflict)))
     {
         return Err(SkillsSyncErrorDto::ConfirmationRequired { conflicts });
     }
@@ -68,7 +70,8 @@ pub fn preflight_targets(
 ) -> Result<(), SkillsSyncErrorDto> {
     let conflicts = sync_conflicts(id, keys, home, targets).map_err(SkillsSyncErrorDto::from)?;
     if conflicts.is_empty()
-        || (conflicts.len() == authorizing.len()
+        || (external_authorizations(authorizing)
+            && conflicts.len() == authorizing.len()
             && conflicts
                 .iter()
                 .all(|conflict| authorizing.contains(conflict)))
@@ -77,6 +80,12 @@ pub fn preflight_targets(
     } else {
         Err(SkillsSyncErrorDto::ConfirmationRequired { conflicts })
     }
+}
+
+fn external_authorizations(authorizing: &[SyncConflictDto]) -> bool {
+    authorizing
+        .iter()
+        .all(|conflict| conflict.fingerprint_token.starts_with("v3:"))
 }
 
 fn conflict_groups(
