@@ -4,12 +4,17 @@ umask 077
 
 readonly APP_PATH="${1:-}"
 readonly TIMEOUT_SECONDS="${2:-150}"
+readonly BIFROST_MODE="${3:-}"
 
 fail() { echo "packaged self-check failed: $*" >&2; exit 1; }
 
 [[ -d "$APP_PATH" && "$(basename "$APP_PATH")" == "CC Buddy.app" ]] \
-  || fail "usage: $0 <CC Buddy.app> [timeout-seconds]"
+  || fail "usage: $0 <CC Buddy.app> <timeout-seconds> <raw|developer-id>"
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail "timeout must be a positive integer"
+case "$BIFROST_MODE" in
+  raw|developer-id) ;;
+  *) fail "Bifrost verification mode must be raw or developer-id" ;;
+esac
 command -v jq >/dev/null || fail "jq is required"
 
 readonly EXECUTABLE="$APP_PATH/Contents/MacOS/CC Buddy"
@@ -37,6 +42,7 @@ trap cleanup EXIT INT TERM
 CCBUD_SELFCHECK=1 \
 CCBUD_HOME="$SELF_CHECK_ROOT" \
 CCBUD_SELFCHECK_OUT="$REPORT" \
+CCBUD_SELFCHECK_BIFROST_MODE="$BIFROST_MODE" \
   "$EXECUTABLE" -ApplePersistenceIgnoreState YES \
     >"$STANDARD_OUTPUT" 2>"$STANDARD_ERROR" &
 SELF_CHECK_PID=$!
@@ -73,11 +79,16 @@ cmp -s "$REPORT" "$STANDARD_OUTPUT" || fail "stdout and the atomic report differ
 EXPECTED_VERSION="$(/usr/libexec/PlistBuddy \
   -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
 readonly EXPECTED_VERSION
-jq -e --arg expectedVersion "$EXPECTED_VERSION" '
+jq -e \
+  --arg expectedVersion "$EXPECTED_VERSION" \
+  --arg expectedBifrostMode "$BIFROST_MODE" '
   .schema == "dev.ccbud.self-check"
   and .version == 1
   and .appVersion == $expectedVersion
   and .success == true
+  and ([.requiredChecks[]
+    | select(.id == "bundled_bifrost")
+    | .values.mode] == [$expectedBifrostMode])
   and ([
     "main_bundle",
     "bundled_bifrost",

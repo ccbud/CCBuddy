@@ -385,7 +385,7 @@ final class SelfCheckRunnerTests: XCTestCase {
                 architecture: "arm64"
             )
         }
-        dependencies.bifrostProbe = {
+        dependencies.bifrostProbe = { _ in
             threads.record("bifrost", isMainThread: Thread.isMainThread)
             return SelfCheckBifrostSnapshot(
                 exists: true,
@@ -419,6 +419,130 @@ final class SelfCheckRunnerTests: XCTestCase {
         XCTAssertEqual(result.exitCode, SelfCheckExitCode.success)
         XCTAssertEqual(Set(threads.names), Set(["bundle", "bifrost", "config", "history"]))
         XCTAssertTrue(threads.mainThreadValues.allSatisfy { !$0 })
+    }
+
+    func testBifrostIntegrityUsesRawDigestsOrDeveloperIDSealsWithoutWeakeningBaseChecks() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("selfcheck-bifrost-modes")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let request = SelfCheckRequest(
+            homeDirectory: root.appendingPathComponent("isolated"),
+            outputURL: nil
+        )
+        let signedSlices = [
+            SelfCheckMachOSlice(architecture: "arm64", sha256: "signed-arm64"),
+            SelfCheckMachOSlice(architecture: "x86_64", sha256: "signed-x86_64"),
+        ]
+
+        func execute(
+            snapshot: SelfCheckBifrostSnapshot,
+            mode: String
+        ) async -> SelfCheckExecution {
+            let capture = OutputCapture()
+            var dependencies = validDependencies(output: capture)
+            dependencies.bifrostProbe = { requestedMode in
+                XCTAssertEqual(requestedMode.rawValue, mode)
+                return snapshot
+            }
+            return await SelfCheckRunner(dependencies: dependencies).run(
+                request: request,
+                environment: [SelfCheckBifrostValidationMode.environmentKey: mode]
+            )
+        }
+
+        let validSigned = SelfCheckBifrostSnapshot(
+            exists: true,
+            isRegularFile: true,
+            executable: true,
+            slices: signedSlices,
+            developerIDSeal: SelfCheckDeveloperIDSealSnapshot(
+                applicationValid: true,
+                helperValid: true
+            )
+        )
+        let signedResult = await execute(snapshot: validSigned, mode: "developer-id")
+        XCTAssertEqual(signedResult.exitCode, SelfCheckExitCode.success)
+        let signedCheck = try XCTUnwrap(
+            signedResult.report.requiredChecks.first { $0.id == "bundled_bifrost" }
+        )
+        XCTAssertEqual(signedCheck.status, .passed)
+        XCTAssertEqual(signedCheck.values["mode"], "developer-id")
+        XCTAssertEqual(signedCheck.values["applicationCodeSeal"], "valid")
+        XCTAssertEqual(signedCheck.values["helperCodeSeal"], "valid")
+
+        let rawResult = await execute(snapshot: validSigned, mode: "raw")
+        XCTAssertEqual(rawResult.exitCode, SelfCheckExitCode.requiredCheckFailed)
+        XCTAssertEqual(
+            rawResult.report.requiredChecks.first { $0.id == "bundled_bifrost" }?.status,
+            .failed
+        )
+
+        let invalidSeal = SelfCheckBifrostSnapshot(
+            exists: true,
+            isRegularFile: true,
+            executable: true,
+            slices: signedSlices,
+            developerIDSeal: SelfCheckDeveloperIDSealSnapshot(
+                applicationValid: true,
+                helperValid: false
+            )
+        )
+        let invalidSealResult = await execute(snapshot: invalidSeal, mode: "developer-id")
+        XCTAssertEqual(invalidSealResult.exitCode, SelfCheckExitCode.requiredCheckFailed)
+        XCTAssertEqual(
+            invalidSealResult.report.requiredChecks.first { $0.id == "bundled_bifrost" }?
+                .values["helperCodeSeal"],
+            "invalid"
+        )
+
+        let invalidBase = SelfCheckBifrostSnapshot(
+            exists: true,
+            isRegularFile: true,
+            executable: false,
+            slices: [signedSlices[0]],
+            developerIDSeal: SelfCheckDeveloperIDSealSnapshot(
+                applicationValid: true,
+                helperValid: true
+            )
+        )
+        let invalidBaseResult = await execute(snapshot: invalidBase, mode: "developer-id")
+        XCTAssertEqual(invalidBaseResult.exitCode, SelfCheckExitCode.requiredCheckFailed)
+        XCTAssertEqual(
+            invalidBaseResult.report.requiredChecks.first { $0.id == "bundled_bifrost" }?.status,
+            .failed
+        )
+    }
+
+    func testBifrostIntegrityRejectsAnUnknownValidationModeWithoutRunningProbe() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("selfcheck-bifrost-invalid-mode")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let capture = OutputCapture()
+        let probes = ProbeThreadRecorder()
+        var dependencies = validDependencies(output: capture)
+        dependencies.bifrostProbe = { _ in
+            probes.record("bifrost", isMainThread: Thread.isMainThread)
+            return SelfCheckBifrostSnapshot(
+                exists: true,
+                isRegularFile: true,
+                executable: true,
+                slices: []
+            )
+        }
+
+        let result = await SelfCheckRunner(dependencies: dependencies).run(
+            request: SelfCheckRequest(
+                homeDirectory: root.appendingPathComponent("isolated"),
+                outputURL: nil
+            ),
+            environment: [SelfCheckBifrostValidationMode.environmentKey: "automatic"]
+        )
+
+        XCTAssertEqual(result.exitCode, SelfCheckExitCode.requiredCheckFailed)
+        XCTAssertFalse(probes.names.contains("bifrost"))
+        let check = try XCTUnwrap(
+            result.report.requiredChecks.first { $0.id == "bundled_bifrost" }
+        )
+        XCTAssertEqual(check.status, .failed)
+        XCTAssertEqual(check.values["mode"], "automatic")
     }
 
     func testUIValidatorRejectsInvalidContainmentAndPositionerGeometry() {
@@ -653,7 +777,7 @@ final class SelfCheckRunnerTests: XCTestCase {
                     architecture: "arm64"
                 )
             },
-            bifrostProbe: {
+            bifrostProbe: { _ in
                 SelfCheckBifrostSnapshot(
                     exists: true,
                     isRegularFile: true,

@@ -8,6 +8,10 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const releaseScript = fs.readFileSync(path.join(ROOT, 'scripts/release.js'), 'utf8');
+const prBuildWorkflow = fs.readFileSync(
+  path.join(ROOT, '.github/workflows/pr-build.yml'),
+  'utf8'
+);
 const releaseWorkflow = fs.readFileSync(
   path.join(ROOT, '.github/workflows/release.yml'),
   'utf8'
@@ -102,7 +106,95 @@ check(
   'packaged self-check ignores persisted window restoration state',
   packagedSelfCheck.includes('"$EXECUTABLE" -ApplePersistenceIgnoreState YES')
 );
+check(
+  'packaged self-check requires an explicit Bifrost verification mode',
+  packagedSelfCheck.includes('readonly BIFROST_MODE="${3:-}"')
+    && packagedSelfCheck.includes('raw|developer-id) ;;')
+    && packagedSelfCheck.includes(
+      'fail "Bifrost verification mode must be raw or developer-id"'
+    )
+);
+check(
+  'packaged self-check passes the selected Bifrost mode to the app',
+  packagedSelfCheck.includes('CCBUD_SELFCHECK_BIFROST_MODE="$BIFROST_MODE"')
+    && packagedSelfCheck.includes('--arg expectedBifrostMode "$BIFROST_MODE"')
+    && packagedSelfCheck.includes('.values.mode] == [$expectedBifrostMode]')
+);
 
+const appNotary = nativePackager.indexOf('notarize_and_staple "$NOTARY_ZIP" "$APP" app');
+const appStapledVerification = nativePackager.indexOf(
+  'verify-release-app.sh" "$APP" "$VERSION" stapled'
+);
+const appSignedSelfCheck = nativePackager.indexOf('"$APP" 150 developer-id');
+const updaterCreation = nativePackager.indexOf('/usr/bin/tar -czf "$UPDATER"');
+check(
+  'signed packaging gates the stapled app before creating updater artifacts',
+  appNotary >= 0
+    && appStapledVerification > appNotary
+    && appSignedSelfCheck > appStapledVerification
+    && updaterCreation > appSignedSelfCheck
+);
+
+const updaterExtraction = nativePackager.indexOf('/usr/bin/tar -xzf "$UPDATER"');
+const extractedVerification = nativePackager.indexOf(
+  'verify-release-app.sh" "$EXTRACTED/CC Buddy.app" "$VERSION" "$VERIFY_MODE"'
+);
+const extractedSelfCheck = nativePackager.indexOf(
+  '"$EXTRACTED/CC Buddy.app" 150 developer-id'
+);
+const dmgCreation = nativePackager.indexOf('hdiutil create -volname');
+check(
+  'signed packaging gates the extracted updater app before creating the DMG',
+  updaterExtraction >= 0
+    && extractedVerification > updaterExtraction
+    && extractedSelfCheck > extractedVerification
+    && dmgCreation > extractedSelfCheck
+);
+
+const dmgAssessment = nativePackager.indexOf('spctl --assess --type open');
+const dmgAttachment = nativePackager.indexOf('hdiutil attach -readonly -nobrowse -noautoopen');
+const mountedVerification = nativePackager.indexOf(
+  'verify-release-app.sh" "$MOUNTED_APP" "$VERSION" stapled'
+);
+const mountedSelfCheck = nativePackager.indexOf('"$MOUNTED_APP" 150 developer-id');
+const dmgDetach = nativePackager.indexOf('hdiutil detach "$DMG_MOUNTPOINT"', mountedSelfCheck);
+const updaterSigning = nativePackager.indexOf('npx --no-install tauri signer sign');
+check(
+  'signed packaging verifies and exercises the app from the final read-only DMG',
+  dmgAssessment >= 0
+    && dmgAttachment > dmgAssessment
+    && mountedVerification > dmgAttachment
+    && mountedSelfCheck > mountedVerification
+    && dmgDetach > mountedSelfCheck
+    && updaterSigning > dmgDetach
+);
+check(
+  'DMG mounting is noninteractive and cleanup safely handles detach failure',
+  nativePackager.includes('hdiutil attach -readonly -nobrowse -noautoopen')
+    && nativePackager.includes('-mountpoint "$DMG_MOUNTPOINT" "$DMG"')
+    && nativePackager.includes('trap cleanup EXIT')
+    && nativePackager.includes("trap 'exit 130' INT")
+    && nativePackager.includes("trap 'exit 143' TERM")
+    && nativePackager.includes("trap 'exit 129' HUP")
+    && nativePackager.includes('hdiutil detach -force "$DMG_MOUNTPOINT"')
+    && nativePackager.includes('could not detach $DMG_MOUNTPOINT; preserved $WORK_ROOT')
+    && nativePackager.includes('[[ "$status" -ne 0 ]] || status=1')
+    && nativePackager.indexOf('exit "$status"')
+      < nativePackager.indexOf('rm -rf -- "$WORK_ROOT"')
+    && nativePackager.indexOf('hdiutil detach -force "$DMG_MOUNTPOINT"')
+      < nativePackager.indexOf('rm -rf -- "$WORK_ROOT"')
+);
+check(
+  'signed packaging has exactly three Developer ID packaged self-check gates',
+  (nativePackager.match(/run-packaged-selfcheck\.sh/g) || []).length === 3
+    && (nativePackager.match(/150 developer-id/g) || []).length === 3
+);
+
+check(
+  'PR and release unsigned packaged checks explicitly request raw verification',
+  /run-packaged-selfcheck\.sh[\s\\]*\n?[\s\S]{0,160}? 150 raw/.test(prBuildWorkflow)
+    && /run-packaged-selfcheck\.sh[\s\\]*\n?[\s\S]{0,160}? 150 raw/.test(releaseWorkflow)
+);
 const homebrewStart = releaseWorkflow.indexOf('\n  homebrew:');
 const homebrewJob = releaseWorkflow.slice(homebrewStart);
 check(
