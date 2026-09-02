@@ -4,7 +4,7 @@ set -euo pipefail
 readonly BINARY_PATH="${1:-}"
 readonly REQUESTED_ARCHS="${2:-}"
 readonly SHA256_ARM64="422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263"
-readonly SHA256_X86_64="50523247a6e5016bd3da29aeb0efea11e8ec6a01edd8b2b8b14bf4b6344afc07"
+readonly SHA256_X86_64="cff62f56fc2bb8274f0b5eb97e663d6d1db953fcd710bb9ef9add1b7d27f75b3"
 
 fail() { echo "$*" >&2; exit 1; }
 
@@ -19,10 +19,9 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ccbud-bifrost-verify.XXXXXX")"
 readonly WORK_DIR
 trap 'rm -rf -- "$WORK_DIR"' EXIT
 
-# Checked one slice at a time rather than as a whole file. A universal helper is two published
-# binaries joined by lipo, so it has a digest of its own that no upstream ever published and that
-# nobody could pin; `lipo -thin` gives back the exact bytes that were downloaded, which are what
-# the digests below are about.
+# Checked one slice at a time rather than as a whole file. A universal helper is two binaries
+# joined by lipo, so it has a digest of its own that no upstream ever published. `lipo -thin`
+# recovers the pinned arm64 download and the pinned, notarization-compatible Intel normalization.
 expected_digest_for() {
   case "$1" in
     arm64) echo "$SHA256_ARM64" ;;
@@ -31,14 +30,29 @@ expected_digest_for() {
   esac
 }
 
+require_notarizable_sdk() {
+  local arch="$1"
+  local slice="$2"
+  local sdk major minor
+  sdk="$(xcrun vtool -show-build "$slice" | awk '$1 == "sdk" {print $2; exit}')"
+  [[ "$sdk" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]] \
+    || fail "Bifrost $arch has no valid macOS SDK load command"
+  major="${BASH_REMATCH[1]}"
+  minor="${BASH_REMATCH[2]}"
+  if (( major < 10 || (major == 10 && minor < 9) )); then
+    fail "Bifrost $arch SDK $sdk is older than Apple's notarization minimum 10.9"
+  fi
+}
+
 for arch in $ACTUAL_ARCHS; do
-  expected="$(expected_digest_for "$arch")"
   slice="$WORK_DIR/$arch"
   if [[ "$ACTUAL_ARCHS" == "$arch" ]]; then
     cp "$BINARY_PATH" "$slice"
   else
     lipo -thin "$arch" "$BINARY_PATH" -output "$slice"
   fi
+  require_notarizable_sdk "$arch" "$slice"
+  expected="$(expected_digest_for "$arch")"
   actual="$(shasum -a 256 "$slice" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]] || fail "Bifrost $arch checksum mismatch: got $actual"
 done

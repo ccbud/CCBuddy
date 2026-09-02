@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "2.0.2"
+version = "2.0.3"
 description = "CCBuddy — Coding CLI Buddy"
 authors = ["loadchange <soocto@gmail.com>"]
 license = "GPL-3.0-only"
