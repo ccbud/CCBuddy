@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+import Security
 
 enum SelfCheckExitCode {
     static let success: Int32 = 0
@@ -266,10 +267,22 @@ struct SelfCheckBundleSnapshot: Equatable, Sendable {
 ///
 /// A universal helper is two published downloads joined by lipo, so the file as a whole has a
 /// digest that nobody upstream ever published and that could not be pinned. Each slice, on the
-/// other hand, is exactly the bytes that were downloaded.
+/// other hand, is exactly the bytes that were downloaded before release signing.
 struct SelfCheckMachOSlice: Equatable, Sendable {
     let architecture: String
     let sha256: String
+}
+
+enum SelfCheckBifrostValidationMode: String, Equatable, Sendable {
+    static let environmentKey = "CCBUD_SELFCHECK_BIFROST_MODE"
+
+    case raw
+    case developerID = "developer-id"
+}
+
+struct SelfCheckDeveloperIDSealSnapshot: Equatable, Sendable {
+    let applicationValid: Bool
+    let helperValid: Bool
 }
 
 struct SelfCheckBifrostSnapshot: Equatable, Sendable {
@@ -277,6 +290,21 @@ struct SelfCheckBifrostSnapshot: Equatable, Sendable {
     let isRegularFile: Bool
     let executable: Bool
     let slices: [SelfCheckMachOSlice]
+    let developerIDSeal: SelfCheckDeveloperIDSealSnapshot?
+
+    init(
+        exists: Bool,
+        isRegularFile: Bool,
+        executable: Bool,
+        slices: [SelfCheckMachOSlice],
+        developerIDSeal: SelfCheckDeveloperIDSealSnapshot? = nil
+    ) {
+        self.exists = exists
+        self.isRegularFile = isRegularFile
+        self.executable = executable
+        self.slices = slices
+        self.developerIDSeal = developerIDSeal
+    }
 }
 
 struct SelfCheckConfigSnapshot: Equatable, Sendable {
@@ -300,7 +328,9 @@ struct SelfCheckClipboardSnapshot: Equatable, Sendable {
 typealias SelfCheckClipboardProbe = @MainActor @Sendable (String) throws -> SelfCheckClipboardSnapshot
 typealias SelfCheckUIProbe = @MainActor @Sendable () async throws -> SelfCheckUISnapshot
 typealias SelfCheckBundleProbe = @Sendable () throws -> SelfCheckBundleSnapshot
-typealias SelfCheckBifrostProbe = @Sendable () throws -> SelfCheckBifrostSnapshot
+typealias SelfCheckBifrostProbe = @Sendable (
+    SelfCheckBifrostValidationMode
+) throws -> SelfCheckBifrostSnapshot
 typealias SelfCheckConfigProbe = @Sendable (URL, String) throws -> SelfCheckConfigSnapshot
 typealias SelfCheckHistoryProbe = @Sendable (URL, String) throws -> SelfCheckHistorySnapshot
 
@@ -359,10 +389,11 @@ struct SelfCheckDependencies {
             now: Date.init,
             marker: { "ccbud-selfcheck-\(UUID().uuidString)" },
             bundleProbe: { SelfCheckSystemProbe.bundle(bundleBox.value) },
-            bifrostProbe: {
+            bifrostProbe: { mode in
                 try SelfCheckSystemProbe.bifrost(
                     bundle: bundleBox.value,
-                    fileManager: fileManagerBox.value
+                    fileManager: fileManagerBox.value,
+                    validationMode: mode
                 )
             },
             configProbe: { home, marker in
@@ -555,36 +586,76 @@ struct SelfCheckRunner {
         }
 
         do {
+            let validationMode = SelfCheckBifrostValidationMode(
+                rawValue: environment[SelfCheckBifrostValidationMode.environmentKey] ?? "raw"
+            )
+            guard let validationMode else {
+                required.append(check(
+                    id: "bundled_bifrost",
+                    passed: false,
+                    detail: "invalid bundled Bifrost validation mode",
+                    values: [
+                        "mode": environment[SelfCheckBifrostValidationMode.environmentKey]
+                            ?? "missing",
+                    ],
+                    redactor: redactor
+                ))
+                throw SelfCheckBifrostModeHandledError()
+            }
             let snapshot = try await runBackgroundProbe(
                 id: "bundled_bifrost",
                 deadline: deadline,
-                operation: dependencies.bifrostProbe
+                operation: { try dependencies.bifrostProbe(validationMode) }
             )
             let digests = Dictionary(
                 snapshot.slices.map { ($0.architecture, $0.sha256) },
                 uniquingKeysWith: { first, _ in first }
             )
-            let passed = snapshot.exists && snapshot.isRegularFile && snapshot.executable
-                && snapshot.slices.count == Self.expectedBifrostSliceSHA256.count
-                && digests == Self.expectedBifrostSliceSHA256
+            let hasExpectedArchitectures = snapshot.slices.count
+                    == Self.expectedBifrostSliceSHA256.count
+                && Set(digests.keys) == Set(Self.expectedBifrostSliceSHA256.keys)
+            let basePassed = snapshot.exists && snapshot.isRegularFile && snapshot.executable
+                && hasExpectedArchitectures
+            let integrityPassed: Bool
+            switch validationMode {
+            case .raw:
+                integrityPassed = digests == Self.expectedBifrostSliceSHA256
+            case .developerID:
+                integrityPassed = snapshot.developerIDSeal?.applicationValid == true
+                    && snapshot.developerIDSeal?.helperValid == true
+            }
+            let passed = basePassed && integrityPassed
             var values = [
                 "exists": String(snapshot.exists),
                 "regularFile": String(snapshot.isRegularFile),
                 "executable": String(snapshot.executable),
+                "mode": validationMode.rawValue,
                 "architectures": snapshot.slices.isEmpty
                     ? "missing"
                     : snapshot.slices.map(\.architecture).sorted().joined(separator: "+"),
             ]
+            if validationMode == .developerID {
+                values["applicationCodeSeal"] = snapshot.developerIDSeal?.applicationValid == true
+                    ? "valid"
+                    : "invalid"
+                values["helperCodeSeal"] = snapshot.developerIDSeal?.helperValid == true
+                    ? "valid"
+                    : "invalid"
+            }
             for slice in snapshot.slices { values["sha256.\(slice.architecture)"] = slice.sha256 }
             required.append(check(
                 id: "bundled_bifrost",
                 passed: passed,
                 detail: passed
-                    ? "bundled bifrost-http matches the pinned universal artifact"
+                    ? validationMode == .raw
+                        ? "bundled bifrost-http matches the pinned raw universal artifact"
+                        : "bundled bifrost-http and application Developer ID code seals are valid"
                     : "bundled bifrost-http failed integrity checks",
                 values: values,
                 redactor: redactor
             ))
+        } catch is SelfCheckBifrostModeHandledError {
+            // The invalid mode was already emitted as a single, structured required check.
         } catch {
             required.append(failedCheck(id: "bundled_bifrost", error: error, redactor: redactor))
         }
@@ -1043,6 +1114,8 @@ private struct SelfCheckProbeTimeoutError: LocalizedError, Sendable {
     }
 }
 
+private struct SelfCheckBifrostModeHandledError: Error {}
+
 private enum SelfCheckProbeOutcome<Value: Sendable>: @unchecked Sendable {
     case success(Value)
     case failure(Error)
@@ -1142,7 +1215,11 @@ enum SelfCheckSystemProbe {
         )
     }
 
-    static func bifrost(bundle: Bundle, fileManager: FileManager) throws -> SelfCheckBifrostSnapshot {
+    static func bifrost(
+        bundle: Bundle,
+        fileManager: FileManager,
+        validationMode: SelfCheckBifrostValidationMode
+    ) throws -> SelfCheckBifrostSnapshot {
         guard let file = bundle.url(forAuxiliaryExecutable: "bifrost-http") else {
             return SelfCheckBifrostSnapshot(
                 exists: false,
@@ -1156,12 +1233,61 @@ enum SelfCheckSystemProbe {
         let executable = fileManager.isExecutableFile(atPath: file.path)
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
+        let developerIDSeal: SelfCheckDeveloperIDSealSnapshot?
+        switch validationMode {
+        case .raw:
+            developerIDSeal = nil
+        case .developerID:
+            developerIDSeal = SelfCheckDeveloperIDSealSnapshot(
+                applicationValid: developerIDCodeSealIsValid(
+                    at: bundle.bundleURL,
+                    identifier: "dev.ccbud.gateway",
+                    includesNestedCode: true
+                ),
+                helperValid: developerIDCodeSealIsValid(
+                    at: file,
+                    identifier: "bifrost-http",
+                    includesNestedCode: false
+                )
+            )
+        }
         return SelfCheckBifrostSnapshot(
             exists: true,
             isRegularFile: regular,
             executable: executable,
-            slices: (try? machOSlices(in: handle)) ?? []
+            slices: (try? machOSlices(in: handle)) ?? [],
+            developerIDSeal: developerIDSeal
         )
+    }
+
+    private static func developerIDCodeSealIsValid(
+        at url: URL,
+        identifier: String,
+        includesNestedCode: Bool
+    ) -> Bool {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, SecCSFlags(), &staticCode)
+                == errSecSuccess,
+              let staticCode
+        else { return false }
+
+        let requirementText = "anchor apple generic and certificate leaf[subject.OU] = \"2CGR266XD2\" and identifier \"\(identifier)\""
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(
+            requirementText as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess,
+              let requirement
+        else { return false }
+
+        var validationBits = kSecCSCheckAllArchitectures | kSecCSStrictValidate
+        if includesNestedCode { validationBits |= kSecCSCheckNestedCode }
+        return SecStaticCodeCheckValidity(
+            staticCode,
+            SecCSFlags(rawValue: validationBits),
+            requirement
+        ) == errSecSuccess
     }
 
     /// Digests any Mach-O file one architecture at a time. Exposed so the fat-header walk can be

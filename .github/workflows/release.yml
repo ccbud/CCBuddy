@@ -222,7 +222,7 @@ jobs:
           native/Scripts/build-native-release.sh unsigned "$version" \
             "${{ github.run_number }}" "$RUNNER_TEMP/ccbud-native/app"
           native/Scripts/run-packaged-selfcheck.sh \
-            "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" 150
+            "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" 150 raw
           native/Scripts/test-single-instance-handoff.sh \
             "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" 20
           native/Scripts/package-native-release.sh unsigned \

@@ -11,7 +11,9 @@ const path = require('path');
 const SUITES = [
   'i18n.test.js',
   'file-size.test.js',
+  'release-package-cleanup.test.js',
   'release-pipeline.test.js',
+  'release-selfcheck-mode.test.js',
   'smoke.test.js',
 ];
 let failed = 0;

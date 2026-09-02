@@ -77,7 +77,26 @@ mkdir -p "$OUTPUT_DIR"
 
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ccbud-package.XXXXXX")"
 readonly WORK_ROOT
-trap 'rm -rf "$WORK_ROOT"' EXIT
+DMG_MOUNTPOINT=""
+cleanup() {
+  local status=$?
+  set +e
+  if [[ -n "$DMG_MOUNTPOINT" ]]; then
+    if ! hdiutil detach "$DMG_MOUNTPOINT" >/dev/null 2>&1; then
+      if ! hdiutil detach -force "$DMG_MOUNTPOINT" >/dev/null 2>&1; then
+        echo "native release packaging cleanup failed: could not detach $DMG_MOUNTPOINT; preserved $WORK_ROOT" >&2
+        [[ "$status" -ne 0 ]] || status=1
+        exit "$status"
+      fi
+    fi
+  fi
+  rm -rf -- "$WORK_ROOT"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 readonly APP="$WORK_ROOT/CC Buddy.app"
 ditto "$APP_SOURCE" "$APP"
 
@@ -94,6 +113,7 @@ if [[ "$MODE" == "signed" ]]; then
   ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
   notarize_and_staple "$NOTARY_ZIP" "$APP" app
   "$ROOT/native/Scripts/verify-release-app.sh" "$APP" "$VERSION" stapled
+  "$ROOT/native/Scripts/run-packaged-selfcheck.sh" "$APP" 150 developer-id
 fi
 
 /usr/bin/tar -czf "$UPDATER" -C "$WORK_ROOT" 'CC Buddy.app'
@@ -109,6 +129,10 @@ mkdir "$EXTRACTED"
 VERIFY_MODE="$([[ "$MODE" == "signed" ]] && echo stapled || echo unsigned)"
 readonly VERIFY_MODE
 "$ROOT/native/Scripts/verify-release-app.sh" "$EXTRACTED/CC Buddy.app" "$VERSION" "$VERIFY_MODE"
+if [[ "$MODE" == "signed" ]]; then
+  "$ROOT/native/Scripts/run-packaged-selfcheck.sh" \
+    "$EXTRACTED/CC Buddy.app" 150 developer-id
+fi
 
 readonly DMG_ROOT="$WORK_ROOT/dmg-root"
 mkdir "$DMG_ROOT"
@@ -121,6 +145,17 @@ if [[ "$MODE" == "signed" ]]; then
   codesign --verify --verbose=2 "$DMG"
   notarize_and_staple "$DMG" "$DMG" dmg
   spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+
+  DMG_MOUNTPOINT="$WORK_ROOT/mounted-dmg"
+  mkdir "$DMG_MOUNTPOINT"
+  hdiutil attach -readonly -nobrowse -noautoopen \
+    -mountpoint "$DMG_MOUNTPOINT" "$DMG"
+  readonly MOUNTED_APP="$DMG_MOUNTPOINT/CC Buddy.app"
+  "$ROOT/native/Scripts/verify-release-app.sh" "$MOUNTED_APP" "$VERSION" stapled
+  "$ROOT/native/Scripts/run-packaged-selfcheck.sh" \
+    "$MOUNTED_APP" 150 developer-id
+  hdiutil detach "$DMG_MOUNTPOINT"
+  DMG_MOUNTPOINT=""
 
   (
     cd "$ROOT"
