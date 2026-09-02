@@ -401,11 +401,11 @@ struct SelfCheckDependencies {
 
 @MainActor
 struct SelfCheckRunner {
-    /// The published digest of each slice, matching the pins in `native/Scripts/verify-bifrost.sh`.
-    /// A release carries both so that Intel Macs have a build to update to.
+    /// The pinned digest of each shipped slice, matching `native/Scripts/verify-bifrost.sh`.
+    /// Intel is the deterministic, notarization-compatible normalization of the upstream binary.
     nonisolated static let expectedBifrostSliceSHA256: [String: String] = [
         "arm64": "422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263",
-        "x86_64": "50523247a6e5016bd3da29aeb0efea11e8ec6a01edd8b2b8b14bf4b6344afc07",
+        "x86_64": "cff62f56fc2bb8274f0b5eb97e663d6d1db953fcd710bb9ef9add1b7d27f75b3",
     ]
 
     var dependencies: SelfCheckDependencies

@@ -16,6 +16,10 @@ const nativePackager = fs.readFileSync(
   path.join(ROOT, 'native/Scripts/package-native-release.sh'),
   'utf8'
 );
+const packagedSelfCheck = fs.readFileSync(
+  path.join(ROOT, 'native/Scripts/run-packaged-selfcheck.sh'),
+  'utf8'
+);
 const caskGenerator = fs.readFileSync(path.join(ROOT, 'scripts/update-cask.js'), 'utf8');
 
 let pass = 0;
@@ -93,6 +97,10 @@ check(
     && nativePackager.includes('"$submission_status" != Accepted')
     && nativePackager.includes('xcrun notarytool log "$submission_id"')
     && nativePackager.includes('fail "$label notarization failed')
+);
+check(
+  'packaged self-check ignores persisted window restoration state',
+  packagedSelfCheck.includes('"$EXECUTABLE" -ApplePersistenceIgnoreState YES')
 );
 
 const homebrewStart = releaseWorkflow.indexOf('\n  homebrew:');

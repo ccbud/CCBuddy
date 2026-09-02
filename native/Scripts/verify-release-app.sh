@@ -62,6 +62,9 @@ cmp -s "$APP_PATH/Contents/Resources/LICENSE" "$ROOT/LICENSE" \
 cmp -s "$APP_PATH/Contents/Resources/Bifrost-LICENSE.txt" \
   "$ROOT/native/Resources/Bifrost-LICENSE.txt" \
   || fail "Bifrost Apache-2.0 license resource is missing or changed"
+cmp -s "$APP_PATH/Contents/Resources/THIRD_PARTY_NOTICES.md" \
+  "$ROOT/THIRD_PARTY_NOTICES.md" \
+  || fail "third-party notices resource is missing or changed"
 
 if [[ "$MODE" != "unsigned" ]]; then
   command -v jq >/dev/null || fail "jq is required to compare signed entitlements"
