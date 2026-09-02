@@ -87,6 +87,13 @@ check(
       'require_value TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$updater_signing_password"'
     )
 );
+check(
+  'notarization requires Accepted and prints the Apple rejection log',
+  nativePackager.includes('--wait --timeout 30m --output-format json')
+    && nativePackager.includes('"$submission_status" != Accepted')
+    && nativePackager.includes('xcrun notarytool log "$submission_id"')
+    && nativePackager.includes('fail "$label notarization failed')
+);
 
 const homebrewStart = releaseWorkflow.indexOf('\n  homebrew:');
 const homebrewJob = releaseWorkflow.slice(homebrewStart);
