@@ -78,16 +78,21 @@ mkdir -p "$OUTPUT_DIR"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ccbud-package.XXXXXX")"
 readonly WORK_ROOT
 DMG_MOUNTPOINT=""
+detach_mounted_dmg() {
+  local mountpoint="$1"
+  if hdiutil detach "$mountpoint"; then
+    return 0
+  fi
+  hdiutil detach -force "$mountpoint"
+}
 cleanup() {
   local status=$?
   set +e
   if [[ -n "$DMG_MOUNTPOINT" ]]; then
-    if ! hdiutil detach "$DMG_MOUNTPOINT" >/dev/null 2>&1; then
-      if ! hdiutil detach -force "$DMG_MOUNTPOINT" >/dev/null 2>&1; then
-        echo "native release packaging cleanup failed: could not detach $DMG_MOUNTPOINT; preserved $WORK_ROOT" >&2
-        [[ "$status" -ne 0 ]] || status=1
-        exit "$status"
-      fi
+    if ! detach_mounted_dmg "$DMG_MOUNTPOINT" >/dev/null 2>&1; then
+      echo "native release packaging cleanup failed: could not detach $DMG_MOUNTPOINT; preserved $WORK_ROOT" >&2
+      [[ "$status" -ne 0 ]] || status=1
+      exit "$status"
     fi
   fi
   rm -rf -- "$WORK_ROOT"
@@ -154,7 +159,7 @@ if [[ "$MODE" == "signed" ]]; then
   "$ROOT/native/Scripts/verify-release-app.sh" "$MOUNTED_APP" "$VERSION" stapled
   "$ROOT/native/Scripts/run-packaged-selfcheck.sh" \
     "$MOUNTED_APP" 150 developer-id
-  hdiutil detach "$DMG_MOUNTPOINT"
+  detach_mounted_dmg "$DMG_MOUNTPOINT"
   DMG_MOUNTPOINT=""
 
   (
