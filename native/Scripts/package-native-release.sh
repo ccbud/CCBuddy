@@ -27,6 +27,33 @@ require_value() {
   local value="$2"
   [[ -n "$value" ]] || fail "missing required secret: $name"
 }
+notarize_and_staple() {
+  local submission="$1"
+  local staple_target="$2"
+  local label="$3"
+  local result="$WORK_ROOT/notary-$label.json"
+  local submit_exit submission_id submission_status
+
+  set +e
+  xcrun notarytool submit "$submission" --key "$apple_api_key_path" \
+    --key-id "$apple_api_key_id" --issuer "$apple_api_issuer" \
+    --wait --timeout 30m --output-format json | tee "$result"
+  submit_exit="${PIPESTATUS[0]}"
+  set -e
+
+  submission_id="$(/usr/bin/plutil -extract id raw -o - "$result" 2>/dev/null || true)"
+  submission_status="$(/usr/bin/plutil -extract status raw -o - "$result" 2>/dev/null || true)"
+  if [[ "$submit_exit" -ne 0 || "$submission_status" != Accepted ]]; then
+    if [[ "$submission_id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+      xcrun notarytool log "$submission_id" --key "$apple_api_key_path" \
+        --key-id "$apple_api_key_id" --issuer "$apple_api_issuer" || true
+    fi
+    fail "$label notarization failed (status: ${submission_status:-unknown})"
+  fi
+
+  xcrun stapler staple "$staple_target"
+  xcrun stapler validate "$staple_target"
+}
 
 case "$MODE" in signed|unsigned) ;; *) fail "usage: $0 <signed|unsigned> <app> <version> <output-dir> [owner/repo]" ;; esac
 [[ -d "$APP_SOURCE" ]] || fail "app is missing: $APP_SOURCE"
@@ -65,10 +92,7 @@ if [[ "$MODE" == "signed" ]]; then
 
   readonly NOTARY_ZIP="$WORK_ROOT/CC.Buddy.notary.zip"
   ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
-  xcrun notarytool submit "$NOTARY_ZIP" --key "$apple_api_key_path" \
-    --key-id "$apple_api_key_id" --issuer "$apple_api_issuer" \
-    --wait --timeout 30m
-  xcrun stapler staple "$APP"
+  notarize_and_staple "$NOTARY_ZIP" "$APP" app
   "$ROOT/native/Scripts/verify-release-app.sh" "$APP" "$VERSION" stapled
 fi
 
@@ -95,11 +119,7 @@ hdiutil create -volname 'CC Buddy' -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG
 if [[ "$MODE" == "signed" ]]; then
   codesign --force --timestamp --sign "$apple_signing_identity" "$DMG"
   codesign --verify --verbose=2 "$DMG"
-  xcrun notarytool submit "$DMG" --key "$apple_api_key_path" \
-    --key-id "$apple_api_key_id" --issuer "$apple_api_issuer" \
-    --wait --timeout 30m
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
+  notarize_and_staple "$DMG" "$DMG" dmg
   spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 
   (
