@@ -157,7 +157,7 @@ const mountedVerification = nativePackager.indexOf(
   'verify-release-app.sh" "$MOUNTED_APP" "$VERSION" stapled'
 );
 const mountedSelfCheck = nativePackager.indexOf('"$MOUNTED_APP" 150 developer-id');
-const dmgDetach = nativePackager.indexOf('hdiutil detach "$DMG_MOUNTPOINT"', mountedSelfCheck);
+const dmgDetach = nativePackager.indexOf('detach_mounted_dmg "$DMG_MOUNTPOINT"', mountedSelfCheck);
 const updaterSigning = nativePackager.indexOf('npx --no-install tauri signer sign');
 check(
   'signed packaging verifies and exercises the app from the final read-only DMG',
@@ -176,12 +176,14 @@ check(
     && nativePackager.includes("trap 'exit 130' INT")
     && nativePackager.includes("trap 'exit 143' TERM")
     && nativePackager.includes("trap 'exit 129' HUP")
-    && nativePackager.includes('hdiutil detach -force "$DMG_MOUNTPOINT"')
+    && nativePackager.includes('detach_mounted_dmg() {')
+    && nativePackager.includes('detach_mounted_dmg "$DMG_MOUNTPOINT"')
+    && nativePackager.includes('hdiutil detach -force "$mountpoint"')
     && nativePackager.includes('could not detach $DMG_MOUNTPOINT; preserved $WORK_ROOT')
     && nativePackager.includes('[[ "$status" -ne 0 ]] || status=1')
     && nativePackager.indexOf('exit "$status"')
       < nativePackager.indexOf('rm -rf -- "$WORK_ROOT"')
-    && nativePackager.indexOf('hdiutil detach -force "$DMG_MOUNTPOINT"')
+    && nativePackager.indexOf('hdiutil detach -force "$mountpoint"')
       < nativePackager.indexOf('rm -rf -- "$WORK_ROOT"')
 );
 check(

@@ -1,7 +1,8 @@
 'use strict';
 
-// Executes the packager's real EXIT cleanup function with a mocked hdiutil. This proves a failed
-// detach cannot turn into a recursive delete of a still-mounted release image.
+// Executes the packager's real detach and EXIT cleanup functions with a mocked hdiutil. This
+// proves a transient busy mount is recovered in the main path without hiding unrelated failures
+// or deleting a release image that could not be detached.
 
 const fs = require('fs');
 const os = require('os');
@@ -13,7 +14,9 @@ const packager = fs.readFileSync(
   path.join(ROOT, 'native/Scripts/package-native-release.sh'),
   'utf8'
 );
+const detachSource = packager.match(/^detach_mounted_dmg\(\) \{[\s\S]*?^\}/m)?.[0];
 const cleanupSource = packager.match(/^cleanup\(\) \{[\s\S]*?^\}/m)?.[0];
+if (!detachSource) throw new Error('package detach helper is missing');
 if (!cleanupSource) throw new Error('package cleanup function is missing');
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccbud-package-cleanup-'));
@@ -51,6 +54,7 @@ exit "$CCBUD_TEST_NORMAL_STATUS"
     const harness = `set -euo pipefail
 WORK_ROOT="$1"
 DMG_MOUNTPOINT="$2"
+${detachSource}
 ${cleanupSource}
 trap cleanup EXIT
 exit ${initialStatus}
@@ -71,6 +75,66 @@ exit ${initialStatus}
       calls: fs.readFileSync(log, 'utf8').trim().split('\n'),
     };
   };
+
+  const runMainDetach = (name, normalStatus, forceStatus) => {
+    const scenarioRoot = path.join(fixtureRoot, name);
+    const workRoot = path.join(scenarioRoot, 'work');
+    const mountpoint = path.join(workRoot, 'mounted-dmg');
+    const sentinel = path.join(scenarioRoot, 'continued');
+    const log = path.join(scenarioRoot, 'hdiutil.log');
+    fs.mkdirSync(mountpoint, { recursive: true });
+    const harness = `set -euo pipefail
+WORK_ROOT="$1"
+DMG_MOUNTPOINT="$2"
+${detachSource}
+${cleanupSource}
+trap cleanup EXIT
+detach_mounted_dmg "$DMG_MOUNTPOINT"
+DMG_MOUNTPOINT=""
+touch "$3"
+`;
+    const result = spawnSync(
+      'bash',
+      ['-c', harness, 'detach-test', workRoot, mountpoint, sentinel],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}`,
+          CCBUD_TEST_HDIUTIL_LOG: log,
+          CCBUD_TEST_NORMAL_STATUS: String(normalStatus),
+          CCBUD_TEST_FORCE_STATUS: String(forceStatus),
+        },
+      }
+    );
+    return {
+      result,
+      continued: fs.existsSync(sentinel),
+      workRootExists: fs.existsSync(workRoot),
+      calls: fs.readFileSync(log, 'utf8').trim().split('\n'),
+    };
+  };
+
+  const mainForceRecovery = runMainDetach('main-force-recovers', 16, 0);
+  check(
+    'main path continues after forced detach recovers a busy mount',
+    mainForceRecovery.result.status === 0
+      && mainForceRecovery.continued
+      && !mainForceRecovery.workRootExists
+      && mainForceRecovery.calls.length === 2
+      && mainForceRecovery.calls[0].startsWith('detach ')
+      && mainForceRecovery.calls[1].startsWith('detach -force ')
+  );
+
+  const mainDoubleFailure = runMainDetach('main-double-failure', 16, 17);
+  check(
+    'main path stops and preserves the work directory when both detach attempts fail',
+    mainDoubleFailure.result.status === 17
+      && !mainDoubleFailure.continued
+      && mainDoubleFailure.workRootExists
+      && mainDoubleFailure.calls.length === 4
+      && mainDoubleFailure.result.stderr.includes('preserved')
+  );
 
   const forceRecovery = runCleanup('force-recovers', 1, 0);
   check(
@@ -95,6 +159,15 @@ exit ${initialStatus}
     originalFailure.result.status === 23
       && originalFailure.workRootExists
       && originalFailure.result.stderr.includes('preserved')
+  );
+
+  const recoveredOriginalFailure = runCleanup('recover-with-original-status', 16, 0, 23);
+  check(
+    'successful cleanup recovery does not hide an existing failure status',
+    recoveredOriginalFailure.result.status === 23
+      && !recoveredOriginalFailure.workRootExists
+      && recoveredOriginalFailure.calls.length === 2
+      && recoveredOriginalFailure.calls[1].startsWith('detach -force ')
   );
 } finally {
   fs.rmSync(fixtureRoot, { recursive: true, force: true });
