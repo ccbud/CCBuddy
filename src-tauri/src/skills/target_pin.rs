@@ -6,11 +6,19 @@ use std::sync::{Mutex, OnceLock};
 const MAX_EXTERNAL_PINS: usize = 64;
 const MAX_TOTAL_PINS: usize = 128;
 
-struct Pin {
-    id: String,
-    signature: String,
-    handle: File,
-    leased: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PinState {
+    External,
+    Claimed,
+    Leased,
+}
+
+pub(super) struct Pin {
+    pub(super) id: String,
+    pub(super) signature: String,
+    pub(super) handle: File,
+    pub(super) state: PinState,
+    pub(super) revoke_pending: bool,
 }
 
 pub struct PendingPin {
@@ -19,8 +27,8 @@ pub struct PendingPin {
 }
 
 #[derive(Default)]
-struct PinStore {
-    pins: VecDeque<Pin>,
+pub(super) struct PinStore {
+    pub(super) pins: VecDeque<Pin>,
     pending: usize,
 }
 
@@ -86,11 +94,18 @@ fn issue_or_reuse(
         .map_err(|_| "Skills target pin lock failed")?;
     store.pending = store.pending.saturating_sub(1);
     for pin in store.pins.iter_mut() {
+        let reusable = if leased {
+            pin.state != PinState::Claimed
+        } else {
+            pin.state == PinState::External
+        };
         if pin.signature == signature
-            && (leased || !pin.leased)
+            && reusable
             && super::target_pin_open::handle_matches(&pin.handle, path)?
         {
-            pin.leased |= leased;
+            if leased {
+                pin.state = PinState::Leased;
+            }
             return Ok(pin.id.clone());
         }
     }
@@ -99,7 +114,12 @@ fn issue_or_reuse(
         id: id.clone(),
         signature: signature.into(),
         handle,
-        leased,
+        state: if leased {
+            PinState::Leased
+        } else {
+            PinState::External
+        },
+        revoke_pending: false,
     });
     prune_external(&mut store);
     Ok(id)
@@ -117,31 +137,13 @@ pub fn matches(id: &str, path: &Path) -> Result<bool, String> {
 
 pub fn revoke(id: &str) {
     if let Ok(mut store) = store().lock() {
-        store.pins.retain(|pin| pin.id != id);
-    }
-}
-
-pub fn promote(id: &str, path: &Path) -> Result<Option<bool>, String> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| "Skills target pin lock failed")?;
-    let Some(pin) = store.pins.iter_mut().find(|pin| pin.id == id) else {
-        return Ok(None);
-    };
-    if !super::target_pin_open::handle_matches(&pin.handle, path)? {
-        return Ok(None);
-    }
-    let was_leased = pin.leased;
-    pin.leased = true;
-    Ok(Some(was_leased))
-}
-
-pub fn demote(id: &str) {
-    if let Ok(mut store) = store().lock() {
         if let Some(pin) = store.pins.iter_mut().find(|pin| pin.id == id) {
-            pin.leased = false;
+            if pin.state == PinState::Claimed {
+                pin.revoke_pending = true;
+                return;
+            }
         }
-        prune_external(&mut store);
+        store.pins.retain(|pin| pin.id != id);
     }
 }
 
@@ -152,7 +154,11 @@ fn reserve_pending() -> Result<(), String> {
     while external_count(&store) + store.pending >= MAX_EXTERNAL_PINS
         || store.pins.len() + store.pending >= MAX_TOTAL_PINS
     {
-        let Some(index) = store.pins.iter().position(|pin| !pin.leased) else {
+        let Some(index) = store
+            .pins
+            .iter()
+            .position(|pin| pin.state == PinState::External)
+        else {
             return Err("too many active Skills target confirmations".into());
         };
         store.pins.remove(index);
@@ -167,9 +173,13 @@ fn release_pending() {
     }
 }
 
-fn prune_external(store: &mut PinStore) {
+pub(super) fn prune_external(store: &mut PinStore) {
     while external_count(store) > MAX_EXTERNAL_PINS || store.pins.len() > MAX_TOTAL_PINS {
-        let Some(index) = store.pins.iter().position(|pin| !pin.leased) else {
+        let Some(index) = store
+            .pins
+            .iter()
+            .position(|pin| pin.state == PinState::External)
+        else {
             break;
         };
         store.pins.remove(index);
@@ -177,15 +187,19 @@ fn prune_external(store: &mut PinStore) {
 }
 
 fn external_count(store: &PinStore) -> usize {
-    store.pins.iter().filter(|pin| !pin.leased).count()
+    store
+        .pins
+        .iter()
+        .filter(|pin| pin.state == PinState::External)
+        .count()
 }
 
-fn store() -> &'static Mutex<PinStore> {
+pub(super) fn store() -> &'static Mutex<PinStore> {
     static PINS: OnceLock<Mutex<PinStore>> = OnceLock::new();
     PINS.get_or_init(|| Mutex::new(PinStore::default()))
 }
 
-fn random_id() -> Result<String, String> {
+pub(super) fn random_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| format!("create target pin: {error}"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())

@@ -31,34 +31,6 @@ fn make_skill(path: &Path, value: &str) {
 }
 
 #[test]
-fn strict_confirmation_changes_across_guarded_round_trip() {
-    let temp = TempDir::new();
-    let target = temp.0.join("target");
-    let moved = temp.0.join("moved");
-    make_skill(&target, "user-owned");
-    let external = model::SyncConflictDto {
-        skill_id: "guard".into(),
-        path: target.to_string_lossy().into_owned(),
-        keys: vec!["amp".into()],
-        fingerprint_token: target_fingerprint::confirmation_token(
-            "guard",
-            &target,
-            &["amp".into()],
-        )
-        .unwrap(),
-    };
-
-    let moved_guard =
-        target_fingerprint::relocate_noreplace(&external, &target, &target, &moved).unwrap();
-    let restored_guard =
-        target_fingerprint::relocate_noreplace(&moved_guard, &target, &moved, &target).unwrap();
-
-    assert!(!target_fingerprint::matches_confirmation(&external, &target, &target).unwrap());
-    assert!(target_fingerprint::matches_confirmation(&restored_guard, &target, &target).unwrap());
-    target_fingerprint::revoke_confirmation(&restored_guard);
-}
-
-#[test]
 fn external_confirmation_rejects_identical_recreated_target() {
     let temp = TempDir::new();
     let target = temp.0.join("target");

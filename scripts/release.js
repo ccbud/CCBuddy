@@ -20,6 +20,7 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     encoding: 'utf8',
+    env: { ...process.env, ...(options.env || {}) },
     stdio: options.capture ? 'pipe' : 'inherit',
   });
   if (result.error) throw result.error;
@@ -88,6 +89,16 @@ try {
   if (xcodegenVersion !== `Version: ${XCODEGEN_VERSION}`) {
     fail(`XcodeGen ${XCODEGEN_VERSION} is required (found ${xcodegenVersion || '<unknown>'})`);
   }
+
+  // XcodeGen requires every declared source to exist. A clean clone has no ignored Vendor
+  // helper, so prepare and verify the pinned universal binary before changing tracked files.
+  run('native/Scripts/fetch-bifrost.sh', [], {
+    env: { CCBUD_BIFROST_ARCH: 'universal' },
+  });
+  run('native/Scripts/verify-bifrost.sh', [
+    'native/Vendor/bifrost-http',
+    'arm64 x86_64',
+  ]);
 
   run(process.execPath, ['scripts/release-version.js', 'set', version]);
   run('xcodegen', ['generate', '--spec', 'native/project.yml', '--project', 'native']);
