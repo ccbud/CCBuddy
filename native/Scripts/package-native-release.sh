@@ -16,6 +16,7 @@ readonly apple_api_key_id="${APPLE_API_KEY_ID:-}"
 readonly apple_api_issuer="${APPLE_API_ISSUER:-}"
 readonly apple_signing_identity="${APPLE_SIGNING_IDENTITY:-}"
 readonly updater_signing_key="${TAURI_SIGNING_PRIVATE_KEY:-}"
+# An unencrypted Tauri private key legitimately has no password.
 readonly updater_signing_password="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 unset APPLE_API_KEY_PATH APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_SIGNING_IDENTITY
 unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -59,7 +60,6 @@ if [[ "$MODE" == "signed" ]]; then
   require_value APPLE_API_ISSUER "$apple_api_issuer"
   require_value APPLE_SIGNING_IDENTITY "$apple_signing_identity"
   require_value TAURI_SIGNING_PRIVATE_KEY "$updater_signing_key"
-  require_value TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$updater_signing_password"
   [[ -f "$apple_api_key_path" ]] || fail "APPLE_API_KEY_PATH is not a file"
   "$ROOT/native/Scripts/verify-release-app.sh" "$APP" "$VERSION" signed
 
