@@ -12,6 +12,10 @@ const releaseWorkflow = fs.readFileSync(
   path.join(ROOT, '.github/workflows/release.yml'),
   'utf8'
 );
+const nativePackager = fs.readFileSync(
+  path.join(ROOT, 'native/Scripts/package-native-release.sh'),
+  'utf8'
+);
 const caskGenerator = fs.readFileSync(path.join(ROOT, 'scripts/update-cask.js'), 'utf8');
 
 let pass = 0;
@@ -73,6 +77,15 @@ check(
   'native-test never receives release secrets',
   !nativeJob.includes('secrets.')
     && !/APPLE_(?:CERTIFICATE|API|SIGNING)|TAURI_SIGNING_PRIVATE_KEY/.test(nativeJob)
+);
+
+check(
+  'release signing accepts an unencrypted updater key',
+  releaseWorkflow.includes('TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$updater_password"')
+    && !releaseWorkflow.includes('missing TAURI_SIGNING_PRIVATE_KEY_PASSWORD')
+    && !nativePackager.includes(
+      'require_value TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$updater_signing_password"'
+    )
 );
 
 const homebrewStart = releaseWorkflow.indexOf('\n  homebrew:');
