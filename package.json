@@ -1,6 +1,6 @@
 {
   "name": "ccbud",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "CC Buddy — a native macOS companion that proxies Claude Code to Anthropic-compatible providers and browses Claude Code and Codex session history.",
   "author": {
     "name": "loadchange",

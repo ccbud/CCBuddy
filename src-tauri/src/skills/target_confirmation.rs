@@ -41,7 +41,7 @@ pub fn retoken_after_relocation(
     let matched = relocated(&conflict.fingerprint_token) == relocated(&refreshed.fingerprint_token);
     if matched {
         let (id, _) = pinned_parts(&conflict.fingerprint_token).unwrap();
-        if super::target_pin::promote(id, state_path)?.is_none() {
+        if !super::target_pin_rotate::active(id, state_path)? {
             return Ok(None);
         }
     }
@@ -58,17 +58,25 @@ pub fn relocate_noreplace(
         return Err(format!("relocation source changed: {}", source.display()));
     }
     let (id, _) = pinned_parts(&conflict.fingerprint_token).unwrap();
-    let was_leased = super::target_pin::promote(id, source)?
+    let claim = super::target_pin_rotate::claim(id, source)?
         .ok_or_else(|| format!("relocation source changed: {}", source.display()))?;
+    #[cfg(test)]
+    super::target_pin_rotate_test_hook::after_claim();
     if let Err(error) = super::target_stage::install_noreplace(source, destination) {
-        if !was_leased {
-            super::target_pin::demote(id);
+        if claim == super::target_pin_rotate::Claim::External {
+            super::target_pin_rotate::release(id);
         }
         return Err(format!("relocate {}: {error}", source.display()));
     }
     super::target_prepare_hooks::inject_relocation(source, destination);
     let failure = match retoken_after_relocation(conflict, logical_target, destination) {
-        Ok(Some(refreshed)) => return Ok(refreshed),
+        Ok(Some(refreshed)) if claim == super::target_pin_rotate::Claim::Leased => {
+            return Ok(refreshed)
+        }
+        Ok(Some(refreshed)) => match rotate_confirmation(refreshed, destination) {
+            Ok(rotated) => return Ok(rotated),
+            Err(error) => error,
+        },
         Ok(None) => format!("target changed while relocating: {}", destination.display()),
         Err(error) => error,
     };
@@ -76,10 +84,22 @@ pub fn relocate_noreplace(
         Ok(()) => Err(failure),
         Err(restore) => Err(format!("{failure}; relocation restore failed: {restore}")),
     };
-    if !was_leased {
-        super::target_pin::demote(id);
+    if claim == super::target_pin_rotate::Claim::External {
+        super::target_pin_rotate::release(id);
     }
     result
+}
+
+fn rotate_confirmation(
+    mut conflict: SyncConflictDto,
+    state_path: &Path,
+) -> Result<SyncConflictDto, String> {
+    let (id, inner) = pinned_parts(&conflict.fingerprint_token)
+        .ok_or_else(|| "confirmation guard is not pinned".to_string())?;
+    let replacement = super::target_pin_rotate::rotate(id, state_path, inner)?
+        .ok_or_else(|| format!("pinned target changed: {}", state_path.display()))?;
+    conflict.fingerprint_token = format!("v3:{replacement}:{inner}");
+    Ok(conflict)
 }
 
 fn restore_failed_relocation(

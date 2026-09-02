@@ -135,6 +135,12 @@ jobs:
           test -x "$claude" && test "$(lipo -archs "$claude")" = arm64
           test "$("$codex" --version)" = 'codex-cli 0.149.0'
           test "$("$claude" --version)" = '2.1.237 (Claude Code)'
+          mkdir -p native/Vendor/test-tools
+          cp "$codex" native/Vendor/test-tools/codex
+          cp "$claude" native/Vendor/test-tools/claude
+          chmod 755 native/Vendor/test-tools/codex native/Vendor/test-tools/claude
+          cmp -s "$codex" native/Vendor/test-tools/codex
+          cmp -s "$claude" native/Vendor/test-tools/claude
       - name: Run native unit tests with all real E2Es
         shell: bash
         env:
@@ -489,7 +495,7 @@ jobs:
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
   homebrew:
-    name: Publish arm64 Homebrew cask
+    name: Publish universal macOS Homebrew cask
     needs: [verify, publish]
     runs-on: ubuntu-22.04
     environment: release
@@ -516,12 +522,20 @@ jobs:
           set -euo pipefail
           [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json isDraft --jq '.isDraft')" == false ]]
-      - name: Generate pinned arm64 cask
+      - name: Generate pinned universal macOS cask
         run: |
           node scripts/update-cask.js dist homebrew/Casks/ccbud.rb
           ruby -c homebrew/Casks/ccbud.rb
-          grep -F 'depends_on arch: :arm64' homebrew/Casks/ccbud.rb
-          ! grep -Fq ':no_check' homebrew/Casks/ccbud.rb
+          grep -F 'releases/download/v#{version}/CC.Buddy_#{version}_universal.dmg' \
+            homebrew/Casks/ccbud.rb
+          if grep -Fq 'depends_on arch:' homebrew/Casks/ccbud.rb; then
+            echo 'universal cask must not be architecture-restricted' >&2
+            exit 1
+          fi
+          if grep -Fq ':no_check' homebrew/Casks/ccbud.rb; then
+            echo 'cask checksum must not use :no_check' >&2
+            exit 1
+          fi
       - name: Prepare the tap commit without credentials
         shell: bash
         run: |

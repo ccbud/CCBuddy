@@ -17,6 +17,7 @@ mod target_fingerprint;
 mod target_identity;
 mod target_pin;
 mod target_pin_open;
+mod target_pin_rotate;
 mod target_prepare;
 mod target_prepare_hooks;
 mod target_prepare_restore;
@@ -29,11 +30,15 @@ mod tools;
 mod transfer;
 
 #[cfg(test)]
+mod target_pin_rotate_test_hook;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_commit_guards;
 #[cfg(test)]
 mod tests_confirmation;
+#[cfg(test)]
+mod tests_confirmation_rotation;
 #[cfg(test)]
 mod tests_conflict_guards;
 #[cfg(test)]
