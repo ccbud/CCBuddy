@@ -55,7 +55,12 @@ struct ConversationTimelinePane: View {
     /// worse rather than better. The provenance now rides beside the title, and the folder joins the
     /// statistics on a single line that truncates in the middle rather than wrapping.
     private func sessionHeader(_ metadata: HistorySessionMetadata) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs + 2) {
+        let statistics = headerStatistics(ConversationHeaderStatistics.metadata(
+            selectedMetadata: metadata,
+            loadedParent: store.selectedSession,
+            activeTranscript: store.activeTranscript
+        )).joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: Space.xs + 2) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .center, spacing: Space.sm) {
                     AgentBrandMark(source: metadata.source, size: 20)
@@ -92,14 +97,11 @@ struct ConversationTimelinePane: View {
                         .truncationMode(.middle)
                         .help(cwd)
                 }
-                Text(headerStatistics(ConversationHeaderStatistics.metadata(
-                    selectedMetadata: metadata,
-                    loadedParent: store.selectedSession,
-                    activeTranscript: store.activeTranscript
-                )).joined(separator: " · "))
+                Text(statistics)
                     .lineLimit(1)
                     .layoutPriority(1)
                     .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(statistics)
                     .accessibilityIdentifier("conversation.statistics")
                 ForEach(metadata.tags.prefix(2), id: \.self) { tag in
                     metadataBadge(tag)

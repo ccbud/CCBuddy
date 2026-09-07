@@ -105,7 +105,12 @@ struct ConversationListPane: View {
         // painting a title strip across all three columns.
         .padding(.top, Metrics.titleBarHeight - Space.sm)
         .padding(.bottom, Space.lg)
-        .background(WindowDragRegion())
+        .background(alignment: .top) {
+            // Keep AppKit's mouseDown/performDrag surface physically above the SwiftUI buttons.
+            // A full-header native background can compete with their hit regions after resizing.
+            WindowDragRegion()
+                .frame(height: Metrics.titleBarHeight - Space.sm)
+        }
     }
 
     @ViewBuilder private var indexingStatus: some View {

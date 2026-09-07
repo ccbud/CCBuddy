@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 
 struct WindowConfigurator: NSViewRepresentable {
+    static let minimumFrameSize = NSSize(width: 940, height: 620)
+
+    /// SwiftUI constrains the safe-area content, while the design specifies the complete window.
+    /// Ask AppKit for its actual title-bar inset instead of assuming one macOS version's height.
+    static func minimumContentHeight(frameHeight: CGFloat, contentLayoutHeight: CGFloat) -> CGFloat {
+        guard frameHeight.isFinite, contentLayoutHeight.isFinite else { return minimumFrameSize.height }
+        let titleBarInset = max(0, frameHeight - contentLayoutHeight)
+        return max(0, minimumFrameSize.height - titleBarInset)
+    }
+
     final class Coordinator {
         private weak var window: NSWindow?
         private var observationTokens: [NSObjectProtocol] = []
@@ -119,7 +129,7 @@ struct WindowConfigurator: NSViewRepresentable {
         // A clear, non-opaque window makes the desktop bleed through behind the traffic lights.
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
-        window.minSize = NSSize(width: 940, height: 620)
+        window.minSize = Self.minimumFrameSize
         window.collectionBehavior.insert(.fullScreenPrimary)
         configureLegacySmokeContentSize(window)
         coordinator.attach(to: window)

@@ -559,9 +559,14 @@ final class CCBuddyUITests: XCTestCase {
             "dragging the rule between two columns has to move it"
         )
 
+        let widenedWidth = stream.frame.width
         app.buttons["layout.toggle.stream"].click()
         XCTAssertTrue(stream.waitForNonExistence(timeout: 3))
         XCTAssertTrue(app.buttons["layout.toggle.stream"].waitForExistence(timeout: 3))
+        app.buttons["layout.toggle.stream"].click()
+        XCTAssertTrue(stream.waitForExistence(timeout: 3))
+        XCTAssertEqual(stream.frame.width, widenedWidth, accuracy: 1,
+                       "Restoring a resized column must preserve the reader's chosen width")
     }
 
     func testDeterministicVisualParityScreenshots() throws {

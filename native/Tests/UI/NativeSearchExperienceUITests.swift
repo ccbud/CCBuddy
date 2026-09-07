@@ -170,22 +170,27 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(waitUntil { visible(firstHit) }, "Opening a live search result must honor its early message anchor")
         XCTAssertFalse(visible(element("conversation.message.59")))
 
-        try appendLiveTurn(30, to: file)
         let statistics = element("conversation.statistics")
-        XCTAssertTrue(waitUntil(timeout: 20) { self.text(statistics).contains("62 messages") },
+        XCTAssertTrue(statistics.waitForExistence(timeout: 5))
+        XCTAssertTrue(statistics.label.contains("60 messages"),
+                      "The visible exact statistics must also have a readable accessibility label")
+        try appendLiveTurn(30, to: file)
+        XCTAssertTrue(waitUntil(timeout: 20) { statistics.label.contains("62 messages") },
                       "Wait for the real live-file refresh, not an arbitrary delay")
         let movedAway = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !visible(firstHit) }, object: nil)
         movedAway.isInverted = true
         XCTAssertEqual(XCTWaiter.wait(for: [movedAway], timeout: 2), .completed,
                        "Appending live turns must not take the reader away from a search hit")
+        keepScreenshot("native-live-search-anchor")
 
         app.buttons["conversation.jump.latest"].click()
         XCTAssertTrue(waitUntil { visible(self.element("conversation.message.61")) })
         XCTAssertFalse(visible(firstHit))
         try appendLiveTurn(31, to: file)
         XCTAssertTrue(waitUntil(timeout: 20) {
-            self.text(statistics).contains("64 messages") && visible(self.element("conversation.message.63"))
+            statistics.label.contains("64 messages") && visible(self.element("conversation.message.63"))
         }, "Latest explicitly resumes following subsequent live turns")
+        keepScreenshot("native-live-latest-following")
     }
 
     func testDestinationShortcutsAndSearchRoundTrip() {

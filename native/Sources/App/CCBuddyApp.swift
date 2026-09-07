@@ -83,6 +83,7 @@ private struct LiveApplicationRoot: View {
     let appDelegate: AppDelegate
     @ObservedObject var commandLocalization: CommandLocalization
     @StateObject private var model = AppModel()
+    @State private var minimumContentHeight = WindowConfigurator.minimumFrameSize.height
 
     var body: some View {
         AppShellView()
@@ -93,6 +94,11 @@ private struct LiveApplicationRoot: View {
             .background(WindowConfigurator(colorScheme: model.themeMode.colorScheme) { window in
                 appDelegate.attach(model: model)
                 appDelegate.registerMainWindow(window)
+                let height = WindowConfigurator.minimumContentHeight(
+                    frameHeight: window.frame.height,
+                    contentLayoutHeight: window.contentLayoutRect.height
+                )
+                if minimumContentHeight != height { minimumContentHeight = height }
             })
             .onAppear {
                 commandLocalization.language = model.appLanguage
@@ -101,6 +107,8 @@ private struct LiveApplicationRoot: View {
             .onChange(of: model.appLanguage) { language in
                 commandLocalization.language = language
             }
-            .frame(minWidth: 940, minHeight: 620)
+            // Keep SwiftUI's content constraint consistent with the complete 940 × 620 window.
+            // NSWindow.minSize alone does not enforce the minimum under SwiftUI Auto Layout.
+            .frame(minWidth: WindowConfigurator.minimumFrameSize.width, minHeight: minimumContentHeight)
     }
 }
