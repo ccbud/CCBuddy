@@ -522,6 +522,9 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var activeTranscriptID: ConversationTranscriptID = .main
     @Published private(set) var detailState: ConversationLoadState = .idle
     @Published private(set) var isSelectedSessionLive = false
+    /// Activity is a file property; following is the reader's intent. A search or explicit jump
+    /// keeps receiving live content without letting the next refresh move its reading position.
+    @Published private(set) var isFollowingLatest = false
     @Published private(set) var detailRevision = 0
     @Published private(set) var followLatestRevision = 0
 
@@ -591,6 +594,14 @@ final class ConversationStore: ObservableObject {
 
     private var actionMessageDismissal: Task<Void, Never>?
     private var deferredTranscriptWorker: Task<Void, Never>?
+    /// Survives a parent-only reload, but not a newer navigation choice by the reader.
+    private struct DeferredTranscriptJump {
+        let parentFileKey: String
+        let transcriptID: ConversationTranscriptID
+        let childFileKey: String
+        let messageIndex: Int
+    }
+    private var deferredTranscriptJump: DeferredTranscriptJump?
     private var actionMessageGeneration: UInt64 = 0
     private let pollIntervalNanoseconds: UInt64
     private let searchDelayNanoseconds: UInt64
@@ -612,7 +623,13 @@ final class ConversationStore: ObservableObject {
     private var searchWorker: Task<[HistorySearchHit], Error>?
     private var contentSearchNeedsRefresh = false
     private var lastSearchStartedRevision: Int64?
-    private var detailWorker: Task<HistorySession, Error>?
+    private struct DetailSnapshot: Sendable {
+        let session: HistorySession
+        let modificationDateBeforeRead: Date?
+        let modificationDateAfterRead: Date?
+    }
+
+    private var detailWorker: Task<DetailSnapshot, Error>?
     private var pollingTask: Task<Void, Never>?
     private var indexRetryTask: Task<Void, Never>?
     private var revisionReloadTask: Task<Void, Never>?
@@ -1042,6 +1059,7 @@ final class ConversationStore: ObservableObject {
         searchHit: HistorySearchHit? = nil
     ) async {
         let file = metadata.file.standardizedFileURL
+        deferredTranscriptJump = nil
         detailWorker?.cancel()
         detailGeneration = UUID()
         let generation = detailGeneration
@@ -1050,6 +1068,7 @@ final class ConversationStore: ObservableObject {
         activeTranscriptID = .main
         observedModificationDate = nil
         isSelectedSessionLive = Self.isLive(lastActivity: metadata.lastActivity, now: now())
+        isFollowingLatest = searchHit == nil && isSelectedSessionLive
         detailState = .loading
         detailQuery = ""
         detailMatches = []
@@ -1058,8 +1077,7 @@ final class ConversationStore: ObservableObject {
         await loadDetail(
             file: file,
             generation: generation,
-            initialSelection: true,
-            followLatest: isSelectedSessionLive
+            initialSelection: true
         )
         guard detailGeneration == generation, detailState == .loaded,
               let searchHit else { return }
@@ -1084,6 +1102,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func clearSelection() {
+        deferredTranscriptJump = nil
         detailGeneration = UUID()
         detailWorker?.cancel()
         detailWorker = nil
@@ -1092,6 +1111,7 @@ final class ConversationStore: ObservableObject {
         activeTranscriptID = .main
         observedModificationDate = nil
         isSelectedSessionLive = false
+        isFollowingLatest = false
         detailState = .idle
         detailQuery = ""
         detailMatches = []
@@ -1101,6 +1121,7 @@ final class ConversationStore: ObservableObject {
 
     func refreshSelectedFileIfChanged(respectingLoadBudget: Bool = false) async {
         guard let file = selectedFile?.standardizedFileURL else { return }
+        let inspectedGeneration = detailGeneration
         let inspector = fileInspector
         let worker = Task.detached(priority: .utility) {
             try Task.checkCancellation()
@@ -1115,7 +1136,8 @@ final class ConversationStore: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            guard selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
+            guard detailGeneration == inspectedGeneration,
+                  selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
             let message = "无法检查会话文件：\(error.localizedDescription)"
             detailState = .failed(message)
             actionMessage = message
@@ -1123,7 +1145,8 @@ final class ConversationStore: ObservableObject {
             return
         }
 
-        guard selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
+        guard detailGeneration == inspectedGeneration,
+              selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
         guard let current else {
             detailState = .failed("会话文件已不存在")
             selectedSession = nil
@@ -1153,8 +1176,7 @@ final class ConversationStore: ObservableObject {
         await loadDetail(
             file: file,
             generation: generation,
-            initialSelection: false,
-            followLatest: isSelectedSessionLive
+            initialSelection: false
         )
     }
 
@@ -1166,6 +1188,7 @@ final class ConversationStore: ObservableObject {
     func selectTranscript(_ id: ConversationTranscriptID) {
         guard id != activeTranscriptID,
               transcriptTabs.contains(where: { $0.id == id }) else { return }
+        deferredTranscriptJump = nil
         activeTranscriptID = id
         refreshTranscriptProjection()
         loadDeferredTranscriptIfNeeded(id)
@@ -1191,6 +1214,18 @@ final class ConversationStore: ObservableObject {
         else { return }
 
         let file = subagent.file
+        let childFileKey = ConversationFilter.fileKey(file)
+        let parentFileKey = selectedFile.map(ConversationFilter.fileKey)
+        if let jumpToSequence, let parentFileKey {
+            deferredTranscriptJump = DeferredTranscriptJump(
+                parentFileKey: parentFileKey, transcriptID: id,
+                childFileKey: childFileKey, messageIndex: jumpToSequence
+            )
+        } else if let pending = deferredTranscriptJump,
+                  pending.parentFileKey != parentFileKey
+                    || pending.transcriptID != id || pending.childFileKey != childFileKey {
+            deferredTranscriptJump = nil
+        }
         let generation = detailGeneration
         let provider = repository
         deferredTranscriptWorker?.cancel()
@@ -1206,12 +1241,22 @@ final class ConversationStore: ObservableObject {
                   child.file.standardizedFileURL == file.standardizedFileURL else { return }
             child.messages = loaded.messages
             child.count = loaded.messages.count
+            child.totals = loaded.metadata.totals
             session.subagents[agentID] = child
             self.selectedSession = session
             self.refreshTranscriptProjection()
             self.detailRevision += 1
-            if let jumpToSequence, child.messages.indices.contains(jumpToSequence) {
-                self.jump(to: jumpToSequence)
+            if let pending = self.deferredTranscriptJump,
+               pending.parentFileKey == self.selectedFile.map(ConversationFilter.fileKey),
+               pending.transcriptID == id, pending.childFileKey == childFileKey {
+                self.deferredTranscriptJump = nil
+                if child.messages.indices.contains(pending.messageIndex) {
+                    self.jump(to: pending.messageIndex)
+                }
+            } else if self.isFollowingLatest {
+                // Latest may have been chosen while the child was still empty. Apply that
+                // current intent now that its bottom anchor has actual content to follow.
+                self.followLatestRevision += 1
             }
         }
     }
@@ -1220,13 +1265,18 @@ final class ConversationStore: ObservableObject {
     /// appear immediately with their titles and sizes.
     static func attachingSubagentRefs(
         of metadata: HistorySessionMetadata?,
-        to session: HistorySession
+        to session: HistorySession,
+        preserving previousSession: HistorySession? = nil
     ) -> HistorySession {
         guard let refs = metadata?.subagentRefs, !refs.isEmpty else { return session }
         var result = session
+        let previous = previousSession.flatMap {
+            ConversationFilter.fileKey($0.metadata.file) == ConversationFilter.fileKey(session.metadata.file)
+                ? $0 : nil
+        }
         for ref in refs where !ref.threadID.isEmpty {
             guard result.subagents[ref.threadID] == nil else { continue }
-            result.subagents[ref.threadID] = HistorySubagent(
+            var child = HistorySubagent(
                 agentID: ref.threadID,
                 file: ref.file,
                 type: "agent",
@@ -1235,7 +1285,18 @@ final class ConversationStore: ObservableObject {
                 totals: ref.totals,
                 messages: []
             )
+            // A parent-only refresh does not reread these separate files. Retain a child's
+            // already-loaded snapshot only while both its thread and physical file still match.
+            if let loaded = previous?.subagents[ref.threadID],
+               !loaded.messages.isEmpty,
+               ConversationFilter.fileKey(loaded.file) == ConversationFilter.fileKey(ref.file) {
+                child.messages = loaded.messages
+                child.count = loaded.count
+                child.totals = loaded.totals
+            }
+            result.subagents[ref.threadID] = child
         }
+        result.metadata.subagentRefs = refs
         result.metadata.subagentCount = result.subagents.count
         return result
     }
@@ -1255,7 +1316,17 @@ final class ConversationStore: ObservableObject {
     }
 
     func jump(to messageIndex: Int) {
+        deferredTranscriptJump = nil
+        isFollowingLatest = false
         jumpRequest = ConversationJumpRequest(id: UUID(), messageIndex: messageIndex)
+    }
+
+    func jumpToLatest() {
+        guard selectedSession != nil else { return }
+        deferredTranscriptJump = nil
+        jumpRequest = nil
+        isFollowingLatest = true
+        followLatestRevision += 1
     }
 
     func contentHit(for metadata: HistorySessionMetadata) -> HistorySearchHit? {
@@ -1914,56 +1985,72 @@ final class ConversationStore: ObservableObject {
     private func loadDetail(
         file: URL,
         generation: UUID,
-        initialSelection: Bool,
-        followLatest: Bool
+        initialSelection: Bool
     ) async {
         let provider = repository
         let inspector = fileInspector
         let startedAt = Date()
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
+            let beforeRead = try? inspector.modificationDate(for: file)
+            try Task.checkCancellation()
             let value = try provider.getSession(file: file)
             try Task.checkCancellation()
-            return value
+            let afterRead = try? inspector.modificationDate(for: file)
+            try Task.checkCancellation()
+            return DetailSnapshot(
+                session: value,
+                modificationDateBeforeRead: beforeRead,
+                modificationDateAfterRead: afterRead
+            )
         }
         detailWorker = worker
 
         do {
-            let value = try await worker.value
-            lastDetailLoadDuration = Date().timeIntervalSince(startedAt)
-            lastDetailLoadFinishedAt = Date()
+            let snapshot = try await worker.value
             guard !Task.isCancelled,
                   detailGeneration == generation,
                   selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
+            lastDetailLoadDuration = Date().timeIntervalSince(startedAt)
+            lastDetailLoadFinishedAt = Date()
+            let value = snapshot.session
 
             let previousMatch = detailMatchIndex >= 0 && detailMatchIndex < detailMatches.count
                 ? detailMatches[detailMatchIndex].messageIndex
                 : nil
-            selectedSession = Self.attachingSubagentRefs(of: selectedMetadata, to: value)
-            refreshTranscriptProjection()
-            if !ConversationTranscriptPresentation.tabs(in: value).contains(where: {
+            let attached = Self.attachingSubagentRefs(
+                of: selectedMetadata, to: value, preserving: selectedSession
+            )
+            selectedSession = attached
+            if !ConversationTranscriptPresentation.tabs(in: attached).contains(where: {
                 $0.id == activeTranscriptID
             }) {
+                deferredTranscriptJump = nil
                 activeTranscriptID = .main
             }
-            selectedMetadata = value.metadata
+            refreshTranscriptProjection()
+            loadDeferredTranscriptIfNeeded(activeTranscriptID)
+            selectedMetadata = attached.metadata
             detailState = .loaded
             detailRevision += 1
 
-            let mtimeWorker = Task.detached(priority: .utility) {
-                try? inspector.modificationDate(for: file)
-            }
-            observedModificationDate = await mtimeWorker.value ?? value.metadata.lastActivity
-            let activity = observedModificationDate ?? value.metadata.lastActivity
+            // Only the version seen before parsing is known to be included. A final append
+            // during the read must remain visible to the next poll even if the writer stops.
+            // Both inspections finish before publishing .loaded, so initial search navigation
+            // cannot arrive after an already-visible Latest action.
+            observedModificationDate = snapshot.modificationDateBeforeRead ?? .distantPast
+            let activity = snapshot.modificationDateAfterRead ?? value.metadata.lastActivity
             isSelectedSessionLive = Self.isLive(lastActivity: activity, now: now())
             rebuildDetailSearch(preservingMessageIndex: previousMatch, jumpToFirst: false)
 
-            if followLatest && isSelectedSessionLive {
+            // Read current intent after the asynchronous load: a jump made while parsing must
+            // not be overwritten by the following state captured before that read began.
+            if isFollowingLatest && isSelectedSessionLive {
                 followLatestRevision += 1
-            } else if initialSelection {
+            } else if initialSelection && jumpRequest == nil {
                 jumpToFirstVisibleMessage()
             }
-            replaceMetadata(value.metadata)
+            replaceMetadata(attached.metadata)
         } catch is CancellationError {
             return
         } catch {
@@ -2048,6 +2135,7 @@ final class ConversationStore: ObservableObject {
     }
 
     private func cancelTransientWork() {
+        deferredTranscriptJump = nil
         contentSearchNeedsRefresh = false
         lastSearchStartedRevision = nil
         cancelSemanticRanking()

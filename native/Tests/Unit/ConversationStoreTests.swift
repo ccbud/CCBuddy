@@ -912,6 +912,7 @@ final class ConversationStoreTests: XCTestCase {
         await store.reload()
         await store.select(metadata)
         XCTAssertEqual(provider.readCount(for: metadata.file), 1)
+        XCTAssertTrue(store.isFollowingLatest, "Opening a live session normally follows new messages")
         let initialFollowRevision = store.followLatestRevision
 
         await store.refreshSelectedFileIfChanged()
@@ -927,6 +928,225 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedSession?.messages.count, 2)
         XCTAssertTrue(store.isSelectedSessionLive)
         XCTAssertGreaterThan(store.followLatestRevision, initialFollowRevision)
+    }
+
+    func testLiveSearchAnchorSurvivesUpdatesUntilLatestExplicitlyResumesFollowing() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = Self.metadata(id: "live-search", title: "Live search", tags: [],
+                                     file: "/tmp/live-search.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["before", "Swift target", "after"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file,
+            source: metadata.source, agent: "main", sequence: 1, snippet: "Swift target", count: 1)
+
+        await store.select(metadata, searchHit: hit)
+        XCTAssertTrue(store.isSelectedSessionLive)
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+        XCTAssertEqual(store.followLatestRevision, 0, "A search result must never request an initial scroll to latest")
+        let searchAnchor = store.jumpRequest
+        let initialDetailRevision = store.detailRevision
+
+        provider.setSession(Self.session(metadata, texts: ["before", "Swift target", "after", "new"]), for: metadata.file)
+        inspector.setDate(base.addingTimeInterval(2))
+        await store.refreshSelectedFileIfChanged()
+        XCTAssertEqual(store.selectedSession?.messages.count, 4, "Pausing follow must not pause live content updates")
+        XCTAssertGreaterThan(store.detailRevision, initialDetailRevision)
+        XCTAssertTrue(store.isSelectedSessionLive)
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.jumpRequest, searchAnchor)
+        XCTAssertEqual(store.followLatestRevision, 0)
+
+        store.jumpToLatest()
+        XCTAssertTrue(store.isFollowingLatest)
+        XCTAssertNil(store.jumpRequest, "Reappearing views must not replay the old search anchor")
+        XCTAssertEqual(store.followLatestRevision, 1)
+        provider.setSession(Self.session(metadata, texts: ["before", "Swift target", "after", "new", "newest"]), for: metadata.file)
+        inspector.setDate(base.addingTimeInterval(3))
+        await store.refreshSelectedFileIfChanged()
+        XCTAssertEqual(store.selectedSession?.messages.count, 5)
+        XCTAssertEqual(store.followLatestRevision, 2, "Latest explicitly restores following on later refreshes")
+
+        store.clearSelection()
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertNil(store.jumpRequest)
+    }
+
+    func testFinalAppendDuringDetailReadIsLoadedByNextPollWithoutAnotherWrite() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = Self.metadata(id: "append-during-read", title: "Append", tags: [],
+                                     file: "/tmp/append-during-read.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["before"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        provider.blockNextReadAfterSnapshot(until: gate)
+        let selection = Task { await store.select(metadata) }
+        await waitUntil { provider.snapshotReadCount(for: metadata.file) == 1 }
+
+        // The old snapshot is already captured. The producer appends once while parsing it,
+        // then stops; no later write is available to rescue an incorrectly advanced baseline.
+        provider.setSession(Self.session(metadata, texts: ["before", "final append"]), for: metadata.file)
+        inspector.setDate(base.addingTimeInterval(2))
+        gate.signal()
+        await selection.value
+        XCTAssertEqual(store.selectedSession?.messages.count, 1)
+
+        await store.refreshSelectedFileIfChanged()
+        XCTAssertEqual(provider.readCount(for: metadata.file), 2)
+        XCTAssertEqual(store.selectedSession?.messages.count, 2)
+        await store.refreshSelectedFileIfChanged()
+        XCTAssertEqual(provider.readCount(for: metadata.file), 2,
+                       "Once the stable version is loaded, unchanged polls must remain cheap")
+    }
+
+    func testInitialSearchDetailIsNotInteractiveUntilFinalInspectionFinishes() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = Self.metadata(id: "initial-search-inspection", title: "Search", tags: [],
+                                     file: "/tmp/initial-search-inspection.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "target", "last"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        inspector.blockRead(number: 2, until: gate)
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file,
+            source: metadata.source, agent: "main", sequence: 1, snippet: "target", count: 1)
+        let selection = Task { await store.select(metadata, searchHit: hit) }
+        await waitUntil { inspector.readCount == 2 }
+
+        XCTAssertEqual(provider.snapshotReadCount(for: metadata.file), 1)
+        XCTAssertEqual(store.detailState, .loading)
+        XCTAssertNil(store.selectedSession,
+                     "A pending initial search anchor must not follow an already-visible Latest action")
+        gate.signal()
+        await selection.value
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+        XCTAssertFalse(store.isFollowingLatest)
+        store.jumpToLatest()
+        XCTAssertTrue(store.isFollowingLatest)
+        XCTAssertNil(store.jumpRequest)
+    }
+
+    func testManualJumpDuringLiveRefreshOverridesEarlierFollowingIntent() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = Self.metadata(id: "live-jump", title: "Live jump", tags: [],
+                                     file: "/tmp/live-jump.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "last"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        await store.select(metadata)
+        let initialFollowRevision = store.followLatestRevision
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        provider.blockNextRead(until: gate)
+        provider.setSession(Self.session(metadata, texts: ["first", "last", "appended"]), for: metadata.file)
+        inspector.setDate(base.addingTimeInterval(2))
+        let refresh = Task { await store.refreshSelectedFileIfChanged() }
+        await waitUntil { provider.readCount(for: metadata.file) == 2 }
+
+        store.jump(to: 0)
+        let anchor = store.jumpRequest
+        gate.signal()
+        await refresh.value
+        XCTAssertEqual(store.selectedSession?.messages.count, 3)
+        XCTAssertEqual(store.jumpRequest, anchor)
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.followLatestRevision, initialFollowRevision,
+                       "A refresh must consult current intent, not the state before its asynchronous read")
+    }
+
+    func testDetailSearchPausesLiveFollowing() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = Self.metadata(id: "live-detail-search", title: "Detail search", tags: [],
+                                     file: "/tmp/live-detail-search.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first Swift", "last Swift"]),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: base), now: { base.addingTimeInterval(10) })
+        await store.select(metadata)
+        XCTAssertTrue(store.isFollowingLatest)
+        store.updateDetailQuery("Swift")
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 0)
+        store.jumpToLatest()
+        store.nextDetailMatch()
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+    }
+
+    func testOldDetailMtimeCompletionCannotScrollNewSelection() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = Self.metadata(id: "old-mtime", title: "Old", tags: [], file: "/tmp/old-mtime.jsonl")
+        let current = Self.metadata(id: "current-mtime", title: "Current", tags: [], file: "/tmp/current-mtime.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(old.file): Self.session(old, texts: ["old first", "old last"]),
+            ConversationFilter.fileKey(current.file): Self.session(current, texts: ["current first", "current last"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        inspector.blockRead(number: 2, until: gate)
+        let oldSelection = Task { await store.select(old) }
+        await waitUntil { inspector.readCount == 2 }
+        await store.select(current)
+        let followRevision = store.followLatestRevision
+        XCTAssertTrue(store.isFollowingLatest)
+        gate.signal()
+        await oldSelection.value
+        XCTAssertEqual(store.selectedSession?.metadata.id, current.id)
+        XCTAssertEqual(store.followLatestRevision, followRevision,
+                       "A stale mtime continuation must not send scroll requests to the new live session")
+        XCTAssertNil(store.jumpRequest)
+    }
+
+    func testOldRefreshInspectionCannotReloadAReselectedFile() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = Self.metadata(id: "reselected", title: "Reselected", tags: [], file: "/tmp/reselected.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "Swift target", "last"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        await store.select(metadata)
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        inspector.setDate(base.addingTimeInterval(1))
+        inspector.blockNextRead(until: gate)
+        let staleRefresh = Task { await store.refreshSelectedFileIfChanged() }
+        await waitUntil { inspector.readCount == 3 }
+
+        inspector.setDate(base.addingTimeInterval(2))
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file,
+            source: metadata.source, agent: "main", sequence: 1, snippet: "Swift target", count: 1)
+        await store.select(metadata, searchHit: hit)
+        let anchor = store.jumpRequest
+        let detailRevision = store.detailRevision
+        gate.signal()
+        await staleRefresh.value
+        XCTAssertEqual(provider.readCount(for: metadata.file), 2,
+                       "Checking only the path lets a stale inspection reload a newer selection of the same file")
+        XCTAssertEqual(store.detailRevision, detailRevision)
+        XCTAssertEqual(store.jumpRequest, anchor)
+        XCTAssertFalse(store.isFollowingLatest)
     }
 
     func testDetailSearchIndexesTextThinkingToolInputAndPairedResult() async {
@@ -1127,6 +1347,131 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(provider.readCount(for: childMetadata.file), 1)
     }
 
+    func testParentLiveRefreshPreservesIndependentChildIdentityContentAndExactTotals() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        var rawParent = Self.metadata(id: "live-parent", title: "Parent", tags: [],
+                                      file: "/tmp/live-parent.jsonl")
+        rawParent.source = .codex
+        var childMetadata = Self.metadata(id: "live-child", title: "Child", tags: [],
+                                          file: "/tmp/live-child.jsonl")
+        childMetadata.source = .codex
+        childMetadata.totals = HistoryTotals(inputTokens: 2_000, outputTokens: 300, credits: 0.4)
+        let child = HistorySession(metadata: childMetadata, messages: [
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "child-tool", name: "Read")]),
+            HistoryMessage(role: "user", content: [.init(type: "tool_result", toolUseID: "child-tool",
+                                                        content: .string("child result"))]),
+            HistoryMessage(role: "assistant", content: [.init(type: "text", text: "exact child target")]),
+        ])
+        var catalogParent = rawParent
+        catalogParent.subagentRefs = [.init(
+            file: childMetadata.file, threadID: "live-child", title: "Child", messageCount: 1,
+            lastActivity: base, totals: HistoryTotals(inputTokens: 20, outputTokens: 3)
+        )]
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(rawParent.file): Self.session(rawParent, texts: ["parent"]),
+            ConversationFilter.fileKey(childMetadata.file): child,
+        ])
+        let inspector = FakeConversationFileInspector(date: base)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      now: { base.addingTimeInterval(10) })
+        let hit = HistorySearchHit(sessionID: rawParent.sessionID, file: rawParent.file,
+            source: .codex, agent: "live-child", sequence: 2, snippet: "exact child target", count: 1)
+        await store.select(catalogParent, searchHit: hit)
+        await waitUntil { store.activeTranscript?.messages.count == 3 }
+        let anchor = store.jumpRequest
+        XCTAssertEqual(anchor?.messageIndex, 2)
+        XCTAssertEqual(store.activeTranscript?.metadata.totals, childMetadata.totals,
+                       "A fully loaded child's totals must replace the catalog prefix sample")
+
+        for revision in 1...2 {
+            provider.setSession(Self.session(rawParent, texts: ["parent", "update \(revision)"]), for: rawParent.file)
+            inspector.setDate(base.addingTimeInterval(Double(revision)))
+            await store.refreshSelectedFileIfChanged()
+
+            XCTAssertEqual(store.activeTranscriptID, .subagent("live-child"))
+            XCTAssertEqual(store.activeTranscriptFile, childMetadata.file)
+            XCTAssertEqual(store.activeTranscript?.messages, child.messages)
+            XCTAssertEqual(store.activeTranscript?.metadata.totals, childMetadata.totals)
+            XCTAssertEqual(store.selectedMetadata?.subagentRefs, catalogParent.subagentRefs)
+            XCTAssertEqual(store.jumpRequest, anchor)
+            XCTAssertFalse(store.isFollowingLatest)
+            XCTAssertNotNil(store.transcriptProjection.toolResults["child-tool"])
+            XCTAssertEqual(provider.readCount(for: childMetadata.file), 1,
+                           "A parent-only refresh should preserve the same child's loaded snapshot")
+        }
+    }
+
+    func testPreservingLoadedChildRequiresBothParentAndChildFileIdentity() {
+        let parent = Self.metadata(id: "parent", title: "Parent", tags: [], file: "/tmp/parent.jsonl")
+        var previous = Self.session(parent, text: "parent")
+        previous.subagents["shared-child-id"] = HistorySubagent(
+            agentID: "shared-child-id", file: URL(fileURLWithPath: "/tmp/old-child.jsonl"),
+            count: 1, messages: [HistoryMessage(role: "user", content: [.init(type: "text", text: "old child")])]
+        )
+        var catalog = parent
+        catalog.subagentRefs = [.init(file: URL(fileURLWithPath: "/tmp/new-child.jsonl"),
+            threadID: "shared-child-id", title: "New", messageCount: 1, lastActivity: parent.lastActivity)]
+        let changedChild = ConversationStore.attachingSubagentRefs(
+            of: catalog, to: Self.session(parent, text: "parent"), preserving: previous
+        )
+        XCTAssertTrue(changedChild.subagents["shared-child-id"]?.messages.isEmpty == true)
+
+        catalog.subagentRefs[0].file = previous.subagents["shared-child-id"]!.file
+        previous.metadata.file = URL(fileURLWithPath: "/tmp/other-parent.jsonl")
+        let changedParent = ConversationStore.attachingSubagentRefs(
+            of: catalog, to: Self.session(parent, text: "parent"), preserving: previous
+        )
+        XCTAssertTrue(changedParent.subagents["shared-child-id"]?.messages.isEmpty == true)
+    }
+
+    func testParentRefreshRestartsPendingChildLoadWithoutLosingSearchSequence() async {
+        let fixture = deferredChildFixture()
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        fixture.provider.blockReadAfterSnapshot(for: fixture.childFile, until: gate)
+        await fixture.store.select(fixture.catalog, searchHit: fixture.hit)
+        await waitUntil { fixture.provider.snapshotReadCount(for: fixture.childFile) == 1 }
+        XCTAssertTrue(fixture.store.activeTranscript?.messages.isEmpty == true)
+
+        var rawParent = fixture.catalog
+        rawParent.subagentRefs = []
+        fixture.provider.setSession(Self.session(rawParent, texts: ["parent", "parent update"]),
+                                    for: rawParent.file)
+        fixture.inspector.setDate(rawParent.lastActivity.addingTimeInterval(1))
+        await fixture.store.refreshSelectedFileIfChanged()
+        // The old child read is still held. Only the restarted worker can supply these messages.
+        await waitUntil { fixture.store.activeTranscript?.messages.count == 3 }
+
+        XCTAssertEqual(fixture.provider.readCount(for: fixture.childFile), 2)
+        XCTAssertEqual(fixture.store.activeTranscriptID, .subagent("deferred-child"))
+        XCTAssertEqual(fixture.store.jumpRequest?.messageIndex, 2,
+                       "The pending child search sequence must survive a parent-only generation change")
+        XCTAssertFalse(fixture.store.isFollowingLatest)
+    }
+
+    func testLatestCancelsPendingChildSearchJumpButStillLoadsAndFollowsItsContent() async {
+        let fixture = deferredChildFixture()
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        fixture.provider.blockReadAfterSnapshot(for: fixture.childFile, until: gate)
+        await fixture.store.select(fixture.catalog, searchHit: fixture.hit)
+        await waitUntil { fixture.provider.snapshotReadCount(for: fixture.childFile) == 1 }
+
+        fixture.store.jumpToLatest()
+        let revision = fixture.store.followLatestRevision
+        XCTAssertTrue(fixture.store.isFollowingLatest)
+        XCTAssertNil(fixture.store.jumpRequest)
+        gate.signal()
+        await waitUntil { fixture.store.activeTranscript?.messages.count == 3 }
+
+        XCTAssertEqual(fixture.store.activeTranscriptFile, fixture.childFile)
+        XCTAssertEqual(fixture.provider.readCount(for: fixture.childFile), 1)
+        XCTAssertNil(fixture.store.jumpRequest, "The late child search anchor must not override Latest")
+        XCTAssertTrue(fixture.store.isFollowingLatest)
+        XCTAssertEqual(fixture.store.followLatestRevision, revision + 1,
+                       "Latest chosen during loading must scroll once the child actually has content")
+    }
+
     func testFailedHTMLExportDoesNotOpenResultAndKeepsLocalizedErrorSource() async {
         let metadata = Self.metadata(
             id: "failed-html",
@@ -1165,6 +1510,31 @@ final class ConversationStoreTests: XCTestCase {
         file: String
     ) -> HistorySessionMetadata {
         ConversationFilterTests.metadata(id: id, title: title, tags: tags, file: file)
+    }
+
+    private func deferredChildFixture() -> (
+        store: ConversationStore, provider: FakeConversationRepository,
+        inspector: FakeConversationFileInspector, catalog: HistorySessionMetadata,
+        childFile: URL, hit: HistorySearchHit
+    ) {
+        var parent = Self.metadata(id: "deferred-parent", title: "Parent", tags: [],
+                                   file: "/tmp/deferred-parent.jsonl")
+        parent.source = .codex
+        let child = Self.metadata(id: "deferred-child", title: "Child", tags: [],
+                                  file: "/tmp/deferred-child.jsonl")
+        var catalog = parent
+        catalog.subagentRefs = [.init(file: child.file, threadID: "deferred-child", title: "Child",
+                                     messageCount: 3, lastActivity: parent.lastActivity)]
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(parent.file): Self.session(parent, text: "parent"),
+            ConversationFilter.fileKey(child.file): Self.session(child, texts: ["before", "middle", "target"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: parent.lastActivity)
+        let currentDate = parent.lastActivity.addingTimeInterval(10)
+        let store = ConversationStore(repository: provider, fileInspector: inspector, now: { currentDate })
+        let hit = HistorySearchHit(sessionID: parent.sessionID, file: parent.file, source: .codex,
+                                   agent: "deferred-child", sequence: 2, snippet: "target", count: 1)
+        return (store, provider, inspector, catalog, child.file, hit)
     }
 
     private static func project(cwd: String, name: String, sessions: [HistorySessionMetadata]) -> HistoryProject {
@@ -1237,6 +1607,10 @@ private final class FakeConversationRepository: ConversationHistoryProviding, @u
     private var storedSessions: [String: HistorySession]
     private var delays: [String: TimeInterval] = [:]
     private var reads: [String: Int] = [:]
+    private var snapshotReads: [String: Int] = [:]
+    private var nextReadGate: DispatchSemaphore?
+    private var nextSnapshotGate: DispatchSemaphore?
+    private var fileSnapshotGates: [String: DispatchSemaphore] = [:]
 
     init(projects: [HistoryProject], sessions: [String: HistorySession]) {
         storedProjects = projects
@@ -1251,21 +1625,50 @@ private final class FakeConversationRepository: ConversationHistoryProviding, @u
 
     func getSession(file: URL) throws -> HistorySession {
         let key = ConversationFilter.fileKey(file)
-        let delay = lock.withLock { () -> TimeInterval in
+        let (delay, gate, snapshotGate) = lock.withLock { () -> (TimeInterval, DispatchSemaphore?, DispatchSemaphore?) in
             reads[key, default: 0] += 1
-            return delays[key] ?? 0
+            defer {
+                nextReadGate = nil
+                nextSnapshotGate = nil
+            }
+            let fileGate = fileSnapshotGates.removeValue(forKey: key)
+            return (delays[key] ?? 0, nextReadGate, nextSnapshotGate ?? fileGate)
+        }
+        if let gate, gate.wait(timeout: .now() + 10) == .timedOut {
+            throw HistoryError.unreadableFile(file, "fixture read gate timed out")
         }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
-        return try lock.withLock {
+        let snapshot = try lock.withLock {
             guard let session = storedSessions[key] else {
                 throw HistoryError.unreadableFile(file, "fixture missing")
             }
+            snapshotReads[key, default: 0] += 1
             return session
         }
+        if let snapshotGate, snapshotGate.wait(timeout: .now() + 10) == .timedOut {
+            throw HistoryError.unreadableFile(file, "fixture snapshot gate timed out")
+        }
+        return snapshot
     }
 
     func setDelay(_ delay: TimeInterval, for file: URL) {
         lock.withLock { delays[ConversationFilter.fileKey(file)] = delay }
+    }
+
+    func blockNextRead(until gate: DispatchSemaphore) {
+        lock.withLock { nextReadGate = gate }
+    }
+
+    func blockNextReadAfterSnapshot(until gate: DispatchSemaphore) {
+        lock.withLock { nextSnapshotGate = gate }
+    }
+
+    func blockReadAfterSnapshot(for file: URL, until gate: DispatchSemaphore) {
+        lock.withLock { fileSnapshotGates[ConversationFilter.fileKey(file)] = gate }
+    }
+
+    func snapshotReadCount(for file: URL) -> Int {
+        lock.withLock { snapshotReads[ConversationFilter.fileKey(file), default: 0] }
     }
 
     func setSession(_ session: HistorySession, for file: URL) {
@@ -1400,11 +1803,30 @@ private final class FakeIndexedConversationRepository: ConversationIndexedHistor
 private final class FakeConversationFileInspector: ConversationFileInspecting, @unchecked Sendable {
     private let lock = NSLock()
     private var date: Date?
+    private var reads = 0
+    private var readGates: [Int: DispatchSemaphore] = [:]
+
+    var readCount: Int { lock.withLock { reads } }
 
     init(date: Date?) { self.date = date }
 
     func modificationDate(for file: URL) throws -> Date? {
-        lock.withLock { date }
+        let (value, gate) = lock.withLock { () -> (Date?, DispatchSemaphore?) in
+            reads += 1
+            return (date, readGates.removeValue(forKey: reads))
+        }
+        if let gate, gate.wait(timeout: .now() + 10) == .timedOut {
+            throw HistoryError.unreadableFile(file, "fixture inspection gate timed out")
+        }
+        return value
+    }
+
+    func blockNextRead(until gate: DispatchSemaphore) {
+        lock.withLock { readGates[reads + 1] = gate }
+    }
+
+    func blockRead(number: Int, until gate: DispatchSemaphore) {
+        lock.withLock { readGates[number] = gate }
     }
 
     func setDate(_ date: Date?) {

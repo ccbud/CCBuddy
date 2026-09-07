@@ -147,6 +147,47 @@ final class NativeSearchExperienceUITests: XCTestCase {
         app.buttons["conversation.jump.latest"].click()
     }
 
+    func testLiveSearchAnchorSurvivesAppendsUntilLatestResumesFollowing() throws {
+        let file = fixtureRoot.appendingPathComponent("history/projects/experience/live-anchor.jsonl")
+        var initial = Data()
+        for turn in 0..<30 { initial.append(try liveTurn(turn)) }
+        try initial.write(to: file)
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(waitUntil { refresh.isEnabled })
+        refresh.click()
+        XCTAssertTrue(app.buttons["conversation.session.disk:live-anchor"].waitForExistence(timeout: 20))
+
+        openSearch(query: "anchorstayneedle")
+        XCTAssertTrue(element("conversation.search.result.0").waitForExistence(timeout: 15))
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(element("conversation.search.palette").waitForNonExistence(timeout: 5))
+        XCTAssertTrue(waitUntil { self.text(self.element("conversation.title")) == "Live anchor fixture" })
+        let firstHit = element("conversation.message.1")
+        let viewport = element("conversation.timeline.scroll")
+        func visible(_ message: XCUIElement) -> Bool {
+            message.exists && message.isHittable && viewport.frame.intersects(message.frame)
+        }
+        XCTAssertTrue(waitUntil { visible(firstHit) }, "Opening a live search result must honor its early message anchor")
+        XCTAssertFalse(visible(element("conversation.message.59")))
+
+        try appendLiveTurn(30, to: file)
+        let statistics = element("conversation.statistics")
+        XCTAssertTrue(waitUntil(timeout: 20) { self.text(statistics).contains("62 messages") },
+                      "Wait for the real live-file refresh, not an arbitrary delay")
+        let movedAway = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !visible(firstHit) }, object: nil)
+        movedAway.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [movedAway], timeout: 2), .completed,
+                       "Appending live turns must not take the reader away from a search hit")
+
+        app.buttons["conversation.jump.latest"].click()
+        XCTAssertTrue(waitUntil { visible(self.element("conversation.message.61")) })
+        XCTAssertFalse(visible(firstHit))
+        try appendLiveTurn(31, to: file)
+        XCTAssertTrue(waitUntil(timeout: 20) {
+            self.text(statistics).contains("64 messages") && visible(self.element("conversation.message.63"))
+        }, "Latest explicitly resumes following subsequent live turns")
+    }
+
     func testDestinationShortcutsAndSearchRoundTrip() {
         XCTAssertTrue(app.menuBars.menuBarItems["Sessions"].exists,
                       "Scene commands must use the app's English locale even on a Chinese system")
@@ -188,9 +229,11 @@ final class NativeSearchExperienceUITests: XCTestCase {
             app.typeText(focusedLayout ? "implementation" : "architecture")
             XCTAssertEqual(paletteField.value as? String, focusedLayout ? "implementation" : "architecture")
             XCTAssertFalse(detail.exists, "VoiceOver must not reach the covered reader while search is modal")
+            XCTAssertFalse(app.buttons["layout.focus.exit"].exists, "Every covered overlay must join the modal accessibility boundary")
 
             app.typeKey(.escape, modifierFlags: [])
             XCTAssertTrue(element("conversation.search.palette").waitForNonExistence(timeout: 5))
+            if focusedLayout { XCTAssertTrue(app.buttons["layout.focus.exit"].waitForExistence(timeout: 5)) }
             XCTAssertEqual(detail.value as? String, "nimbusneedle", "The covered reader must not receive palette typing")
             app.typeText("x")
             XCTAssertEqual(detail.value as? String, "nimbusneedlex", "Escape restores the prior field and caret, not a selected-all replacement")
@@ -241,24 +284,28 @@ final class NativeSearchExperienceUITests: XCTestCase {
         keepScreenshot("native-workbench-alternate-appearance")
 
         let window = app.windows.firstMatch
-        if window.frame.width < 1_000 || window.frame.height < 680 {
-            // Even a previously compact window must exercise an actual resize in this test.
-            window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
-                .withOffset(CGVector(dx: -2, dy: -2))
-                .press(forDuration: 0.2, thenDragTo:
-                    window.coordinate(withNormalizedOffset: .zero)
-                        .withOffset(CGVector(dx: 1_100, dy: 740)))
-            XCTAssertTrue(waitUntil { window.frame.width >= 1_080 && window.frame.height >= 720 })
-        }
         let original = window.frame
-        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
-            .withOffset(CGVector(dx: -2, dy: -2))
-        let compact = window.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: 940, dy: 620))
-        corner.press(forDuration: 0.2, thenDragTo: compact)
+        // The CI desktop constrains a fresh window to 1024 × 674. That already has enough
+        // room for a real two-axis shrink; demanding 1100 × 740 first exceeds that display.
+        XCTAssertGreaterThan(original.width, 968, "The fresh window must allow a measurable width reduction: \(original)")
+        XCTAssertGreaterThan(original.height, 648, "The fresh window must allow a measurable height reduction: \(original)")
+        // Drag straight-edge midpoints independently. A point two pixels inside the rounded
+        // bottom-right corner can be outside the actual window and never start live resizing.
+        let rightEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+            .withOffset(CGVector(dx: -1, dy: 0))
+        rightEdge.press(forDuration: 0.2, thenDragTo:
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+                .withOffset(CGVector(dx: 939, dy: 0)))
+        XCTAssertTrue(waitUntil { abs(window.frame.width - 940) <= 8 },
+                      "Dragging the right edge must resize the window: \(window.frame)")
+        let bottomEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
+            .withOffset(CGVector(dx: 0, dy: -1))
+        bottomEdge.press(forDuration: 0.2, thenDragTo:
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+                .withOffset(CGVector(dx: 0, dy: 619)))
         XCTAssertTrue(waitUntil {
             abs(window.frame.width - 940) <= 8 && abs(window.frame.height - 620) <= 8
-        }, "Compact layout must really run at the app's 940 × 620 minimum, not an unchanged wide window")
+        }, "Compact layout must really run at the app's 940 × 620 minimum: \(window.frame)")
         XCTAssertLessThan(window.frame.width, original.width - 20)
         XCTAssertLessThan(window.frame.height, original.height - 20)
         openSearch(query: "nimbusneedle")
@@ -318,5 +365,36 @@ final class NativeSearchExperienceUITests: XCTestCase {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = try XCTUnwrap(formatter.date(from: timestamp))
         try FileManager.default.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: file.path)
+    }
+
+    private func liveTurn(_ index: Int) throws -> Data {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let answer = index == 0 ? "anchorstayneedle: Keep reading this early answer."
+            : "Live tail \(index). " + String(repeating:
+                "Streaming updates should never move a reader away from a deliberate search position. ", count: 6)
+        let records: [[String: Any]] = [
+            ["type": "user", "uuid": "live-user-\(index)", "timestamp": timestamp,
+             "sessionId": "live-anchor", "cwd": "/workspace/native-experience",
+             "message": ["role": "user", "content": "Live turn \(index)"],
+             "__ccbud__": ["title": "Live anchor fixture"]],
+            ["type": "assistant", "uuid": "live-assistant-\(index)", "timestamp": timestamp,
+             "sessionId": "live-anchor",
+             "message": ["id": "live-response-\(index)", "role": "assistant", "model": "local-fixture",
+                         "content": [["type": "text", "text": answer]],
+                         "usage": ["input_tokens": 12, "output_tokens": 8]]],
+        ]
+        var data = Data()
+        for record in records {
+            data.append(try JSONSerialization.data(withJSONObject: record, options: .sortedKeys))
+            data.append(0x0a)
+        }
+        return data
+    }
+
+    private func appendLiveTurn(_ index: Int, to file: URL) throws {
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: liveTurn(index))
     }
 }

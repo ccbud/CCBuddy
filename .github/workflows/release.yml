@@ -219,7 +219,7 @@ jobs:
           xcrun xcresulttool get test-results tests \
             --path "$result" --compact > "$tests"
           # Allow additions, but never a green run that discovered only the older UI suite.
-          jq -e '.result == "Passed" and .totalTestCount >= 21
+          jq -e '.result == "Passed" and .totalTestCount >= 22
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq -e '[.. | objects | select(.nodeType == "Test Case")
@@ -232,6 +232,7 @@ jobs:
                "testDestinationShortcutsAndSearchRoundTrip",
                "testCommandKClaimsTypingFromDetailSearchAndEscapeRestoresInsertionPoint",
                "testModalSearchOwnsFindShortcutAndTabCannotEditTheCoveredReader",
+               "testLiveSearchAnchorSurvivesAppendsUntilLatestResumesFollowing",
                "testLightDarkAndCompactSearchScreenshots"] as $required
             | all($required[]; . as $name
                 | any($experience[]; .name == $name and .result == "Passed"))' "$tests"

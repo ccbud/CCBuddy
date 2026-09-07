@@ -92,9 +92,15 @@ struct ConversationTimelinePane: View {
                         .truncationMode(.middle)
                         .help(cwd)
                 }
-                Text(headerStatistics(metadata).joined(separator: " · "))
+                Text(headerStatistics(ConversationHeaderStatistics.metadata(
+                    selectedMetadata: metadata,
+                    loadedParent: store.selectedSession,
+                    activeTranscript: store.activeTranscript
+                )).joined(separator: " · "))
                     .lineLimit(1)
                     .layoutPriority(1)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("conversation.statistics")
                 ForEach(metadata.tags.prefix(2), id: \.self) { tag in
                     metadataBadge(tag)
                 }
@@ -576,7 +582,9 @@ struct ConversationTimelinePane: View {
             }
             .textSelection(.enabled)
             .onAppear {
-                if store.isSelectedSessionLive {
+                if let request = store.jumpRequest {
+                    proxy.scrollTo(ConversationPresentation.messageAnchor(request.messageIndex), anchor: .center)
+                } else if store.isFollowingLatest && store.isSelectedSessionLive {
                     proxy.scrollTo(ConversationPresentation.bottomAnchor, anchor: .bottom)
                 }
             }
@@ -585,6 +593,7 @@ struct ConversationTimelinePane: View {
                 scroll(proxy, to: ConversationPresentation.messageAnchor(request.messageIndex), anchor: .center)
             }
             .onChange(of: store.followLatestRevision) { _ in
+                guard store.isFollowingLatest else { return }
                 scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
             }
             .accessibilityIdentifier("conversation.timeline.scroll")
@@ -600,7 +609,7 @@ struct ConversationTimelinePane: View {
                     .accessibilityLabel(appLanguage.localized("专注阅读"))
                     .accessibilityIdentifier("conversation.focus")
                     Button {
-                        scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
+                        store.jumpToLatest()
                     } label: {
                         Label(appLanguage.localized("最新消息"), systemImage: "arrow.down")
                             .font(.ccCaption(.medium))

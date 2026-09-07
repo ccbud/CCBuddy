@@ -80,7 +80,7 @@ struct AppShellView: View {
             model.conversationStore.deactivate()
         }
         .overlay(alignment: .topTrailing) {
-            if columns.focusModeEnabled {
+            if columns.focusModeEnabled && !searchPaletteVisible {
                 Button(action: toggleFocusMode) {
                     Label(appLanguage.localized("退出专注"), systemImage: "arrow.down.right.and.arrow.up.left")
                         .font(.ccCaption(.medium))

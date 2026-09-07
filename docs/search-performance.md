@@ -175,6 +175,13 @@ and diagnostics. Explicit query or scope changes still cancel stale work. This
 checks responsiveness under live producer writes; Debug-app observations are
 not performance measurements and do not replace the frozen-catalog timings above.
 
+Live activity and reading intent are separate: opening a search hit or jumping
+within a transcript pauses automatic scrolling without stopping content updates.
+The Latest action explicitly resumes following. Header statistics use the fully
+loaded active transcript, so a later bounded-prefix catalog refresh cannot replace
+exact message/token totals with sampled counts; catalog edits remain authoritative
+for titles, tags, and other non-statistical metadata.
+
 The corpus also exposed a CJK regression inherited from SQLite FTS's
 three-character gate: the two-character query `搜索` previously scanned the
 whole catalog in 64,546 ms. tgrep uses UTF-8 byte trigrams; the corrected gate
@@ -182,7 +189,9 @@ generated candidates in 4.09 ms on the same derived corpus. This is a candidate
 stage measurement, not end-to-end UI latency. Exact matching, occurrence
 counts, document decoding, snippets, and semantic reranking are separate work.
 
-The benchmark emits aggregate timings and fixed public query terms only:
+By default, the benchmark emits aggregate timings and fixed public query terms only.
+The explicit `--show-roots` option also prints private source paths for local
+inspection; do not publish that output.
 
 ```sh
 bash native/Scripts/benchmark-real-history.sh --inventory
