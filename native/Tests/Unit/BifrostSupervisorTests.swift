@@ -1107,6 +1107,66 @@ final class BifrostSupervisorTests: XCTestCase {
         XCTAssertNil(root["auth_config"])
     }
 
+    func testDetachingBeforeOutputReadersRunKeepsTheirHandlesAliveUntilTheyExit() async throws {
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let stdoutDescriptor = stdout.fileHandleForReading.fileDescriptor
+        let stderrDescriptor = stderr.fileHandleForReading.fileDescriptor
+        let readersEntered = expectation(description: "both readers are held before their first read")
+        readersEntered.expectedFulfillmentCount = 2
+        let releaseReaders = OutputReaderStartGate()
+        defer { releaseReaders.releaseAll() }
+        let capture = BifrostOutputCapture(byteLimitPerStream: 512, beforeReaderStarts: {
+            readersEntered.fulfill()
+            releaseReaders.waitUntilReleased()
+        })
+        capture.attach(stdout: stdout, stderr: stderr)
+        await fulfillment(of: [readersEntered], timeout: 3)
+
+        capture.detachAndDrain(stdout: stdout, stderr: stderr, drainAfterExit: false)
+        XCTAssertTrue(capture.hasActiveReaders, "The test deliberately holds both scheduled readers")
+        XCTAssertNotEqual(fcntl(stdoutDescriptor, F_GETFD), -1,
+                          "Cleanup must not close a descriptor owned by a delayed reader")
+        XCTAssertNotEqual(fcntl(stderrDescriptor, F_GETFD), -1)
+        XCTAssertTrue(capture.snapshot().isEmpty)
+
+        releaseReaders.releaseAll()
+        let deadline = Date().addingTimeInterval(2)
+        while capture.hasActiveReaders, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(capture.hasActiveReaders,
+                       "Delayed readers must see cancellation and close their own handles without an NSException")
+        XCTAssertTrue(capture.snapshot().isEmpty)
+    }
+
+    func testOutputReaderCancellationDoesNotNeedEOFWhenAnInheritedWriterStaysOpen() async throws {
+        let stdout = Pipe()
+        let stderr = Pipe()
+        // A dup models a grandchild retaining each write end after the supervised child exits.
+        let inheritedStdout = dup(stdout.fileHandleForWriting.fileDescriptor)
+        defer { if inheritedStdout >= 0 { Darwin.close(inheritedStdout) } }
+        let inheritedStderr = dup(stderr.fileHandleForWriting.fileDescriptor)
+        defer { if inheritedStderr >= 0 { Darwin.close(inheritedStderr) } }
+        XCTAssertGreaterThanOrEqual(inheritedStdout, 0)
+        XCTAssertGreaterThanOrEqual(inheritedStderr, 0)
+        let capture = BifrostOutputCapture(byteLimitPerStream: 512)
+        capture.attach(stdout: stdout, stderr: stderr)
+
+        let start = Date()
+        capture.detachAndDrain(stdout: stdout, stderr: stderr, drainAfterExit: true)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2,
+                          "A surviving inherited writer must not make output cleanup unbounded")
+        let deadline = Date().addingTimeInterval(2)
+        while capture.hasActiveReaders, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(capture.hasActiveReaders)
+        XCTAssertTrue(capture.snapshot().isEmpty)
+        XCTAssertNotEqual(fcntl(inheritedStdout, F_GETFD), -1)
+        XCTAssertNotEqual(fcntl(inheritedStderr, F_GETFD), -1)
+    }
+
     func testEachSupervisorOwnsDifferentProcessLocalManagementCredentials() {
         let first = BifrostSupervisor(environment: [:])
         let second = BifrostSupervisor(environment: [:])
@@ -1353,6 +1413,27 @@ final class BifrostSupervisorTests: XCTestCase {
 private struct Fixture {
     let root: URL
     let environment: [String: String]
+}
+
+/// Hold scheduled readers without a semaphore's artificial QoS inversion. The test's defer
+/// always releases the condition, including assertion/throw exits; a timer must not let readers
+/// escape early while XCTest is reporting a diagnostic and destroy the tested ordering.
+private final class OutputReaderStartGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+
+    func waitUntilReleased() {
+        condition.lock()
+        defer { condition.unlock() }
+        while !released { condition.wait() }
+    }
+
+    func releaseAll() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
 }
 
 private actor FirstTerminationObservationGate {

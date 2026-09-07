@@ -150,7 +150,7 @@ struct ConversationsView: View {
 
                 ColumnDivider(
                     column: ColumnLayout.stream,
-                    width: $columns.streamWidth,
+                    width: fit.streamWidth,
                     onCommit: { columns.resize(ColumnLayout.stream, to: $0) },
                     identifier: "layout.divider.stream"
                 )
@@ -184,7 +184,7 @@ struct ConversationsView: View {
                 ColumnDivider(
                     column: ColumnLayout.inspector,
                     side: .trailing,
-                    width: $columns.inspectorWidth,
+                    width: fit.inspectorWidth,
                     onCommit: { columns.resize(ColumnLayout.inspector, to: $0) },
                     identifier: "layout.divider.inspector"
                 )

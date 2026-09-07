@@ -205,7 +205,8 @@ enum ColumnInteractionDiagnostics {
         guard output != nil, monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak window] event in
             guard let window, event.window === window, let content = window.contentView else { return event }
-            let point = content.convert(event.locationInWindow, from: nil)
+            // hitTest takes the receiver's superview coordinates, not its (potentially flipped) bounds.
+            let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
             let target = content.hitTest(point)
             let receiver = target.map { String(describing: type(of: $0)) } ?? "nil"
             let targetFrame = target.map { $0.convert($0.bounds, to: nil) } ?? .zero

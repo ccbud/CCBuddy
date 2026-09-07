@@ -23,7 +23,7 @@ struct AppShellView: View {
                     .frame(width: columns.railWidth)
                 ColumnDivider(
                     column: ColumnLayout.rail,
-                    width: $columns.railWidth,
+                    width: columns.railWidth,
                     onCommit: { columns.resize(ColumnLayout.rail, to: $0) },
                     identifier: "layout.divider.rail"
                 )

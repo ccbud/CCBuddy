@@ -219,7 +219,8 @@ struct ColumnDivider: View {
 
     let column: ColumnLayout.Column
     var side: Side = .leading
-    @Binding var width: CGFloat
+    /// The width on screen, which can be narrower than the remembered preference in a small window.
+    let width: CGFloat
     var onCommit: (CGFloat) -> Void = { _ in }
     var identifier: String?
 
@@ -243,7 +244,9 @@ struct ColumnDivider: View {
                         if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
                     }
                     .gesture(
-                        DragGesture(minimumDistance: 1)
+                        // This rule moves as its column changes width. Its own local coordinate
+                        // system would feed that movement back into the next pointer sample.
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
                             .onChanged { value in
                                 let origin = dragOrigin ?? width
                                 if dragOrigin == nil { dragOrigin = origin }
@@ -253,6 +256,12 @@ struct ColumnDivider: View {
                                 onCommit(ColumnLayout.clamped(origin + travel, in: column))
                             }
                             .onEnded { value in
+                                if let origin = dragOrigin {
+                                    let travel = side == .leading
+                                        ? value.translation.width
+                                        : -value.translation.width
+                                    onCommit(ColumnLayout.clamped(origin + travel, in: column))
+                                }
                                 #if DEBUG
                                 ColumnInteractionDiagnostics.record("dragEnded column=\(column.key) translation=\(value.translation.width) width=\(width)")
                                 #endif

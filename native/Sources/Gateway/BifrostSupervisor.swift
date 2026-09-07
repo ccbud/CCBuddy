@@ -296,7 +296,6 @@ actor BifrostSupervisor {
         let stdout = Pipe()
         let stderr = Pipe()
         let capture = BifrostOutputCapture(byteLimitPerStream: logByteLimitPerStream)
-        capture.attach(stdout: stdout, stderr: stderr)
         child.standardOutput = stdout
         child.standardError = stderr
         resources.process = child
@@ -328,6 +327,9 @@ actor BifrostSupervisor {
         do {
             try child.run()
             resources.didLaunchProcess = true
+            // A failed spawn has no child output to drain. Starting readers before run() lets
+            // failure cleanup close their FileHandles before those threads have even started.
+            capture.attach(stdout: stdout, stderr: stderr)
         } catch {
             guard owns(resources) else { throw CancellationError() }
             retire(resources)
@@ -661,7 +663,7 @@ actor BifrostSupervisor {
     }
 }
 
-private final class BifrostOutputCapture: @unchecked Sendable {
+final class BifrostOutputCapture: @unchecked Sendable {
     private enum Stream: Sendable {
         case stdout, stderr
     }
@@ -672,42 +674,49 @@ private final class BifrostOutputCapture: @unchecked Sendable {
     private var stdoutData = Data()
     private var stderrData = Data()
     private var isAttached = false
+    private var didStartReaders = false
+    private let beforeReaderStarts: (@Sendable () -> Void)?
 
-    init(byteLimitPerStream: Int) {
+    /// The optional scheduling seam lets tests hold readers before their first read.
+    init(byteLimitPerStream: Int, beforeReaderStarts: (@Sendable () -> Void)? = nil) {
         self.byteLimitPerStream = max(1, byteLimitPerStream)
+        self.beforeReaderStarts = beforeReaderStarts
     }
+
+    var hasActiveReaders: Bool { readers.wait(timeout: .now()) == .timedOut }
 
     func attach(stdout: Pipe, stderr: Pipe) {
         lock.lock()
         isAttached = true
+        didStartReaders = true
         lock.unlock()
         startReader(on: stdout.fileHandleForReading, stream: .stdout)
         startReader(on: stderr.fileHandleForReading, stream: .stderr)
     }
 
     func detachAndDrain(stdout: Pipe, stderr: Pipe, drainAfterExit: Bool) {
-        let stdoutHandle = stdout.fileHandleForReading
-        let stderrHandle = stderr.fileHandleForReading
         try? stdout.fileHandleForWriting.close()
         try? stderr.fileHandleForWriting.close()
+        lock.lock()
+        let hadReaders = didStartReaders
+        lock.unlock()
+        guard hadReaders else {
+            // No successful spawn attached readers, so cleanup still owns these handles.
+            try? stdout.fileHandleForReading.close()
+            try? stderr.fileHandleForReading.close()
+            return
+        }
         if drainAfterExit {
             // The readers normally reach EOF immediately after the child exits. Keep the join
             // bounded because a grandchild may have inherited a pipe descriptor.
-            if readers.wait(timeout: .now() + .milliseconds(500)) == .timedOut {
-                try? stdoutHandle.close()
-                try? stderrHandle.close()
-                _ = readers.wait(timeout: .now() + .milliseconds(250))
-            }
-        } else {
-            markDetached()
-            try? stdoutHandle.close()
-            try? stderrHandle.close()
-            _ = readers.wait(timeout: .now() + .milliseconds(250))
+            _ = readers.wait(timeout: .now() + .milliseconds(500))
         }
 
         markDetached()
-        try? stdoutHandle.close()
-        try? stderrHandle.close()
+        _ = readers.wait(timeout: .now() + .milliseconds(250))
+        // Each reader closes its own handle on exit. Never close a descriptor under a delayed
+        // or blocked reader: FileHandle can raise an Objective-C exception, and a raw descriptor
+        // could be reused for an unrelated file before the reader resumes.
     }
 
     func snapshot() -> BifrostProcessDiagnostics {
@@ -722,11 +731,16 @@ private final class BifrostOutputCapture: @unchecked Sendable {
     }
 
     private func startReader(on handle: FileHandle, stream: Stream) {
+        let descriptor = handle.fileDescriptor
         readers.enter()
         let readers = readers
         let thread = Thread { [weak self] in
-            defer { readers.leave() }
-            self?.readUntilEOF(from: handle, stream: stream)
+            defer {
+                try? handle.close()
+                readers.leave()
+            }
+            self?.beforeReaderStarts?()
+            self?.readUntilEOF(from: descriptor, stream: stream)
         }
         thread.name = switch stream {
         case .stdout: "dev.ccbud.bifrost.stdout"
@@ -737,10 +751,19 @@ private final class BifrostOutputCapture: @unchecked Sendable {
         thread.start()
     }
 
-    private func readUntilEOF(from handle: FileHandle, stream: Stream) {
-        let descriptor = handle.fileDescriptor
+    private func readUntilEOF(from descriptor: Int32, stream: Stream) {
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
-        while true {
+        while attached() {
+            // Cancellation must also wake a reader whose pipe is kept open by a grandchild.
+            // Polling bounds that wait without closing the reader's descriptor from another thread.
+            var readiness = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = Darwin.poll(&readiness, 1, 50)
+            if ready == 0 { continue }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            guard attached() else { return }
             let count = buffer.withUnsafeMutableBytes { bytes in
                 Darwin.read(descriptor, bytes.baseAddress, bytes.count)
             }
@@ -759,6 +782,12 @@ private final class BifrostOutputCapture: @unchecked Sendable {
             appendLocked(data, stream: stream)
             lock.unlock()
         }
+    }
+
+    private func attached() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isAttached
     }
 
     private func markDetached() {

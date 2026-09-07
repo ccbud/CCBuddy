@@ -577,6 +577,21 @@ final class CCBuddyUITests: XCTestCase {
         XCTAssertTrue(stream.waitForExistence(timeout: 3))
         XCTAssertEqual(stream.frame.width, widenedWidth, accuracy: 1,
                        "Restoring a resized column must preserve the reader's chosen width")
+
+        // Shrinking has room even when the earlier expansion hit the reading pane's minimum.
+        // Measure the actual visible width: a remembered, squeezed preference must not create
+        // dead travel, and a moving local gesture coordinate must not lose pointer distance.
+        let shrinkStart = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        shrinkStart.press(forDuration: 0.2, thenDragTo: shrinkStart.withOffset(CGVector(dx: -48, dy: 0)))
+        let shrunk = XCTNSPredicateExpectation(
+            predicate: NSPredicate { element, _ in
+                guard let element = element as? XCUIElement else { return false }
+                return abs(element.frame.width - (widenedWidth - 48)) <= 2
+            },
+            object: stream
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [shrunk], timeout: 3), .completed,
+                       "A 48-point drag must shrink the displayed column by 48 points")
     }
 
     func testDeterministicVisualParityScreenshots() throws {
