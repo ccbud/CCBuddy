@@ -100,12 +100,7 @@ final class ColumnLayout: ObservableObject {
 
     func toggleRail() { railVisible.toggle() }
 
-    func toggleStream() {
-        #if DEBUG
-        ColumnInteractionDiagnostics.record("toggleStream before=\(streamVisible) width=\(streamWidth)")
-        #endif
-        streamVisible.toggle()
-    }
+    func toggleStream() { streamVisible.toggle() }
 
     func toggleInspector() { inspectorVisible.toggle() }
 
@@ -262,9 +257,6 @@ struct ColumnDivider: View {
                                         : -value.translation.width
                                     onCommit(ColumnLayout.clamped(origin + travel, in: column))
                                 }
-                                #if DEBUG
-                                ColumnInteractionDiagnostics.record("dragEnded column=\(column.key) translation=\(value.translation.width) width=\(width)")
-                                #endif
                                 dragOrigin = nil
                             }
                     )
