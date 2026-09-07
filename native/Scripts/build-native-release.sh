@@ -34,12 +34,23 @@ command -v xcodegen >/dev/null || fail "xcodegen is required"
 # A release is universal so that the Intel Macs running the last 1.x build have somewhere to
 # update to. Both the app and the helper it launches carry both slices.
 readonly RELEASE_ARCHS="arm64 x86_64"
+python3 "$ROOT/native/Scripts/verify-semantic-model.py"
 if [[ ! -x "$ROOT/native/Vendor/bifrost-http" ]]; then
   [[ "$MODE" == "unsigned" ]] \
     || fail "signed builds require the pinned Bifrost helper to be prepared before credentials"
   CCBUD_BIFROST_ARCH=universal "$ROOT/native/Scripts/fetch-bifrost.sh" >/dev/null
 fi
 "$ROOT/native/Scripts/verify-bifrost.sh" "$ROOT/native/Vendor/bifrost-http" "$RELEASE_ARCHS"
+
+if [[ "$MODE" == "unsigned" ]]; then
+  CCBUD_TGREP_ARCH=universal bash "$ROOT/native/Scripts/build-tgrep.sh"
+  node "$ROOT/native/Scripts/generate-tgrep-notices.js" --check
+fi
+[[ -f "$ROOT/native/Vendor/libccbuddy_tgrep.dylib" ]] \
+  || fail "prepare the embedded tgrep library before signing credentials are loaded"
+[[ "$(lipo -archs "$ROOT/native/Vendor/libccbuddy_tgrep.dylib")" == *arm64* \
+   && "$(lipo -archs "$ROOT/native/Vendor/libccbuddy_tgrep.dylib")" == *x86_64* ]] \
+  || fail "embedded tgrep must contain both macOS architectures"
 
 xcodegen generate --spec "$ROOT/native/project.yml" --project "$ROOT/native"
 node "$ROOT/scripts/release-version.js" check "$VERSION"
@@ -65,6 +76,7 @@ if [[ "$MODE" == "signed" ]]; then
   xcodebuild archive \
     -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
     -destination 'generic/platform=macOS' -archivePath "$ARCHIVE_PATH" \
+    -derivedDataPath "$BUILD_ROOT/DerivedData" \
     ARCHS="$RELEASE_ARCHS" ONLY_ACTIVE_ARCH=NO MARKETING_VERSION="$VERSION" \
     CURRENT_PROJECT_VERSION="$BUILD_NUMBER" DEVELOPMENT_TEAM="$TEAM_ID" \
     CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$apple_signing_identity" \
@@ -77,6 +89,7 @@ else
   readonly PRODUCTS_PATH="$BUILD_ROOT/products"
   xcodebuild build \
     -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+    -derivedDataPath "$BUILD_ROOT/DerivedData" \
     -destination 'generic/platform=macOS' ARCHS="$RELEASE_ARCHS" ONLY_ACTIVE_ARCH=NO \
     MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
     CODE_SIGNING_ALLOWED=NO ENABLE_HARDENED_RUNTIME=YES \

@@ -3,6 +3,81 @@ import XCTest
 @testable import CCBuddy
 
 final class IndexedHistoryRepositoryParityTests: XCTestCase {
+    func testScopeCountsUseVisibleCodexTreesWithoutCrossScopeOrTrashFolding() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-visible-counts")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let first = home.appendingPathComponent("first")
+        let second = home.appendingPathComponent("second")
+        let hidden = home.appendingPathComponent("not-configured")
+        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        for value in [
+            indexedCodex(scope: first, id: "parent"),
+            indexedCodex(scope: first, id: "child", parent: "parent"),
+            indexedCodex(scope: first, id: "grandchild", parent: "child"),
+            indexedCodex(scope: first, id: "orphan", parent: "missing"),
+            indexedCodex(scope: second, id: "cross-scope-child", parent: "parent"),
+            indexedCodex(scope: first, id: "deleted-parent", deleted: true),
+            indexedCodex(scope: first, id: "deleted-child", parent: "deleted-parent", deleted: true),
+            indexedCodex(scope: first, id: "live-child", parent: "deleted-parent"),
+            indexedCodex(scope: hidden, id: "hidden"),
+        ] { try database.replace(value) }
+        let configuration = HistoryConfiguration(historyDirs: [first.path, second.path],
+            homeDirectory: home, importsRoot: home.appendingPathComponent("app/imports"))
+        let repository = IndexedHistoryRepository(configuration: configuration, database: database)
+        let snapshot = try XCTUnwrap(repository.conversationScopeSnapshot())
+        XCTAssertEqual(snapshot.sessionCounts, [first.path: 3, second.path: 1])
+        XCTAssertEqual(snapshot.trashCount, 1)
+        XCTAssertEqual(try repository.listSessions(limit: .max).count, 4)
+        for active in [first.path, second.path, "__trash__"] {
+            var scoped = configuration
+            scoped.active = active
+            let provider = IndexedHistoryRepository(configuration: scoped, database: database)
+            XCTAssertEqual(provider.conversationScopeSnapshot(), snapshot,
+                "The library tally is authoritative and independent of the active scope")
+            XCTAssertEqual(try provider.listSessions(limit: .max).count,
+                active == "__trash__" ? snapshot.trashCount : snapshot.sessionCounts[active, default: 0])
+        }
+    }
+
+    func testFoldedCodexChildAndGrandchildSearchMapToParentAndExactLazyTab() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-child-search")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let first = home.appendingPathComponent("first")
+        let second = home.appendingPathComponent("second")
+        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        let parent = indexedCodex(scope: first, id: "parent", text: "common parent contents")
+        let crossScope = indexedCodex(scope: second, id: "cross-scope", parent: "parent", text: "foreign-only needle")
+        let deleted = indexedCodex(scope: first, id: "deleted", parent: "parent", text: "trash-only needle", deleted: true)
+        for value in [parent, crossScope, deleted,
+            indexedCodex(scope: first, id: "child", parent: "parent", text: "common child-only needle child-only needle", sequence: 2),
+            indexedCodex(scope: first, id: "grandchild", parent: "child", text: "grandchild-only target", sequence: 3),
+            indexedCodex(scope: home.appendingPathComponent("hidden"), id: "hidden", parent: "parent", text: "hidden-only needle"),
+        ] { try database.replace(value) }
+        let configuration = HistoryConfiguration(historyDirs: [first.path, second.path],
+            homeDirectory: home, importsRoot: home.appendingPathComponent("app/imports"))
+        let repository = IndexedHistoryRepository(configuration: configuration, database: database)
+        let child = try XCTUnwrap(repository.search(query: "child-only needle").first)
+        XCTAssertEqual(child.file, parent.metadata.file)
+        XCTAssertEqual(child.sessionID, parent.metadata.sessionID)
+        XCTAssertEqual(child.agent, "child")
+        XCTAssertEqual(child.sequence, 2)
+        XCTAssertEqual(child.count, 2)
+        let grandchild = try XCTUnwrap(repository.search(query: "grandchild-only").first)
+        XCTAssertEqual(grandchild.file, parent.metadata.file)
+        XCTAssertEqual(grandchild.agent, "grandchild")
+        XCTAssertEqual(grandchild.sequence, 3)
+        XCTAssertEqual(try repository.search(query: "common").map(\.agent), ["main"])
+        let foreign = try XCTUnwrap(repository.search(query: "foreign-only").first)
+        XCTAssertEqual(foreign.file, crossScope.metadata.file)
+        XCTAssertEqual(foreign.agent, "main", "A parent ID in another scope cannot absorb this hit")
+        XCTAssertTrue(try repository.search(query: "trash-only").isEmpty)
+        XCTAssertTrue(try repository.search(query: "hidden-only").isEmpty)
+        let scoped = repository.scoped(to: first.path)
+        XCTAssertTrue(try scoped.search(query: "foreign-only", limit: 20).isEmpty)
+        XCTAssertEqual(try scoped.search(query: "child-only needle", limit: 20).map(\.file), [parent.metadata.file])
+        XCTAssertEqual(try repository.scoped(to: "__trash__").search(query: "trash-only", limit: 20).map(\.file), [deleted.metadata.file])
+    }
+
     func testWarmIndexMatchesLegacyListsProjectsQoderAndCanonicalCodex() throws {
         let home = try HistoryTestSupport.temporaryDirectory("indexed-parity-list")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -246,6 +321,30 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    private func indexedCodex(
+        scope: URL,
+        id: String,
+        parent: String? = nil,
+        text: String = "fixture contents",
+        deleted: Bool = false,
+        sequence: Int = 0
+    ) -> ConversationIndexedSession {
+        let metadata = HistorySessionMetadata(
+            id: id, file: scope.appendingPathComponent("rollout-\(id).jsonl"), source: .codex,
+            dirID: scope.path, dirLabel: scope.lastPathComponent, sessionID: id,
+            threadID: id, parentThreadID: parent, canonicalThreadIDValid: true,
+            cwd: "/fixture", project: "Fixture", title: id, autoTitle: id,
+            deleted: deleted, createdAt: .now, lastActivity: .now, sizeBytes: UInt64(text.utf8.count),
+            messageCount: sequence + 1
+        )
+        return ConversationIndexedSession(metadata: metadata,
+            fingerprint: .init(modificationTime: .now, sizeBytes: UInt64(text.utf8.count)),
+            documents: [.init(transcriptID: "main", sortOrder: 0, text: text, messageSpans: [
+                .init(sequence: sequence, messageIndex: sequence, utf16Location: 0,
+                    utf16Length: text.utf16.count, role: "assistant"),
+            ])])
+    }
 
     private func makeWarmRepository(
         configuration: HistoryConfiguration

@@ -171,7 +171,7 @@ struct ConversationsView: View {
                         }
                         .padding(
                             .leading,
-                            columns.railVisible ? Space.md : Metrics.trafficLightClearance
+                            columns.railVisible ? Space.md : Metrics.trafficLightClearance + 36
                         )
                         .padding(.top, 5)
                     }

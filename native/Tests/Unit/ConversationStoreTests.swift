@@ -1097,6 +1097,36 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
     }
 
+    func testIndexedCodexChildHitLoadsSeparateTranscriptAndJumpsAfterLazyRead() async {
+        var metadata = Self.metadata(id: "codex-parent", title: "Parent", tags: [],
+            file: "/tmp/codex-parent.jsonl")
+        metadata.source = .codex
+        var childMetadata = Self.metadata(id: "codex-child", title: "Child", tags: [],
+            file: "/tmp/codex-child.jsonl")
+        childMetadata.source = .codex
+        metadata.subagentRefs = [.init(file: childMetadata.file, threadID: "codex-child",
+            title: "Child", messageCount: 3, lastActivity: metadata.lastActivity)]
+        let child = Self.session(childMetadata, texts: ["before", "exact child target", "after"])
+        let provider = FakeConversationRepository(
+            projects: [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            sessions: [
+                ConversationFilter.fileKey(metadata.file): Self.session(metadata, text: "parent"),
+                ConversationFilter.fileKey(childMetadata.file): child,
+            ])
+        provider.setDelay(0.02, for: childMetadata.file)
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file,
+            source: .codex, agent: "codex-child", sequence: 1, snippet: "exact child target", count: 1)
+        await store.select(metadata, searchHit: hit)
+        await waitUntil { store.activeTranscript?.messages.count == 3 }
+        XCTAssertEqual(store.activeTranscriptID, .subagent("codex-child"))
+        XCTAssertEqual(store.activeTranscriptFile, childMetadata.file.standardizedFileURL)
+        XCTAssertEqual(store.activeTranscript?.messages, child.messages)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+        XCTAssertEqual(provider.readCount(for: childMetadata.file), 1)
+    }
+
     func testFailedHTMLExportDoesNotOpenResultAndKeepsLocalizedErrorSource() async {
         let metadata = Self.metadata(
             id: "failed-html",

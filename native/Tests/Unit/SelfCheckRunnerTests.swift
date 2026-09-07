@@ -5,6 +5,25 @@ import XCTest
 
 @MainActor
 final class SelfCheckRunnerTests: XCTestCase {
+    func testPackagedSearchAccelerationProbeIsARequiredGate() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("selfcheck-search-gate")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for semanticMatched in [true, false] {
+            var dependencies = validDependencies(output: OutputCapture())
+            dependencies.searchProbe = { _ in
+                SelfCheckSearchSnapshot(tgrepMatched: true, semanticMatched: semanticMatched, computePolicy: "CPU")
+            }
+            let execution = await SelfCheckRunner(dependencies: dependencies).run(
+                request: .init(homeDirectory: root.appendingPathComponent("isolated"), outputURL: nil),
+                userHomeDirectory: root.appendingPathComponent("user")
+            )
+            let check = try XCTUnwrap(execution.report.requiredChecks.first { $0.id == "search_acceleration" })
+            XCTAssertEqual(check.status, semanticMatched ? .passed : .failed)
+            XCTAssertEqual(execution.report.success, semanticMatched)
+            XCTAssertEqual(execution.exitCode, semanticMatched ? SelfCheckExitCode.success : SelfCheckExitCode.requiredCheckFailed)
+        }
+    }
+
     func testEnvironmentGateRequiresExplicitIsolatedHomeAndAbsoluteOutput() throws {
         let root = try HistoryTestSupport.temporaryDirectory("selfcheck-gate")
         defer { try? FileManager.default.removeItem(at: root) }

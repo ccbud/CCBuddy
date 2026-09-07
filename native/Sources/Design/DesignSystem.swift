@@ -1,76 +1,60 @@
 import AppKit
 import SwiftUI
 
-/// The single source of truth for CC Buddy's visual language.
-///
-/// The system fuses three lineages that used to fight each other on screen:
-///
-/// * **Wake** contributes the structure — an opaque warm-neutral material ladder where columns are
-///   separated by tone rather than borders, persistent chrome casts no shadow, and every surface
-///   belongs to one of five steps.
-/// * **Claude** contributes the temperature and the accent — warm paper instead of clinical grey,
-///   and clay instead of system blue for primary actions and selection.
-/// * **cc-switch** contributes the gateway vocabulary, which is expressed with the semantic status
-///   trio below rather than with its own palette.
-///
-/// Rules that every view is expected to honor:
-///
-/// 1. No color literals outside this file. Use `Theme` tokens.
-/// 2. No font size literals outside this file. Use `Typography` steps.
-/// 3. No shadows on persistent interface. Shadows belong to popovers, menus, sheets and toasts.
-/// 4. No decorative gradients, and no border on a surface that already differs in tone.
-/// 5. Agent identity is carried by the brand mark, never by tinting UI chrome.
+/// CC Buddy's native workbench: quiet reading surfaces, translucent navigation and floating
+/// controls. Glass communicates an interactive layer; transcripts remain opaque and readable.
+/// Colors here are also the solid fallbacks for Reduce Transparency and Increase Contrast.
 enum Theme {}
 
 // MARK: - Materials
 
 extension Theme {
     /// Window drag strip. Shares the sidebar tone so the title bar reads as part of the rail.
-    static let titleBar = Color.themed(light: 0xEDEBE4, dark: 0x1B1B19)
+    static let titleBar = Color.themed(light: 0xE8ECF3, dark: 0x161B24)
     /// Library rail — the darkest persistent step in light mode.
-    static let sidebar = Color.themed(light: 0xEDEBE4, dark: 0x1B1B19)
+    static let sidebar = Color.themed(light: 0xE8ECF3, dark: 0x161B24)
     /// Middle column: session stream, settings rail, provider list.
-    static let list = Color.themed(light: 0xF7F5F0, dark: 0x201F1D)
+    static let list = Color.themed(light: 0xF6F8FC, dark: 0x1D2430)
     /// Outer canvas of the reading/detail area.
-    static let background = Color.themed(light: 0xF1EFE9, dark: 0x242320)
+    static let background = Color.themed(light: 0xEDF1F7, dark: 0x252D3A)
     /// Raised reading material: reading card, popovers, menus, sheets.
-    static let surface = Color.themed(light: 0xFDFCFA, dark: 0x2C2B28)
+    static let surface = Color.themed(light: 0xFFFFFF, dark: 0x303948)
     /// Quiet filled control: search field, badge backing, segmented track.
-    static let fill = Color.themed(light: 0xE7E4DB, dark: 0x322F2B)
+    static let fill = Color.themed(light: 0xE3E9F2, dark: 0x354051)
     /// A second, slightly quieter fill for nested chips inside `fill`.
-    static let fillSubtle = Color.themed(light: 0xEEEBE3, dark: 0x2A2825)
+    static let fillSubtle = Color.themed(light: 0xEEF2F8, dark: 0x2B3442)
     /// Row hover in the session stream and lists.
-    static let hover = Color.themed(light: 0xE9E6DE, dark: 0x2A2926)
+    static let hover = Color.themed(light: 0xE5EBF5, dark: 0x303C4E)
     /// Selected row in the session stream / reading target. Deliberately a low-saturation wash: a
     /// selected row has to survive being repeated down a long list without shouting.
-    static let selection = Color.themed(light: 0xF0E7E1, dark: 0x372C26)
+    static let selection = Color.themed(light: 0xDAE8FF, dark: 0x263F61)
     /// Selected destination inside the library rail.
-    static let sidebarAccent = Color.themed(light: 0xE0DCD1, dark: 0x343330)
+    static let sidebarAccent = Color.themed(light: 0xD5E3F8, dark: 0x294161)
     /// Hairline. Only where two surfaces share the same tone.
-    static let separator = Color.themed(light: 0xE1DDD2, dark: 0x33322E)
+    static let separator = Color.themed(light: 0xCFD7E3, dark: 0x475164)
 }
 
 // MARK: - Content
 
 extension Theme {
     /// Body copy and titles.
-    static let foreground = Color.themed(light: 0x1D1B18, dark: 0xF0EEE9)
+    static let foreground = Color.themed(light: 0x182236, dark: 0xF3F6FC)
     /// Every kind of secondary text. Never stack opacity on top of it.
     ///
     /// Dark enough to clear 4.5:1 against `sidebarAccent`, the darkest material it ever sits on —
     /// metadata here is body-sized, so the large-text allowance does not apply to it.
-    static let mutedForeground = Color.themed(light: 0x64605A, dark: 0xA8A49B)
+    static let mutedForeground = Color.themed(light: 0x4D5A6E, dark: 0xB9C5D8)
     /// Placeholder / disabled text — the only third step, used sparingly.
-    static let faintForeground = Color.themed(light: 0x9A958A, dark: 0x7A766D)
+    static let faintForeground = Color.themed(light: 0x7B8799, dark: 0x8996AA)
 
-    /// Claude clay. Fills for primary buttons, toggles, focus rings and active segments.
-    static let accent = Color.themed(light: 0xCC785C, dark: 0xD97757)
-    /// Darkened clay for accent-colored *text* so it clears contrast on paper.
-    static let accentText = Color.themed(light: 0xA64F2B, dark: 0xE7A184)
+    /// Blue is action, navigation and focus; agent brands keep their own identities.
+    static let accent = Color.themed(light: 0x0068E1, dark: 0x006FE8)
+    /// A separate text accent keeps small text readable on every material.
+    static let accentText = Color.themed(light: 0x064EA8, dark: 0xA3CAFF)
     /// Content placed on top of `accent`.
     static let onAccent = Color.themed(light: 0xFFFFFF, dark: 0xFFFFFF)
-    /// Faint clay wash for accent-tinted backings.
-    static let accentSoft = Color.themed(light: 0xF6E8E1, dark: 0x3A2A22)
+    static let accentSoft = Color.themed(light: 0xE5EFFF, dark: 0x233D60)
+    static let glassHighlight = Color.themed(light: 0xFFFFFF, dark: 0x71829C)
 }
 
 // MARK: - Status
@@ -78,7 +62,7 @@ extension Theme {
 extension Theme {
     static let success = Color.themed(light: 0x3B774C, dark: 0x56C789)
     static let successSoft = Color.themed(light: 0xE7EFE6, dark: 0x1D3527)
-    static let danger = Color.themed(light: 0xB4442F, dark: 0xFF6B60)
+    static let danger = Color.themed(light: 0xB4442F, dark: 0xFF8077)
     static let dangerSoft = Color.themed(light: 0xF8E7E2, dark: 0x3E2321)
     static let warning = Color.themed(light: 0x8D6316, dark: 0xE0A94A)
     static let warningSoft = Color.themed(light: 0xF6EEDD, dark: 0x3A2F1C)
@@ -90,9 +74,9 @@ extension Theme {
 /// Anything that needs a size that is not listed here is a design bug, not a missing constant.
 enum Typography {
     /// Product name on the About pane.
-    static let display: CGFloat = 28
+    static let display: CGFloat = 34
     /// Context title at the top of the middle column.
-    static let title: CGFloat = 22
+    static let title: CGFloat = 24
     /// Section and dialog titles, session title in the reading header.
     static let heading: CGFloat = 16
     /// Navigation rows, list titles, buttons, inputs, dialog body.
@@ -145,11 +129,11 @@ enum Space {
 
 /// Four corner steps. Panels are the roundest, badges the tightest; nothing else is allowed.
 enum Radius {
-    static let panel: CGFloat = 12
-    static let row: CGFloat = 8
-    static let button: CGFloat = 6
+    static let panel: CGFloat = 20
+    static let row: CGFloat = 12
+    static let button: CGFloat = 10
     static let keyboard: CGFloat = 5
-    static let badge: CGFloat = 4
+    static let badge: CGFloat = 6
 }
 
 /// Column widths shared by the shell and its columns.
@@ -164,11 +148,11 @@ enum Metrics {
     /// than crowded against the green one.
     static let trafficLightClearance: CGFloat = 94
     /// Primary navigation row.
-    static let rowHeight: CGFloat = 32
+    static let rowHeight: CGFloat = 36
     /// Nested navigation row (agents, projects).
-    static let subRowHeight: CGFloat = 26
+    static let subRowHeight: CGFloat = 30
     /// Toolbar/inline control height.
-    static let controlHeight: CGFloat = 28
+    static let controlHeight: CGFloat = 32
     /// Maximum measure for long-form reading copy.
     static let readingMaxWidth: CGFloat = 860
 }

@@ -1132,3 +1132,34 @@
 "tokens" = "tokens";
 "v{version} 已安装，正在安全退出并重新打开。" = "v{version} is installed. Safely quitting and reopening now.";
 "v{version} 已通过完整性、Developer ID 和随附公证验证。" = "v{version} passed integrity, Developer ID, and stapled notarization checks.";
+
+/* Local search and native navigation */
+"本地搜索" = "Local search";
+"智能排序" = "Smart ranking";
+"正在智能排序" = "Ranking locally";
+"离线模型为前 32 条结果排序，适合英文与代码查询。" = "An offline model ranks the first 32 results for English and code queries.";
+"搜索与加速详情" = "Search and acceleration details";
+"本机完成，隐私留在本机" = "On your Mac. Private by design.";
+"tgrep 缩小候选范围，再精确核对原文；智能排序不会移除匹配结果。" = "tgrep narrows the candidates before exact text verification. Smart ranking keeps every matching result.";
+"搜索引擎" = "Search engine";
+"索引文档" = "Indexed documents";
+"本次候选" = "Query candidates";
+"本地模型" = "Local model";
+"计算策略" = "Compute policy";
+"ANE 优选算子" = "ANE preferred operations";
+"向量缓存命中" = "Embedding cache hits";
+"Neural Engine 由 Core ML 调度；计算计划不代表逐次运行的硬件计数。" = "Core ML schedules Neural Engine work. Its compute plan is not per-inference hardware telemetry.";
+"专注阅读" = "Focus on reading";
+"前往" = "Go";
+"退出专注" = "Exit Focus";
+"你的本地 AI 工作台" = "Local AI workspace";
+"工作空间" = "Workspace";
+"最近会话" = "Recent sessions";
+"会话结果" = "Session results";
+"打开" = "Open";
+"最新消息" = "Latest message";
+"This model supports English and code queries. Keyword order is preserved for other languages." = "This model supports English and code queries. Keyword order is preserved for other languages.";
+"Local semantic model unavailable. Keyword results remain available." = "Local semantic model unavailable. Keyword results remain available.";
+"首次使用会准备本地模型，精确搜索结果始终可用。" = "The first use prepares the local model. Exact search results stay available.";
+"本地智能排序已完成。" = "Local smart ranking is complete.";
+"分析" = "Analyze";

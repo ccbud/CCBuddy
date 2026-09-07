@@ -1,10 +1,89 @@
+import AppKit
 import SwiftUI
+
+/// A single material policy for the whole app. Public Liquid Glass is used on macOS 26 and
+/// newer; older systems use native material. Accessibility preferences always win over glass.
+struct CCGlassSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
+    var radius: CGFloat = Radius.panel
+    var interactive = false
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if reduceTransparency || contrast == .increased {
+            content
+                .background(Theme.surface, in: shape)
+                .overlay { shape.strokeBorder(Theme.separator, lineWidth: contrast == .increased ? 2 : 1) }
+        } else if #available(macOS 26.0, *) {
+            // A resident glass host caches its effective material appearance. Rebuild that host
+            // when the app changes theme, just as opening a fresh popover picks up the new theme.
+            // Keeping the old host produced light glass and light-resolved children in dark mode.
+            content
+                .environment(\.colorScheme, colorScheme)
+                .glassEffect(.regular.interactive(interactive), in: shape)
+                .id(colorScheme)
+        } else {
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay { shape.strokeBorder(Theme.glassHighlight.opacity(0.45), lineWidth: 1) }
+        }
+    }
+
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: radius, style: .continuous) }
+}
+
+struct CCSidebarMaterial: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        content.background {
+            if reduceTransparency || contrast == .increased {
+                Theme.sidebar
+            } else {
+                CCVisualEffect(material: .sidebar)
+                    .overlay(Theme.sidebar.opacity(0.48))
+            }
+        }
+    }
+}
+
+private struct CCVisualEffect: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        view.setAccessibilityElement(false)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+    }
+}
+
+extension View {
+    func ccGlass(radius: CGFloat = Radius.panel, interactive: Bool = false) -> some View {
+        modifier(CCGlassSurface(radius: radius, interactive: interactive))
+    }
+
+    func ccSidebarMaterial() -> some View { modifier(CCSidebarMaterial()) }
+}
+
+enum CCMotion {
+    static let response = Animation.interactiveSpring(response: 0.3, dampingFraction: 1)
+    static let feedback = Animation.easeOut(duration: 0.12)
+}
 
 // MARK: - Surfaces
 
-/// A flat reading/content surface. Persistent interface never casts a shadow, so separation comes
-/// from the tone step alone; the hairline is only drawn when the surface sits on the same tone.
+/// Content remains opaque, with rounded geometry shared by every destination.
 struct PanelSurface: ViewModifier {
+    @Environment(\.colorSchemeContrast) private var contrast
     var radius: CGFloat = Radius.panel
     var bordered: Bool = false
 
@@ -13,28 +92,22 @@ struct PanelSurface: ViewModifier {
             .background(Theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay {
-                if bordered {
+                if bordered || contrast == .increased {
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .strokeBorder(Theme.separator, lineWidth: 1)
+                        .strokeBorder(Theme.separator, lineWidth: contrast == .increased ? 2 : 1)
                 }
             }
     }
 }
 
-/// A transient overlay — menu, sheet, command palette, toast. These are the only surfaces allowed
-/// to cast a shadow.
+/// A transient layer stays visually connected to the workspace behind it.
 struct FloatingSurface: ViewModifier {
     var radius: CGFloat = Radius.panel
 
     func body(content: Content) -> some View {
         content
-            .background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(Theme.separator, lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.22), radius: 28, y: 12)
+            .ccGlass(radius: radius)
+            .shadow(color: .black.opacity(0.16), radius: 32, y: 16)
     }
 }
 
@@ -106,7 +179,7 @@ extension View {
 
 /// The four button roles. Anything that needs a fifth is a design question, not a code question.
 enum CCButtonRole {
-    /// Clay fill. One per view, reserved for the single most likely next action.
+    /// Blue fill. Reserved for the most likely next action.
     case primary
     /// Quiet fill with a hairline. The default for ordinary actions.
     case secondary
@@ -119,6 +192,7 @@ enum CCButtonRole {
 struct CCButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
 
     var role: CCButtonRole = .secondary
     var size: CGFloat = Metrics.controlHeight
@@ -141,8 +215,10 @@ struct CCButtonStyle: ButtonStyle {
             }
             .opacity(isEnabled ? 1 : 0.45)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : CCMotion.response, value: configuration.isPressed)
+            .animation(CCMotion.feedback, value: hovering)
             .contentShape(Rectangle())
+            .onHover { hovering = $0 }
     }
 
     private var foreground: Color {
@@ -157,8 +233,8 @@ struct CCButtonStyle: ButtonStyle {
     private func background(pressed: Bool) -> Color {
         switch role {
         case .primary: pressed ? Theme.accentText : Theme.accent
-        case .secondary: pressed ? Theme.hover : Theme.fillSubtle
-        case .quiet: pressed ? Theme.hover : .clear
+        case .secondary: pressed || hovering ? Theme.hover : Theme.fillSubtle
+        case .quiet: pressed || hovering ? Theme.hover : .clear
         case .danger: pressed ? Theme.dangerSoft : Theme.dangerSoft.opacity(0.6)
         }
     }
@@ -176,6 +252,7 @@ extension ButtonStyle where Self == CCButtonStyle {
 struct CCIconButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
 
     var size: CGFloat = Metrics.controlHeight
     var symbolSize: CGFloat = Typography.caption
@@ -188,15 +265,17 @@ struct CCIconButtonStyle: ButtonStyle {
             .foregroundStyle(tint)
             .frame(width: size, height: size)
             .background(
-                configuration.isPressed
+                configuration.isPressed || hovering
                     ? Theme.hover
                     : (filled ? Theme.fillSubtle : Color.clear)
             )
-            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .clipShape(Circle())
             .opacity(isEnabled ? 1 : 0.4)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
-            .contentShape(Rectangle())
+            .animation(reduceMotion ? nil : CCMotion.response, value: configuration.isPressed)
+            .animation(CCMotion.feedback, value: hovering)
+            .contentShape(Circle())
+            .onHover { hovering = $0 }
     }
 }
 
@@ -216,8 +295,8 @@ struct CCBadge: View {
         Text(text)
             .font(.ccLabel(.medium))
             .foregroundStyle(tint)
-            .padding(.horizontal, Space.xs + 1)
-            .padding(.vertical, 1)
+            .padding(.horizontal, Space.sm)
+            .padding(.vertical, 3)
             .background(backing)
             .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
             .lineLimit(1)
@@ -295,12 +374,13 @@ struct CCEmptyState<Actions: View>: View {
                 ProgressView().controlSize(.small)
             } else {
                 ZStack {
-                    Circle().fill(Theme.fill)
+                    RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
+                        .fill(Theme.accentSoft)
                     Image(systemName: symbol)
                         .font(.system(size: compact ? 20 : 24, weight: .light))
-                        .foregroundStyle(Theme.mutedForeground)
+                        .foregroundStyle(Theme.accentText)
                 }
-                .frame(width: compact ? 48 : 58, height: compact ? 48 : 58)
+                .frame(width: compact ? 54 : 68, height: compact ? 54 : 68)
             }
             VStack(spacing: Space.xs + 2) {
                 Text(title)

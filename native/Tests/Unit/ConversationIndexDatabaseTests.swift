@@ -101,8 +101,12 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(code.documents.map(\.document.transcriptID), ["main"])
 
         let short = try database.candidateDocuments(for: "实现")
-        XCTAssertTrue(short.usedFallback)
+        XCTAssertFalse(short.usedFallback, "Two CJK characters contain enough UTF-8 bytes for tgrep")
         XCTAssertEqual(short.documents.map(\.document.transcriptID), ["main"])
+
+        let shortASCII = try database.candidateDocuments(for: "us")
+        XCTAssertTrue(shortASCII.usedFallback)
+        XCTAssertEqual(shortASCII.documents.map(\.document.transcriptID), ["main"])
     }
 
     func testReplacementIsAtomicAndRemovesStaleSearchRows() throws {

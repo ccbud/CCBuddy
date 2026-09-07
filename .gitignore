@@ -18,6 +18,8 @@ native/TestResults*-attachments/
 native/ReleaseValidation-*/
 native/VisualComparison/
 native/Vendor/bifrost-http
+native/Vendor/libccbuddy_tgrep.dylib
+native/TgrepBridge/target/
 native/Vendor/test-tools/
 native/*.xcworkspace/xcuserdata/
 native/*.xcodeproj/xcuserdata/

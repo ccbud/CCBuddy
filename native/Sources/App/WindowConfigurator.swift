@@ -75,8 +75,10 @@ struct WindowConfigurator: NSViewRepresentable {
     }
 
     var onWindowAvailable: ((NSWindow) -> Void)?
+    var colorScheme: ColorScheme?
 
-    init(onWindowAvailable: ((NSWindow) -> Void)? = nil) {
+    init(colorScheme: ColorScheme? = nil, onWindowAvailable: ((NSWindow) -> Void)? = nil) {
+        self.colorScheme = colorScheme
         self.onWindowAvailable = onWindowAvailable
     }
 
@@ -98,6 +100,13 @@ struct WindowConfigurator: NSViewRepresentable {
 
     private func configure(_ window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
+        // Liquid Glass and AppKit controls resolve their dynamic colors through NSAppearance.
+        // SwiftUI's preferredColorScheme alone can leave existing native glass in light Aqua
+        // after an in-app theme change, even while the reading canvas has already become dark.
+        if let colorScheme {
+            let name: NSAppearance.Name = colorScheme == .dark ? .darkAqua : .aqua
+            if window.appearance?.name != name { window.appearance = NSAppearance(named: name) }
+        }
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none

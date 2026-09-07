@@ -233,6 +233,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private let metadataEncoder: JSONEncoder
     private let metadataDecoder: JSONDecoder
     private var trigramFTSAvailable = false
+    private let enableTgrep: Bool
+    private var tgrep: TgrepSearchIndex?
+    private var tgrepUnavailable = false
+    private var latestSearchDiagnostics = ConversationSearchDiagnostics()
 
     /// Decoded metadata keyed by row identity. Every list refresh — and the scope counts beside
     /// it — decodes the metadata blob of every session row; while an agent is appending, those
@@ -243,7 +247,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private var metadataDecodeCache: [String: (indexedAt: Double, metadata: HistorySessionMetadata)] = [:]
     private static let metadataDecodeCacheLimit = 20_000
 
-    init(file: URL) throws {
+    init(file: URL, enableTgrep: Bool = true) throws {
         guard file.isFileURL else {
             throw ConversationIndexDatabaseError.invalidDatabaseURL(file)
         }
@@ -265,6 +269,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
 
         self.file = standardized
+        self.enableTgrep = enableTgrep
         connection = handle
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -276,6 +281,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             trigramFTSAvailable = probeTrigramFTS()
             try initializeSchema()
             readConnection = try Self.openReadConnection(standardized)
+            if let readConnection { Self.registerLiteralMatcher(on: readConnection) }
             try hardenPermissions()
         } catch {
             if let readConnection { sqlite3_close(readConnection) }
@@ -304,6 +310,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
     var supportsTrigramSearch: Bool {
         withLock { trigramFTSAvailable }
+    }
+
+    var searchDiagnostics: ConversationSearchDiagnostics {
+        (try? withReadLock { _ in latestSearchDiagnostics }) ?? ConversationSearchDiagnostics()
     }
 
     func generation() throws -> Int64 {
@@ -696,11 +706,25 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     /// Reads one transcript located by `candidateDocumentReferences`. Search calls this per
     /// candidate and releases the result before moving on, so a query costs one transcript rather
     /// than every transcript that matched.
-    func document(id: Int64) throws -> ConversationIndexDocument? {
+    func document(
+        id: Int64,
+        expectedSessionPath: String? = nil,
+        expectedTranscriptID: String? = nil
+    ) throws -> ConversationIndexDocument? {
         try withReadLock { connection in
+            var predicate = " WHERE d.id = ?"
+            var bindings: [SQLiteValue] = [.integer(id)]
+            if let expectedSessionPath {
+                predicate += " AND d.session_path = ?"
+                bindings.append(.text(expectedSessionPath))
+            }
+            if let expectedTranscriptID {
+                predicate += " AND d.transcript_id = ?"
+                bindings.append(.text(expectedTranscriptID))
+            }
             let statement = try prepare(
-                Self.documentSelect + " WHERE d.id = ? LIMIT 1",
-                bindings: [.integer(id)],
+                Self.documentSelect + predicate + " LIMIT 1",
+                bindings: bindings,
                 connection: connection
             )
             defer { sqlite3_finalize(statement) }
@@ -755,6 +779,13 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         deleted: Bool? = false
     ) throws -> ConversationIndexCandidateReferenceBatch {
         try withReadLock { connection in
+            try Task.checkCancellation()
+            let started = ContinuousClock.now
+            defer {
+                let elapsed = started.duration(to: .now).components
+                latestSearchDiagnostics.queryMilliseconds = Double(elapsed.seconds) * 1_000
+                    + Double(elapsed.attoseconds) / 1_000_000_000_000_000
+            }
             let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else {
                 return ConversationIndexCandidateReferenceBatch(
@@ -763,27 +794,75 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 )
             }
 
+            // A read transaction binds the tgrep generation, incremental text
+            // reads, and returned IDs to the same SQLite snapshot even while
+            // the independent writer publishes a new catalog revision.
+            if enableTgrep, !tgrepUnavailable, TgrepSearchIndex.canIndex(query) {
+                do {
+                    guard sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil) == SQLITE_OK else {
+                        throw TgrepSearchIndex.Failure.operationFailed
+                    }
+                    defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil) }
+                    let updated = try synchronizeTgrep(connection: connection)
+                    guard let tgrep else { throw TgrepSearchIndex.Failure.unavailable }
+                    let ids = try tgrep.candidates(for: query)
+                    var references: [ConversationIndexDocumentReference] = []
+                    // Bound SQLite variable counts for older system libraries.
+                    for offset in stride(from: 0, to: ids.count, by: 400) {
+                        references.append(contentsOf: try queryCandidateReferences(
+                            query: query, scope: scope, source: source, deleted: deleted,
+                            useFTS: false, connection: connection,
+                            documentIDs: Array(ids[offset..<min(ids.count, offset + 400)])
+                        ))
+                    }
+                    latestSearchDiagnostics = ConversationSearchDiagnostics(
+                        engine: "tgrep", indexedDocuments: tgrep.documentCount,
+                        candidateCount: references.count,
+                        incrementallyIndexedDocuments: updated, usedFallback: false,
+                        cumulativeNormalizationMilliseconds: tgrep.normalizationMilliseconds,
+                        cumulativeTrigramBuildMilliseconds: tgrep.trigramBuildMilliseconds,
+                        restoredFromCache: tgrep.restoredFromCache
+                    )
+                    return ConversationIndexCandidateReferenceBatch(references: references, usedFallback: false)
+                } catch is CancellationError {
+                    // A cancelled incremental build is incomplete, but a later
+                    // search may retry; cancellation is not an engine failure.
+                    tgrep = nil
+                    throw CancellationError()
+                } catch {
+                    // Partial synchronization must never become an authoritative
+                    // empty candidate set. Drop it and retain exact local search.
+                    tgrep = nil
+                    tgrepUnavailable = true
+                }
+            }
+
             let segments = query.split(whereSeparator: \.isWhitespace).map(String.init)
             let ftsIsReady = try int64Value(
                 "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1",
                 connection: connection
             ) == 0
             let canUseFTS = trigramFTSAvailable
+                // If tgrep failed, preserve Foundation's complete Unicode
+                // semantics. FTS case folding alone can miss expansions such
+                // as Straße/STRASSE, so failure falls through to the literal UDF.
+                && !tgrepUnavailable
                 && ftsIsReady
                 && !segments.isEmpty
                 && segments.allSatisfy { $0.count >= 3 }
                 && !query.unicodeScalars.contains(where: { $0.value == 0 })
             if canUseFTS {
                 do {
+                    let references = try queryCandidateReferences(
+                        query: query, scope: scope, source: source, deleted: deleted,
+                        useFTS: true, connection: connection
+                    )
+                    latestSearchDiagnostics = ConversationSearchDiagnostics(
+                        engine: "SQLite FTS", candidateCount: references.count,
+                        usedFallback: enableTgrep
+                    )
                     return ConversationIndexCandidateReferenceBatch(
-                        references: try queryCandidateReferences(
-                            query: query,
-                            scope: scope,
-                            source: source,
-                            deleted: deleted,
-                            useFTS: true,
-                            connection: connection
-                        ),
+                        references: references,
                         usedFallback: false
                     )
                 } catch {
@@ -791,15 +870,15 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     // SQLite runtime. The ordinary document table is always a safe fallback.
                 }
             }
+            let references = try queryCandidateReferences(
+                query: query, scope: scope, source: source, deleted: deleted,
+                useFTS: false, connection: connection
+            )
+            latestSearchDiagnostics = ConversationSearchDiagnostics(
+                engine: "Literal", candidateCount: references.count, usedFallback: true
+            )
             return ConversationIndexCandidateReferenceBatch(
-                references: try queryCandidateReferences(
-                    query: query,
-                    scope: scope,
-                    source: source,
-                    deleted: deleted,
-                    useFTS: false,
-                    connection: connection
-                ),
+                references: references,
                 usedFallback: true
             )
         }
@@ -827,7 +906,11 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         var documents: [ConversationIndexDocumentCandidate] = []
         for reference in batch.references.sorted(by: Self.referenceComesFirst) {
             guard let entry = try entry(forPath: reference.sessionPath),
-                  let document = try document(id: reference.documentID) else { continue }
+                  let document = try document(
+                    id: reference.documentID,
+                    expectedSessionPath: reference.sessionPath,
+                    expectedTranscriptID: reference.transcriptID
+                  ) else { continue }
             documents.append(
                 ConversationIndexDocumentCandidate(entry: entry, document: document)
             )
@@ -1273,7 +1356,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         source: HistorySource?,
         deleted: Bool?,
         useFTS: Bool,
-        connection: OpaquePointer
+        connection: OpaquePointer,
+        documentIDs: [Int64]? = nil
     ) throws -> [ConversationIndexDocumentReference] {
         var bindings: [SQLiteValue] = []
         var conditions: [String] = []
@@ -1295,8 +1379,14 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 FROM conversation_documents d
                 JOIN conversation_sessions s ON s.source_path = d.session_path
                 """
-            conditions.append("instr(lower(d.search_text), lower(?)) > 0")
-            bindings.append(.text(query))
+            if let documentIDs {
+                guard !documentIDs.isEmpty else { return [] }
+                conditions.append("d.id IN (\(documentIDs.map { _ in "?" }.joined(separator: ",")))")
+                bindings.append(contentsOf: documentIDs.map(SQLiteValue.integer))
+            } else {
+                conditions.append("ccbud_literal_contains(d.search_text, ?) = 1")
+                bindings.append(.text(query))
+            }
         }
         if let scope {
             conditions.append("s.scope = ?")
@@ -1343,6 +1433,92 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 lastActivity: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
             ))
         }
+    }
+
+    /// Scans small document identities at a new catalog revision, reading text
+    /// only for added/replaced transcripts. Warm queries read one generation
+    /// integer, then go directly to tgrep's mmap postings. The caller owns an
+    /// active SQLite snapshot and the read lock for this entire operation.
+    private func synchronizeTgrep(connection: OpaquePointer) throws -> Int {
+        let revision = try int64Value(
+            "SELECT generation FROM conversation_catalog_state WHERE singleton = 1",
+            connection: connection
+        )
+        if tgrep == nil {
+            tgrep = try TgrepSearchIndex(cacheDirectory: file.deletingLastPathComponent()
+                .appendingPathComponent(file.lastPathComponent + ".tgrep-v2", isDirectory: true))
+        }
+        guard let tgrep else { throw TgrepSearchIndex.Failure.unavailable }
+        if tgrep.revision == revision { return 0 }
+
+        let statement = try prepare(
+            """
+            SELECT d.id, d.session_path, d.transcript_id, s.indexed_at
+            FROM conversation_documents d
+            JOIN conversation_sessions s ON s.source_path = d.session_path
+            """,
+            bindings: [], connection: connection
+        )
+        defer { sqlite3_finalize(statement) }
+        var stamps: [Int64: TgrepSearchIndex.Stamp] = [:]
+        var updated = 0
+        while true {
+            try Task.checkCancellation()
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { break }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("synchronize tgrep identities", status, connection: connection)
+            }
+            let id = sqlite3_column_int64(statement, 0)
+            let stamp = TgrepSearchIndex.Stamp(
+                path: try textColumn(statement, 1, field: "session_path"),
+                transcript: try textColumn(statement, 2, field: "transcript_id"),
+                indexedAt: sqlite3_column_double(statement, 3)
+            )
+            stamps[id] = stamp
+            guard !tgrep.contains(id: id, stamp: stamp) else { continue }
+            let textStatement = try prepare(
+                "SELECT search_text FROM conversation_documents WHERE id = ?",
+                bindings: [.integer(id)], connection: connection
+            )
+            defer { sqlite3_finalize(textStatement) }
+            guard sqlite3_step(textStatement) == SQLITE_ROW else {
+                throw TgrepSearchIndex.Failure.operationFailed
+            }
+            let text = try textColumn(textStatement, 0, field: "search_text")
+            try tgrep.upsert(id: id, text: text)
+            updated += 1
+        }
+        try tgrep.commit(revision: revision, stamps: stamps)
+        return updated
+    }
+
+    /// SQLite's built-in lower() only handles ASCII; using it for fallback
+    /// quietly lost Cyrillic, accented-case, and canonical-equivalence hits.
+    /// This bound deterministic function shares the final result's Foundation
+    /// semantics, and sqlite3_value_bytes preserves embedded NUL characters.
+    private static func registerLiteralMatcher(on connection: OpaquePointer) {
+        sqlite3_create_function_v2(
+            connection, "ccbud_literal_contains", 2,
+            SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil,
+            { context, count, arguments in
+                guard count == 2, let arguments else {
+                    sqlite3_result_int(context, 0)
+                    return
+                }
+                func value(_ index: Int) -> String? {
+                    guard let bytes = sqlite3_value_text(arguments[index]) else { return nil }
+                    return String(decoding: UnsafeBufferPointer(
+                        start: bytes, count: Int(sqlite3_value_bytes(arguments[index]))
+                    ), as: UTF8.self)
+                }
+                guard let text = value(0), let query = value(1), !query.isEmpty else {
+                    sqlite3_result_int(context, 0)
+                    return
+                }
+                sqlite3_result_int(context, text.range(of: query, options: [.caseInsensitive]) == nil ? 0 : 1)
+            }, nil, nil, nil
+        )
     }
 
     private func decodeEntry(

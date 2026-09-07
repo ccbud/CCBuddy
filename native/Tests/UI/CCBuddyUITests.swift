@@ -822,13 +822,13 @@ final class CCBuddyUITests: XCTestCase {
             return
         }
 
-        // The three columns must still be told apart by tone alone in the title-bar band, which is
-        // also what proves the opaque shell reaches under it. Values are Theme.sidebar, Theme.list
-        // and Theme.background.
-        let samples: [(name: String, point: CGPoint, expectedRGB: UInt32)] = [
-            ("sidebar", CGPoint(x: 112, y: 12), 0xEDEBE4),
-            ("conversation list", CGPoint(x: 392, y: 12), 0xF7F5F0),
-            ("conversation detail", CGPoint(x: 870, y: 12), 0xF1EFE9),
+        // Reading and list surfaces stay opaque beneath the title bar. The sidebar now uses
+        // native backdrop material, so its resolved RGB depends on the wallpaper; only its
+        // final composited opacity is stable. Solid accessibility fallbacks have unit contrast tests.
+        let samples: [(name: String, point: CGPoint, expectedRGB: UInt32?)] = [
+            ("sidebar", CGPoint(x: 112, y: 12), nil),
+            ("conversation list", CGPoint(x: 392, y: 12), 0xF6F8FC),
+            ("conversation detail", CGPoint(x: 870, y: 12), 0xEDF1F7),
         ]
         let xScale = CGFloat(bitmap.pixelsWide) / frame.width
         let yScale = CGFloat(bitmap.pixelsHigh) / frame.height
@@ -852,15 +852,16 @@ final class CCBuddyUITests: XCTestCase {
                 continue
             }
 
-            let expectedRed = CGFloat((sample.expectedRGB >> 16) & 0xFF) / 255
-            let expectedGreen = CGFloat((sample.expectedRGB >> 8) & 0xFF) / 255
-            let expectedBlue = CGFloat(sample.expectedRGB & 0xFF) / 255
             XCTAssertEqual(
                 sRGB.alphaComponent,
                 1,
                 accuracy: 0.02,
                 "The \(sample.name) top surface must be opaque"
             )
+            guard let rgb = sample.expectedRGB else { continue }
+            let expectedRed = CGFloat((rgb >> 16) & 0xFF) / 255
+            let expectedGreen = CGFloat((rgb >> 8) & 0xFF) / 255
+            let expectedBlue = CGFloat(rgb & 0xFF) / 255
             XCTAssertEqual(
                 sRGB.redComponent,
                 expectedRed,

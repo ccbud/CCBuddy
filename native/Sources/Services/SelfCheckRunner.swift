@@ -319,6 +319,12 @@ struct SelfCheckHistorySnapshot: Equatable, Sendable {
     let messageMarkerMatched: Bool
 }
 
+struct SelfCheckSearchSnapshot: Equatable, Sendable {
+    let tgrepMatched: Bool
+    let semanticMatched: Bool
+    let computePolicy: String
+}
+
 struct SelfCheckClipboardSnapshot: Equatable, Sendable {
     let writeSucceeded: Bool
     let readBackSucceeded: Bool
@@ -370,6 +376,7 @@ struct SelfCheckDependencies {
     var timeoutPolicy: SelfCheckTimeoutPolicy
     var writeReportFile: (Data, URL) throws -> Void
     var writeStandardOutput: (Data) throws -> Void
+    var searchProbe: (@Sendable (URL) async throws -> SelfCheckSearchSnapshot)? = nil
 
     static func live(
         bundle: Bundle = .main,
@@ -425,7 +432,8 @@ struct SelfCheckDependencies {
                     fileManager: fileManagerBox.value
                 )
             },
-            writeStandardOutput: { data in try FileHandle.standardOutput.write(contentsOf: data) }
+            writeStandardOutput: { data in try FileHandle.standardOutput.write(contentsOf: data) },
+            searchProbe: { home in try await SelfCheckSystemProbe.searchAcceleration(homeDirectory: home) }
         )
     }
 }
@@ -717,6 +725,26 @@ struct SelfCheckRunner {
             ))
         } catch {
             required.append(failedCheck(id: "history_round_trip", error: error, redactor: redactor))
+        }
+
+        if let searchProbe = dependencies.searchProbe {
+            do {
+                let home = request.homeDirectory
+                let snapshot = try await runMainActorProbe(id: "search_acceleration", deadline: deadline) {
+                    try await searchProbe(home)
+                }
+                required.append(check(
+                    id: "search_acceleration",
+                    passed: snapshot.tgrepMatched && snapshot.semanticMatched,
+                    detail: "packaged tgrep query and offline semantic inference round-trip",
+                    values: ["tgrepMatched": String(snapshot.tgrepMatched),
+                             "semanticMatched": String(snapshot.semanticMatched),
+                             "computePolicy": snapshot.computePolicy],
+                    redactor: redactor
+                ))
+            } catch {
+                required.append(failedCheck(id: "search_acceleration", error: error, redactor: redactor))
+            }
         }
 
         do {
@@ -1484,6 +1512,35 @@ enum SelfCheckSystemProbe {
             messageMarkerMatched: session.messages.contains { message in
                 message.content.contains { $0.text == messageMarker }
             }
+        )
+    }
+
+    /// Runs the actual packaged library and compiled model, not just resource-existence checks.
+    /// Only fixed synthetic text is supplied; the validated self-check home contains all writes.
+    static func searchAcceleration(homeDirectory: URL) async throws -> SelfCheckSearchSnapshot {
+        let root = try makeUniqueProbeDirectory(homeDirectory: homeDirectory,
+                                                prefix: "search", fileManager: .default)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let matched: Bool = try {
+            let index = try TgrepSearchIndex(cacheDirectory: root.appendingPathComponent("index"))
+            try index.upsert(id: 1, text: "Swift offline 搜索")
+            try index.commit(revision: 1, stamps: [1: .init(path: "synthetic", transcript: "main", indexedAt: 1)])
+            return try index.candidates(for: "搜索") == [1] && index.candidates(for: "SWIFT") == [1]
+                && index.candidates(for: "absent") == []
+        }()
+        let candidates = [
+            SemanticSearchCandidate(id: "appearance", text: "Arrange the sidebar icons and change the background color."),
+            SemanticSearchCandidate(id: "authentication", text: "Renew credentials to restore access to the service."),
+            SemanticSearchCandidate(id: "database", text: "Investigate slow database queries and reduce response latency."),
+        ]
+        let result = try await LocalSemanticSearch().rank(
+            query: "Fix authentication errors when the API key expires.", candidates: candidates
+        )
+        return SelfCheckSearchSnapshot(
+            tgrepMatched: matched,
+            semanticMatched: result.diagnostics.state == .ready && result.orderedIDs.first == "authentication"
+                && Set(result.orderedIDs) == Set(candidates.map(\.id)),
+            computePolicy: result.diagnostics.computePolicy == .cpuAndNeuralEngine ? "CPU+ANE" : "CPU"
         )
     }
 

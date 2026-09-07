@@ -112,14 +112,26 @@ jobs:
           set -euo pipefail
           native/Scripts/install-xcodegen.sh "$RUNNER_TEMP/xcodegen-2.46.0"
           echo "$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.98.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Prepare pinned helper and generated project
         shell: bash
         run: |
           set -euo pipefail
+          CCBUD_TGREP_ARCH=universal bash native/Scripts/build-tgrep.sh
           CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
           xcodegen generate --spec native/project.yml --project native
           git diff --exit-code -- native/CCBuddy.xcodeproj
           node scripts/release-version.js check "${{ needs.verify.outputs.version }}"
+      - name: Verify embedded tgrep bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path native/TgrepBridge/Cargo.toml
+          node native/Scripts/generate-tgrep-notices.js --check
+          python3 native/Scripts/verify-semantic-model.py
       - name: Install pinned loopback E2E CLIs
         shell: bash
         run: |
@@ -187,6 +199,7 @@ jobs:
           set -euo pipefail
           result="$RUNNER_TEMP/CCBuddyUITests.xcresult"
           summary="$RUNNER_TEMP/CCBuddyUITests-summary.json"
+          tests="$RUNNER_TEMP/CCBuddyUITests-tests.json"
           ui_bundle_id="dev.ccbud.gateway.ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           test ! -e "$result"
           xcodebuild test \
@@ -203,12 +216,25 @@ jobs:
             CCBUD_PRODUCT_BUNDLE_IDENTIFIER="$ui_bundle_id"
           xcrun xcresulttool get test-results summary \
             --path "$result" --compact > "$summary"
-          # Counted, not pinned: an exact total meant every added UI test failed this gate while
-          # passing, and "all of them passed, none skipped" is the property being enforced. The
-          # floor still catches a suite that silently stopped running.
-          jq -e '.result == "Passed" and .totalTestCount >= 10
+          xcrun xcresulttool get test-results tests \
+            --path "$result" --compact > "$tests"
+          # Allow additions, but never a green run that discovered only the older UI suite.
+          jq -e '.result == "Passed" and .totalTestCount >= 21
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
+          jq -e '[.. | objects | select(.nodeType == "Test Case")
+            | select((.nodeIdentifier // "") | startswith("NativeSearchExperienceUITests/"))
+            | {name: ((.nodeIdentifier // "") | split("/") | last | rtrimstr("()")), result}] as $experience
+            | ["testFullTextSearchReportsTgrepAndKeyboardOpensSelectedResult",
+               "testLocalSemanticRankingPreservesResultsAndExplainsComputePolicy",
+               "testSearchCanReachEveryMatchInALargeResultSet",
+               "testFocusReadingRestoresCustomLayoutAndFindsWithinTranscript",
+               "testDestinationShortcutsAndSearchRoundTrip",
+               "testCommandKClaimsTypingFromDetailSearchAndEscapeRestoresInsertionPoint",
+               "testModalSearchOwnsFindShortcutAndTabCannotEditTheCoveredReader",
+               "testLightDarkAndCompactSearchScreenshots"] as $required
+            | all($required[]; . as $name
+                | any($experience[]; .name == $name and .result == "Passed"))' "$tests"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
             "$summary"
       - name: Run the Bifrost helper validator suite
@@ -260,6 +286,10 @@ jobs:
       - name: Install build dependencies
         shell: bash
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.98.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Install pinned XcodeGen
         shell: bash
         run: |
@@ -270,6 +300,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CCBUD_TGREP_ARCH=universal bash native/Scripts/build-tgrep.sh
+          node native/Scripts/generate-tgrep-notices.js --check
           CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
           xcodegen generate --spec native/project.yml --project native
           git diff --exit-code -- native/CCBuddy.xcodeproj

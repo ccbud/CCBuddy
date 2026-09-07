@@ -18,8 +18,8 @@ struct ProviderHeroView: View {
                 heroIcon
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.ccHeading())
-                        .tracking(-0.2)
+                        .font(.ccTitle())
+                        .tracking(-0.6)
                         .lineLimit(1)
                     Text(subtitle)
                         .font(.ccCaption())
@@ -68,16 +68,16 @@ struct ProviderHeroView: View {
 
     @ViewBuilder private var heroIcon: some View {
         if model.gatewayState.isRunning, let provider = model.activeProvider {
-            ProviderIconView(name: provider.name, icon: provider.icon, size: 34)
+            ProviderIconView(name: provider.name, icon: provider.icon, size: 48)
         } else {
             ZStack {
                 RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
-                    .fill(Theme.fill)
+                    .fill(Theme.accentSoft)
                 Image(systemName: "bolt.slash")
-                    .font(.system(size: Typography.body))
-                    .foregroundStyle(Theme.mutedForeground)
+                    .font(.system(size: Typography.title, weight: .medium))
+                    .foregroundStyle(Theme.accentText)
             }
-            .frame(width: 34, height: 34)
+            .frame(width: 48, height: 48)
         }
     }
 

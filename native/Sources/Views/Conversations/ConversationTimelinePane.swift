@@ -11,6 +11,7 @@ struct ConversationTimelinePane: View {
     @Environment(\.appLanguage) private var appLanguage
     @State private var showingMetadataEditor = false
     @State private var confirmingPermanentDelete = false
+    @FocusState private var detailSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,11 +56,22 @@ struct ConversationTimelinePane: View {
     /// statistics on a single line that truncates in the middle rather than wrapping.
     private func sessionHeader(_ metadata: HistorySessionMetadata) -> some View {
         VStack(alignment: .leading, spacing: Space.xs + 2) {
-            HStack(alignment: .center, spacing: Space.sm) {
-                AgentBrandMark(source: metadata.source, size: 16)
-                sessionTitle(metadata)
-                Spacer(minLength: Space.sm)
-                actionButtons
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: Space.sm) {
+                    AgentBrandMark(source: metadata.source, size: 20)
+                    sessionTitle(metadata).fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: Space.sm)
+                    actionButtons
+                }
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    HStack(spacing: Space.sm) {
+                        AgentBrandMark(source: metadata.source, size: 20)
+                        sessionTitle(metadata)
+                        Spacer(minLength: 0)
+                    }
+                    actionButtons
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
             HStack(spacing: Space.xs + 2) {
@@ -104,9 +116,10 @@ struct ConversationTimelinePane: View {
     private func sessionTitle(_ metadata: HistorySessionMetadata) -> some View {
         Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
             .font(.ccTitle())
-            .tracking(-0.35)
+            .tracking(-0.65)
             .lineLimit(1)
             .help(metadata.title)
+            .accessibilityIdentifier("conversation.title")
     }
 
     private func metadataBadge(_ value: String) -> some View {
@@ -136,15 +149,24 @@ struct ConversationTimelinePane: View {
     /// pane below shows. The tabs take the left because they name the thing; search takes the right
     /// because it is a tool, and it keeps the row when a session has no subagents to switch between.
     private var secondaryBar: some View {
-        HStack(spacing: Space.sm) {
-            if store.transcriptTabs.count > 1 {
-                transcriptTabs
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Space.sm) {
+                if store.transcriptTabs.count > 1 { transcriptTabs }
+                Spacer(minLength: Space.xs)
+                searchControls
             }
-            Spacer(minLength: Space.xs)
-            searchControls
+            VStack(alignment: .leading, spacing: Space.sm) {
+                if store.transcriptTabs.count > 1 { transcriptTabs }
+                searchControls
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.bottom, Space.sm + 2)
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.xs)
+        .ccGlass(radius: Radius.row)
+        .padding(.horizontal, Space.md)
+        .padding(.bottom, Space.md)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.toolbar")
     }
 
@@ -189,11 +211,10 @@ struct ConversationTimelinePane: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
             .help(activeSubagent?.description ?? appLanguage.localized("子代理"))
             .accessibilityIdentifier("conversation.transcript.subagents")
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.transcript.tabs")
     }
 
@@ -240,6 +261,8 @@ struct ConversationTimelinePane: View {
                 )
                 .textFieldStyle(.plain)
                 .font(.ccCaption())
+                .focused($detailSearchFocused)
+                .onSubmit { store.nextDetailMatch() }
                 .disabled(store.selectedSession == nil)
                 .accessibilityIdentifier("conversation.detail.search")
             }
@@ -270,6 +293,12 @@ struct ConversationTimelinePane: View {
                 }
             }
         }
+        .background {
+            Button("") { detailSearchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
+        }
     }
 
     /// Two named actions, three affordances, everything else in the overflow.
@@ -292,8 +321,6 @@ struct ConversationTimelinePane: View {
                     analysisMenu(compact: true)
                 }
             }
-            .fixedSize()
-
             if store.isTrash {
                 toolbarButton("arrow.uturn.backward", label: "恢复", identifier: "conversation.action.restore") {
                     Task { await store.restoreSelected() }
@@ -521,7 +548,7 @@ struct ConversationTimelinePane: View {
 
         return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: Space.xxl) {
                     // Indices, not `enumerated()`: the latter copies the whole message array into
                     // a fresh array of tuples every time the body runs.
                     ForEach(session.messages.indices, id: \.self) { index in
@@ -542,7 +569,9 @@ struct ConversationTimelinePane: View {
                     Color.clear.frame(height: 1).id(ConversationPresentation.bottomAnchor)
                 }
                 .padding(.horizontal, Space.xl)
-                .padding(.vertical, Space.lg)
+                .padding(.top, Space.xxl)
+                .padding(.bottom, 68)
+                .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .textSelection(.enabled)
@@ -559,6 +588,32 @@ struct ConversationTimelinePane: View {
                 scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
             }
             .accessibilityIdentifier("conversation.timeline.scroll")
+            .overlay(alignment: .bottomTrailing) {
+                HStack(spacing: Space.xs) {
+                    Button {
+                        NotificationCenter.default.post(name: .ccbudToggleFocusMode, object: nil)
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.ccIcon)
+                    .help(appLanguage.localized("专注阅读") + " · ⌘⇧S")
+                    .accessibilityLabel(appLanguage.localized("专注阅读"))
+                    .accessibilityIdentifier("conversation.focus")
+                    Button {
+                        scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
+                    } label: {
+                        Label(appLanguage.localized("最新消息"), systemImage: "arrow.down")
+                            .font(.ccCaption(.medium))
+                            .padding(.horizontal, Space.sm)
+                            .frame(height: Metrics.controlHeight)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("conversation.jump.latest")
+                }
+                .padding(Space.xs)
+                .ccGlass(radius: Radius.panel, interactive: true)
+                .padding(Space.md)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.surface)

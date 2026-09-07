@@ -23,6 +23,9 @@ targets:
       - path: Sources
       - path: Resources
         buildPhase: resources
+        excludes:
+          - SemanticSearch/MiniLMSemantic.mlpackage
+      - path: Resources/SemanticSearch/MiniLMSemantic.mlpackage
       - path: ../LICENSE
         group: Resources
         createIntermediateGroups: false
@@ -47,6 +50,12 @@ targets:
         buildPhase:
           copyFiles:
             destination: executables
+        attributes:
+          - CodeSignOnCopy
+      - path: Vendor/libccbuddy_tgrep.dylib
+        buildPhase:
+          copyFiles:
+            destination: frameworks
         attributes:
           - CodeSignOnCopy
     preBuildScripts:

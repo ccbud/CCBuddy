@@ -1,0 +1,2 @@
+# Keep the checksum-pinned upstream model card byte-for-byte, including its Markdown whitespace.
+native/Resources/SemanticSearch/MODEL-CARD.md -whitespace

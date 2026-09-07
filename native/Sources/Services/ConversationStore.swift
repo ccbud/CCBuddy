@@ -2,19 +2,6 @@ import AppKit
 import Combine
 import Foundation
 
-protocol ConversationHistoryProviding: Sendable {
-    func listProjects(limit: Int) throws -> [HistoryProject]
-    func search(query: String, limit: Int) throws -> [HistorySearchHit]
-    func getSession(file: URL) throws -> HistorySession
-    func conversationScopeSnapshot() -> ConversationScopeSnapshot?
-}
-
-extension ConversationHistoryProviding {
-    /// Lightweight fakes and embedders can omit scope statistics. The store then derives the
-    /// currently visible counts, while the production repository supplies an authoritative view.
-    func conversationScopeSnapshot() -> ConversationScopeSnapshot? { nil }
-}
-
 extension HistoryRepository: ConversationHistoryProviding {
     func conversationScopeSnapshot() -> ConversationScopeSnapshot? {
         var allConfiguration = configuration
@@ -147,14 +134,6 @@ struct ConversationJumpRequest: Equatable, Sendable {
 struct ConversationImportProgress: Equatable, Sendable {
     var completed: Int
     var total: Int
-}
-
-struct ConversationScopeSnapshot: Equatable, Sendable {
-    var sessionCounts: [String: Int] = [:]
-    var trashCount = 0
-    var isAuthoritative = false
-
-    var importedCount: Int { sessionCounts["__imported__", default: 0] }
 }
 
 enum ConversationTranscriptID: Hashable, Equatable, Sendable {
@@ -484,14 +463,15 @@ enum ConversationVisibleText {
         return value.isEmpty ? nil : value
     }
 
+    private static let injectedTransportExpressions: [NSRegularExpression] = [
+        #"(?s)<system-reminder>.*?</system-reminder>"#,
+        #"(?s)<command-[a-z-]+>.*?</command-[a-z-]+>"#,
+        #"(?s)<local-command-[a-z]+>.*?</local-command-[a-z]+>"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+
     static func stripInjected(_ text: String) -> String {
         var value = text
-        for pattern in [
-            #"(?s)<system-reminder>.*?</system-reminder>"#,
-            #"(?s)<command-[a-z-]+>.*?</command-[a-z-]+>"#,
-            #"(?s)<local-command-[a-z]+>.*?</local-command-[a-z]+>"#,
-        ] {
-            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+        for expression in injectedTransportExpressions {
             value = expression.stringByReplacingMatches(
                 in: value,
                 range: NSRange(value.startIndex..<value.endIndex, in: value),
@@ -530,6 +510,12 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var contentHits: [String: HistorySearchHit] = [:]
     @Published private(set) var isSearchingContent = false
     @Published private(set) var contentSearchError: String?
+    @Published private(set) var searchDiagnostics: ConversationSearchDiagnostics?
+    @Published private(set) var searchDurationMilliseconds: Double?
+    @Published private(set) var semanticRankingEnabled = false
+    @Published private(set) var semanticDiagnostics: SemanticSearchDiagnostics?
+    @Published private(set) var isRankingSearch = false
+    @Published private(set) var semanticRanks: [String: Int] = [:]
 
     @Published private(set) var selectedMetadata: HistorySessionMetadata?
     @Published private(set) var selectedSession: HistorySession?
@@ -590,6 +576,7 @@ final class ConversationStore: ObservableObject {
     private(set) var configuredHistoryDirectories: [String] = []
 
     private var repository: any ConversationHistoryProviding
+    private let semanticRanker: any SemanticSearchRanking
     private var mutationService: (any ConversationMutating)?
     private var htmlExporter: any ConversationHTMLExporting
     private let exportResultOpener: any ConversationExportResultOpening
@@ -620,7 +607,11 @@ final class ConversationStore: ObservableObject {
     private var listTask: Task<Void, Never>?
     private var listWorker: Task<ConversationListSnapshot, Error>?
     private var searchTask: Task<Void, Never>?
+    private var semanticTask: Task<Void, Never>?
+    private var semanticGeneration = UUID()
     private var searchWorker: Task<[HistorySearchHit], Error>?
+    private var contentSearchNeedsRefresh = false
+    private var lastSearchStartedRevision: Int64?
     private var detailWorker: Task<HistorySession, Error>?
     private var pollingTask: Task<Void, Never>?
     private var indexRetryTask: Task<Void, Never>?
@@ -641,6 +632,76 @@ final class ConversationStore: ObservableObject {
 
     var filteredSessionCount: Int {
         filteredProjects.reduce(0) { $0 + $1.sessions.count }
+    }
+
+    /// The palette shares membership with the library. Semantic inference only reorders the
+    /// bounded leading results; it never hides a literal hit or invents a transcript location.
+    var orderedSearchSessions: [HistorySessionMetadata] {
+        let sessions = filteredProjects.flatMap(\.sessions)
+        func recentFirst(_ lhs: HistorySessionMetadata, _ rhs: HistorySessionMetadata) -> Bool {
+            lhs.lastActivity == rhs.lastActivity ? lhs.id < rhs.id : lhs.lastActivity > rhs.lastActivity
+        }
+        guard !semanticRanks.isEmpty else { return sessions.sorted(by: recentFirst) }
+        // Normalizing a file URL inside the comparator multiplies its cost by O(n log n).
+        // Compute ranks once per row, and leave the ordinary recency path free of URL work.
+        return sessions.map { session in
+            (session: session, rank: semanticRanks[ConversationFilter.fileKey(session.file)] ?? Int.max)
+        }.sorted {
+            $0.rank == $1.rank ? recentFirst($0.session, $1.session) : $0.rank < $1.rank
+        }.map(\.session)
+    }
+
+    func setSemanticRankingEnabled(_ enabled: Bool) {
+        guard enabled != semanticRankingEnabled else { return }
+        semanticRankingEnabled = enabled
+        cancelSemanticRanking()
+        // Changing ordering never clears already verified keyword hits or starts another scan.
+        // An in-flight lexical search will schedule inference when its results arrive.
+        if enabled && !isSearchingContent { scheduleSemanticRanking() }
+    }
+
+    private func cancelSemanticRanking() {
+        semanticGeneration = UUID()
+        semanticTask?.cancel()
+        semanticTask = nil
+        semanticRanks = [:]
+        semanticDiagnostics = nil
+        isRankingSearch = false
+    }
+
+    private func scheduleSemanticRanking() {
+        cancelSemanticRanking()
+        let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard semanticRankingEnabled, !query.isEmpty else { return }
+        let search = searchGeneration
+        let ranking = semanticGeneration
+        let ranker = semanticRanker
+        let candidates = orderedSearchSessions.prefix(LocalSemanticSearch.candidateLimit).map { session in
+            SemanticSearchCandidate(
+                id: ConversationFilter.fileKey(session.file),
+                text: "\(session.title)\n\(session.project)\n\(contentHit(for: session)?.snippet ?? "")"
+            )
+        }
+        guard !candidates.isEmpty else { return }
+        isRankingSearch = true
+        semanticTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.semanticGeneration == ranking {
+                    self.isRankingSearch = false
+                    self.semanticTask = nil
+                }
+            }
+            do {
+                let result = try await ranker.rank(query: query, candidates: candidates)
+                guard let self, !Task.isCancelled, self.searchGeneration == search,
+                      self.semanticGeneration == ranking, self.semanticRankingEnabled else { return }
+                self.semanticDiagnostics = result.diagnostics
+                self.semanticRanks = Dictionary(result.orderedIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+            } catch {
+                // Production ranking reports model failures as diagnostics; cancellation should
+                // quietly leave exact search results and the newer generation alone.
+            }
+        }
     }
 
     var selectedFile: URL? { selectedMetadata?.file }
@@ -688,6 +749,7 @@ final class ConversationStore: ObservableObject {
 
     init(
         repository: any ConversationHistoryProviding,
+        semanticRanker: any SemanticSearchRanking = LocalSemanticSearch.shared,
         mutationService: (any ConversationMutating)? = nil,
         htmlExporter: any ConversationHTMLExporting = ConversationHTMLExporter(),
         exportResultOpener: any ConversationExportResultOpening = ConversationWorkspaceExportResultOpener(),
@@ -699,11 +761,12 @@ final class ConversationStore: ObservableObject {
         },
         replayURLLauncher: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) },
         pollIntervalNanoseconds: UInt64 = 4_000_000_000,
-        searchDelayNanoseconds: UInt64 = 220_000_000,
+        searchDelayNanoseconds: UInt64 = 90_000_000,
         noticeLifetime: @escaping (Bool) -> TimeInterval = { $0 ? 6 : 3.2 },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.repository = repository
+        self.semanticRanker = semanticRanker
         self.mutationService = mutationService
         self.htmlExporter = htmlExporter
         self.exportResultOpener = exportResultOpener
@@ -722,7 +785,7 @@ final class ConversationStore: ObservableObject {
         importsRoot: URL? = nil,
         fileInspector: any ConversationFileInspecting = ConversationFileInspector(),
         pollIntervalNanoseconds: UInt64 = 4_000_000_000,
-        searchDelayNanoseconds: UInt64 = 220_000_000,
+        searchDelayNanoseconds: UInt64 = 90_000_000,
         noticeLifetime: @escaping (Bool) -> TimeInterval = { $0 ? 6 : 3.2 },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -755,6 +818,7 @@ final class ConversationStore: ObservableObject {
         listWorker?.cancel()
         searchTask?.cancel()
         searchWorker?.cancel()
+        semanticTask?.cancel()
         detailWorker?.cancel()
         pollingTask?.cancel()
         indexRetryTask?.cancel()
@@ -844,6 +908,9 @@ final class ConversationStore: ObservableObject {
     func deactivate() {
         guard isActive else { return }
         isActive = false
+        cancelSemanticRanking()
+        searchDiagnostics = nil
+        searchDurationMilliseconds = nil
         indexObservationGeneration = UUID()
         pollingTask?.cancel()
         pollingTask = nil
@@ -851,6 +918,8 @@ final class ConversationStore: ObservableObject {
         listWorker?.cancel()
         searchTask?.cancel()
         searchWorker?.cancel()
+        contentSearchNeedsRefresh = false
+        lastSearchStartedRevision = nil
         detailWorker?.cancel()
         indexRetryTask?.cancel()
         revisionReloadTask?.cancel()
@@ -922,13 +991,24 @@ final class ConversationStore: ObservableObject {
         listQuery = query
         searchTask?.cancel()
         searchWorker?.cancel()
+        searchTask = nil
+        searchWorker = nil
+        contentSearchNeedsRefresh = false
+        lastSearchStartedRevision = nil
         searchGeneration = UUID()
         contentHits = [:]
         contentSearchError = nil
+        searchDiagnostics = nil
+        searchDurationMilliseconds = nil
+        cancelSemanticRanking()
         isSearchingContent = false
 
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        enqueueContentSearch(query: trimmed)
+    }
+
+    private func enqueueContentSearch(query: String) {
         isSearchingContent = true
         let generation = searchGeneration
         searchTask = Task { @MainActor [weak self] in
@@ -938,8 +1018,23 @@ final class ConversationStore: ObservableObject {
             } catch {
                 return
             }
-            await self.performContentSearch(query: trimmed, generation: generation)
+            await self.performContentSearch(query: query, generation: generation)
         }
+    }
+
+    /// Automatic index updates must not starve a slower exact search. Keep the current query
+    /// generation and its visible results, then coalesce revisions into one trailing refresh.
+    /// User query/scope changes still use updateListQuery/cancelTransientWork to cancel eagerly.
+    private func refreshContentSearchForCatalogRevision() {
+        let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, lastSearchStartedRevision != observedIndexRevision else { return }
+        if isSearchingContent {
+            contentSearchNeedsRefresh = true
+            return
+        }
+        contentSearchNeedsRefresh = false
+        contentSearchError = nil
+        enqueueContentSearch(query: query)
     }
 
     func select(
@@ -973,6 +1068,8 @@ final class ConversationStore: ObservableObject {
             : .subagent(searchHit.agent)
         if transcriptTabs.contains(where: { $0.id == transcriptID }) {
             activeTranscriptID = transcriptID
+            refreshTranscriptProjection()
+            loadDeferredTranscriptIfNeeded(transcriptID, jumpToSequence: searchHit.sequence)
             detailRevision += 1
         }
         if let sequence = searchHit.sequence,
@@ -1083,7 +1180,10 @@ final class ConversationStore: ObservableObject {
     /// A child that lives in its own file is described by the catalog but only read when its tab is
     /// opened. Opening a session that delegated forty tasks would otherwise parse forty transcripts
     /// nobody asked for.
-    private func loadDeferredTranscriptIfNeeded(_ id: ConversationTranscriptID) {
+    private func loadDeferredTranscriptIfNeeded(
+        _ id: ConversationTranscriptID,
+        jumpToSequence: Int? = nil
+    ) {
         guard case .subagent(let agentID) = id,
               let subagent = selectedSession?.subagents[agentID],
               subagent.messages.isEmpty,
@@ -1091,6 +1191,7 @@ final class ConversationStore: ObservableObject {
         else { return }
 
         let file = subagent.file
+        let generation = detailGeneration
         let provider = repository
         deferredTranscriptWorker?.cancel()
         deferredTranscriptWorker = Task { [weak self] in
@@ -1098,15 +1199,20 @@ final class ConversationStore: ObservableObject {
                 try? provider.getSession(file: file)
             }.value
             guard let self, !Task.isCancelled, let loaded else { return }
-            guard self.activeTranscriptID == id,
+            guard self.detailGeneration == generation,
+                  self.activeTranscriptID == id,
                   var session = self.selectedSession,
-                  var child = session.subagents[agentID] else { return }
+                  var child = session.subagents[agentID],
+                  child.file.standardizedFileURL == file.standardizedFileURL else { return }
             child.messages = loaded.messages
             child.count = loaded.messages.count
             session.subagents[agentID] = child
             self.selectedSession = session
             self.refreshTranscriptProjection()
             self.detailRevision += 1
+            if let jumpToSequence, child.messages.indices.contains(jumpToSequence) {
+                self.jump(to: jumpToSequence)
+            }
         }
     }
 
@@ -1638,8 +1744,7 @@ final class ConversationStore: ObservableObject {
     private func performRevisionReload() {
         lastRevisionReloadAt = Date()
         requestReload()
-        let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty { updateListQuery(listQuery) }
+        refreshContentSearchForCatalogRevision()
     }
 
     /// A partial scan keeps the catalog usable, so it is reported in place and never interrupts.
@@ -1731,7 +1836,12 @@ final class ConversationStore: ObservableObject {
             let value = snapshot.projects
             // Each publish re-renders every observer of this store. Under a live agent most
             // refreshes carry an identical list, so equality is checked before publishing.
-            if projects != value { projects = value }
+            if projects != value {
+                projects = value
+                // Search can finish before an initial list load. Rank the newly visible result
+                // snapshot without rescanning, while the query-generation guard rejects old work.
+                if semanticRankingEnabled && !isSearchingContent { scheduleSemanticRanking() }
+            }
             if scopeSnapshot != snapshot.scopes { scopeSnapshot = snapshot.scopes }
             if listState != .loaded { listState = .loaded }
             if let selectedFile {
@@ -1756,6 +1866,8 @@ final class ConversationStore: ObservableObject {
 
     private func performContentSearch(query: String, generation: UUID) async {
         guard searchGeneration == generation else { return }
+        lastSearchStartedRevision = observedIndexRevision
+        let startedAt = ContinuousClock.now
         let provider = repository
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
@@ -1769,6 +1881,11 @@ final class ConversationStore: ObservableObject {
                 searchWorker = nil
                 searchTask = nil
                 isSearchingContent = false
+                let needsRefresh = contentSearchNeedsRefresh
+                contentSearchNeedsRefresh = false
+                if needsRefresh, isActive, !Task.isCancelled {
+                    refreshContentSearchForCatalogRevision()
+                }
             }
         }
 
@@ -1778,6 +1895,14 @@ final class ConversationStore: ObservableObject {
             var mapped: [String: HistorySearchHit] = [:]
             for hit in hits { mapped[ConversationFilter.fileKey(hit.file)] = hit }
             contentHits = mapped
+            searchDiagnostics = (provider as? any ConversationIndexedHistoryProviding)?.searchDiagnostics
+            let duration = startedAt.duration(to: .now).components
+            searchDurationMilliseconds = Double(duration.seconds) * 1_000
+                + Double(duration.attoseconds) / 1_000_000_000_000_000
+            // Publish exact matches before the first model load, which can take substantially
+            // longer than a warm lexical query. A new keystroke cancels this generation.
+            isSearchingContent = false
+            if semanticRankingEnabled { scheduleSemanticRanking() }
         } catch is CancellationError {
             return
         } catch {
@@ -1923,6 +2048,11 @@ final class ConversationStore: ObservableObject {
     }
 
     private func cancelTransientWork() {
+        contentSearchNeedsRefresh = false
+        lastSearchStartedRevision = nil
+        cancelSemanticRanking()
+        searchDiagnostics = nil
+        searchDurationMilliseconds = nil
         listGeneration = UUID()
         searchGeneration = UUID()
         detailGeneration = UUID()

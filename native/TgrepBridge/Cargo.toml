@@ -1,0 +1,20 @@
+[package]
+name = "ccbuddy-tgrep"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The exact revision supplied with the integration request; never resolve a moving branch.
+tgrep-core = { git = "https://github.com/microsoft/tgrep.git", rev = "e2007b52d2b8fe4176159d0da20c9ba4a46d5aab" }
+tempfile = "3"
+libc = "0.2"
+blake3 = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

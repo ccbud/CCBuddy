@@ -94,6 +94,7 @@ jq -e \
     "bundled_bifrost",
     "config_atomic_round_trip",
     "history_round_trip",
+    "search_acceleration",
     "clipboard_round_trip",
     "ui_snapshot",
     "gateway_lifecycle"

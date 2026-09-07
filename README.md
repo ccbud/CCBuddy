@@ -6,7 +6,7 @@
 
 **Manage and review completed Coding Agent CLI sessions.**
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20silicon-5b6cff?style=flat-square&logo=apple&logoColor=white)](#installation) [![Built with SwiftUI](https://img.shields.io/badge/built%20with-SwiftUI-F05138?style=flat-square&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B%20Universal-5b6cff?style=flat-square&logo=apple&logoColor=white)](#installation) [![Built with SwiftUI](https://img.shields.io/badge/built%20with-SwiftUI-F05138?style=flat-square&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
 
 [Download](https://github.com/ccbud/ccbud/releases) · **English** · [简体中文](./README.zh-CN.md)
 
@@ -29,6 +29,21 @@ Reads local histories from **Claude Code, Codex CLI, Qoder CLI, Grok Build CLI, 
 - **Manage the archive** — rename, tag, star, filter, recycle, follow active sessions, and import compatible JSONL/ZIP transcripts. History roots are managed in Settings › Session locations.
 - **Pick it back up** — reopen a session in Terminal, iTerm, Ghostty or Warp with the producing CLI's own resume flags; export raw session files/bundles (JSONL, ZIP, or DB) or portable HTML; hand the main and subagent transcripts to Claude or ChatGPT for analysis.
 
+## Fast search, local intelligence
+
+- **Embedded tgrep** narrows full-text candidates with a Rust trigram index. CC Buddy checks the original text to preserve Unicode matching, snippets and message positions. Incremental updates avoid rebuilding unchanged documents; SQLite remains the fallback. The search palette shows the engine and measured query time.
+- **Apple Neural Engine through Core ML** powers optional offline semantic ordering of the first 32 results for English and code queries. A bundled 22.6 MB MiniLM weight file needs no account or download. Keyword results appear first and remain available while the model prepares; disabling smart ordering restores their original order. Intel uses CPU inference, and non-Latin queries keep keyword order.
+
+On an Apple M4, Core ML's compute plan preferred ANE for 147 of 155 reported operations. A warm new-query rerank with three cached candidates took a median 0.774 ms versus 1.836 ms on CPU in the recorded run. The interface distinguishes anticipated placement from hardware-utilization telemetry. See [model details, limitations and reproducible measurements](native/SEMANTIC_SEARCH.md).
+
+## A renewed Mac workspace
+
+A floating navigation rail, layered search palette, quieter transcript cards and focus reading bring the library, conversation and inspector into a clearer workspace. Native glass is used on macOS 26+, with material or opaque fallbacks for earlier systems and accessibility preferences. Motion respects Reduce Motion; surfaces respect Reduce Transparency and Increase Contrast.
+
+Press **⌘K** to search, **↑ / ↓** to choose a result and **Return** to open it. **⌘⇧S** toggles focus reading, **⌘1–6** switches workspaces, **⌘R** refreshes the conversation index and **⌘,** opens Settings.
+
+The redesign follows a macOS 27 design direction using available macOS 26 APIs behind availability checks. It does not require macOS 27 or claim validation on that OS.
+
 ## Included: local API gateway
 
 As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** on both client and provider sides, passing through matching protocols or translating between them. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Around seventy provider presets ship built in, alongside custom and plugin-backed providers, with switching and model mapping.
@@ -49,20 +64,22 @@ brew install --cask ccbud/tap/ccbud
 
 ## Development
 
-Native development requires Xcode 26 and XcodeGen. Node.js is used by localization and release tooling.
+Native development requires Xcode 26, XcodeGen, Python 3 and a current Rust stable toolchain installed through [rustup](https://rustup.rs/). Node.js is used by localization and release tooling. End users do not need these tools.
 
 ```bash
 git clone https://github.com/ccbud/ccbud.git && cd ccbud
 brew install xcodegen
 native/Scripts/fetch-bifrost.sh
+bash native/Scripts/build-tgrep.sh
+python3 native/Scripts/verify-semantic-model.py
 xcodegen generate --spec native/project.yml --project native
 xcodebuild -project native/CCBuddy.xcodeproj -scheme CCBuddy \
-  -destination 'platform=macOS,arch=arm64' build
+  -destination 'platform=macOS' build
 ```
 
-See [`native/README.md`](native/README.md) for the isolated unit/integration command and the
-unique-bundle-ID UI test command. The latter keeps an installed CC Buddy process out of XCTest's
-launch and termination scope.
+The helper scripts build for the current Mac; release builds bundle both arm64 and x86_64. No local tgrep checkout is required: Cargo pins the upstream revision and dependency lockfile.
+
+See the [native build and test guide](native/README.md) for universal builds, isolated unit/integration tests and UI tests with a separate bundle identifier. The [architecture guide](docs/architecture.md) maps the native modules, data flow and compatibility boundaries.
 
 ## License
 

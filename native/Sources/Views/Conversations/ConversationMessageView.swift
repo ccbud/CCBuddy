@@ -37,7 +37,7 @@ struct ConversationMessageView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             roleHeader
             messageBody
             messageMetadata
@@ -117,11 +117,10 @@ struct ConversationMessageView: View {
                     )
                 }
             }
-            .padding(12)
+            .padding(Space.lg)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Theme.separator))
+            .background(Theme.fillSubtle)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         } else {
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in

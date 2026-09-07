@@ -19,6 +19,7 @@ enum ConversationCatalogLimits {
 /// mutations without making the producer files anything other than authoritative.
 protocol ConversationIndexedHistoryProviding: ConversationHistoryProviding {
     var indexTopologySignature: String { get }
+    var searchDiagnostics: ConversationSearchDiagnostics? { get }
 
     func scoped(to active: String) -> any ConversationIndexedHistoryProviding
     func startIndexing(onEvent: @escaping @Sendable (ConversationCatalogScanEvent) -> Void)
@@ -28,6 +29,8 @@ protocol ConversationIndexedHistoryProviding: ConversationHistoryProviding {
 }
 
 extension ConversationIndexedHistoryProviding {
+    var searchDiagnostics: ConversationSearchDiagnostics? { nil }
+
     func startIndexing(onRevision: @escaping @Sendable (Int64) -> Void) {
         startIndexing { event in
             guard event.phase != .started else { return }
@@ -45,6 +48,8 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
     let database: ConversationIndexDatabase
     let loader: HistorySessionLoader
     let coordinator: ConversationCatalogCoordinator
+
+    var searchDiagnostics: ConversationSearchDiagnostics? { database.searchDiagnostics }
 
     var indexTopologySignature: String {
         Self.topologySignature(
@@ -116,6 +121,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
     func search(query rawQuery: String, limit: Int = 120) throws -> [HistorySearchHit] {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, limit > 0 else { return [] }
+        let matcher = ConversationLiteralSearch(query: query)
 
         // Scan activity-ordered canonical sessions and return the first matching transcript per
         // session. The scan window matches the stream's window so search can never claim fewer
@@ -139,42 +145,67 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
 
         var hits: [HistorySearchHit] = []
         for metadata in sessions {
+            try Task.checkCancellation()
             let path = ConversationIndexDatabase.normalizedPath(metadata.file)
-            guard let references = referencesByPath[path] else { continue }
-            for reference in references.sorted(
-                by: ConversationIndexDatabase.referenceComesFirst
-            ) {
-                guard let document = try database.document(id: reference.documentID),
-                      let hit = Self.hit(for: metadata, in: document, query: query) else { continue }
+            // The visible Codex row owns separately indexed child rollouts.
+            // Search them after its main/embedded transcripts and attribute a
+            // child hit to the parent row, using the same key as its lazy tab.
+            // These refs come from the already scope/trash-filtered projection;
+            // never resolve a parent relationship across directory boundaries.
+            var transcripts: [(reference: ConversationIndexDocumentReference, agent: String?)] =
+                (referencesByPath[path] ?? [])
+                    .sorted(by: ConversationIndexDatabase.referenceComesFirst)
+                    .map { ($0, nil) }
+            if metadata.source == .codex {
+                for child in metadata.subagentRefs {
+                    let childPath = ConversationIndexDatabase.normalizedPath(child.file)
+                    for reference in referencesByPath[childPath] ?? [] where reference.transcriptID == "main" {
+                        transcripts.append((reference, child.threadID))
+                    }
+                }
+            }
+            for transcript in transcripts {
+                let reference = transcript.reference
+                try Task.checkCancellation()
+                guard let document = try database.document(
+                    id: reference.documentID,
+                    expectedSessionPath: reference.sessionPath,
+                    expectedTranscriptID: reference.transcriptID
+                ),
+                      let hit = Self.hit(for: metadata, in: document, matcher: matcher,
+                        agentOverride: transcript.agent) else { continue }
                 hits.append(hit)
                 break
             }
             if hits.count == limit { break }
         }
+        try Task.checkCancellation()
         return hits
     }
 
     private static func hit(
         for metadata: HistorySessionMetadata,
         in document: ConversationIndexDocument,
-        query: String
+        matcher: ConversationLiteralSearch,
+        agentOverride: String? = nil
     ) -> HistorySearchHit? {
         // FTS and the short-query fallback are candidate generators; only this literal match
         // decides whether the transcript is really a result.
-        guard let range = document.text.range(of: query, options: [.caseInsensitive]) else {
+        guard let match = matcher.match(in: document.text) else {
             return nil
         }
+        let range = match.range
         let offset = range.lowerBound.utf16Offset(in: document.text)
         let span = Self.span(at: offset, in: document.messageSpans)
         return HistorySearchHit(
             sessionID: metadata.sessionID,
             file: metadata.file,
             source: metadata.source,
-            agent: document.transcriptID,
+            agent: agentOverride ?? document.transcriptID,
             agentType: document.agentType,
             sequence: span?.sequence,
             snippet: Self.snippet(in: document.text, around: range, context: 56),
-            count: Self.occurrenceCount(of: query, in: document.text)
+            count: match.count
         )
     }
 
@@ -184,17 +215,21 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
 
     func conversationScopeSnapshot() -> ConversationScopeSnapshot? {
         do {
-            let live = HistoryCatalogProjection.canonicalizedCodexSessions(
-                try database.listEntries(deleted: false, limit: .max)
-                    .map(\.metadata)
-                    .filter { allowedScopeIDs.contains($0.dirID) },
-                homeDirectory: configuration.homeDirectory
+            let live = HistoryCatalogProjection.nestingSubagentRollouts(
+                HistoryCatalogProjection.canonicalizedCodexSessions(
+                    try database.listEntries(deleted: false, limit: .max)
+                        .map(\.metadata)
+                        .filter { allowedScopeIDs.contains($0.dirID) },
+                    homeDirectory: configuration.homeDirectory
+                )
             )
-            let trash = HistoryCatalogProjection.canonicalizedCodexSessions(
-                try database.listEntries(deleted: true, limit: .max)
-                    .map(\.metadata)
-                    .filter { allowedScopeIDs.contains($0.dirID) },
-                homeDirectory: configuration.homeDirectory
+            let trash = HistoryCatalogProjection.nestingSubagentRollouts(
+                HistoryCatalogProjection.canonicalizedCodexSessions(
+                    try database.listEntries(deleted: true, limit: .max)
+                        .map(\.metadata)
+                        .filter { allowedScopeIDs.contains($0.dirID) },
+                    homeDirectory: configuration.homeDirectory
+                )
             )
             return ConversationScopeSnapshot(
                 sessionCounts: Dictionary(grouping: live, by: \.dirID).mapValues(\.count),
@@ -267,21 +302,6 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
             return containing
         }
         return spans.first(where: { $0.utf16Location >= utf16Offset }) ?? spans.last
-    }
-
-    private static func occurrenceCount(of query: String, in text: String) -> Int {
-        var count = 0
-        var cursor = text.startIndex
-        while cursor < text.endIndex,
-              let range = text.range(
-                  of: query,
-                  options: [.caseInsensitive],
-                  range: cursor..<text.endIndex
-              ) {
-            count += 1
-            cursor = range.upperBound
-        }
-        return count
     }
 
     private static func snippet(
