@@ -52,12 +52,15 @@ targets:
             destination: executables
         attributes:
           - CodeSignOnCopy
-      - path: Vendor/libccbuddy_tgrep.dylib
-        buildPhase:
-          copyFiles:
-            destination: frameworks
-        attributes:
-          - CodeSignOnCopy
+    dependencies:
+      # Use the built-in named embed phase: XcodeGen 2.46 iterates multiple
+      # anonymous source copyFiles phases in randomized dictionary order.
+      # The bridge remains dlopen-only, never a mandatory linked dependency.
+      - framework: Vendor/libccbuddy_tgrep.dylib
+        embed: true
+        link: false
+        codeSign: true
+        removeHeaders: false
     preBuildScripts:
       - name: Verify pinned Bifrost helper
         script: '"$SRCROOT/Scripts/verify-bifrost.sh" "$SRCROOT/Vendor/bifrost-http" "$ARCHS"'
