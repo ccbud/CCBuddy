@@ -21,6 +21,9 @@ struct WindowConfigurator: NSViewRepresentable {
         }
 
         func attach(to window: NSWindow) {
+            #if DEBUG
+            ColumnInteractionDiagnostics.attach(to: window)
+            #endif
             if self.window !== window {
                 removeObservers()
                 self.window = window
@@ -176,3 +179,39 @@ struct WindowDragRegion: NSViewRepresentable {
 
     func updateNSView(_ nsView: DragView, context: Context) {}
 }
+
+#if DEBUG
+/// Opt-in, content-free evidence for native hit routing in the isolated column UI regression.
+/// This observes only events already delivered to this app; it never posts or changes events.
+enum ColumnInteractionDiagnostics {
+    private static var monitor: Any?
+    private static var events: [String] = []
+
+    private static var output: URL? {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["CCBUD_UI_TESTING"] == "1",
+              environment["CCBUD_UI_COLUMN_DIAGNOSTICS"] == "1",
+              let directory = environment["CCBUD_HOME"] else { return nil }
+        return URL(fileURLWithPath: directory).appendingPathComponent("column-interactions.txt")
+    }
+
+    static func record(_ message: String) {
+        guard let output else { return }
+        events.append("\(ProcessInfo.processInfo.systemUptime): \(message)")
+        try? events.joined(separator: "\n").write(to: output, atomically: true, encoding: .utf8)
+    }
+
+    static func attach(to window: NSWindow) {
+        guard output != nil, monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak window] event in
+            guard let window, event.window === window, let content = window.contentView else { return event }
+            let point = content.convert(event.locationInWindow, from: nil)
+            let target = content.hitTest(point)
+            let receiver = target.map { String(describing: type(of: $0)) } ?? "nil"
+            let targetFrame = target.map { $0.convert($0.bounds, to: nil) } ?? .zero
+            record("event=\(event.type.rawValue) point=\(event.locationInWindow) receiver=\(receiver) frame=\(targetFrame) key=\(window.isKeyWindow)")
+            return event
+        }
+    }
+}
+#endif

@@ -43,8 +43,9 @@ These are derived caches, not encrypted storage, and contain no plaintext
 transcript copies or queries. Validation protects reopen, not arbitrary external
 modification of already memory-mapped files while the app is running.
 
-At an unchanged catalog generation, a search reads one generation integer and
-queries the mmap index. It does not read the entire corpus. At a changed
+At an unchanged catalog generation, tgrep candidate lookup reads one generation
+integer and queries the mmap index without rereading the corpus. Exact matching
+still reads candidate text; common terms can cover much of the corpus. At a changed
 generation, it enumerates small document identities and reads text only for
 added or replaced transcripts. Removed IDs are pruned before the generation
 becomes searchable. The generation, changed text, and candidate references are
@@ -108,7 +109,7 @@ identified 69.75 s in Rust indexing, dominated by per-byte generic hashing and
 excessive small full-index merges. Using upstream's optimized trigram extractor
 and a 64 MiB streaming overlay reduced first candidate preparation to 21.48 s
 (10.43 s normalization, 7.49 s Rust build). The sealed checkpoint occupies about
-192 MiB. A separate-process reopen's first query took 324.67 ms including full
+192 MiB. A separate-process reopen's first candidate lookup took 324.67 ms including full
 checkpoint integrity reads, mmap validation, and SQLite identity reconciliation,
 with **zero** documents reindexed and zero normalization/build time.
 

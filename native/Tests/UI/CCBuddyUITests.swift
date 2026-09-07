@@ -11,6 +11,9 @@ final class CCBuddyUITests: XCTestCase {
             .appendingPathComponent("ccbud-xcui-home-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: isolatedHome, withIntermediateDirectories: true)
         app = makeIsolatedApplication()
+        if name.contains("testColumnsCollapseAndResize") {
+            app.launchEnvironment["CCBUD_UI_COLUMN_DIAGNOSTICS"] = "1"
+        }
         terminateAppIfRunning()
         app.launchEnvironment["CCBUD_MONITOR_UI_FIXTURE"] = "1"
         app.launchArguments += [
@@ -21,6 +24,13 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        if let isolatedHome,
+           let diagnostics = try? String(contentsOf: isolatedHome.appendingPathComponent("column-interactions.txt"), encoding: .utf8) {
+            let attachment = XCTAttachment(string: diagnostics)
+            attachment.name = "native-column-event-routing"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
         if let app, app.state != .notRunning {
             app.terminate()
             _ = app.wait(for: .notRunning, timeout: 8)
