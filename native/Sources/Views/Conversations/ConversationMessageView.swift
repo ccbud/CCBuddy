@@ -89,10 +89,11 @@ struct ConversationMessageView: View {
 
         if message.role == "user" && !message.isMetadata {
             VStack(alignment: .leading, spacing: 7) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
                     ConversationBlockView(
                         block: block,
                         result: block.id.flatMap { toolResults[$0] },
+                        version: .init(projection: projection, messageIndex: messageIndex, blockIndex: offset),
                         role: message.role,
                         searchQuery: searchQuery,
                         isCurrentSearchMatch: isCurrentSearchMatch,
@@ -106,10 +107,11 @@ struct ConversationMessageView: View {
             .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         } else {
             VStack(alignment: .leading, spacing: 7) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
                     ConversationBlockView(
                         block: block,
                         result: block.id.flatMap { toolResults[$0] },
+                        version: .init(projection: projection, messageIndex: messageIndex, blockIndex: offset),
                         role: message.role,
                         searchQuery: searchQuery,
                         isCurrentSearchMatch: isCurrentSearchMatch,
@@ -207,6 +209,7 @@ struct ConversationMessageView: View {
 private struct ConversationBlockView: View {
     let block: HistoryContentBlock
     let result: HistoryContentBlock?
+    let version: ConversationBlockRenderVersion
     let role: String
     let searchQuery: String
     let isCurrentSearchMatch: Bool
@@ -240,6 +243,7 @@ private struct ConversationBlockView: View {
             ConversationToolCard(
                 block: block,
                 result: result,
+                version: version,
                 searchQuery: searchQuery,
                 isCurrentSearchMatch: isCurrentSearchMatch,
                 fontSize: fontSize
@@ -256,14 +260,18 @@ private struct ConversationBlockView: View {
         case "image":
             ConversationRawBlock(
                 title: "图片",
-                value: block.raw?.conversationPrettyJSON ?? "",
+                raw: block.raw,
+                fallback: "",
+                version: version,
                 fontSize: fontSize,
                 localizesTitle: true
             )
         default:
             ConversationRawBlock(
                 title: block.type.isEmpty ? "未知内容" : block.type,
-                value: block.raw?.conversationPrettyJSON ?? block.text ?? block.thinking ?? "",
+                raw: block.raw,
+                fallback: block.text ?? block.thinking ?? "",
+                version: version,
                 fontSize: fontSize,
                 localizesTitle: block.type.isEmpty
             )
@@ -481,7 +489,11 @@ struct ConversationToolPresentation: Equatable, Sendable {
 
     static func resultSummary(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "" }
-        let bytes = value.utf8.count
+        return resultSummary(byteCount: value.utf8.count)
+    }
+
+    static func resultSummary(byteCount bytes: Int?) -> String {
+        guard let bytes, bytes > 0 else { return "" }
         if bytes < 1_024 { return "\(bytes) B" }
         return String(format: "%.1f KB", Double(bytes) / 1_024)
     }
@@ -514,6 +526,187 @@ struct ConversationToolPresentation: Equatable, Sendable {
     }
 }
 
+/// The projection is immutable and replaced whenever transcript content changes. Position plus
+/// projection identity therefore invalidates streamed edits without hashing giant text/JSON.
+struct ConversationBlockRenderVersion {
+    let projection: ConversationStore.TranscriptProjection
+    let messageIndex: Int
+    let blockIndex: Int
+}
+
+/// Per visible block, not a process-wide transcript cache. The weak version reference cannot
+/// retain an obsolete transcript, and oversized values are returned intact without being cached.
+@MainActor
+final class ConversationBlockRenderCache: ObservableObject {
+    private weak var projection: ConversationStore.TranscriptProjection?
+    private var messageIndex = -1
+    private var blockIndex = -1
+    private var presentationValue: ConversationToolPresentation?
+    private var textValue: String?
+    private var didPrepareText = false
+    private var summaryValue: String?
+    private let maximumBytes: Int
+    private(set) var retainedTextBytes = 0
+
+    init(maximumBytes: Int = 256 * 1_024) {
+        self.maximumBytes = max(0, maximumBytes)
+    }
+
+    func presentation(for version: ConversationBlockRenderVersion,
+                      prepare: () -> ConversationToolPresentation) -> ConversationToolPresentation {
+        select(version)
+        if let presentationValue { return presentationValue }
+        let value = prepare()
+        let bytes = value.retainedTextByteCount
+        if bytes <= maximumBytes - retainedTextBytes {
+            presentationValue = value
+            retainedTextBytes += bytes
+        }
+        return value
+    }
+
+    func text(for version: ConversationBlockRenderVersion, prepare: () -> String?) -> String? {
+        select(version)
+        if didPrepareText { return textValue }
+        let value = prepare()
+        let bytes = value?.utf8.count ?? 0
+        if bytes <= maximumBytes - retainedTextBytes {
+            textValue = value
+            didPrepareText = true
+            retainedTextBytes += bytes
+        }
+        return value
+    }
+
+    func text(for version: ConversationBlockRenderVersion, whenExpanded expanded: Bool,
+              prepare: () -> String?) -> String? {
+        select(version)
+        guard expanded else {
+            releaseText()
+            return nil
+        }
+        return text(for: version, prepare: prepare)
+    }
+
+    func summary(for version: ConversationBlockRenderVersion, prepare: () -> String) -> String {
+        select(version)
+        if let summaryValue { return summaryValue }
+        let value = prepare()
+        summaryValue = value
+        return value
+    }
+
+    func releaseText() {
+        retainedTextBytes -= textValue?.utf8.count ?? 0
+        textValue = nil
+        didPrepareText = false
+    }
+
+    func release() {
+        projection = nil
+        presentationValue = nil
+        textValue = nil
+        didPrepareText = false
+        summaryValue = nil
+        retainedTextBytes = 0
+    }
+
+    private func select(_ version: ConversationBlockRenderVersion) {
+        guard projection !== version.projection || messageIndex != version.messageIndex
+            || blockIndex != version.blockIndex else { return }
+        projection = version.projection
+        messageIndex = version.messageIndex
+        blockIndex = version.blockIndex
+        presentationValue = nil
+        textValue = nil
+        didPrepareText = false
+        summaryValue = nil
+        retainedTextBytes = 0
+    }
+}
+
+private extension ConversationToolPresentation {
+    var retainedTextByteCount: Int {
+        let header = symbol.utf8.count + label.utf8.count + target.utf8.count
+        switch body {
+        case .none: return header
+        case .code(let value), .note(let value): return header + value.utf8.count
+        case .diff(let old, let new): return header + old.utf8.count + new.utf8.count
+        case .todos(let items):
+            return header + items.count * MemoryLayout<Todo>.stride
+                + items.reduce(0) { $0 + $1.text.utf8.count + $1.status.utf8.count }
+        }
+    }
+}
+
+/// Mirrors toolResultText's selection and JSONEncoder.history's UTF-8 byte length without
+/// joining result arrays or encoding an entire object solely to label its collapsed disclosure.
+enum ConversationToolResultByteCount {
+    static func count(_ content: HistoryValue?) -> Int? {
+        guard let content else { return nil }
+        if let value = content.stringValue { return value.utf8.count }
+        if let values = content.arrayValue {
+            var bytes = 0
+            var parts = 0
+            for item in values {
+                if let value = item["text"]?.stringValue ?? item.stringValue {
+                    bytes += value.utf8.count
+                    parts += 1
+                }
+            }
+            bytes += max(0, parts - 1)
+            if bytes > 0 { return bytes }
+        }
+        return jsonBytes(content, scalarEncoder: JSONEncoder())
+    }
+
+    private static func jsonBytes(_ value: HistoryValue, scalarEncoder: JSONEncoder,
+                                  containerDepth: Int = 0) -> Int? {
+        switch value {
+        case .string(let value): return quotedStringBytes(value)
+        case .number(let value):
+            // Foundation owns floating-point spelling and invalid-number behavior. This only
+            // encodes one scalar; it cannot allocate a giant nested payload.
+            guard let data = try? scalarEncoder.encode(value) else { return nil }
+            return data.count
+        case .bool(let value): return value ? 4 : 5
+        case .null: return 4
+        case .array(let values):
+            // Foundation JSONWriter increments before entering a container and rejects depth
+            // 512. Match encoding failure, including empty containers at that boundary.
+            guard containerDepth + 1 < 512 else { return nil }
+            var count = 2 + max(0, values.count - 1)
+            for value in values {
+                guard let bytes = jsonBytes(value, scalarEncoder: scalarEncoder,
+                                            containerDepth: containerDepth + 1) else { return nil }
+                count += bytes
+            }
+            return count
+        case .object(let values):
+            guard containerDepth + 1 < 512 else { return nil }
+            var count = 2 + max(0, values.count - 1)
+            for (key, value) in values {
+                guard let bytes = jsonBytes(value, scalarEncoder: scalarEncoder,
+                                            containerDepth: containerDepth + 1) else { return nil }
+                count += quotedStringBytes(key) + 1 + bytes
+            }
+            return count
+        }
+    }
+
+    private static func quotedStringBytes(_ value: String) -> Int {
+        var count = 2
+        for byte in value.utf8 {
+            switch byte {
+            case 0x22, 0x5c, 0x08, 0x09, 0x0a, 0x0c, 0x0d: count += 2
+            case 0..<0x20: count += 6
+            default: count += 1
+            }
+        }
+        return count
+    }
+}
+
 private extension String {
     var nonEmpty: String? { isEmpty ? nil : self }
 }
@@ -521,15 +714,17 @@ private extension String {
 private struct ConversationToolCard: View {
     let block: HistoryContentBlock
     let result: HistoryContentBlock?
+    let version: ConversationBlockRenderVersion
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
 
-    private var presentation: ConversationToolPresentation {
-        .make(name: block.name, input: block.input)
-    }
+    @StateObject private var renderCache = ConversationBlockRenderCache()
 
     var body: some View {
+        let presentation = renderCache.presentation(for: version) {
+            .make(name: block.name, input: block.input)
+        }
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: presentation.symbol)
@@ -554,11 +749,12 @@ private struct ConversationToolCard: View {
             .background(Theme.foreground.opacity(0.045))
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
 
-            toolInput
+            toolInput(presentation.body)
 
             if let result {
                 ConversationToolResultDisclosure(
                     result: result,
+                    version: version,
                     searchQuery: searchQuery,
                     isCurrentSearchMatch: isCurrentSearchMatch,
                     fontSize: fontSize
@@ -578,13 +774,14 @@ private struct ConversationToolCard: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Theme.separator)
         }
         .overlay(alignment: .leading) {
-            Rectangle().fill(toolAccent).frame(width: 3)
+            Rectangle().fill(toolAccent(presentation.category)).frame(width: 3)
         }
         .accessibilityIdentifier("conversation.tool.\(block.name ?? "unknown")")
+        .onDisappear { renderCache.release() }
     }
 
-    @ViewBuilder private var toolInput: some View {
-        switch presentation.body {
+    @ViewBuilder private func toolInput(_ body: ConversationToolPresentation.Body) -> some View {
+        switch body {
         case .none:
             EmptyView()
         case .code(let value):
@@ -618,8 +815,8 @@ private struct ConversationToolCard: View {
         }
     }
 
-    private var toolAccent: Color {
-        switch presentation.category {
+    private func toolAccent(_ category: ConversationToolPresentation.Category) -> Color {
+        switch category {
         case .execution: return .orange
         case .read: return .blue
         case .write: return Theme.success
@@ -637,18 +834,22 @@ private struct ConversationToolResultDisclosure: View {
     @Environment(\.appLanguage) private var appLanguage
 
     let result: HistoryContentBlock
+    let version: ConversationBlockRenderVersion
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
     @State private var expanded: Bool
+    @StateObject private var renderCache = ConversationBlockRenderCache()
 
     init(
         result: HistoryContentBlock,
+        version: ConversationBlockRenderVersion,
         searchQuery: String,
         isCurrentSearchMatch: Bool,
         fontSize: CGFloat
     ) {
         self.result = result
+        self.version = version
         self.searchQuery = searchQuery
         self.isCurrentSearchMatch = isCurrentSearchMatch
         self.fontSize = fontSize
@@ -656,6 +857,11 @@ private struct ConversationToolResultDisclosure: View {
     }
 
     var body: some View {
+        let resultSummary = renderCache.summary(for: version) {
+            ConversationToolPresentation.resultSummary(
+                byteCount: ConversationToolResultByteCount.count(result.content)
+            )
+        }
         VStack(alignment: .leading, spacing: 0) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 6) {
@@ -681,21 +887,16 @@ private struct ConversationToolResultDisclosure: View {
             .buttonStyle(ConversationPressableButtonStyle())
             .accessibilityValue(expanded ? "已展开" : "已折叠")
 
-            if expanded, let value = resultText, !value.isEmpty {
+            if let value = renderCache.text(for: version, whenExpanded: expanded, prepare: {
+                ConversationVisibleText.toolResultText(result.content)
+            }), !value.isEmpty {
                 ConversationCodeBlock(value: value, fontSize: fontSize)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 8)
             }
         }
         .overlay(alignment: .top) { Rectangle().fill(Theme.separator).frame(height: 1) }
-    }
-
-    private var resultText: String? {
-        ConversationVisibleText.toolResultText(result.content)
-    }
-
-    private var resultSummary: String {
-        ConversationToolPresentation.resultSummary(resultText)
+        .onDisappear { renderCache.release() }
     }
 }
 
@@ -764,14 +965,23 @@ private struct ConversationRawBlock: View {
     @Environment(\.appLanguage) private var appLanguage
 
     let title: String
-    let value: String
+    let raw: HistoryValue?
+    let fallback: String
+    let version: ConversationBlockRenderVersion
     let fontSize: CGFloat
     var localizesTitle = false
     @State private var expanded = false
+    @StateObject private var renderCache = ConversationBlockRenderCache()
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            if !value.isEmpty { ConversationCodeBlock(value: value, fontSize: fontSize).padding(.bottom, 8) }
+            // DisclosureGroup can evaluate its content builder while collapsed. The cache's
+            // explicit expanded gate keeps raw/image JSON out of every collapsed redraw.
+            if let value = renderCache.text(for: version, whenExpanded: expanded, prepare: {
+                raw?.conversationPrettyJSON ?? fallback
+            }), !value.isEmpty {
+                ConversationCodeBlock(value: value, fontSize: fontSize).padding(.bottom, 8)
+            }
         } label: {
             Text(localizesTitle ? appLanguage.localized(title) : title)
                 .font(.system(size: max(10, fontSize * 0.82), weight: .semibold, design: .monospaced))
@@ -781,6 +991,7 @@ private struct ConversationRawBlock: View {
         .background(Theme.foreground.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator))
+        .onDisappear { renderCache.release() }
     }
 }
 

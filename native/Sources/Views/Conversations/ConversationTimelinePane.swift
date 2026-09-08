@@ -274,8 +274,10 @@ struct ConversationTimelinePane: View {
                 .disabled(store.selectedSession == nil)
                 .accessibilityIdentifier("conversation.detail.search")
                 if store.isSearchingDetail {
-                    ProgressView()
-                        .controlSize(.mini)
+                    ConversationActivityIndicator(controlSize: .mini)
+                        .help(appLanguage.localized(ConversationActivityStage.searchingMessages.titleKey))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(appLanguage.localized(ConversationActivityStage.searchingMessages.titleKey))
                         .accessibilityIdentifier("conversation.detail.search.progress")
                 }
             }
@@ -284,10 +286,13 @@ struct ConversationTimelinePane: View {
             .background(Theme.fill)
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
 
-            Text(store.detailSearchPositionText)
+            Text(store.isSearchingDetail ? "…" : store.detailSearchPositionText)
                 .font(.ccMono(Typography.label))
                 .foregroundStyle(Theme.mutedForeground)
                 .frame(minWidth: 32)
+                .accessibilityLabel(store.isSearchingDetail
+                    ? appLanguage.localized(ConversationActivityStage.searchingMessages.titleKey)
+                    : store.detailSearchPositionText)
                 .accessibilityIdentifier("conversation.detail.search.count")
 
             toolbarButton("arrow.up", label: "上一个匹配", identifier: "conversation.detail.search.previous") {
@@ -534,7 +539,7 @@ struct ConversationTimelinePane: View {
                 Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .loading:
-            ConversationDetailState(symbol: "clock.arrow.circlepath", title: "正在读取会话…", showsProgress: true)
+            loadingFeedback
         case .failed(let message):
             ConversationDetailState(symbol: "exclamationmark.triangle", title: message) {
                 Button("重试") { Task { await store.retrySelectedSession() } }
@@ -548,6 +553,34 @@ struct ConversationTimelinePane: View {
                 ConversationDetailState(symbol: "bubble.left", title: "会话没有可显示的消息")
             }
         }
+    }
+
+    private var loadingFeedback: some View {
+        VStack(spacing: Space.lg) {
+            ConversationActivityFeedback(stage: .openingSession, prominent: true)
+                .accessibilityIdentifier("conversation.detail.loading.status")
+            if let metadata = store.selectedMetadata, metadata.sizeBytes > 0 {
+                Label(ByteCountFormatter.string(fromByteCount: Int64(clamping: metadata.sizeBytes), countStyle: .file),
+                      systemImage: "doc.text")
+                    .font(.ccLabel())
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.mutedForeground)
+                    .help(metadata.file.lastPathComponent)
+                    .accessibilityIdentifier("conversation.detail.loading.size")
+            }
+            Button(appLanguage.localized("取消打开")) { store.clearSelection() }
+                .buttonStyle(CCButtonStyle())
+                .accessibilityIdentifier("conversation.detail.loading.cancel")
+        }
+        .padding(Space.xxl)
+        .frame(maxWidth: 360)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+        .padding(.horizontal, Space.md)
+        .padding(.bottom, Space.md)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation.detail.loading")
     }
 
     private func timeline(_ session: HistorySession) -> some View {

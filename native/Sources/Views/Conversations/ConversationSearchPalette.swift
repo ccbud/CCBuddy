@@ -77,6 +77,12 @@ struct ConversationSearchPalette: View {
             .foregroundStyle(Theme.mutedForeground)
             .padding(.horizontal, Space.xxl)
             .padding(.vertical, Space.sm)
+            if store.isSearchingContent {
+                ConversationSearchActivityFeedback(phase: store.contentSearchPhase,
+                    hasVerifiedResults: !store.contentHits.isEmpty)
+                    .padding(.horizontal, Space.xxl)
+                    .padding(.bottom, Space.md)
+            }
             if !results.isEmpty, let error = store.contentSearchError {
                 Label(appLanguage.localized("搜索未完成，当前显示部分结果。"), systemImage: "exclamationmark.triangle")
                     .font(.ccCaption())
@@ -113,7 +119,7 @@ struct ConversationSearchPalette: View {
                 onSubmit: openHighlighted
             )
 
-            if store.isSearchingContent || store.isRankingSearch {
+            if store.isRankingSearch {
                 ProgressView().controlSize(.small)
             }
             if !store.listQuery.isEmpty {
@@ -147,7 +153,7 @@ struct ConversationSearchPalette: View {
                 message: store.isSearchingContent ? appLanguage.localized("可继续输入或清空搜索。")
                     : store.contentSearchError.map { appLanguage.localized($0) }
                         ?? appLanguage.localized("换个说法，或删掉几个词再试。"),
-                showsProgress: store.isSearchingContent,
+                showsProgress: false,
                 compact: true
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)

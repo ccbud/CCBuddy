@@ -1,5 +1,134 @@
 import Foundation
 
+/// Only the exact, document-local answer is retained: never transcript text, spans or String.Index.
+/// Current metadata, scope visibility, ordering and parent/subagent ownership are rebound per search.
+enum ConversationSearchRefinement: Equatable, Sendable {
+    case noMatch
+    case hit(transcriptID: String, agentType: String?, sequence: Int?, snippet: String, count: Int)
+
+    var retainedBytes: Int {
+        switch self {
+        case .noMatch: return 0
+        case let .hit(transcriptID, agentType, _, snippet, _):
+            return transcriptID.utf8.count + (agentType?.utf8.count ?? 0) + snippet.utf8.count
+        }
+    }
+
+    func hit(for metadata: HistorySessionMetadata, agentOverride: String?) -> HistorySearchHit? {
+        guard case let .hit(transcriptID, agentType, sequence, snippet, count) = self else { return nil }
+        return HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file, source: metadata.source,
+            agent: agentOverride ?? transcriptID, agentType: agentType, sequence: sequence,
+            snippet: snippet, count: count)
+    }
+}
+
+/// One small cache per database, shared by scoped repository facades. The generation is intentionally
+/// catalog-wide: metadata-only and live revisions invalidate it too. This accelerates repeated queries
+/// in an unchanged catalog, not first-time queries or repeated revision refreshes.
+final class ConversationSearchRefinementCache: @unchecked Sendable {
+    struct Key: Hashable, Sendable {
+        var documentID: Int64
+        var sessionPath: String
+        var transcriptID: String
+        // Byte identity avoids silently treating canonically equivalent query spellings as one key.
+        var queryUTF8: Data
+        var options: UInt
+        var localeIdentifier: String?
+        var algorithmVersion: Int = 1
+
+        init(reference: ConversationIndexDocumentReference, query: String,
+             options: String.CompareOptions = .caseInsensitive, localeIdentifier: String? = nil) {
+            documentID = reference.documentID
+            sessionPath = reference.sessionPath
+            transcriptID = reference.transcriptID
+            queryUTF8 = Data(query.utf8)
+            self.options = options.rawValue
+            self.localeIdentifier = localeIdentifier
+        }
+
+        var retainedBytes: Int {
+            sessionPath.utf8.count + transcriptID.utf8.count + queryUTF8.count
+                + (localeIdentifier?.utf8.count ?? 0)
+        }
+    }
+
+    struct Entry: Sendable {
+        var generation: Int64
+        var result: ConversationSearchRefinement
+        fileprivate var cost: Int
+        fileprivate var access: UInt64
+    }
+
+    struct Statistics: Sendable {
+        var entries: Int
+        var retainedBytes: Int
+        var validatedHits: Int
+        var stores: Int
+    }
+
+    private let lock = NSLock()
+    private var entries: [Key: Entry] = [:]
+    private var retainedBytes = 0
+    private var clock: UInt64 = 0
+    private var validatedHits = 0
+    private var stores = 0
+    private let maximumBytes: Int
+    private let maximumEntries: Int
+    private let maximumEntryBytes: Int
+
+    init(maximumBytes: Int = 2 * 1_024 * 1_024, maximumEntries: Int = 2_048,
+         maximumEntryBytes: Int = 64 * 1_024) {
+        self.maximumBytes = max(0, maximumBytes)
+        self.maximumEntries = max(0, maximumEntries)
+        self.maximumEntryBytes = max(0, maximumEntryBytes)
+    }
+
+    func lookup(_ key: Key) -> Entry? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var value = entries[key] else { return nil }
+        clock &+= 1
+        value.access = clock
+        entries[key] = value
+        return value
+    }
+
+    func recordValidatedHit() {
+        lock.lock()
+        validatedHits += 1
+        lock.unlock()
+    }
+
+    /// Cancellation is not a negative match. Check after preparation and again before publishing
+    /// into the cache, including callers whose matcher represents cancellation by returning nil.
+    func store(_ result: ConversationSearchRefinement, for key: Key, generation: Int64) throws {
+        try Task.checkCancellation()
+        // Include conservative fixed entry/dictionary overhead as well as every retained byte.
+        let cost = 256 + key.retainedBytes + result.retainedBytes
+        guard maximumEntries > 0, cost <= maximumBytes, cost <= maximumEntryBytes else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        try Task.checkCancellation()
+        if let old = entries.removeValue(forKey: key) { retainedBytes -= old.cost }
+        while entries.count >= maximumEntries || retainedBytes > maximumBytes - cost {
+            guard let oldest = entries.min(by: { $0.value.access < $1.value.access }) else { break }
+            retainedBytes -= oldest.value.cost
+            entries.removeValue(forKey: oldest.key)
+        }
+        clock &+= 1
+        entries[key] = Entry(generation: generation, result: result, cost: cost, access: clock)
+        retainedBytes += cost
+        stores += 1
+    }
+
+    var statistics: Statistics {
+        lock.lock()
+        defer { lock.unlock() }
+        return Statistics(entries: entries.count, retainedBytes: retainedBytes,
+                          validatedHits: validatedHits, stores: stores)
+    }
+}
+
 /// Catalog-wide caps.
 ///
 /// The session stream used to stop at 600 entries, which silently hid everything older on machines
@@ -202,13 +331,27 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             for transcript in transcripts {
                 let reference = transcript.reference
                 try Task.checkCancellation()
-                guard let document = try database.document(
-                    id: reference.documentID,
-                    expectedSessionPath: reference.sessionPath,
-                    expectedTranscriptID: reference.transcriptID
-                ),
-                      let hit = Self.hit(for: metadata, in: document, matcher: matcher,
-                        agentOverride: transcript.agent) else { continue }
+                let cache = database.searchRefinementCache
+                let key = ConversationSearchRefinementCache.Key(reference: reference, query: query)
+                let cached = cache.lookup(key)
+                guard let read = try database.refinementDocument(
+                    reference: reference, cachedGeneration: cached?.generation
+                ) else { continue }
+                let refinement: ConversationSearchRefinement
+                switch read {
+                case .unchanged:
+                    // Only the generation/identity check can authorize reuse. The local value
+                    // remains valid even if another search concurrently evicts its cache entry.
+                    guard let cached else { continue }
+                    refinement = cached.result
+                    cache.recordValidatedHit()
+                case let .document(generation, document):
+                    refinement = Self.refine(document, matcher: matcher)
+                    try Task.checkCancellation()
+                    try cache.store(refinement, for: key, generation: generation)
+                }
+                try Task.checkCancellation()
+                guard let hit = refinement.hit(for: metadata, agentOverride: transcript.agent) else { continue }
                 hits.append(hit)
                 // Publish only after exact verification has produced the full
                 // count and source anchor, and after database.document released
@@ -228,25 +371,20 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         return hits
     }
 
-    private static func hit(
-        for metadata: HistorySessionMetadata,
-        in document: ConversationIndexDocument,
-        matcher: ConversationLiteralSearch,
-        agentOverride: String? = nil
-    ) -> HistorySearchHit? {
+    private static func refine(
+        _ document: ConversationIndexDocument,
+        matcher: ConversationLiteralSearch
+    ) -> ConversationSearchRefinement {
         // FTS and the short-query fallback are candidate generators; only this literal match
         // decides whether the transcript is really a result.
         guard let match = matcher.match(in: document.text) else {
-            return nil
+            return .noMatch
         }
         let range = match.range
         let offset = range.lowerBound.utf16Offset(in: document.text)
         let span = Self.span(at: offset, in: document.messageSpans)
-        return HistorySearchHit(
-            sessionID: metadata.sessionID,
-            file: metadata.file,
-            source: metadata.source,
-            agent: agentOverride ?? document.transcriptID,
+        return .hit(
+            transcriptID: document.transcriptID,
             agentType: document.agentType,
             sequence: span?.sequence,
             snippet: Self.snippet(in: document.text, around: range, context: 56),

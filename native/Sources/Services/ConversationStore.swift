@@ -609,6 +609,7 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var searchFirstResultMilliseconds: Double?
     @Published private(set) var contentSearchPhase: ConversationSearchProgress.Phase?
     private var activeSearchRunID: UUID?
+    private var activeSearchFirstResultMilliseconds: Double?
     @Published private(set) var semanticRankingEnabled = false
     @Published private(set) var semanticDiagnostics: SemanticSearchDiagnostics?
     @Published private(set) var isRankingSearch = false
@@ -2158,6 +2159,7 @@ final class ConversationStore: ObservableObject {
         let provider = repository
         let runID = UUID()
         activeSearchRunID = runID
+        activeSearchFirstResultMilliseconds = nil
         contentSearchPhase = .preparingCandidates
         // A background revision refresh preserves the already visible complete result set.
         // User edits clear it before starting this run and can receive progressive prefixes.
@@ -2206,9 +2208,12 @@ final class ConversationStore: ObservableObject {
             let duration = startedAt.duration(to: .now).components
             searchDurationMilliseconds = Double(duration.seconds) * 1_000
                 + Double(duration.attoseconds) / 1_000_000_000_000_000
-            if searchFirstResultMilliseconds == nil, !hits.isEmpty {
-                searchFirstResultMilliseconds = searchDurationMilliseconds
-            }
+            // These two timings must describe the same completed run. A trailing catalog
+            // refresh keeps the old visible snapshot until its full replacement arrives;
+            // its first newly published result is therefore its completion, not the original
+            // query's potentially much slower cold-index first result.
+            searchFirstResultMilliseconds = hits.isEmpty ? nil
+                : activeSearchFirstResultMilliseconds ?? searchDurationMilliseconds
             contentSearchPhase = .completed
             // Publish exact matches before the first model load, which can take substantially
             // longer than a warm lexical query. A new keystroke cancels this generation.
@@ -2240,10 +2245,12 @@ final class ConversationStore: ObservableObject {
         guard progress.hits.count > contentHits.count else { return }
         contentHits = Dictionary(progress.hits.map { (ConversationFilter.fileKey($0.file), $0) },
                                  uniquingKeysWith: { _, newer in newer })
-        if searchFirstResultMilliseconds == nil {
+        if activeSearchFirstResultMilliseconds == nil {
             let duration = startedAt.duration(to: .now).components
-            searchFirstResultMilliseconds = Double(duration.seconds) * 1_000
+            let milliseconds = Double(duration.seconds) * 1_000
                 + Double(duration.attoseconds) / 1_000_000_000_000_000
+            activeSearchFirstResultMilliseconds = milliseconds
+            searchFirstResultMilliseconds = milliseconds
         }
     }
 

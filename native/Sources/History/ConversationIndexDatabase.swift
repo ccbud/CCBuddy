@@ -177,6 +177,12 @@ struct ConversationIndexCandidateReferenceBatch: Equatable, Sendable {
     var usedFallback: Bool
 }
 
+/// A cache validation and its optional document are read from one SQLite snapshot.
+enum ConversationIndexRefinementRead: Sendable {
+    case unchanged(generation: Int64)
+    case document(generation: Int64, ConversationIndexDocument)
+}
+
 struct ConversationIndexReconciliation: Equatable, Sendable {
     var removedPaths: [String]
     var generation: Int64
@@ -223,6 +229,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     static let schemaVersion: Int32 = 4
 
     let file: URL
+    let searchRefinementCache: ConversationSearchRefinementCache
 
     private let lock = NSLock()
     private let readLock = NSLock()
@@ -274,7 +281,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private var metadataDecodeCache: [String: (indexedAt: Double, metadata: HistorySessionMetadata)] = [:]
     private static let metadataDecodeCacheLimit = 20_000
 
-    init(file: URL, enableTgrep: Bool = true, tgrepRuntime: TgrepRuntime = .init()) throws {
+    init(file: URL, enableTgrep: Bool = true, tgrepRuntime: TgrepRuntime = .init(),
+         searchRefinementCache: ConversationSearchRefinementCache = .init()) throws {
         guard file.isFileURL else {
             throw ConversationIndexDatabaseError.invalidDatabaseURL(file)
         }
@@ -296,6 +304,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
 
         self.file = standardized
+        self.searchRefinementCache = searchRefinementCache
         self.enableTgrep = enableTgrep
         self.tgrepRuntime = tgrepRuntime
         connection = handle
@@ -763,6 +772,55 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             }
             do {
                 return try decodeDocument(statement, offset: 0)
+            } catch ConversationIndexDatabaseError.corruptRow(_) {
+                return nil
+            }
+        }
+    }
+
+    /// A warm exact-result cache needs only the catalog generation and row identity. On a miss,
+    /// decode the document in that same short read transaction; a writer must never let new text
+    /// be cached under an older generation. Matching and all progress callbacks happen afterwards.
+    /// The conservative generation deliberately invalidates metadata-only/live catalog revisions
+    /// too. Wall-clock content stamps alone cannot prove identity after row-ID reuse.
+    func refinementDocument(
+        reference: ConversationIndexDocumentReference,
+        cachedGeneration: Int64?
+    ) throws -> ConversationIndexRefinementRead? {
+        try withReadLock { connection in
+            let begin = sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil)
+            guard begin == SQLITE_OK else {
+                throw sqliteError("begin refinement snapshot", begin, connection: connection)
+            }
+            defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil) }
+            let bindings: [SQLiteValue] = [.integer(reference.documentID),
+                .text(reference.sessionPath), .text(reference.transcriptID)]
+            let predicate = " WHERE d.id = ? AND d.session_path = ? AND d.transcript_id = ? LIMIT 1"
+            let identity = try prepare(
+                "SELECT c.generation FROM conversation_documents d "
+                    + "CROSS JOIN conversation_catalog_state c"
+                    + " WHERE c.singleton = 1 AND d.id = ? AND d.session_path = ? AND d.transcript_id = ? LIMIT 1",
+                bindings: bindings, connection: connection
+            )
+            defer { sqlite3_finalize(identity) }
+            let identityStatus = sqlite3_step(identity)
+            if identityStatus == SQLITE_DONE { return nil }
+            guard identityStatus == SQLITE_ROW else {
+                throw sqliteError("read refinement identity", identityStatus, connection: connection)
+            }
+            let generation = sqlite3_column_int64(identity, 0)
+            if cachedGeneration == generation { return .unchanged(generation: generation) }
+            try Task.checkCancellation()
+            let statement = try prepare(Self.documentSelect + predicate,
+                bindings: bindings, connection: connection)
+            defer { sqlite3_finalize(statement) }
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("read refinement document", status, connection: connection)
+            }
+            do {
+                return .document(generation: generation, try decodeDocument(statement, offset: 0))
             } catch ConversationIndexDatabaseError.corruptRow(_) {
                 return nil
             }

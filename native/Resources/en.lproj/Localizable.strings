@@ -1164,6 +1164,11 @@
 "本地智能排序已完成。" = "Local smart ranking is complete.";
 "分析" = "Analyze";
 /* Search acceleration recovery */
+"正在本机整理消息与工具记录，可随时切换其他会话。" = "Messages and tool records are being prepared locally. You can switch sessions at any time.";
+"取消打开" = "Cancel opening";
+"正在查找候选会话…" = "Finding candidate sessions…";
+"正在核对匹配内容…" = "Verifying matching content…";
+"已找到的结果可先打开，也可继续输入。" = "Open results as they arrive, or keep typing.";
 "搜索未完成，当前显示部分结果。" = "Search is incomplete. Showing partial results.";
 "候选检索" = "Candidate lookup";
 "首批结果" = "First results";

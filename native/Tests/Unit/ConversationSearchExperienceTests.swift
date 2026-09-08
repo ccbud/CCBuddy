@@ -115,6 +115,9 @@ final class ConversationSearchExperienceTests: XCTestCase {
         await waitUntil { store.semanticDiagnostics?.state == .ready }
         repository.release(2)
         await waitUntil { !store.isSearchingContent && store.contentHits.values.first?.count == 2 }
+        XCTAssertLessThanOrEqual(try XCTUnwrap(store.searchFirstResultMilliseconds),
+                                 try XCTUnwrap(store.searchDurationMilliseconds),
+                                 "A warm refresh must not pair its final time with the cold query's first-result time")
         try await Task.sleep(nanoseconds: UInt64((ConversationStore.catalogReloadSpacing + 0.1) * 1_000_000_000))
         XCTAssertEqual(repository.searchCount, 2, "A queued list reload must not re-search an already covered revision")
     }

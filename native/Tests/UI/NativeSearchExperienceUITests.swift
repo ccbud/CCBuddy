@@ -138,16 +138,19 @@ final class NativeSearchExperienceUITests: XCTestCase {
         try contents.write(to: project.appendingPathComponent("live-anchor.jsonl"))
         app.launch()
         app.activate()
+        XCTAssertTrue(element("app.shell").waitForExistence(timeout: 10))
+        app.typeKey("1", modifierFlags: .command)
         XCTAssertTrue(app.buttons["conversation.session.disk:live-anchor"].waitForExistence(timeout: 20))
 
         openSearch(query: nil)
-        pasteReplacingFocusedText("系统代理")
+        let searchField = app.textFields["conversation.search.palette.field"]
+        pasteReplacingFocusedText("系统代理", in: searchField)
         XCTAssertTrue(element("conversation.search.result.0").waitForExistence(timeout: 15))
         XCTAssertTrue(element("search.performance.fallback").waitForExistence(timeout: 5),
                       "A failed accelerator must not silently appear to be healthy local search")
         XCTAssertFalse(element("conversation.search.result.1").exists)
-        pasteReplacingFocusedText("当前版本")
-        XCTAssertEqual(app.textFields["conversation.search.palette.field"].value as? String, "当前版本")
+        pasteReplacingFocusedText("当前版本", in: searchField)
+        XCTAssertEqual(searchField.value as? String, "当前版本")
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.element("conversation.search.result.0").label.contains("当前版本")
         }, "The replacement query must publish its own snippet, not leave the stale result visible")
@@ -174,16 +177,29 @@ final class NativeSearchExperienceUITests: XCTestCase {
         let statistics = element("conversation.statistics")
         XCTAssertTrue(waitUntil(timeout: 20) { statistics.label.contains("12000 messages") },
                       "The real parser and reader must publish all 12,000 messages")
-        app.typeKey("f", modifierFlags: .command)
-        pasteReplacingFocusedText("系统代理")
-        pasteReplacingFocusedText("当前版本")
-        XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "当前版本")
+        // Keyboard focus/shortcut ownership has separate tests. This case verifies
+        // the large-document parser, exact search, tail navigation, and session switch.
+        let detailField = app.textFields["conversation.detail.search"]
+        XCTAssertTrue(detailField.waitForExistence(timeout: 5))
+        detailField.click()
+        pasteReplacingFocusedText("系统代理", in: detailField)
+        pasteReplacingFocusedText("当前版本", in: detailField)
+        XCTAssertEqual(detailField.value as? String, "当前版本")
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
         })
         let tail = element("conversation.message.11999")
         XCTAssertTrue(waitUntil(timeout: 15) { tail.exists && tail.isHittable },
                       "The exact tail hit must be reachable without materializing every earlier row")
+        // SwiftUI can propagate the row identifier to several leaf AX elements rather
+        // than expose one parent container. Match the unique fixture prose directly.
+        let preparedTail = app.descendants(matching: .staticText)
+            .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
+                                  "final searchable answer.", "final searchable answer.")).firstMatch
+        XCTAssertTrue(preparedTail.waitForExistence(timeout: 10),
+                      "A visible message shell is insufficient: its asynchronous prose must finish preparing")
+        XCTAssertTrue(tail.isHittable,
+                      "The searched tail must remain visible after its prose replaces the loading placeholder")
         app.buttons["conversation.session.disk:beta"].click()
         XCTAssertTrue(waitUntil(timeout: 8) { self.text(self.element("conversation.title")) == "Beta implementation" })
         XCTAssertTrue(element("conversation.message.1").waitForExistence(timeout: 8))
@@ -478,7 +494,13 @@ final class NativeSearchExperienceUITests: XCTestCase {
         try handle.write(contentsOf: liveTurn(index))
     }
 
-    private func pasteReplacingFocusedText(_ value: String) {
+    private func pasteReplacingFocusedText(
+        _ value: String,
+        in field: XCUIElement,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertTrue(field.waitForExistence(timeout: 5), file: file, line: line)
         let pasteboard = NSPasteboard.general
         let saved = (pasteboard.pasteboardItems ?? []).map { item in
             item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
@@ -496,5 +518,10 @@ final class NativeSearchExperienceUITests: XCTestCase {
         pasteboard.setString(value, forType: .string)
         app.typeKey("a", modifierFlags: .command)
         app.typeKey("v", modifierFlags: .command)
+        // Event synthesis can return before the field editor consumes the pasteboard.
+        // Keep these bytes available until the actual target acknowledges the edit.
+        XCTAssertTrue(waitUntil(timeout: 10) { field.value as? String == value },
+                      "The target field must consume the requested pasted text before restoring the clipboard",
+                      file: file, line: line)
     }
 }

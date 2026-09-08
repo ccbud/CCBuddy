@@ -314,6 +314,96 @@ corpus, so it is not a controlled like-for-like speedup baseline. The current
 inventory was 1,377 files / 7,666,776,681 bytes; live producer
 activity explains its difference from the previous day's inventory.
 
+#### Real-history desktop checks
+
+The follow-up desktop test used the same seven configured local agent-history
+roots, a private system-volume catalog/profile, and a distinct local test bundle
+identifier. The user's running gateway, source files and online catalog were left
+intact. The test profile disabled gateway startup, CLI connections and updates;
+it did not substitute generated histories for these desktop checks.
+
+On the `e6b7df8` Release build, the first cold `系统代理` search took 64,393.2 ms
+end to end. A later warm `当前版本` search reported 50.1 ms candidates, 589.2 ms
+to the Store's first verified publication, and 7,585.8 ms to complete. Other warm
+live runs completed in roughly 7–8 s. Live indexing and other local agents were
+active; these are observed desktop diagnostics, not an isolated benchmark or
+measured frame-paint latency. The cold-start limit remains material.
+
+The desktop actually opened the 458 MB / 16,921-message source, found
+`系统代理` (2 matching messages / 7 occurrences), replaced the query with
+`当前版本` (16 messages / 18 occurrences), wrapped Previous to the last match,
+and used Latest to reach message 16,920. Starting a broad find and switching to
+a two-message session cleared the old query and navigation state. Automation
+settling time is intentionally not reported as search or rendering latency.
+
+The check also caught a diagnostics consistency bug: a background refresh could
+pair the original cold first-publication time with a later warm completion time.
+Both displayed timings now refer to the same search run, with regression coverage.
+This corrects measurement reporting; it is not itself a search speedup.
+
+The next rendering pass prepares Markdown structure, inline attributes and query
+highlights on a cancellable per-view worker. Query changes reuse the current base
+formatting; newer text never displays an older source's highlights. Disappearance
+drops derived text caches while retaining one serial worker so rapid reappearance
+cannot fan out giant parses. Native indeterminate feedback reports actual opening,
+candidate and refinement stages, offers cancellation, and uses a static indicator
+with Reduce Motion. It has no timer that redraws the transcript per frame.
+
+Tool cards reuse source-versioned presentations, avoid encoding collapsed raw
+JSON, and compute collapsed result byte summaries without joining the full body.
+Their per-block derived-text budget is 256 KiB; oversized expanded content is
+returned intact rather than clipped. Derived caches are released offscreen. These
+changes remove repeated preparation, but do not claim to virtualize the layout of
+a single giant expanded paragraph, code block or table.
+
+An additional 2 MiB / 2,048-entry exact-refinement LRU retains only small hit or
+no-match answers, not document text or message-span arrays. A short SQLite read
+snapshot validates catalog generation and row identity before reuse; metadata,
+scope and parent ownership are rebound on every search. Any catalog revision
+(including metadata-only or live updates) conservatively invalidates entries.
+Thus it helps repeated queries on an unchanged catalog, not first-time queries
+or continuous revision refreshes. The accounting covers retained key/result bytes
+and an overhead allowance, not total process RSS.
+
+On the same private 1,413-row / 331-visible-session snapshot, the refinement-cache
+follow-up measured the following repository-path results. There was no concurrent
+build/test benchmark; the normal gateway app and real-history desktop test app
+remained active. The metadata cache was prewarmed by scope discovery and the tgrep
+checkpoint was restored. Filesystem caches were not flushed.
+
+| Query / refinement cache state | First complete hit | Complete search | Rows / occurrences |
+| --- | ---: | ---: | ---: |
+| `系统代理`, first pass for this query | 223.12 ms | 6,583.38 ms | 8 / 46 |
+| `当前版本`, first pass for this query, warm process | 82.78 ms | 4,247.72 ms | 50 / 309 |
+| `系统代理`, repeated unchanged snapshot | 28.87 ms | 40.00 ms | 8 / 46 |
+| `当前版本`, repeated unchanged snapshot | 19.04 ms | 28.27 ms | 50 / 309 |
+
+Every run passed progressive-prefix and final-only ordering/count/snippet/anchor
+parity. As above, the untimed final-only oracle ran after each timed query and can
+warm the cache before the repeat. The independent Foundation oracle covered two
+small-document samples total, not necessarily distinct documents or the entire corpus. Peak process RSS was
+322,666,496 bytes. These are repository delivery timings, not UI paint latency;
+live catalog changes invalidate the reuse demonstrated by the repeat rows.
+
+The updated Universal Release (local build 99) repeated the real desktop long-
+session checks after the asynchronous-rendering changes: both Chinese finds,
+Previous wrapping, manual scrolling away and back without an old search pulling
+the view back, Latest through message 16,920, and a broad find interrupted by
+opening a two-message session. The in-session working indicator was observed
+before counts appeared, and no preparation placeholder remained at the settled
+checked anchors. This validates those observed paths, not every possible giant
+Markdown layout. A global result also opened its real transcript and reached
+prepared content containing the query.
+
+In that live build, `当前版本` showed an openable verified result while the
+remaining results were still refining; diagnostics reported 36.0 ms candidate
+lookup, 363.5 ms first Store publication and 6,475.2 ms completion. A first
+`系统代理` search in this process completed in 11,103.5 ms, while a later
+automatic refresh reported 583.9 ms. These used the actively changing system-
+volume test profile (1,458 physical rows in diagnostics), not the unchanged
+benchmark snapshot. No build or XCTest run overlapped these global-search
+observations, but the original gateway app and other local agents remained active.
+
 All reported peak RSS values are process-lifetime high-water marks, not current
 resident memory or exact allocations attributable to one operation. Subtracting
 the emitted baseline peak from the later peak does not measure allocation volume.
