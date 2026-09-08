@@ -277,6 +277,7 @@ final class NativeSearchExperienceUITests: XCTestCase {
         app.buttons["conversation.jump.latest"].click()
         XCTAssertTrue(waitUntil { visible(self.element("conversation.message.61")) })
         XCTAssertFalse(visible(firstHit))
+        keepScreenshot("native-live-latest-footer-clearance")
         try appendLiveTurn(31, to: file)
         XCTAssertTrue(waitUntil(timeout: 20) {
             statistics.label.contains("64 messages") && visible(self.element("conversation.message.63"))

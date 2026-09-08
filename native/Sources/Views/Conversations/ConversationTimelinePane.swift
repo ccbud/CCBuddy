@@ -615,11 +615,12 @@ struct ConversationTimelinePane: View {
                             )
                             .id(ConversationPresentation.messageAnchor(index))
                     }
-                    Color.clear.frame(height: 1).id(ConversationPresentation.bottomAnchor)
+                    // Latest must include the floating controls' clearance in its scroll target;
+                    // outer padding is excluded when ScrollViewReader aligns an inner anchor.
+                    Color.clear.frame(height: 68).id(ConversationPresentation.bottomAnchor)
                 }
                 .padding(.horizontal, Space.xl)
                 .padding(.top, Space.xxl)
-                .padding(.bottom, 68)
                 .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(ConversationLatestScrollObserver(request: latestRequest) { request in

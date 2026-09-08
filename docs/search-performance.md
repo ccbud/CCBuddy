@@ -425,6 +425,15 @@ the four layout-intent tests and the delayed-find/manual-scroll regression.
 The universal Release build 100 also passed its packaged self-check (including
 tgrep and offline CPU+ANE inference) and single-instance handoff check.
 
+Final CI screenshot review caught a separate footer-clearance issue: the floating
+Latest controls covered the final message's token metadata. The 68-point clearance
+now belongs to the bottom scroll target itself, rather than outer padding excluded
+by anchor alignment. The live-follow UI test retains its original assertions and
+also captures the first Latest position for visual review.
+Local Release build 101 visually verified the complete footer after Latest and
+after the public fixture grew from 66 to 68 messages; its packaged self-check and
+single-instance handoff both passed again.
+
 All reported peak RSS values are process-lifetime high-water marks, not current
 resident memory or exact allocations attributable to one operation. Subtracting
 the emitted baseline peak from the later peak does not measure allocation volume.
