@@ -9,9 +9,20 @@ transitive dependencies. A release carries arm64 and x86_64 slices of
 ## Search path
 
 The existing SQLite catalog remains the authoritative derived store. tgrep is
-an in-process candidate generator over the catalog's normalized, visible
-transcripts, including subagents. It does not crawl the producer's directories,
+an in-process candidate generator over the catalog's normalized search
+projections, including subagents. It does not crawl the producer's directories,
 start a server, execute a command, or change a user's CLI configuration.
+
+Global search is not an unrestricted scan of every byte in the original files.
+The existing catalog projection retains at most 32 KiB of UTF-8 search text per
+message, with 16 KiB limits for individual thinking/tool/raw blocks before the
+whole-message limit is applied. These limits include a truncation marker and
+preserve complete grapheme clusters. Injected user transport text is excluded.
+Both tgrep verification and literal fallback search this same stored projection;
+neither can find a phrase omitted when the projection was built. In-session find
+instead uses the fully loaded normalized transcript's visible text, without these
+catalog byte limits; it still follows the reader's content and tool-pairing rules,
+not raw-file byte-search semantics.
 
 On the first eligible search without a valid checkpoint, the catalog streams
 each transcript into tgrep. This initial preparation is not instantaneous and
@@ -54,17 +65,20 @@ transcript identities, preventing a reused SQLite row ID from attributing a
 new transcript to an old search result.
 
 Queries and documents share Foundation case folding and Unicode canonical
-composition. Final matches, occurrence counts, original snippets, and UTF-16
-message anchors are verified against the unchanged original text. Source,
+composition. Final matches, occurrence counts, snippets, and UTF-16
+message anchors are verified against the unchanged stored projection, not the
+folded tgrep text or a new read of the original file. Source,
 scope, trash, canonical-session, and activity-order filters remain in force.
 Common ASCII coding terms and unified Han queries use an escaped literal ICU
 scanner followed by exact Foundation validation at **Swift** grapheme boundaries.
 It scans cancellation-bounded 64 Ki UTF-16 windows with query-length overlap;
-neither text, queries, nor occurrence counts are truncated. Rejected boundary
-candidates resume one scalar later, preserving valid overlapping matches around
-ZWJ and Unicode Prepend characters. Complex Unicode queries, canonical Han
-aliases, and queries over 1,024 UTF-16 units retain the original Swift Foundation
-path. The long-query threshold selects an algorithm, not a search-length limit.
+the scanner adds no further document truncation or query/count cap. Rejected
+boundary candidates resume one scalar later, preserving valid overlapping matches around
+ZWJ and Unicode Prepend characters. Pure Han queries include canonically equivalent
+compatibility ideographs in their regex character classes, with Foundation remaining
+the authority for each candidate. Complex Unicode queries and queries over 1,024
+UTF-16 units use cancellation-bounded Foundation windows. The long-query threshold
+selects an algorithm, not a search-length limit.
 Queries whose folded UTF-8 form contains fewer than three bytes use the literal
 path. One- and two-character CJK queries use tgrep's byte trigrams. Unavailable or
 failed tgrep libraries also use a bound Foundation literal matcher in SQLite;
@@ -93,8 +107,8 @@ paths are not included in this report or committed fixtures.
 | Catalog + WAL + SHM after import | 2,409,385,752 bytes |
 | Peak process RSS during cold import | 2,442,674,176 bytes |
 | Largest single source file | 458,822,422 bytes |
-| Largest-file parse / messages | 6.41 s / 16,921 |
-| Largest-file parse peak process RSS | 933,560,320 bytes |
+| Largest-file load including catalog projection / messages | 6.41 s / 16,921 |
+| Largest-file load peak process RSS | 933,560,320 bytes |
 
 The derived catalog contains 1,371 searchable transcripts, including subagents.
 Cold import remains a substantial operation for this archive; the existing
@@ -129,7 +143,8 @@ include Unicode-aware candidates, short CJK acceleration, persistent restart
 reuse, and explicit engine/fallback diagnostics.
 
 The final cancellation-bounded literal matcher was separately remeasured on the
-unchanged documents. The old column performs only the first Foundation match;
+unchanged stored search documents. The old column performs only the first
+Foundation match;
 the new column finds that same first match **and counts every nonoverlapping
 occurrence**. Neither includes SQLite decoding, snippets, inference, or UI work.
 
@@ -163,8 +178,9 @@ message anchor. After the timed calls, an independent Swift Foundation oracle
 checked full counts, exact snippets, and UTF-16 anchors across 19 real-document/query
 samples of at most 128 KiB across nine query runs, with no mismatches. Repeated
 queries can revisit the same document; this is not a count of distinct documents.
-Only this expensive validation oracle was sampled; production matching did not truncate documents
-or counts. The standalone nine-query run, including validation, took 22.93 s
+Only this expensive validation oracle was sampled; production matching added no
+truncation beyond the stored catalog projection and counted all occurrences within it.
+The standalone nine-query run, including validation, took 22.93 s
 and peaked at 806,273,024 bytes RSS; this is not the app's steady-state footprint.
 The checkpoint-restored first candidate stage took 166.29 ms in this run.
 
@@ -190,6 +206,118 @@ generated candidates in 4.09 ms on the same derived corpus. This is a candidate
 stage measurement, not end-to-end UI latency. Exact matching, occurrence
 counts, document decoding, snippets, and semantic reranking are separate work.
 
+### Live-profile regression audit (2026-09-08)
+
+The frozen external-volume benchmark above did **not** establish responsiveness
+in the user's normal running Release app. A subsequent self-test exposed a
+`当前版本` query taking **115,876.9 ms** for 48 results. A five-second process
+sample found the search worker inside SQLite's literal-match function and
+Foundation case-insensitive `String.range`; the catalog coordinator was waiting
+for that query's shared read lock. A second sample while testing `系统代理`
+confirmed the same fallback path and queued searches/list loads. The main thread
+was mostly idle during these samples: this was slow result delivery and lock
+contention, not evidence of an ANE or main-thread inference stall.
+
+The app had loaded its bundled tgrep library, but the normal profile had no
+usable persistent checkpoint. Unlike the benchmark catalog on the external
+volume, the normal catalog and all tgrep merge work used the system volume,
+which had only about 400 MiB available. The code discarded the native error and
+permanently disabled tgrep after a single failure; that state also disabled FTS.
+Low disk space is a strong suspected trigger, **not a recovered ENOSPC error**.
+The silent permanent fallback and the expensive literal scan are established
+independently of the original failure's cause.
+
+The same audit found that detail-only loads unnecessarily built and discarded
+an entire catalog search projection, and that transcript projection and in-session
+find performed repeated whole-transcript work on the main actor. These paths
+must be covered independently of parser-only and candidate-only benchmarks.
+Acceptance should include cache failure/recovery, rapid query replacement,
+large-transcript first readable content, exact tail-hit navigation, and return
+to a small session. A fixture that blocks cache-directory creation tests a real
+initialization failure; it must not be described as a physical disk-full test.
+
+### Follow-up measurements and behavior (2026-09-08)
+
+The follow-up used a private read-only backup of the live catalog, containing
+1,413 physical session rows and 331 visible canonical sessions. Source histories
+and the running app's online catalog were not modified. Snapshot scope resolution
+prewarmed the metadata cache. The original Release app continued running during
+these measurements and was observed consuming substantial CPU; these are not
+controlled, isolated UI benchmarks or a same-storage comparison with the 116 s
+live-app observation.
+
+The snapshot was queried as stored, without reimporting the source files. A legacy
+catalog may retain older projections with different bounds until reindexing, so
+these corpus timings and counts do not establish fresh-index coverage of text
+beyond the current per-message limits. The fallback UI fixture separately builds
+a fresh index from many messages below the limit, with the Chinese phrases in a
+distinct final message; it does not rely on searching a clipped giant message.
+
+Search now publishes an ordered prefix as soon as the first result has its **full**
+exact count within the stored projection, snippet and message anchor. Later batches
+only extend that prefix; the final-only API remains authoritative. Query/run generation guards prevent late
+callbacks from replacing a newer query, a cleared palette or a completed result.
+Automatic catalog refreshes retain already visible results. The UI reports candidate,
+first-result publication and full-search times separately; publication is not frame paint.
+
+| Query / persistent checkpoint state | First complete repository hit | Complete repository search | Rows / exact occurrences |
+| --- | ---: | ---: | ---: |
+| `系统代理`, separate-process restore | 206.50 ms | 6,392.25 ms | 8 / 46 |
+| `当前版本`, warm | 215.15 ms | 4,049.91 ms | 50 / 309 |
+| `系统代理`, repeat | 184.66 ms | 5,478.03 ms | 8 / 46 |
+| `当前版本`, repeat | 206.37 ms | 4,021.33 ms | 50 / 309 |
+
+All four runs validated cumulative-prefix monotonicity, complete-callback parity
+and identical final ordering/counts/snippets/anchors against the final-only API.
+Lightweight callback validation was included in each progressive timing. After
+each timed query, one untimed final-only search and the bounded Foundation oracle
+ran before the next query. These checks can warm filesystem/database caches and
+accelerator state for later queries and repeats; no oracle search preceded the
+first timed query.
+The restored candidate stage took 165.45 ms; warm candidates took 31–33 ms.
+The complete benchmark, including untimed final-only validation searches, peaked
+at 681,181,184 bytes RSS. The independent Foundation oracle was limited to small
+real documents (two samples total here); it is not a full-corpus independent oracle.
+
+There are still important limits. An earlier cold build of this snapshot took
+37.76 s end to end, including 32.53 s candidate preparation. Progressive delivery
+does not bypass that cold preparation. Blocking the cache directory with a regular
+file exercised the real `unsafeCache` failure: complete literal fallback queries
+took 12.23–13.62 s, with the same counts over the stored projection. Fallback is
+exact and cancellable, not instantaneous. These earlier measurements used the same
+snapshot but separate runs, before the progressive delivery measurement above.
+
+Native failures now expose privacy-safe reason codes, a low-space cold-build
+preflight and a 30 s subsequent-query retry cooldown instead of permanently
+disabling acceleration. Literal fallback reuses the optimized matcher and releases
+its SQLite reader on cancellation. A content-only stamp prevents metadata refreshes
+from repeatedly reindexing unchanged large transcripts. Neither a low-space
+preflight nor the 64 MiB input overlay is a guaranteed bound on merge disk usage.
+
+Detail-only loading skips the discarded catalog projection. Visible rows, tool
+pairs, transcript tabs and navigation are prepared off the main actor. In-session
+find is debounced, cancellable and generation-guarded, with an 8 MiB prepared-text
+cache; the cache budget does not truncate the searched visible text or its
+occurrence counts. Messages too large to cache are still searched in full. The
+budget covers retained UTF-8 search text, not total transcript memory, transient
+preparation or process RSS. The lazy timeline iterates prefiltered visible indices
+rather than a conditional child per message.
+
+The largest real source (458,822,422 bytes, 16,921 messages) loaded through the
+updated production detail loader in **4,879.66 ms**, with 761,430,016 bytes peak
+process RSS. This excludes Store projection, Markdown layout and UI rendering;
+it establishes neither subsecond opening nor a measured selection-to-first-paint
+speedup. Source discovery ran before the timed load, and filesystem caches were
+not flushed; this is not a guaranteed cold-disk measurement. The earlier 6.41 s
+load also constructed a catalog projection and used the previous day's live
+corpus, so it is not a controlled like-for-like speedup baseline. The current
+inventory was 1,377 files / 7,666,776,681 bytes; live producer
+activity explains its difference from the previous day's inventory.
+
+All reported peak RSS values are process-lifetime high-water marks, not current
+resident memory or exact allocations attributable to one operation. Subtracting
+the emitted baseline peak from the later peak does not measure allocation volume.
+
 By default, the benchmark emits aggregate timings and fixed public query terms only.
 The explicit `--show-roots` option also prints private source paths for local
 inspection; do not publish that output.
@@ -197,6 +325,7 @@ inspection; do not publish that output.
 ```sh
 bash native/Scripts/benchmark-real-history.sh --inventory
 bash native/Scripts/benchmark-real-history.sh --largest
+bash native/Scripts/benchmark-real-history.sh --detail
 bash native/Scripts/benchmark-real-history.sh --run
 ```
 
@@ -210,6 +339,14 @@ facade and the post-timing Foundation sample oracle, without starting watchers
 or reconciliation. Any parity mismatch makes the benchmark fail. All these
 snapshot modes require the explicitly named, private benchmark-owned derived
 database; they do not accept a live application's catalog.
+
+`--progressive-repository --catalog <benchmark.sqlite3>` measures the two fixed
+CJK queries above, both first and repeated delivery, and rejects empty result sets
+or progressive/final parity failures. `--fallback-repository` requires a private
+snapshot without an existing tgrep cache and installs a temporary regular-file
+obstacle; it does not simulate an actual full disk. `--detail` measures the largest
+authorized real source through the production detail loader, excluding Store
+projection and UI first paint. Do not compare it to selection-to-visible latency.
 
 ## Reproducing the bridge checks
 

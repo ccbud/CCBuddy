@@ -61,15 +61,20 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     let configuration: HistoryConfiguration
     let qoderReader: QoderFileReader
     let adapters: ConversationSourceAdapterRegistry
+    private let makeCatalogProjection: @Sendable (HistorySession) -> HistoryCatalogProjection
 
     init(
         configuration: HistoryConfiguration,
         qoderReader: QoderFileReader = .shared,
-        adapters: ConversationSourceAdapterRegistry = .init()
+        adapters: ConversationSourceAdapterRegistry = .init(),
+        makeCatalogProjection: @escaping @Sendable (HistorySession) -> HistoryCatalogProjection = {
+            HistoryCatalogProjection(session: $0)
+        }
     ) {
         self.configuration = configuration
         self.qoderReader = qoderReader
         self.adapters = adapters
+        self.makeCatalogProjection = makeCatalogProjection
     }
 
     init(
@@ -144,6 +149,35 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         _ candidate: HistoryFileCandidate,
         consistency: HistorySessionLoadConsistency = .dependencyStable
     ) throws -> LoadedHistorySession {
+        let parsed = try parseSession(candidate, consistency: consistency)
+        let projection = makeCatalogProjection(parsed.session)
+        try Task.checkCancellation()
+        let dependenciesAfterParse = parsed.manifest.snapshot()
+        if consistency == .dependencyStable,
+           parsed.dependenciesBeforeParse != dependenciesAfterParse {
+            throw HistorySessionLoadError.dependenciesChanged(candidate.file)
+        }
+        return LoadedHistorySession(
+            session: parsed.session,
+            projection: projection,
+            manifest: parsed.manifest,
+            dependencySnapshot: dependenciesAfterParse
+        )
+    }
+
+    private struct ParsedSession {
+        var session: HistorySession
+        var manifest: ConversationDependencyManifest
+        var dependenciesBeforeParse: ConversationDependencySnapshot
+    }
+
+    /// Detail/export need the lossless normalized session, not the catalog's searchable copy.
+    /// Keep the producer parsing path shared without making each open build an unused projection.
+    private func parseSession(
+        _ candidate: HistoryFileCandidate,
+        consistency: HistorySessionLoadConsistency
+    ) throws -> ParsedSession {
+        try Task.checkCancellation()
         let primaryRole: ConversationDependencyRole = candidate.formatHint == .antigravity
             ? .primaryDatabase
             : .primaryTranscript
@@ -162,6 +196,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
                 qoderReader: qoderReader
             )
         }
+        try Task.checkCancellation()
 
         let adapter = try adapters.adapter(for: candidate, document: document)
         let manifest = ConversationDependencyManifest(
@@ -182,12 +217,14 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
             candidate.file,
             records: document?.records ?? []
         )
+        try Task.checkCancellation()
         var session = try adapter.parse(ConversationSourceParseInput(
             candidate: candidate,
             document: document,
             facts: facts,
             configuration: configuration
         ))
+        try Task.checkCancellation()
         if adapter.attachesSubagents {
             session = HistorySubagentReader.attach(
                 to: session,
@@ -196,6 +233,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
                 qoderReader: qoderReader
             )
         }
+        try Task.checkCancellation()
 
         if session.metadata.source == .codex,
            let state = CodexStateDatabase.quickMetadata(
@@ -204,18 +242,12 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
            )[candidate.file.standardizedFileURL.path] {
             session.metadata = Self.mergeCodexState(state, into: session.metadata)
         }
+        try Task.checkCancellation()
 
-        let projection = HistoryCatalogProjection(session: session)
-        let dependenciesAfterParse = manifest.snapshot()
-        if consistency == .dependencyStable,
-           dependenciesBeforeParse != dependenciesAfterParse {
-            throw HistorySessionLoadError.dependenciesChanged(candidate.file)
-        }
-        return LoadedHistorySession(
+        return ParsedSession(
             session: session,
-            projection: projection,
             manifest: manifest,
-            dependencySnapshot: dependenciesAfterParse
+            dependenciesBeforeParse: dependenciesBeforeParse
         )
     }
 
@@ -230,7 +262,11 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     }
 
     func getSession(file: URL) throws -> HistorySession {
-        try load(file: file, consistency: .bestEffort).session
+        try Task.checkCancellation()
+        return try parseSession(
+            pathResolver.validatedCandidate(for: file),
+            consistency: .bestEffort
+        ).session
     }
 
     func getSession(filePath: String) throws -> HistorySession {

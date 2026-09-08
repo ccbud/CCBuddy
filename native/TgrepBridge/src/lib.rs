@@ -6,6 +6,7 @@
 //! The live overlay is flushed every 64 MiB of input; streaming merges keep the
 //! full corpus's postings in mmap instead of a second in-memory transcript store.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::io::{Read, Write};
@@ -22,6 +23,59 @@ use tgrep_core::query::build_literal_plan;
 use tgrep_core::reader::IndexReader;
 
 const FLUSH_BYTES: usize = 64 * 1024 * 1024;
+thread_local! {
+    // Additive ABI-v2 diagnostic. Numeric codes cannot expose transcript text,
+    // query strings, cache paths, or raw operating-system error descriptions.
+    static LAST_ERROR_CODE: Cell<u32> = const { Cell::new(0) };
+}
+
+#[derive(Debug)]
+struct UnsafeCache;
+
+impl std::fmt::Display for UnsafeCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unsafe cache")
+    }
+}
+impl std::error::Error for UnsafeCache {}
+
+fn error_code(mut error: &(dyn std::error::Error + 'static)) -> u32 {
+    let mut saw_io_error = false;
+    loop {
+        if error.is::<UnsafeCache>() {
+            return 3;
+        }
+        if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            saw_io_error = true;
+            if matches!(io.raw_os_error(), Some(libc::ENOSPC) | Some(libc::EDQUOT)) {
+                return 1;
+            }
+            if let Some(inner) = io.get_ref() {
+                error = inner;
+                continue;
+            }
+        }
+        match error.source() {
+            Some(source) => error = source,
+            None => return if saw_io_error { 2 } else { 4 },
+        }
+    }
+}
+
+fn ffi_result<T>(fallback: T, body: impl FnOnce() -> Result<T, Box<dyn std::error::Error>>) -> T {
+    LAST_ERROR_CODE.set(0);
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            LAST_ERROR_CODE.set(error_code(error.as_ref()));
+            fallback
+        }
+        Err(_) => {
+            LAST_ERROR_CODE.set(4);
+            fallback
+        }
+    }
+}
 const CHECKPOINT_FILES: [&str; 4] = [
     "lookup.bin",
     "index.bin",
@@ -123,7 +177,7 @@ impl Engine {
     fn persistent(root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         if let Ok(metadata) = std::fs::symlink_metadata(root) {
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(std::io::Error::other("unsafe cache directory").into());
+                return Err(UnsafeCache.into());
             }
         } else {
             std::fs::create_dir_all(root)?;
@@ -371,15 +425,18 @@ pub extern "C" fn ccbuddy_tgrep_abi_version() -> u32 {
     2
 }
 
+/// Last failure on the calling thread: 0 none, 1 disk/quota full, 2 I/O,
+/// 3 unsafe cache, 4 other. Read immediately after a failed ABI call.
+#[unsafe(no_mangle)]
+pub extern "C" fn ccbuddy_tgrep_last_error_code() -> u32 {
+    LAST_ERROR_CODE.get()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn ccbuddy_tgrep_create() -> *mut c_void {
-    catch_unwind(|| {
-        Engine::new()
-            .ok()
-            .map(|engine| Box::into_raw(Box::new(engine)).cast())
-            .unwrap_or(std::ptr::null_mut())
+    ffi_result(std::ptr::null_mut(), || {
+        Ok(Box::into_raw(Box::new(Engine::new()?)).cast())
     })
-    .unwrap_or(std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -388,18 +445,13 @@ pub unsafe extern "C" fn ccbuddy_tgrep_create_persistent(
     length: usize,
 ) -> *mut c_void {
     if bytes.is_null() {
+        LAST_ERROR_CODE.set(4);
         return std::ptr::null_mut();
     }
-    catch_unwind(|| {
-        let Ok(path) = std::str::from_utf8(unsafe { slice::from_raw_parts(bytes, length) }) else {
-            return std::ptr::null_mut();
-        };
-        Engine::persistent(Path::new(path))
-            .ok()
-            .map(|value| Box::into_raw(Box::new(value)).cast())
-            .unwrap_or(std::ptr::null_mut())
+    ffi_result(std::ptr::null_mut(), || {
+        let path = std::str::from_utf8(unsafe { slice::from_raw_parts(bytes, length) })?;
+        Ok(Box::into_raw(Box::new(Engine::persistent(Path::new(path))?)).cast())
     })
-    .unwrap_or(std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -409,18 +461,18 @@ pub unsafe extern "C" fn ccbuddy_tgrep_copy_manifest(
     capacity: usize,
 ) -> isize {
     if engine.is_null() || (output.is_null() && capacity != 0) {
+        LAST_ERROR_CODE.set(4);
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_result(-1, || {
         let manifest = &unsafe { &*engine.cast::<Engine>() }.manifest;
         if manifest.len() <= capacity && !manifest.is_empty() {
             unsafe {
                 std::ptr::copy_nonoverlapping(manifest.as_ptr(), output, manifest.len());
             }
         }
-        isize::try_from(manifest.len()).unwrap_or(-1)
-    }))
-    .unwrap_or(-1)
+        Ok(isize::try_from(manifest.len())?)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -430,18 +482,15 @@ pub unsafe extern "C" fn ccbuddy_tgrep_persist(
     length: usize,
 ) -> i32 {
     if engine.is_null() || bytes.is_null() || length > 16 * 1024 * 1024 {
+        LAST_ERROR_CODE.set(4);
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_result(-1, || {
         let engine = unsafe { &mut *engine.cast::<Engine>() };
         let manifest = unsafe { slice::from_raw_parts(bytes, length) };
-        if engine.persist(manifest).is_ok() {
-            0
-        } else {
-            -1
-        }
-    }))
-    .unwrap_or(-1)
+        engine.persist(manifest)?;
+        Ok(0)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -461,18 +510,15 @@ pub unsafe extern "C" fn ccbuddy_tgrep_upsert(
     length: usize,
 ) -> i32 {
     if engine.is_null() || bytes.is_null() {
+        LAST_ERROR_CODE.set(4);
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_result(-1, || {
         let engine = unsafe { &mut *engine.cast::<Engine>() };
         let text = unsafe { slice::from_raw_parts(bytes, length) };
-        if engine.upsert(id, text).is_ok() {
-            0
-        } else {
-            -1
-        }
-    }))
-    .unwrap_or(-1)
+        engine.upsert(id, text)?;
+        Ok(0)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -482,9 +528,10 @@ pub unsafe extern "C" fn ccbuddy_tgrep_retain(
     count: usize,
 ) -> i32 {
     if engine.is_null() || (ids.is_null() && count != 0) {
+        LAST_ERROR_CODE.set(4);
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_result(-1, || {
         let engine = unsafe { &mut *engine.cast::<Engine>() };
         let ids = if count == 0 {
             &[]
@@ -492,9 +539,9 @@ pub unsafe extern "C" fn ccbuddy_tgrep_retain(
             unsafe { slice::from_raw_parts(ids, count) }
         };
         engine.retain(ids);
-        if engine.flush().is_ok() { 0 } else { -1 }
-    }))
-    .unwrap_or(-1)
+        engine.flush()?;
+        Ok(0)
+    })
 }
 
 /// Caller owns `output`; return the required capacity, or -1 on failure. Calls
@@ -508,27 +555,66 @@ pub unsafe extern "C" fn ccbuddy_tgrep_query(
     capacity: usize,
 ) -> isize {
     if engine.is_null() || bytes.is_null() || (output.is_null() && capacity != 0) {
+        LAST_ERROR_CODE.set(4);
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
+    ffi_result(-1, || {
         let engine = unsafe { &*engine.cast::<Engine>() };
-        let Ok(query) = std::str::from_utf8(unsafe { slice::from_raw_parts(bytes, length) }) else {
-            return -1;
-        };
+        let query = std::str::from_utf8(unsafe { slice::from_raw_parts(bytes, length) })?;
         let ids = engine.search(query);
         if ids.len() <= capacity && !ids.is_empty() {
             unsafe {
                 std::ptr::copy_nonoverlapping(ids.as_ptr(), output, ids.len());
             }
         }
-        isize::try_from(ids.len()).unwrap_or(-1)
-    }))
-    .unwrap_or(-1)
+        Ok(isize::try_from(ids.len())?)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_codes_are_sanitized_and_success_clears_them() {
+        for (errno, code) in [(libc::ENOSPC, 1), (libc::EDQUOT, 1), (libc::EACCES, 2)] {
+            let result = ffi_result(-1, || Err(std::io::Error::from_raw_os_error(errno).into()));
+            assert_eq!(result, -1);
+            assert_eq!(ccbuddy_tgrep_last_error_code(), code);
+            assert_eq!(
+                error_code(&std::io::Error::other(std::io::Error::from_raw_os_error(
+                    errno
+                ))),
+                code
+            );
+        }
+        assert_eq!(ffi_result(-1, || Ok(0)), 0);
+        assert_eq!(ccbuddy_tgrep_last_error_code(), 0);
+    }
+
+    #[test]
+    fn persistent_abi_reports_unsafe_root_without_exposing_the_path() {
+        let root = tempfile::tempdir().unwrap();
+        let blocked = root.path().join("private-sentinel-root");
+        std::fs::write(&blocked, b"untouched").unwrap();
+        let path = blocked.as_os_str().as_encoded_bytes();
+        let handle = unsafe { ccbuddy_tgrep_create_persistent(path.as_ptr(), path.len()) };
+        assert!(handle.is_null());
+        assert_eq!(ccbuddy_tgrep_last_error_code(), 3);
+        assert_eq!(std::fs::read(blocked).unwrap(), b"untouched");
+    }
+
+    #[test]
+    fn failure_diagnostics_are_thread_local() {
+        LAST_ERROR_CODE.set(1);
+        std::thread::spawn(|| {
+            assert_eq!(ccbuddy_tgrep_last_error_code(), 0);
+            LAST_ERROR_CODE.set(2);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(ccbuddy_tgrep_last_error_code(), 1);
+    }
 
     #[test]
     fn literal_candidates_cover_unicode_spaces_nuls_and_punctuation() {

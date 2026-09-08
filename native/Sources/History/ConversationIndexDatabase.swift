@@ -235,8 +235,35 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private var trigramFTSAvailable = false
     private let enableTgrep: Bool
     private var tgrep: TgrepSearchIndex?
-    private var tgrepUnavailable = false
-    private var latestSearchDiagnostics = ConversationSearchDiagnostics()
+    private let tgrepRuntime: TgrepRuntime
+    private var tgrepFailure: TgrepSearchIndex.Failure?
+    private var tgrepRetryAfter: Date?
+    private let diagnosticsLock = NSLock()
+    private var storedSearchDiagnostics = ConversationSearchDiagnostics()
+    private var latestSearchDiagnostics: ConversationSearchDiagnostics {
+        get {
+            diagnosticsLock.lock()
+            defer { diagnosticsLock.unlock() }
+            return storedSearchDiagnostics
+        }
+        set {
+            diagnosticsLock.lock()
+            defer { diagnosticsLock.unlock() }
+            storedSearchDiagnostics = newValue
+        }
+    }
+
+    /// Injectable resource/clock boundaries keep recovery tests deterministic. A short
+    /// wall-clock cooldown retries even when no catalog revision changes after disk recovery.
+    struct TgrepRuntime {
+        var now: () -> Date = { Date() }
+        var availableCapacity: (URL) -> Int64? = { directory in
+            (try? directory.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?
+                .volumeAvailableCapacity.map(Int64.init)
+        }
+        var makeIndex: (URL) throws -> TgrepSearchIndex = { try TgrepSearchIndex(cacheDirectory: $0) }
+        var retryInterval: TimeInterval = 30
+    }
 
     /// Decoded metadata keyed by row identity. Every list refresh — and the scope counts beside
     /// it — decodes the metadata blob of every session row; while an agent is appending, those
@@ -247,7 +274,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private var metadataDecodeCache: [String: (indexedAt: Double, metadata: HistorySessionMetadata)] = [:]
     private static let metadataDecodeCacheLimit = 20_000
 
-    init(file: URL, enableTgrep: Bool = true) throws {
+    init(file: URL, enableTgrep: Bool = true, tgrepRuntime: TgrepRuntime = .init()) throws {
         guard file.isFileURL else {
             throw ConversationIndexDatabaseError.invalidDatabaseURL(file)
         }
@@ -270,6 +297,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
         self.file = standardized
         self.enableTgrep = enableTgrep
+        self.tgrepRuntime = tgrepRuntime
         connection = handle
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -313,7 +341,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     var searchDiagnostics: ConversationSearchDiagnostics {
-        (try? withReadLock { _ in latestSearchDiagnostics }) ?? ConversationSearchDiagnostics()
+        latestSearchDiagnostics
     }
 
     func generation() throws -> Int64 {
@@ -797,7 +825,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             // A read transaction binds the tgrep generation, incremental text
             // reads, and returned IDs to the same SQLite snapshot even while
             // the independent writer publishes a new catalog revision.
-            if enableTgrep, !tgrepUnavailable, TgrepSearchIndex.canIndex(query) {
+            let retryReady = tgrepRetryAfter.map { tgrepRuntime.now() >= $0 } ?? true
+            if enableTgrep, retryReady, TgrepSearchIndex.canIndex(query) {
                 do {
                     guard sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil) == SQLITE_OK else {
                         throw TgrepSearchIndex.Failure.operationFailed
@@ -806,6 +835,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     let updated = try synchronizeTgrep(connection: connection)
                     guard let tgrep else { throw TgrepSearchIndex.Failure.unavailable }
                     let ids = try tgrep.candidates(for: query)
+                    try Task.checkCancellation()
                     var references: [ConversationIndexDocumentReference] = []
                     // Bound SQLite variable counts for older system libraries.
                     for offset in stride(from: 0, to: ids.count, by: 400) {
@@ -823,6 +853,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         cumulativeTrigramBuildMilliseconds: tgrep.trigramBuildMilliseconds,
                         restoredFromCache: tgrep.restoredFromCache
                     )
+                    tgrepFailure = nil
+                    tgrepRetryAfter = nil
                     return ConversationIndexCandidateReferenceBatch(references: references, usedFallback: false)
                 } catch is CancellationError {
                     // A cancelled incremental build is incomplete, but a later
@@ -833,7 +865,13 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     // Partial synchronization must never become an authoritative
                     // empty candidate set. Drop it and retain exact local search.
                     tgrep = nil
-                    tgrepUnavailable = true
+                    try Task.checkCancellation()
+                    tgrepFailure = (error as? TgrepSearchIndex.Failure) ?? .operationFailed
+                    tgrepRetryAfter = tgrepRuntime.now().addingTimeInterval(tgrepRuntime.retryInterval)
+                    latestSearchDiagnostics = ConversationSearchDiagnostics(
+                        engine: "Literal", usedFallback: true,
+                        fallbackReason: tgrepFailure?.rawValue, tgrepRetryAfter: tgrepRetryAfter
+                    )
                 }
             }
 
@@ -846,7 +884,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 // If tgrep failed, preserve Foundation's complete Unicode
                 // semantics. FTS case folding alone can miss expansions such
                 // as Straße/STRASSE, so failure falls through to the literal UDF.
-                && !tgrepUnavailable
+                && tgrepFailure == nil
                 && ftsIsReady
                 && !segments.isEmpty
                 && segments.allSatisfy { $0.count >= 3 }
@@ -866,6 +904,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         usedFallback: false
                     )
                 } catch {
+                    try Task.checkCancellation()
                     // A copied database can contain an FTS table unsupported by the current
                     // SQLite runtime. The ordinary document table is always a safe fallback.
                 }
@@ -875,7 +914,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 useFTS: false, connection: connection
             )
             latestSearchDiagnostics = ConversationSearchDiagnostics(
-                engine: "Literal", candidateCount: references.count, usedFallback: true
+                engine: "Literal", candidateCount: references.count, usedFallback: true,
+                fallbackReason: tgrepFailure?.rawValue, tgrepRetryAfter: tgrepRetryAfter
             )
             return ConversationIndexCandidateReferenceBatch(
                 references: references,
@@ -1136,6 +1176,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 if trigramFTSAvailable {
                     try execute("DROP TABLE IF EXISTS conversation_documents_fts")
                 }
+                try execute("DROP TABLE IF EXISTS conversation_content_stamps")
                 try execute("DROP TABLE IF EXISTS conversation_documents")
                 try execute("DROP TABLE IF EXISTS conversation_sessions")
                 try execute("DROP TABLE IF EXISTS conversation_catalog_state")
@@ -1284,6 +1325,35 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             "CREATE INDEX IF NOT EXISTS conversation_documents_session_order "
                 + "ON conversation_documents(session_path, sort_order, transcript_id)"
         )
+        // Additive v4 migration: this small side table snapshots the existing stamp
+        // without rewriting multi-GB document rows. Matching legacy stamps retain a
+        // warm checkpoint; a pre-migration metadata refresh may require one safe reindex.
+        // Metadata-only refreshes change sessions.indexed_at, not transcript content.
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_content_stamps (
+                session_path TEXT PRIMARY KEY NOT NULL
+                    REFERENCES conversation_sessions(source_path) ON DELETE CASCADE,
+                indexed_at REAL NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        try execute(
+            "INSERT OR IGNORE INTO conversation_content_stamps(session_path, indexed_at) "
+                + "SELECT source_path, indexed_at FROM conversation_sessions"
+        )
+        // Keeping the stamp at the SQL mutation boundary also covers writers from
+        // earlier app builds which do not know about this additive metadata table.
+        try execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS conversation_documents_content_stamp
+            AFTER INSERT ON conversation_documents BEGIN
+                INSERT INTO conversation_content_stamps(session_path, indexed_at)
+                SELECT source_path, indexed_at FROM conversation_sessions WHERE source_path = NEW.session_path
+                ON CONFLICT(session_path) DO UPDATE SET indexed_at = excluded.indexed_at;
+            END
+            """
+        )
     }
 
     private func probeTrigramFTS() -> Bool {
@@ -1411,7 +1481,9 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         defer { sqlite3_finalize(statement) }
         var result: [ConversationIndexDocumentReference] = []
         while true {
+            try Task.checkCancellation()
             let status = sqlite3_step(statement)
+            if status == SQLITE_INTERRUPT, Task.isCancelled { throw CancellationError() }
             if status == SQLITE_DONE { return result }
             guard status == SQLITE_ROW else {
                 throw sqliteError(
@@ -1445,17 +1517,26 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             connection: connection
         )
         if tgrep == nil {
-            tgrep = try TgrepSearchIndex(cacheDirectory: file.deletingLastPathComponent()
+            tgrep = try tgrepRuntime.makeIndex(file.deletingLastPathComponent()
                 .appendingPathComponent(file.lastPathComponent + ".tgrep-v2", isDirectory: true))
         }
         guard let tgrep else { throw TgrepSearchIndex.Failure.unavailable }
         if tgrep.revision == revision { return 0 }
+        if !tgrep.restoredFromCache, tgrep.documentCount == 0,
+           let available = tgrepRuntime.availableCapacity(file.deletingLastPathComponent()) {
+            let databaseBytes = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            // A conservative early guard, not a promised upper bound: upstream streaming
+            // merges temporarily retain old and new postings. Small catalogs still work on
+            // constrained disks; a multi-GB cold rebuild needs meaningful free headroom.
+            let required = 64 * 1_024 * 1_024 + min(Int64(databaseBytes), 512 * 1_024 * 1_024)
+            guard available >= required else { throw TgrepSearchIndex.Failure.lowDiskSpace }
+        }
 
         let statement = try prepare(
             """
             SELECT d.id, d.session_path, d.transcript_id, s.indexed_at
             FROM conversation_documents d
-            JOIN conversation_sessions s ON s.source_path = d.session_path
+            JOIN conversation_content_stamps s ON s.session_path = d.session_path
             """,
             bindings: [], connection: connection
         )
@@ -1512,13 +1593,38 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         start: bytes, count: Int(sqlite3_value_bytes(arguments[index]))
                     ), as: UTF8.self)
                 }
+                guard !Task.isCancelled else {
+                    sqlite3_result_error_code(context, SQLITE_INTERRUPT)
+                    return
+                }
                 guard let text = value(0), let query = value(1), !query.isEmpty else {
                     sqlite3_result_int(context, 0)
                     return
                 }
-                sqlite3_result_int(context, text.range(of: query, options: [.caseInsensitive]) == nil ? 0 : 1)
+                let matcher: LiteralMatcherBox
+                if let cached = sqlite3_get_auxdata(context, 1) {
+                    matcher = Unmanaged<LiteralMatcherBox>.fromOpaque(cached).takeUnretainedValue()
+                } else {
+                    matcher = LiteralMatcherBox(query: query)
+                    // SQLite may discard auxdata immediately. The local strong reference
+                    // keeps this row's matcher alive regardless of its caching decision.
+                    sqlite3_set_auxdata(context, 1, Unmanaged.passRetained(matcher).toOpaque(), {
+                        if let pointer = $0 { Unmanaged<LiteralMatcherBox>.fromOpaque(pointer).release() }
+                    })
+                }
+                let found = matcher.search.firstMatch(in: text) != nil
+                if Task.isCancelled {
+                    sqlite3_result_error_code(context, SQLITE_INTERRUPT)
+                } else {
+                    sqlite3_result_int(context, found ? 1 : 0)
+                }
             }, nil, nil, nil
         )
+    }
+
+    private final class LiteralMatcherBox {
+        let search: ConversationLiteralSearch
+        init(query: String) { search = ConversationLiteralSearch(query: query) }
     }
 
     private func decodeEntry(
@@ -1873,8 +1979,12 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     private func withReadLock<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
-        readLock.lock()
+        try Task.checkCancellation()
+        while !readLock.lock(before: Date(timeIntervalSinceNow: 0.01)) {
+            try Task.checkCancellation()
+        }
         defer { readLock.unlock() }
+        try Task.checkCancellation()
         guard let readConnection else {
             throw ConversationIndexDatabaseError.sqlite(
                 operation: "open read connection",
@@ -1882,7 +1992,21 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 detail: "query-only connection is unavailable"
             )
         }
-        return try body(readConnection)
+        sqlite3_progress_handler(readConnection, 1_000, { _ in Task.isCancelled ? 1 : 0 }, nil)
+        defer {
+            sqlite3_progress_handler(readConnection, 0, nil, nil)
+            // Cancellation can interrupt even the transaction body's cleanup.
+            // Never return a pooled reader to the next query with a stale snapshot.
+            if sqlite3_get_autocommit(readConnection) == 0 {
+                sqlite3_exec(readConnection, "ROLLBACK", nil, nil, nil)
+            }
+        }
+        do {
+            return try body(readConnection)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
     }
 
     private func transaction<T>(_ body: () throws -> T) throws -> T {

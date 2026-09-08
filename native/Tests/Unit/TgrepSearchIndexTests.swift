@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import CCBuddy
 
 final class TgrepSearchIndexTests: XCTestCase {
@@ -84,6 +85,7 @@ final class TgrepSearchIndexTests: XCTestCase {
         XCTAssertEqual(try database.candidateDocumentReferences(for: "STRASSE").references.count, 1)
         XCTAssertEqual(database.searchDiagnostics.engine, "Literal")
         XCTAssertTrue(database.searchDiagnostics.usedFallback)
+        XCTAssertEqual(database.searchDiagnostics.fallbackReason, "unsafeCache")
         XCTAssertEqual(try database.candidateDocumentReferences(for: "搜索").references.count, 1)
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
     }
@@ -254,6 +256,222 @@ final class TgrepSearchIndexTests: XCTestCase {
         XCTAssertEqual(database.searchDiagnostics.engine, "tgrep")
     }
 
+    func testLowDiskFallbackRetriesAfterCooldownWithoutCatalogChange() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-disk-retry")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var now = Date(timeIntervalSince1970: 100)
+        var capacity: Int64 = 0
+        var attempts = 0
+        let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"),
+            tgrepRuntime: .init(now: { now }, availableCapacity: { _ in capacity }, makeIndex: {
+                attempts += 1
+                return try TgrepSearchIndex(cacheDirectory: $0)
+            }))
+        try database.replace(session(root: root, id: "low-space", text: "系统代理与搜索工具 Straße"))
+        let generation = try database.generation()
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "系统代理").references.count, 1)
+        XCTAssertEqual(database.searchDiagnostics.engine, "Literal")
+        XCTAssertEqual(database.searchDiagnostics.fallbackReason, "lowDiskSpace")
+        XCTAssertEqual(database.searchDiagnostics.tgrepRetryAfter, now.addingTimeInterval(30))
+        capacity = .max
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "STRASSE").references.count, 1)
+        XCTAssertEqual(attempts, 1, "Queries in the cooldown must not repeatedly start cold builds")
+        now = now.addingTimeInterval(31)
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "搜索工具").references.count, 1)
+        XCTAssertEqual(try database.generation(), generation)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(database.searchDiagnostics.engine, "tgrep")
+        XCTAssertNil(database.searchDiagnostics.fallbackReason)
+        XCTAssertNil(database.searchDiagnostics.tgrepRetryAfter)
+    }
+
+    func testTransientIOFailureDoesNotDisableTheEnginePermanently() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-io-retry")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var now = Date(timeIntervalSince1970: 100)
+        var attempts = 0
+        let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"),
+            tgrepRuntime: .init(now: { now }, availableCapacity: { _ in .max }, makeIndex: {
+                attempts += 1
+                if attempts == 1 { throw TgrepSearchIndex.Failure.ioFailure }
+                return try TgrepSearchIndex(cacheDirectory: $0)
+            }))
+        try database.replace(session(root: root, id: "retry", text: "Straße recoverable phrase"))
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "STRASSE").references.count, 1)
+        XCTAssertEqual(database.searchDiagnostics.fallbackReason, "ioFailure")
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "recoverable").references.count, 1)
+        XCTAssertEqual(attempts, 1)
+        now = now.addingTimeInterval(31)
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "STRASSE").references.count, 1)
+        XCTAssertEqual(database.searchDiagnostics.engine, "tgrep")
+        XCTAssertNil(database.searchDiagnostics.fallbackReason)
+    }
+
+    func testCancellationInsideTgrepReadTransactionRestoresTheReaderForNextQuery() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-transaction-cancel")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var attempts = 0
+        let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"),
+            tgrepRuntime: .init(availableCapacity: { _ in .max }, makeIndex: {
+                attempts += 1
+                if attempts == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                return try TgrepSearchIndex(cacheDirectory: $0)
+            }))
+        try database.replace(session(root: root, id: "transaction", text: "recoverable transaction phrase"))
+        let worker = Task.detached { try database.candidateDocumentReferences(for: "transaction") }
+        do {
+            _ = try await worker.value
+            XCTFail("Cancellation inside synchronization must abandon its read snapshot")
+        } catch is CancellationError {}
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "transaction").references.count, 1)
+        XCTAssertEqual(database.searchDiagnostics.engine, "tgrep")
+        XCTAssertNil(database.searchDiagnostics.fallbackReason)
+    }
+
+    func testMetadataOnlyRefreshDoesNotReindexTranscriptAcrossReopen() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-metadata-stamp")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("index.sqlite3")
+        var database: ConversationIndexDatabase? = try ConversationIndexDatabase(file: file)
+        var value = session(root: root, id: "metadata", text: "original searchable phrase")
+        try database?.replace(value)
+        _ = try database?.candidateDocumentReferences(for: "searchable")
+        value.metadata.title = "A renamed and starred session"
+        value.metadata.starred = true
+        value.documents = []
+        try database?.replaceMetadata([value])
+        XCTAssertEqual(try database?.candidateDocumentReferences(for: "searchable").references.count, 1)
+        XCTAssertEqual(database?.searchDiagnostics.incrementallyIndexedDocuments, 0)
+        database = nil
+        database = try ConversationIndexDatabase(file: file)
+        XCTAssertEqual(try database?.candidateDocumentReferences(for: "searchable").references.count, 1)
+        XCTAssertEqual(database?.searchDiagnostics.incrementallyIndexedDocuments, 0)
+        XCTAssertEqual(database?.searchDiagnostics.restoredFromCache, true)
+        value.documents = [.init(transcriptID: "main", sortOrder: 0, text: "new replacement phrase")]
+        try database?.replace(value)
+        XCTAssertTrue(try XCTUnwrap(database?.candidateDocumentReferences(for: "searchable").references.isEmpty))
+        XCTAssertEqual(database?.searchDiagnostics.incrementallyIndexedDocuments, 1)
+        XCTAssertEqual(try database?.candidateDocumentReferences(for: "replacement").references.count, 1)
+        database = nil
+    }
+
+    func testAdditiveContentStampMigrationKeepsWarmCheckpoint() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-stamp-migration")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("index.sqlite3")
+        var database: ConversationIndexDatabase? = try ConversationIndexDatabase(file: file)
+        try database?.replace(session(root: root, id: "legacy", text: "retained migration phrase"))
+        _ = try database?.candidateDocumentReferences(for: "migration")
+        let generation = try database?.generation()
+        database = nil
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(file.path, &raw), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw,
+            "DROP TRIGGER conversation_documents_content_stamp; DROP TABLE conversation_content_stamps;",
+            nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+        database = try ConversationIndexDatabase(file: file)
+        XCTAssertEqual(try database?.generation(), generation)
+        XCTAssertEqual(try database?.candidateDocumentReferences(for: "migration").references.count, 1)
+        XCTAssertEqual(database?.searchDiagnostics.incrementallyIndexedDocuments, 0)
+        XCTAssertEqual(database?.searchDiagnostics.restoredFromCache, true)
+        database = nil
+    }
+
+    func testLegacyWriterMetadataAndDocumentMutationsMaintainContentStamps() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-legacy-writer")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("index.sqlite3")
+        let database = try ConversationIndexDatabase(file: file)
+        try database.replace(session(root: root, id: "legacy", text: "original legacy phrase"))
+        _ = try database.candidateDocumentReferences(for: "original")
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(file.path, &raw), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        // Simulate an older v4 app, which has no knowledge of the new side table.
+        XCTAssertEqual(sqlite3_exec(raw, """
+            BEGIN IMMEDIATE;
+            UPDATE conversation_sessions SET indexed_at = indexed_at + 1;
+            UPDATE conversation_catalog_state SET generation = generation + 1;
+            COMMIT;
+            """, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "original").references.count, 1)
+        XCTAssertEqual(database.searchDiagnostics.incrementallyIndexedDocuments, 0)
+        XCTAssertEqual(sqlite3_exec(raw, """
+            BEGIN IMMEDIATE;
+            UPDATE conversation_sessions SET indexed_at = indexed_at + 1;
+            DELETE FROM conversation_documents;
+            INSERT INTO conversation_documents(session_path, transcript_id, sort_order, search_text, message_spans_json)
+            SELECT source_path, 'main', 0, 'replacement legacy phrase', X'5B5D' FROM conversation_sessions;
+            UPDATE conversation_catalog_state SET generation = generation + 1, fts_dirty = 1;
+            COMMIT;
+            """, nil, nil, nil), SQLITE_OK)
+        XCTAssertTrue(try database.candidateDocumentReferences(for: "original").references.isEmpty)
+        XCTAssertEqual(database.searchDiagnostics.incrementallyIndexedDocuments, 1)
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "replacement").references.count, 1)
+    }
+
+    func testCancelledLiteralScanReleasesReaderForNextCatalogOperation() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-literal-cancellation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"), enableTgrep: false)
+        try database.replace(session(root: root, id: "large", text:
+            String(repeating: "payload without target ", count: 1_000_000)))
+        let (started, continuation) = AsyncStream<Void>.makeStream()
+        let worker = Task.detached {
+            continuation.yield(())
+            continuation.finish()
+            return try database.candidateDocumentReferences(for: "系统")
+        }
+        for await _ in started { break }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        worker.cancel()
+        do {
+            _ = try await worker.value
+            XCTFail("A cancelled UDF scan must throw, not return a partial candidate set")
+        } catch is CancellationError {}
+        XCTAssertGreaterThan(try database.generation(), 0)
+        XCTAssertEqual(try database.candidateDocumentReferences(for: "pa").references.count, 1)
+    }
+
+    func testCancelledReadLockWaiterExitsBeforeTheCurrentSearchAndDiagnosticsStayReadable() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("tgrep-lock-cancellation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entered = expectation(description: "Search owns read lock")
+        let waiterFinished = expectation(description: "Cancelled lock waiter exits promptly")
+        let diagnosticsFinished = expectation(description: "Diagnostics never wait behind search")
+        let release = ReadGate()
+        defer { release.open() }
+        let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"),
+            tgrepRuntime: .init(availableCapacity: { _ in
+                entered.fulfill()
+                release.wait()
+                return 0
+            }))
+        try database.replace(session(root: root, id: "locked", text: "searchable phrase"))
+        let holder = Task.detached { try database.candidateDocumentReferences(for: "searchable") }
+        await fulfillment(of: [entered], timeout: 2)
+        let waiter = Task.detached {
+            defer { waiterFinished.fulfill() }
+            return try database.generation()
+        }
+        waiter.cancel()
+        // A diagnostics read must not join the long search's read-lock queue.
+        let diagnostics = Task.detached {
+            _ = database.searchDiagnostics
+            diagnosticsFinished.fulfill()
+        }
+        await fulfillment(of: [waiterFinished, diagnosticsFinished], timeout: 0.5)
+        release.open()
+        await diagnostics.value
+        _ = try await holder.value
+        do {
+            _ = try await waiter.value
+            XCTFail("The cancelled waiter must not perform its read")
+        } catch is CancellationError {}
+        XCTAssertGreaterThan(try database.generation(), 0)
+    }
+
     private func session(root: URL, id: String, text: String) -> ConversationIndexedSession {
         ConversationIndexedSession(
             metadata: HistorySessionMetadata(
@@ -264,5 +482,23 @@ final class TgrepSearchIndexTests: XCTestCase {
             fingerprint: .init(modificationTime: .now, sizeBytes: UInt64(text.utf8.count)),
             documents: [.init(transcriptID: "main", sortOrder: 0, text: text)]
         )
+    }
+
+    private final class ReadGate: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var isOpen = false
+
+        func wait() {
+            condition.lock()
+            defer { condition.unlock() }
+            while !isOpen { condition.wait() }
+        }
+
+        func open() {
+            condition.lock()
+            isOpen = true
+            condition.broadcast()
+            condition.unlock()
+        }
     }
 }

@@ -11,26 +11,60 @@ struct ConversationLiteralSearch {
 
     private let query: String
     private let expression: NSRegularExpression?
-    private let checksHanAliases: Bool
     private let candidateUTF16Length: Int
+    private let foundationOverlapCharacters: Int
 
-    private static let hanCanonicalAliases = try! NSRegularExpression(
-        pattern: #"[\uF900-\uFAFF\x{2F800}-\x{2FA1F}]"#
-    )
+    /// Foundation's canonical Han aliases are single-scalar substitutions. Build
+    /// this small, immutable table once using the running OS's normalization data.
+    /// Numeric keys are deliberate: Swift String equality is already canonical,
+    /// so comparing alias and normalized Strings would hide these substitutions.
+    private static let hanCanonicalAliases: [UInt32: [Unicode.Scalar]] = {
+        var aliases: [UInt32: [Unicode.Scalar]] = [:]
+        for range in [0xf900...0xfaff, 0x2f800...0x2fa1f] {
+            for value in range {
+                guard let alias = Unicode.Scalar(value) else { continue }
+                let normalized = String(alias).precomposedStringWithCanonicalMapping.unicodeScalars
+                guard normalized.count == 1, let base = normalized.first,
+                      base.value != alias.value, isUnifiedHan(base.value) else { continue }
+                aliases[base.value, default: []].append(alias)
+            }
+        }
+        return aliases
+    }()
 
     init(query: String) {
         self.query = query
-        candidateUTF16Length = query.utf16.count
+        let queryUTF16Length = query.utf16.count
+        // Canonical case-fold expansion bounds how many source graphemes can
+        // participate in one exact match, including Greek/ligature expansions.
+        foundationOverlapCharacters = query.folding(options: .caseInsensitive, locale: nil)
+            .decomposedStringWithCanonicalMapping.unicodeScalars.count
         let scalars = query.unicodeScalars
         let asciiWords = !scalars.isEmpty && scalars.allSatisfy {
             (65...90).contains($0.value) || (97...122).contains($0.value)
                 || (48...57).contains($0.value) || $0.value == 32
         }
-        checksHanAliases = !scalars.isEmpty && scalars.allSatisfy { Self.isUnifiedHan($0.value) }
+        let unifiedHan = !scalars.isEmpty && scalars.allSatisfy { Self.isUnifiedHan($0.value) }
+        var pattern = NSRegularExpression.escapedPattern(for: query)
+        var maximumCandidateLength = queryUTF16Length
+        if unifiedHan, queryUTF16Length <= 1_024 {
+            pattern = ""
+            maximumCandidateLength = 0
+            for scalar in scalars {
+                let aliases = Self.hanCanonicalAliases[scalar.value] ?? []
+                if aliases.isEmpty {
+                    pattern.append(String(scalar))
+                } else {
+                    pattern += "[" + String(scalar) + aliases.map(String.init).joined() + "]"
+                }
+                maximumCandidateLength += ([scalar] + aliases).contains { $0.value > 0xffff } ? 2 : 1
+            }
+        }
+        candidateUTF16Length = maximumCandidateLength
         // Large pasted queries keep the exact Foundation path instead of spending seconds
         // compiling a huge ICU pattern. This selects an algorithm; it never truncates a query.
-        expression = (asciiWords || checksHanAliases) && candidateUTF16Length <= 1_024
-            ? try? NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: query), options: .caseInsensitive)
+        expression = (asciiWords || unifiedHan) && queryUTF16Length <= 1_024
+            ? try? NSRegularExpression(pattern: pattern, options: .caseInsensitive)
             : nil
     }
 
@@ -46,10 +80,6 @@ struct ConversationLiteralSearch {
         // UTF-8/UTF-16 boundary, especially when counting a frequent term in a long transcript.
         let source = NSString(string: text)
         let bridged = source as String
-        let fullRange = NSRange(location: 0, length: source.length)
-        if checksHanAliases, Self.hanCanonicalAliases.firstMatch(in: bridged, range: fullRange) != nil {
-            return foundationMatch(in: text, countingOccurrences: countingOccurrences)
-        }
         var first: NSRange?
         var count = 0
         var cursor = 0
@@ -58,7 +88,8 @@ struct ConversationLiteralSearch {
             // overlapping rescans; a lookahead would force an attempt at every text position.
             // Bound no-hit scans for cancellation without .reportProgress, which calls back
             // almost once per UTF-16 unit. The overlap includes every possible fast-path
-            // match (ASCII fold expansions only shorten it; unified Han preserves length).
+            // match (ASCII fold expansions only shorten it; a Han compatibility alias
+            // may occupy two UTF-16 units even when its query scalar occupies one).
             let chunkEnd = scalarBoundary(atOrAfter: min(source.length, cursor + 65_536), in: source)
             let scanEnd = scalarBoundary(atOrAfter:
                 chunkEnd + min(source.length - chunkEnd, candidateUTF16Length), in: source)
@@ -108,11 +139,24 @@ struct ConversationLiteralSearch {
         var cursor = text.startIndex
         while cursor < text.endIndex {
             if Task.isCancelled { return nil }
-            guard let range = text.range(of: query, options: .caseInsensitive, range: cursor..<text.endIndex) else { break }
-            if first == nil { first = range }
-            count += 1
-            if !countingOccurrences { break }
-            cursor = range.upperBound
+            // Keep Foundation as the semantic authority, but bound its no-hit
+            // scan as well. Windows end only at Swift grapheme boundaries, and
+            // overlap by the canonical-fold length so crossing matches survive.
+            let chunkEnd = text.index(cursor, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
+            let scanEnd = text.index(chunkEnd, offsetBy: foundationOverlapCharacters,
+                limitedBy: text.endIndex) ?? text.endIndex
+            while cursor < chunkEnd {
+                if Task.isCancelled { return nil }
+                guard let range = text.range(of: query, options: .caseInsensitive, range: cursor..<scanEnd),
+                      range.lowerBound < chunkEnd else { break }
+                if first == nil { first = range }
+                count += 1
+                if !countingOccurrences {
+                    return Task.isCancelled ? nil : Match(range: range, count: count)
+                }
+                cursor = range.upperBound
+            }
+            cursor = max(cursor, chunkEnd)
         }
         guard !Task.isCancelled else { return nil }
         return first.map { Match(range: $0, count: count) }

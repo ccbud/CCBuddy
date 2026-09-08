@@ -413,6 +413,72 @@ final class TranscriptProjectionIdentityTests: XCTestCase {
             "reading it twice must not build it twice, or every read invalidates the view"
         )
     }
+
+    func testProjectionPreparesVisibleRowsAndNavigationOffMainThread() async throws {
+        let messages = [
+            HistoryMessage(role: "user", content: [.init(type: "text", text: "<system-reminder>hidden</system-reminder>")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "tool", name: "Read")]),
+            HistoryMessage(role: "user", content: [.init(type: "tool_result", toolUseID: "tool", content: .string("result"))]),
+            HistoryMessage(role: "user", content: [.init(type: "text", text: "  first\nvisible  question ")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "thinking", thinking: "reason")]),
+        ]
+        let (projection, wasMainThread) = try await Task.detached {
+            try Self.prepareProjectionAndObserveThread(messages)
+        }.value
+        XCTAssertFalse(wasMainThread)
+        XCTAssertEqual(projection.visibleMessageIndices, [1, 3, 4])
+        XCTAssertEqual(projection.tableOfContents.map(\.index), [3])
+        XCTAssertEqual(projection.tableOfContents.first?.title, "first visible question")
+        XCTAssertEqual(projection.toolResults["tool"]?.content, .string("result"))
+    }
+
+    nonisolated private static func prepareProjectionAndObserveThread(_ messages: [HistoryMessage]) throws
+        -> (ConversationStore.TranscriptProjection, Bool) {
+        // Observe the synchronous work itself, not the async task's scheduling context.
+        (try ConversationStore.TranscriptProjection.make(messages: messages), Thread.isMainThread)
+    }
+}
+
+final class ConversationDetailSearchIndexTests: XCTestCase {
+    func testBoundedCacheDoesNotLimitCompleteSearchResults() throws {
+        let messages = (0..<20).map { index in
+            HistoryMessage(role: "assistant", content: [.init(type: "text", text: "row \(index) 系统代理 needle")])
+        }
+        let index = ConversationDetailSearchIndex(messages: messages, results: [:], pairedIDs: [], maximumCacheBytes: 60)
+        XCTAssertEqual(try index.matches(query: "系统代理").count, 20)
+        XCTAssertLessThanOrEqual(index.retainedTextBytes, 60)
+        XCTAssertEqual(try index.matches(query: "needle").count, 20)
+        XCTAssertLessThanOrEqual(index.retainedTextBytes, 60)
+    }
+
+    func testDetailSearchRetainsAccentAndPairedToolSemantics() throws {
+        let messages = [
+            HistoryMessage(role: "user", content: [.init(type: "text", text: "café cafe\u{301} CAFÉ")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "t", name: "Read",
+                input: .object(["path": .string("系统代理.swift")]))]),
+            HistoryMessage(role: "user", content: [.init(type: "tool_result", toolUseID: "t", content: .string("系统代理 result"))]),
+        ]
+        let index = ConversationDetailSearchIndex(messages: messages,
+            results: ConversationVisibleText.resultMap(in: messages),
+            pairedIDs: ConversationVisibleText.pairedToolResultIDs(in: messages))
+        for query in ["cafe", "CAFÉ", "系统代理", "Read", "no match"] {
+            XCTAssertEqual(try index.matches(query: query), ConversationVisibleText.detailMatches(in: messages, query: query))
+        }
+    }
+
+    func testDetailSearchPreservesExplicitTurkishLocaleCaseMapping() throws {
+        let locale = Locale(identifier: "tr_TR")
+        let texts = ["I ı I", "i İ i", "I ı i İ", "ISTANBUL İstanbul"]
+        let messages = texts.map { HistoryMessage(role: "assistant", content: [.init(type: "text", text: $0)]) }
+        let index = ConversationDetailSearchIndex(messages: messages, results: [:], pairedIDs: [], locale: locale)
+        for query in ["I", "ı", "i", "İ", "istanbul"] {
+            let expected = texts.enumerated().compactMap { messageIndex, text -> ConversationDetailSearchMatch? in
+                let count = ConversationVisibleText.occurrenceCount(of: query, in: text, locale: locale)
+                return count == 0 ? nil : .init(messageIndex: messageIndex, occurrences: count)
+            }
+            XCTAssertEqual(try index.matches(query: query), expected, "Locale-specific parity for \(query)")
+        }
+    }
 }
 
 @MainActor
@@ -1083,6 +1149,7 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertTrue(store.isFollowingLatest)
         store.updateDetailQuery("Swift")
         XCTAssertFalse(store.isFollowingLatest)
+        await waitUntil { !store.isSearchingDetail }
         XCTAssertEqual(store.jumpRequest?.messageIndex, 0)
         store.jumpToLatest()
         store.nextDetailMatch()
@@ -1171,6 +1238,7 @@ final class ConversationStoreTests: XCTestCase {
 
         await store.select(metadata)
         store.updateDetailQuery("needle")
+        await waitUntil { !store.isSearchingDetail }
 
         XCTAssertEqual(store.detailMatches.map(\.messageIndex), [0, 1])
         XCTAssertEqual(store.totalDetailOccurrences, 5)
@@ -1178,6 +1246,214 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
         store.nextDetailMatch()
         XCTAssertEqual(store.jumpRequest?.messageIndex, 0, "Search navigation wraps")
+    }
+
+    func testLargeDetailSearchDebouncesAndOnlyPublishesTheLatestQuery() async {
+        let metadata = Self.metadata(id: "large-find", title: "Large", tags: [], file: "/tmp/large-find.jsonl")
+        let messages = (0..<12_000).map { index in
+            HistoryMessage(role: "assistant", content: [.init(type: "text",
+                text: index == 11_999 ? "系统代理 final needle" : "ordinary row \(index)")])
+        }
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): HistorySession(metadata: metadata, messages: messages),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        await store.select(metadata)
+        let initialJump = store.jumpRequest
+        store.updateDetailQuery("ordinary")
+        store.updateDetailQuery("系统代理")
+        XCTAssertEqual(store.detailQuery, "系统代理", "Typing publishes immediately, not after scanning")
+        XCTAssertTrue(store.isSearchingDetail)
+        XCTAssertEqual(store.jumpRequest, initialJump, "Input must not synchronously search or scroll")
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) { !store.isSearchingDetail }
+        XCTAssertEqual(store.detailMatches.map(\.messageIndex), [11_999])
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 11_999)
+        XCTAssertEqual(store.transcriptProjection.visibleMessageIndices.count, 12_000)
+    }
+
+    func testClearingDetailQueryCancelsPendingResultsImmediately() async {
+        let metadata = Self.metadata(id: "clear-find", title: "Clear", tags: [], file: "/tmp/clear-find.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["needle", "needle tail"]),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        XCTAssertTrue(store.isSearchingDetail)
+        store.updateDetailQuery("")
+        XCTAssertFalse(store.isSearchingDetail)
+        XCTAssertTrue(store.detailMatches.isEmpty)
+        XCTAssertEqual(store.detailMatchIndex, -1)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(store.detailMatches.isEmpty, "The superseded worker must never republish")
+    }
+
+    func testChangingSessionCancelsPendingDetailSearchAndItsJump() async {
+        let old = Self.metadata(id: "old-find", title: "Old", tags: [], file: "/tmp/old-find.jsonl")
+        let new = Self.metadata(id: "new-find", title: "New", tags: [], file: "/tmp/new-find.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(old.file): Self.session(old, texts: ["first", "needle"]),
+            ConversationFilter.fileKey(new.file): Self.session(new, texts: ["new content"]),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: old.lastActivity))
+        await store.select(old)
+        store.updateDetailQuery("needle")
+        await store.select(new)
+        let newJump = store.jumpRequest
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(store.selectedFile, new.file)
+        XCTAssertEqual(store.detailQuery, "")
+        XCTAssertFalse(store.isSearchingDetail)
+        XCTAssertTrue(store.detailMatches.isEmpty)
+        XCTAssertEqual(store.jumpRequest, newJump)
+    }
+
+    func testPendingDetailSearchDoesNotOverrideAnExplicitLatestAction() async {
+        let metadata = Self.metadata(id: "latest-find", title: "Latest", tags: [], file: "/tmp/latest-find.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["needle first", "tail"]),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        store.jumpToLatest()
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertEqual(store.detailMatches.map(\.messageIndex), [0])
+        XCTAssertTrue(store.isFollowingLatest)
+        XCTAssertNil(store.jumpRequest)
+    }
+
+    func testPendingDetailSearchKeepsFirstHitNavigationAcrossLiveSnapshotRefresh() async {
+        let metadata = Self.metadata(id: "refresh-find", title: "Refresh", tags: [], file: "/tmp/refresh-find.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "middle", "needle tail"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: metadata.lastActivity)
+        let fixtureNow = metadata.lastActivity.addingTimeInterval(10)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      searchDelayNanoseconds: 200_000_000, now: { fixtureNow })
+        await store.select(metadata)
+        XCTAssertTrue(store.isSelectedSessionLive)
+        store.updateDetailQuery("needle")
+        XCTAssertTrue(store.isSearchingDetail)
+        provider.setSession(Self.session(metadata, texts: ["first", "middle", "needle tail", "appended"]),
+                            for: metadata.file)
+        inspector.setDate(metadata.lastActivity.addingTimeInterval(1))
+        await store.refreshSelectedFileIfChanged()
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertEqual(store.activeTranscript?.messages.count, 4)
+        XCTAssertEqual(store.detailMatches.map(\.messageIndex), [2])
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 2,
+                       "Refreshing the projection must not consume a pending user query's first-hit jump")
+    }
+
+    func testLiveSnapshotRefreshDoesNotRestoreSearchNavigationRevokedByReader() async {
+        for choosesLatest in [false, true] {
+            let metadata = Self.metadata(id: "refresh-navigation", title: "Refresh", tags: [], file: "/tmp/refresh-navigation.jsonl")
+            let provider = FakeConversationRepository(projects: [], sessions: [
+                ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "middle", "needle tail"]),
+            ])
+            let inspector = FakeConversationFileInspector(date: metadata.lastActivity)
+            let fixtureNow = metadata.lastActivity.addingTimeInterval(10)
+            let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                          searchDelayNanoseconds: 200_000_000, now: { fixtureNow })
+            await store.select(metadata)
+            store.updateDetailQuery("needle")
+            if choosesLatest { store.jumpToLatest() } else { store.jump(to: 1) }
+            let readerPosition = store.jumpRequest
+            provider.setSession(Self.session(metadata, texts: ["first", "middle", "needle tail", "appended"]),
+                                for: metadata.file)
+            inspector.setDate(metadata.lastActivity.addingTimeInterval(1))
+            await store.refreshSelectedFileIfChanged()
+            await waitUntil { !store.isSearchingDetail }
+            XCTAssertEqual(store.detailMatches.map(\.messageIndex), [2])
+            XCTAssertEqual(store.jumpRequest, readerPosition)
+            XCTAssertEqual(store.isFollowingLatest, choosesLatest)
+        }
+    }
+
+    func testNewDetailQueryImmediatelyRevokesPreviousMatchNavigation() async {
+        let metadata = Self.metadata(id: "replace-find", title: "Replace", tags: [], file: "/tmp/replace-find.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "needle old", "tail"]),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertEqual(store.detailMatches.map(\.messageIndex), [1])
+        let oldJump = store.jumpRequest
+
+        store.updateDetailQuery("no match")
+        XCTAssertTrue(store.isSearchingDetail)
+        XCTAssertTrue(store.detailMatches.isEmpty)
+        XCTAssertEqual(store.detailMatchIndex, -1)
+        store.nextDetailMatch()
+        store.previousDetailMatch()
+        XCTAssertEqual(store.jumpRequest, oldJump, "Navigation must not use the previous query during debounce")
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertTrue(store.detailMatches.isEmpty)
+        XCTAssertEqual(store.jumpRequest, oldJump)
+    }
+
+    func testPendingDetailQueryResumesAfterViewReactivationWithoutMovingReader() async {
+        let metadata = Self.metadata(id: "resume-find", title: "Resume", tags: [], file: "/tmp/resume-find.jsonl")
+        let provider = FakeConversationRepository(
+            projects: [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            sessions: [ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "needle tail"])]
+        )
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity),
+            pollIntervalNanoseconds: 60_000_000_000)
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        let readerPosition = store.jumpRequest
+        XCTAssertTrue(store.isSearchingDetail)
+        store.deactivate()
+        XCTAssertFalse(store.isSearchingDetail)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(store.detailMatches.isEmpty)
+
+        store.activate()
+        XCTAssertTrue(store.isSearchingDetail)
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertEqual(store.detailQuery, "needle")
+        XCTAssertEqual(store.detailMatches.map(\.messageIndex), [1])
+        XCTAssertEqual(store.jumpRequest, readerPosition, "Restoring a view must not steal its reading position")
+        store.deactivate()
+    }
+
+    func testMissingSelectedFileRevokesPendingDetailSearchAndTranscript() async {
+        let metadata = Self.metadata(id: "missing-find", title: "Missing", tags: [], file: "/tmp/missing-find.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "needle tail"]),
+        ])
+        let inspector = FakeConversationFileInspector(date: metadata.lastActivity)
+        let store = ConversationStore(repository: provider, fileInspector: inspector)
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        inspector.setDate(nil)
+        await store.refreshSelectedFileIfChanged()
+        XCTAssertEqual(store.detailState, .failed("会话文件已不存在"))
+        XCTAssertEqual(store.selectedMetadata, metadata, "Keep the missing title/path for the failure explanation")
+        XCTAssertNil(store.selectedSession)
+        XCTAssertNil(store.activeTranscript)
+        XCTAssertTrue(store.transcriptTabs.isEmpty)
+        XCTAssertEqual(store.detailQuery, "")
+        XCTAssertFalse(store.isSearchingDetail)
+        XCTAssertTrue(store.detailMatches.isEmpty)
+        XCTAssertNil(store.jumpRequest)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertNil(store.activeTranscript)
+        XCTAssertTrue(store.detailMatches.isEmpty)
+        XCTAssertNil(store.jumpRequest, "A canceled search must not resurrect the removed file's anchor")
     }
 
     func testActiveSubagentDrivesSearchCopyAndReplayWhileExportsStayRooted() async throws {
@@ -1238,6 +1514,7 @@ final class ConversationStoreTests: XCTestCase {
 
         await store.select(metadata)
         store.updateDetailQuery("root only")
+        await waitUntil { !store.isSearchingDetail }
         XCTAssertEqual(store.detailMatches.map(\.messageIndex), [0])
 
         store.selectTranscript(.subagent("spawn-child"))
@@ -1245,8 +1522,10 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(store.activeTranscriptFile, childFile.standardizedFileURL)
         XCTAssertEqual(store.activeTranscript?.messages, child.messages)
         store.updateDetailQuery("root only")
+        await waitUntil { !store.isSearchingDetail }
         XCTAssertTrue(store.detailMatches.isEmpty, "The root transcript must not leak into subagent search")
         store.updateDetailQuery("child needle")
+        await waitUntil { !store.isSearchingDetail }
         XCTAssertEqual(store.detailMatches.map(\.messageIndex), [0])
         XCTAssertEqual(store.totalDetailOccurrences, 2)
 

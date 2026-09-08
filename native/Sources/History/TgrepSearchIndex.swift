@@ -13,6 +13,9 @@ struct ConversationSearchDiagnostics: Equatable, Sendable {
     var cumulativeNormalizationMilliseconds: Double = 0
     var cumulativeTrigramBuildMilliseconds: Double = 0
     var restoredFromCache: Bool = false
+    /// Stable, privacy-safe reason codes; never an operating-system error description.
+    var fallbackReason: String? = nil
+    var tgrepRetryAfter: Date? = nil
 }
 
 /// The catalog owns this object and serializes all access with its read lock.
@@ -34,7 +37,13 @@ final class TgrepSearchIndex {
         var fingerprints: [Int64: String]
     }
 
-    enum Failure: Error { case unavailable, operationFailed }
+    enum Failure: String, Error {
+        case unavailable = "engineUnavailable"
+        case operationFailed
+        case lowDiskSpace
+        case ioFailure
+        case unsafeCache
+    }
 
     private let symbols: Symbols
     private let handle: UnsafeMutableRawPointer
@@ -61,7 +70,7 @@ final class TgrepSearchIndex {
         } else {
             created = symbols.create()
         }
-        guard let handle = created else { throw Failure.unavailable }
+        guard let handle = created else { throw symbols.failure(default: .unavailable) }
         self.symbols = symbols
         self.handle = handle
         let size = symbols.copyManifest(handle, nil, 0)
@@ -95,7 +104,7 @@ final class TgrepSearchIndex {
             symbols.upsert(handle, id, $0.baseAddress!, bytes.count)
         }
         trigramBuildMilliseconds += Self.milliseconds(since: indexStart)
-        guard status == 0 else { throw Failure.operationFailed }
+        guard status == 0 else { throw symbols.failure() }
     }
 
     func commit(revision: Int64, stamps: [Int64: Stamp]) throws {
@@ -113,7 +122,7 @@ final class TgrepSearchIndex {
             symbols.retain(handle, $0.baseAddress, $0.count)
         }
         trigramBuildMilliseconds += Self.milliseconds(since: indexStart)
-        guard status == 0 else { throw Failure.operationFailed }
+        guard status == 0 else { throw symbols.failure() }
         fingerprints = nextFingerprints
         let data = try JSONEncoder().encode(Manifest(
             normalizationVersion: Self.normalizationVersion, fingerprints: fingerprints
@@ -121,7 +130,7 @@ final class TgrepSearchIndex {
         let persisted = data.withUnsafeBytes {
             symbols.persist(handle, $0.baseAddress!.assumingMemoryBound(to: UInt8.self), $0.count)
         }
-        guard persisted == 0 else { throw Failure.operationFailed }
+        guard persisted == 0 else { throw symbols.failure() }
         self.revision = revision
     }
 
@@ -139,12 +148,12 @@ final class TgrepSearchIndex {
             }
         }
         var count = execute(&output)
-        guard count >= 0, count <= documentCount else { throw Failure.operationFailed }
+        guard count >= 0, count <= documentCount else { throw symbols.failure() }
         if count > output.count {
             output = [Int64](repeating: 0, count: count)
             count = execute(&output)
         }
-        guard count >= 0, count <= output.count else { throw Failure.operationFailed }
+        guard count >= 0, count <= output.count else { throw symbols.failure() }
         return Array(output.prefix(count))
     }
 
@@ -167,6 +176,7 @@ final class TgrepSearchIndex {
 
     private final class Symbols: @unchecked Sendable {
         typealias Version = @convention(c) () -> UInt32
+        typealias LastErrorCode = @convention(c) () -> UInt32
         typealias Create = @convention(c) () -> UnsafeMutableRawPointer?
         typealias CreatePersistent = @convention(c) (UnsafePointer<UInt8>, Int) -> UnsafeMutableRawPointer?
         typealias CopyManifest = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt8>?, Int) -> Int
@@ -192,6 +202,16 @@ final class TgrepSearchIndex {
         let upsert: Upsert
         let retain: Retain
         let query: Query
+        let lastErrorCode: LastErrorCode?
+
+        func failure(default fallback: Failure = .operationFailed) -> Failure {
+            switch lastErrorCode?() {
+            case 1: .lowDiskSpace
+            case 2: .ioFailure
+            case 3: .unsafeCache
+            default: fallback
+            }
+        }
 
         init?(url: URL) {
             guard let library = dlopen(url.path, RTLD_NOW | RTLD_LOCAL) else { return nil }
@@ -220,6 +240,8 @@ final class TgrepSearchIndex {
             self.upsert = upsert
             self.retain = retain
             self.query = query
+            // Additive to ABI v2: an older signed v2 artifact remains usable.
+            self.lastErrorCode = load("ccbuddy_tgrep_last_error_code", as: LastErrorCode.self)
         }
 
         deinit { dlclose(library) }

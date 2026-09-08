@@ -3,6 +3,87 @@ import XCTest
 
 @MainActor
 final class ConversationSearchExperienceTests: XCTestCase {
+    func testProgressiveFailureRetainsVerifiedHitsButNeverLooksComplete() async {
+        let provider = GatedProgressiveSearchRepository(failsAfterPrefix: true)
+        defer { provider.release() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        provider.release()
+        await waitUntil { !store.isSearchingContent }
+        XCTAssertEqual(store.contentHits.count, 1)
+        XCTAssertEqual(store.contentHits.values.first?.count, 3)
+        XCTAssertNotNil(store.contentSearchError)
+        XCTAssertNotEqual(store.contentSearchPhase, .completed)
+        XCTAssertNil(store.searchDurationMilliseconds)
+        XCTAssertNotNil(store.searchFirstResultMilliseconds)
+    }
+
+    func testDeactivatedProgressiveWorkerCannotPublishALateFailure() async throws {
+        let provider = GatedProgressiveSearchRepository(failsAfterPrefix: true)
+        defer { provider.release() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        store.deactivate()
+        provider.release()
+        await waitUntil { provider.finishedOldCall }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertNil(store.contentSearchError)
+        XCTAssertNil(store.searchDurationMilliseconds)
+        XCTAssertNil(store.contentSearchPhase)
+        XCTAssertFalse(store.isSearchingContent)
+    }
+
+    func testFirstExactResultIsVisibleBeforeProgressiveSearchCompletes() async throws {
+        let provider = GatedProgressiveSearchRepository()
+        defer { provider.release() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        XCTAssertTrue(store.isSearchingContent)
+        XCTAssertEqual(store.contentSearchPhase, .refiningResults)
+        XCTAssertEqual(store.searchDiagnostics?.engine, "Progress fixture")
+        XCTAssertNotNil(store.searchFirstResultMilliseconds)
+        XCTAssertNil(store.searchDurationMilliseconds, "First delivery is not whole-query completion")
+        XCTAssertEqual(store.contentHits.values.first?.count, 3, "Partial publication still carries an exact count")
+        provider.release()
+        await waitUntil { !store.isSearchingContent && store.contentHits.count == 2 }
+        XCTAssertEqual(store.contentSearchPhase, .completed)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(store.searchDurationMilliseconds),
+                                   try XCTUnwrap(store.searchFirstResultMilliseconds))
+    }
+
+    func testLateProgressCannotReplaceANewerQueryOrRepopulateAClear() async throws {
+        for replacement in ["replacement", ""] {
+            let provider = GatedProgressiveSearchRepository()
+            defer { provider.release() }
+            let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+            await store.reload()
+            store.updateListQuery("cache")
+            await waitUntil { store.contentHits.count == 1 }
+            store.updateListQuery(replacement)
+            provider.release()
+            await waitUntil { provider.finishedOldCall && !store.isSearchingContent }
+            // Let deliberately late callback deliveries reach the main actor; run IDs/generations
+            // must reject them even if a provider cannot interrupt its own work immediately.
+            try await Task.sleep(nanoseconds: 30_000_000)
+            XCTAssertEqual(store.listQuery, replacement)
+            if replacement.isEmpty {
+                XCTAssertTrue(store.contentHits.isEmpty)
+                XCTAssertNil(store.searchFirstResultMilliseconds)
+                XCTAssertNil(store.contentSearchPhase)
+            } else {
+                XCTAssertEqual(store.contentHits.count, 2)
+                XCTAssertTrue(store.contentHits.values.allSatisfy { $0.snippet == replacement })
+            }
+        }
+    }
+
     func testContinuousCatalogRevisionsCannotStarveSlowSearchOrBlankItsTrailingRefresh() async throws {
         let repository = GatedIndexedSearchRepository()
         let ranker = ControlledSemanticRanker()
@@ -210,6 +291,64 @@ private actor ControlledSemanticRanker: SemanticSearchRanking {
         SemanticSearchResult(orderedIDs: candidates.reversed().map(\.id), scores: [:],
                              diagnostics: .init(state: .ready, computePolicy: .cpuOnly))
     }
+}
+
+private final class GatedProgressiveSearchRepository: ConversationProgressiveHistoryProviding, @unchecked Sendable {
+    private let condition = NSCondition()
+    private let failsAfterPrefix: Bool
+    private var released = false
+    private var finished = false
+    init(failsAfterPrefix: Bool = false) { self.failsAfterPrefix = failsAfterPrefix }
+    var finishedOldCall: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return finished
+    }
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+    func listProjects(limit: Int) throws -> [HistoryProject] {
+        try SearchExperienceRepository().listProjects(limit: limit)
+    }
+    func getSession(file: URL) throws -> HistorySession {
+        try SearchExperienceRepository().getSession(file: file)
+    }
+    func search(query: String, limit: Int) throws -> [HistorySearchHit] {
+        try SearchExperienceRepository().search(query: query, limit: limit)
+    }
+    func search(query: String, limit: Int,
+                onProgress: @Sendable (ConversationSearchProgress) -> Void) throws -> [HistorySearchHit] {
+        let diagnostics = ConversationSearchDiagnostics(engine: "Progress fixture")
+        var hits = try search(query: query, limit: limit)
+        for index in hits.indices { hits[index].snippet = query; hits[index].count = 3 }
+        onProgress(.init(phase: .preparingCandidates, hits: []))
+        onProgress(.init(phase: .refiningResults, hits: Array(hits.prefix(1)), diagnostics: diagnostics))
+        if query == "cache" {
+            condition.lock()
+            let deadline = Date().addingTimeInterval(5)
+            while !released, condition.wait(until: deadline) {}
+            let wasReleased = released
+            condition.unlock()
+            guard wasReleased else { throw FixtureError.timedOut }
+            if failsAfterPrefix {
+                condition.lock()
+                finished = true
+                condition.unlock()
+                throw FixtureError.interruptedRead
+            }
+            // Intentionally deliver after cancellation to exercise the store's stale-result guard.
+            onProgress(.init(phase: .refiningResults, hits: hits, diagnostics: diagnostics))
+            condition.lock()
+            finished = true
+            condition.unlock()
+        }
+        onProgress(.init(phase: .completed, hits: hits, diagnostics: diagnostics))
+        return hits
+    }
+    private enum FixtureError: Error { case timedOut, interruptedRead }
 }
 
 private struct SearchExperienceRepository: ConversationHistoryProviding {

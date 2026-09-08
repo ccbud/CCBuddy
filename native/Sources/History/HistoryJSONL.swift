@@ -8,14 +8,21 @@ struct HistoryJSONLDocument: Sendable {
         from file: URL,
         qoderReader: QoderFileReader = .shared
     ) throws -> HistoryJSONLDocument {
+        try Task.checkCancellation()
         if QoderFileReader.isQoderDataPath(file) {
             let data: Data
             do { data = try qoderReader.read(file) }
+            catch is CancellationError { throw CancellationError() }
             catch { throw HistoryError.unreadableFile(file, String(describing: error)) }
-            return parse(data: data)
+            try Task.checkCancellation()
+            let document = parse(data: data)
+            try Task.checkCancellation()
+            return document
         }
         do {
             return try streamed(from: file)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as HistoryError {
             throw error
         } catch {
@@ -29,6 +36,8 @@ struct HistoryJSONLDocument: Sendable {
     /// full-size copy of itself before a single record existed — and mapping it instead only traded
     /// the copy for 438 MB of resident pages held until the parse finished. A rolling buffer keeps
     /// one chunk and one line alive; what survives is the records the caller asked for.
+    /// Cancellation is checked between chunks and records, not for every scanned byte. A single
+    /// large JSONDecoder call cannot be interrupted; cancellation is observed when it returns.
     private static func streamed(from file: URL) throws -> HistoryJSONLDocument {
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: file) }
@@ -47,14 +56,15 @@ struct HistoryJSONLDocument: Sendable {
         // rescanning the buffer from the start on each chunk is quadratic, and a single Codex
         // record can be tens of megabytes, so one line can span many chunks.
         var scanFrom = 0
-        func drain(finalChunk: Bool) {
+        func drain(finalChunk: Bool) throws {
             var lineStart = 0
             // Decoded straight out of the buffer's storage: handing each line to the decoder as a
             // fresh `Data` copied every byte of the file a second time.
-            pending.withUnsafeBufferPointer { buffer in
+            try pending.withUnsafeBufferPointer { buffer in
                 var index = scanFrom
                 while index < buffer.count {
                     if buffer[index] == newlineByte {
+                        try Task.checkCancellation()
                         decode(
                             buffer, from: lineStart, to: index,
                             into: &records, malformed: &malformed, decoder: decoder
@@ -64,6 +74,7 @@ struct HistoryJSONLDocument: Sendable {
                     index += 1
                 }
                 if finalChunk, lineStart < buffer.count {
+                    try Task.checkCancellation()
                     decode(
                         buffer, from: lineStart, to: buffer.count,
                         into: &records, malformed: &malformed, decoder: decoder
@@ -80,18 +91,21 @@ struct HistoryJSONLDocument: Sendable {
         }
 
         while true {
-            let chunk = autoreleasepool { () -> Data in
-                (try? handle.read(upToCount: chunkSize)) ?? Data()
+            try Task.checkCancellation()
+            let chunk = try autoreleasepool { () throws -> Data in
+                try handle.read(upToCount: chunkSize) ?? Data()
             }
+            try Task.checkCancellation()
             if chunk.isEmpty { break }
             // Appending a `Data` element by element goes through its collection conformance; the
             // raw buffer is the fast path.
             chunk.withUnsafeBytes { raw in
                 pending.append(contentsOf: raw.bindMemory(to: UInt8.self))
             }
-            autoreleasepool { drain(finalChunk: false) }
+            try autoreleasepool { try drain(finalChunk: false) }
         }
-        drain(finalChunk: true)
+        try drain(finalChunk: true)
+        try Task.checkCancellation()
 
         return HistoryJSONLDocument(
             records: records,

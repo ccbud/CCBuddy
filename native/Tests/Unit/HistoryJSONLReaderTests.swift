@@ -143,4 +143,44 @@ final class HistoryJSONLReaderTests: XCTestCase {
             fromBytes.records.compactMap { $0["id"]?.stringValue }
         )
     }
+
+    func testPrecancelledReadPreservesCancellationError() async throws {
+        let file = try write("{\"id\":\"complete\"}\n")
+        let worker = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try HistoryJSONLDocument.read(from: file)
+        }
+        do {
+            _ = try await worker.value
+            XCTFail("A cancelled read must not return a document")
+        } catch is CancellationError {
+            // Cancellation must not be wrapped as an unreadable-file error.
+        }
+    }
+
+    func testConcurrentReadCancellationNeverReturnsAPartialDocument() async throws {
+        let line = "{\"id\":\"record\",\"text\":\"synthetic multi-chunk cancellation fixture\"}\n"
+        let file = try write(String(repeating: line, count: 100_000))
+        let (started, continuation) = AsyncStream<Void>.makeStream()
+        let worker = Task.detached {
+            continuation.yield(())
+            continuation.finish()
+            return try HistoryJSONLDocument.read(from: file)
+        }
+        for await _ in started { break }
+        worker.cancel()
+        do {
+            _ = try await worker.value
+            XCTFail("Cancellation must throw, never publish only the records decoded so far")
+        } catch is CancellationError {}
+    }
+
+    func testSynchronousDataParsingRemainsCompleteInACancelledTask() async {
+        let document = await Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return HistoryJSONLDocument.parse(data: Data("{\"id\":\"a\"}\n{\"id\":\"b\"}".utf8))
+        }.value
+        XCTAssertEqual(document.records.compactMap { $0["id"]?.stringValue }, ["a", "b"])
+        XCTAssertEqual(document.diagnostics.malformedLines, 0)
+    }
 }

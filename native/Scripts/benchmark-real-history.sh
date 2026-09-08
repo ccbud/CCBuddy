@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 readonly ROOT
 readonly LIBRARY="$ROOT/native/Vendor/libccbuddy_tgrep.dylib"
 [[ -f "$LIBRARY" ]] || { echo 'First run bash native/Scripts/build-tgrep.sh' >&2; exit 1; }
@@ -22,6 +22,7 @@ while IFS= read -r file; do
   sources+=("$file")
 done < <(find "$ROOT/native/Sources/History" -name '*.swift' -type f | sort)
 xcrun swiftc -O -parse-as-library -module-name RealHistoryBenchmark \
+  -module-cache-path "$ROOT/native/build/history-benchmark-module-cache" \
   "${sources[@]}" "$ROOT/native/Scripts/benchmark-real-history.swift" \
   -o "$bundle/Contents/MacOS/history-benchmark"
 codesign --force --sign - "$bundle" >/dev/null 2>&1

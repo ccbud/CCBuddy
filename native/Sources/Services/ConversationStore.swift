@@ -357,6 +357,22 @@ enum ConversationFilter {
 /// Rules shared by the timeline and its data-driven search index. Keeping the index on parsed
 /// messages means a long transcript never has to be fully materialized just to find a phrase.
 enum ConversationVisibleText {
+    static func isVisible(_ message: HistoryMessage, pairedToolResultIDs: Set<String>) -> Bool {
+        message.content.contains { block in
+            if block.type == "tool_result", let id = block.toolUseID,
+               pairedToolResultIDs.contains(id) { return false }
+            switch block.type {
+            case "text":
+                let value = message.role == "user" ? stripInjected(block.text ?? "") : (block.text ?? "")
+                return !value.isEmpty
+            case "thinking": return !(block.thinking ?? "").isEmpty
+            case "tool_use", "skill_load", "image": return true
+            case "tool_result": return block.content != nil
+            default: return block.raw != nil || block.text != nil || block.thinking != nil
+            }
+        }
+    }
+
     static func resultMap(in messages: [HistoryMessage]) -> [String: HistoryContentBlock] {
         var result: [String: HistoryContentBlock] = [:]
         for message in messages {
@@ -481,20 +497,98 @@ enum ConversationVisibleText {
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func occurrenceCount(of query: String, in text: String) -> Int {
+    static func occurrenceCount(of query: String, in text: String, locale: Locale = .current) -> Int {
         var count = 0
         var cursor = text.startIndex
         while cursor < text.endIndex,
+              !Task.isCancelled,
               let range = text.range(
                   of: query,
                   options: [.caseInsensitive, .diacriticInsensitive],
                   range: cursor..<text.endIndex,
-                  locale: .current
+                  locale: locale
               ) {
             count += 1
             cursor = range.upperBound
         }
         return count
+    }
+}
+
+struct ConversationTOCEntry: Sendable {
+    let index: Int
+    let title: String
+    let fullText: String
+}
+
+/// Keeps expensive JSON/text preparation off the input path without retaining another complete
+/// copy of an arbitrarily large transcript. The immutable source uses Array/String copy-on-write;
+/// only small prepared messages are cached, with a hard eight-megabyte total budget.
+final class ConversationDetailSearchIndex: @unchecked Sendable {
+    private struct Entry {
+        let text: String
+        let needsDiacriticFallback: Bool
+    }
+    private let messages: [HistoryMessage]
+    private let results: [String: HistoryContentBlock]
+    private let pairedIDs: Set<String>
+    private let lock = NSLock()
+    private var cache: [Int: Entry] = [:]
+    private var cacheBytes = 0
+    private let maximumCacheBytes: Int
+    private let maximumEntryBytes = 256 * 1_024
+    private let locale: Locale
+
+    init(messages: [HistoryMessage], results: [String: HistoryContentBlock], pairedIDs: Set<String>,
+         maximumCacheBytes: Int = 8 * 1_024 * 1_024, locale: Locale = .current) {
+        self.messages = messages
+        self.results = results
+        self.pairedIDs = pairedIDs
+        self.maximumCacheBytes = max(0, maximumCacheBytes)
+        self.locale = locale
+    }
+
+    var retainedTextBytes: Int { lock.withLock { cacheBytes } }
+
+    func matches(query rawQuery: String) throws -> [ConversationDetailSearchMatch] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        let matcher = ConversationLiteralSearch(query: query)
+        let queryNeedsFallback = query.folding(options: .diacriticInsensitive, locale: locale) != query
+            || ["tr", "az", "lt"].contains(locale.language.languageCode?.identifier ?? "")
+        var matches: [ConversationDetailSearchMatch] = []
+        for index in messages.indices {
+            try Task.checkCancellation()
+            let entry = preparedText(at: index)
+            try Task.checkCancellation()
+            // The existing detail search ignores accents. Keep its exact Foundation behavior
+            // where folding changes text; the verified literal scanner handles the common path.
+            let count = queryNeedsFallback || entry.needsDiacriticFallback
+                ? ConversationVisibleText.occurrenceCount(of: query, in: entry.text, locale: locale)
+                : matcher.match(in: entry.text)?.count ?? 0
+            try Task.checkCancellation()
+            if count > 0 { matches.append(.init(messageIndex: index, occurrences: count)) }
+        }
+        return matches
+    }
+
+    private func preparedText(at index: Int) -> Entry {
+        if let existing = lock.withLock({ cache[index] }) { return existing }
+        let text = ConversationVisibleText.searchableText(
+            for: messages[index], results: results, pairedToolResultIDs: pairedIDs
+        )
+        let entry = Entry(text: text,
+            needsDiacriticFallback: text.folding(options: .diacriticInsensitive, locale: locale) != text)
+        let bytes = text.utf8.count
+        if bytes <= maximumEntryBytes {
+            lock.withLock {
+                if cache[index] == nil, bytes <= maximumCacheBytes - cacheBytes {
+                    cache[index] = entry
+                    cacheBytes += bytes
+                }
+            }
+        }
+        return entry
     }
 }
 
@@ -512,6 +606,9 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var contentSearchError: String?
     @Published private(set) var searchDiagnostics: ConversationSearchDiagnostics?
     @Published private(set) var searchDurationMilliseconds: Double?
+    @Published private(set) var searchFirstResultMilliseconds: Double?
+    @Published private(set) var contentSearchPhase: ConversationSearchProgress.Phase?
+    private var activeSearchRunID: UUID?
     @Published private(set) var semanticRankingEnabled = false
     @Published private(set) var semanticDiagnostics: SemanticSearchDiagnostics?
     @Published private(set) var isRankingSearch = false
@@ -529,6 +626,7 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var followLatestRevision = 0
 
     @Published private(set) var detailQuery = ""
+    @Published private(set) var isSearchingDetail = false
     @Published private(set) var detailMatches: [ConversationDetailSearchMatch] = []
     @Published private(set) var detailMatchIndex = -1
     @Published private(set) var jumpRequest: ConversationJumpRequest?
@@ -549,21 +647,88 @@ final class ConversationStore: ObservableObject {
     final class TranscriptProjection: Equatable, Sendable {
         let toolResults: [String: HistoryContentBlock]
         let pairedToolResultIDs: Set<String>
+        let visibleMessageIndices: [Int]
+        let tableOfContents: [ConversationTOCEntry]
+        let searchIndex: ConversationDetailSearchIndex
 
-        init(
+        nonisolated init(
             toolResults: [String: HistoryContentBlock] = [:],
-            pairedToolResultIDs: Set<String> = []
+            pairedToolResultIDs: Set<String> = [],
+            messages: [HistoryMessage] = [],
+            visibleMessageIndices: [Int] = [],
+            tableOfContents: [ConversationTOCEntry] = []
         ) {
             self.toolResults = toolResults
             self.pairedToolResultIDs = pairedToolResultIDs
+            self.visibleMessageIndices = visibleMessageIndices
+            self.tableOfContents = tableOfContents
+            searchIndex = ConversationDetailSearchIndex(messages: messages, results: toolResults,
+                                                        pairedIDs: pairedToolResultIDs)
         }
 
-        static func == (lhs: TranscriptProjection, rhs: TranscriptProjection) -> Bool {
+        nonisolated static func == (lhs: TranscriptProjection, rhs: TranscriptProjection) -> Bool {
             lhs === rhs
+        }
+
+        nonisolated static func make(messages: [HistoryMessage]) throws -> TranscriptProjection {
+            let results = ConversationVisibleText.resultMap(in: messages)
+            let pairedIDs = ConversationVisibleText.pairedToolResultIDs(in: messages)
+            var visible: [Int] = []
+            var contents: [ConversationTOCEntry] = []
+            for index in messages.indices {
+                try Task.checkCancellation()
+                let message = messages[index]
+                if ConversationVisibleText.isVisible(message, pairedToolResultIDs: pairedIDs) {
+                    visible.append(index)
+                }
+                if message.role == "user", !message.isMetadata {
+                    let value = ConversationVisibleText.visibleUserText(message)
+                        .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+                    if !value.isEmpty {
+                        contents.append(.init(index: index, title: String(value.prefix(32)),
+                                              fullText: String(value.prefix(200))))
+                    }
+                }
+            }
+            return TranscriptProjection(toolResults: results, pairedToolResultIDs: pairedIDs,
+                                        messages: messages, visibleMessageIndices: visible,
+                                        tableOfContents: contents)
         }
     }
 
     @Published private(set) var transcriptProjection = TranscriptProjection()
+    private struct PreparedTranscripts: Sendable {
+        let tabs: [ConversationTranscriptTab]
+        let transcripts: [ConversationTranscriptID: HistorySession]
+        let projections: [ConversationTranscriptID: TranscriptProjection]
+
+        nonisolated static func make(_ session: HistorySession) throws -> Self {
+            let tabs = ConversationTranscriptPresentation.tabs(in: session)
+            var transcripts: [ConversationTranscriptID: HistorySession] = [.main: session]
+            var projections: [ConversationTranscriptID: TranscriptProjection] = [:]
+            for tab in tabs {
+                try Task.checkCancellation()
+                guard let transcript = ConversationTranscriptPresentation.transcript(tab.id, in: session) else { continue }
+                transcripts[tab.id] = transcript
+                projections[tab.id] = try TranscriptProjection.make(messages: transcript.messages)
+            }
+            return Self(tabs: tabs, transcripts: transcripts, projections: projections)
+        }
+    }
+    private var preparedTranscripts: PreparedTranscripts?
+    private var preparedTranscriptsRevision = 0
+    private var projectionWorker: Task<PreparedTranscripts, Error>?
+    private var projectionWorkerID = UUID()
+    private var detailSearchTask: Task<Void, Never>?
+    private var detailSearchWorker: Task<[ConversationDetailSearchMatch], Error>?
+    private var detailSearchGeneration = UUID()
+    private var detailSearchNeedsResume = false
+    private struct DetailSearchNavigationIntent {
+        let query: String
+        let transcriptID: ConversationTranscriptID
+        let originalJump: ConversationJumpRequest?
+    }
+    private var detailSearchNavigationIntent: DetailSearchNavigationIntent?
 
     @Published private(set) var actionMessage: String? {
         didSet {
@@ -724,15 +889,12 @@ final class ConversationStore: ObservableObject {
     var selectedFile: URL? { selectedMetadata?.file }
 
     var transcriptTabs: [ConversationTranscriptTab] {
-        selectedSession.map { ConversationTranscriptPresentation.tabs(in: $0) } ?? []
+        selectedSession == nil ? [] : preparedTranscripts?.tabs ?? []
     }
 
     var activeTranscript: HistorySession? {
-        guard let selectedSession else { return nil }
-        return ConversationTranscriptPresentation.transcript(
-            activeTranscriptID,
-            in: selectedSession
-        ) ?? selectedSession
+        guard selectedSession != nil else { return nil }
+        return preparedTranscripts?.transcripts[activeTranscriptID] ?? selectedSession
     }
 
     var activeTranscriptFile: URL? { activeTranscript?.metadata.file }
@@ -837,6 +999,9 @@ final class ConversationStore: ObservableObject {
         searchWorker?.cancel()
         semanticTask?.cancel()
         detailWorker?.cancel()
+        projectionWorker?.cancel()
+        detailSearchTask?.cancel()
+        detailSearchWorker?.cancel()
         pollingTask?.cancel()
         indexRetryTask?.cancel()
         revisionReloadTask?.cancel()
@@ -914,6 +1079,10 @@ final class ConversationStore: ObservableObject {
     func activate() {
         guard !isActive else { return }
         isActive = true
+        if detailSearchNeedsResume {
+            detailSearchNeedsResume = false
+            rebuildDetailSearch(preservingMessageIndex: currentDetailMatchMessageIndex, jumpToFirst: false)
+        }
         // Always re-read the warm catalog. Indexing remains app-lifetime work while this view is
         // inactive, so a revision may have advanced while its UI observer was detached.
         requestReload()
@@ -928,6 +1097,9 @@ final class ConversationStore: ObservableObject {
         cancelSemanticRanking()
         searchDiagnostics = nil
         searchDurationMilliseconds = nil
+        searchFirstResultMilliseconds = nil
+        contentSearchPhase = nil
+        activeSearchRunID = nil
         indexObservationGeneration = UUID()
         pollingTask?.cancel()
         pollingTask = nil
@@ -938,6 +1110,9 @@ final class ConversationStore: ObservableObject {
         contentSearchNeedsRefresh = false
         lastSearchStartedRevision = nil
         detailWorker?.cancel()
+        cancelProjectionPreparation()
+        detailSearchNeedsResume = isSearchingDetail
+        cancelDetailSearch()
         indexRetryTask?.cancel()
         revisionReloadTask?.cancel()
         revisionReloadTask = nil
@@ -1017,6 +1192,9 @@ final class ConversationStore: ObservableObject {
         contentSearchError = nil
         searchDiagnostics = nil
         searchDurationMilliseconds = nil
+        searchFirstResultMilliseconds = nil
+        contentSearchPhase = nil
+        activeSearchRunID = nil
         cancelSemanticRanking()
         isSearchingContent = false
 
@@ -1061,10 +1239,16 @@ final class ConversationStore: ObservableObject {
         let file = metadata.file.standardizedFileURL
         deferredTranscriptJump = nil
         detailWorker?.cancel()
+        cancelProjectionPreparation()
+        cancelDetailSearch()
+        detailSearchNeedsResume = false
         detailGeneration = UUID()
         let generation = detailGeneration
         selectedMetadata = metadata
         selectedSession = nil
+        preparedTranscripts = nil
+        preparedTranscriptsRevision += 1
+        transcriptProjection = TranscriptProjection()
         activeTranscriptID = .main
         observedModificationDate = nil
         isSelectedSessionLive = Self.isLive(lastActivity: metadata.lastActivity, now: now())
@@ -1106,8 +1290,14 @@ final class ConversationStore: ObservableObject {
         detailGeneration = UUID()
         detailWorker?.cancel()
         detailWorker = nil
+        cancelProjectionPreparation()
+        cancelDetailSearch()
+        detailSearchNeedsResume = false
         selectedMetadata = nil
         selectedSession = nil
+        preparedTranscripts = nil
+        preparedTranscriptsRevision += 1
+        transcriptProjection = TranscriptProjection()
         activeTranscriptID = .main
         observedModificationDate = nil
         isSelectedSessionLive = false
@@ -1140,6 +1330,7 @@ final class ConversationStore: ObservableObject {
                   selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
             let message = "无法检查会话文件：\(error.localizedDescription)"
             detailState = .failed(message)
+            cancelDetailSearch()
             actionMessage = message
             actionIsError = true
             return
@@ -1148,9 +1339,12 @@ final class ConversationStore: ObservableObject {
         guard detailGeneration == inspectedGeneration,
               selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
         guard let current else {
+            // Keep the missing selection/title for the failure explanation, but revoke every
+            // asynchronous snapshot/search that could otherwise resurrect its old transcript.
+            let metadata = selectedMetadata
+            clearSelection()
+            selectedMetadata = metadata
             detailState = .failed("会话文件已不存在")
-            selectedSession = nil
-            isSelectedSessionLive = false
             return
         }
 
@@ -1171,6 +1365,7 @@ final class ConversationStore: ObservableObject {
         observedModificationDate = current
 
         detailWorker?.cancel()
+        cancelProjectionPreparation()
         detailGeneration = UUID()
         let generation = detailGeneration
         await loadDetail(
@@ -1181,7 +1376,13 @@ final class ConversationStore: ObservableObject {
     }
 
     func updateDetailQuery(_ query: String) {
+        guard query != detailQuery else { return }
         detailQuery = query
+        detailMatches = []
+        detailMatchIndex = -1
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            isFollowingLatest = false
+        }
         rebuildDetailSearch(preservingMessageIndex: nil, jumpToFirst: true)
     }
 
@@ -1189,6 +1390,7 @@ final class ConversationStore: ObservableObject {
         guard id != activeTranscriptID,
               transcriptTabs.contains(where: { $0.id == id }) else { return }
         deferredTranscriptJump = nil
+        cancelDetailSearch()
         activeTranscriptID = id
         refreshTranscriptProjection()
         loadDeferredTranscriptIfNeeded(id)
@@ -1234,23 +1436,42 @@ final class ConversationStore: ObservableObject {
                 try? provider.getSession(file: file)
             }.value
             guard let self, !Task.isCancelled, let loaded else { return }
-            guard self.detailGeneration == generation,
-                  self.activeTranscriptID == id,
-                  var session = self.selectedSession,
-                  var child = session.subagents[agentID],
-                  child.file.standardizedFileURL == file.standardizedFileURL else { return }
-            child.messages = loaded.messages
-            child.count = loaded.messages.count
-            child.totals = loaded.metadata.totals
-            session.subagents[agentID] = child
-            self.selectedSession = session
+            while true {
+                guard !Task.isCancelled, self.detailGeneration == generation,
+                      self.activeTranscriptID == id,
+                      var session = self.selectedSession,
+                      var child = session.subagents[agentID],
+                      child.file.standardizedFileURL == file.standardizedFileURL else { return }
+                let revision = self.preparedTranscriptsRevision
+                child.messages = loaded.messages
+                child.count = loaded.messages.count
+                child.totals = loaded.metadata.totals
+                session.subagents[agentID] = child
+                let updatedSession = session
+                let preparation = Task.detached(priority: .userInitiated) {
+                    try PreparedTranscripts.make(updatedSession)
+                }
+                let prepared = try? await withTaskCancellationHandler {
+                    try await preparation.value
+                } onCancel: { preparation.cancel() }
+                guard let prepared, !Task.isCancelled, self.detailGeneration == generation,
+                      self.activeTranscriptID == id else { return }
+                // A parent refresh can publish while the worker prepares this child. Reattach
+                // to that newer parent instead of rolling its messages back to our old snapshot.
+                guard self.preparedTranscriptsRevision == revision else { continue }
+                self.preparedTranscripts = prepared
+                self.preparedTranscriptsRevision += 1
+                self.selectedSession = updatedSession
+                break
+            }
             self.refreshTranscriptProjection()
+            self.rebuildDetailSearch(preservingMessageIndex: nil, jumpToFirst: false)
             self.detailRevision += 1
             if let pending = self.deferredTranscriptJump,
                pending.parentFileKey == self.selectedFile.map(ConversationFilter.fileKey),
                pending.transcriptID == id, pending.childFileKey == childFileKey {
                 self.deferredTranscriptJump = nil
-                if child.messages.indices.contains(pending.messageIndex) {
+                if loaded.messages.indices.contains(pending.messageIndex) {
                     self.jump(to: pending.messageIndex)
                 }
             } else if self.isFollowingLatest {
@@ -1263,7 +1484,7 @@ final class ConversationStore: ObservableObject {
 
     /// Describes the catalog's separate-file children on the session that was just read, so its tabs
     /// appear immediately with their titles and sizes.
-    static func attachingSubagentRefs(
+    nonisolated static func attachingSubagentRefs(
         of metadata: HistorySessionMetadata?,
         to session: HistorySession,
         preserving previousSession: HistorySession? = nil
@@ -1626,17 +1847,7 @@ final class ConversationStore: ObservableObject {
     }
 
     private func refreshTranscriptProjection() {
-        guard let transcript = activeTranscript else {
-            if !transcriptProjection.toolResults.isEmpty
-                || !transcriptProjection.pairedToolResultIDs.isEmpty {
-                transcriptProjection = TranscriptProjection()
-            }
-            return
-        }
-        transcriptProjection = TranscriptProjection(
-            toolResults: ConversationVisibleText.resultMap(in: transcript.messages),
-            pairedToolResultIDs: ConversationVisibleText.pairedToolResultIDs(in: transcript.messages)
-        )
+        transcriptProjection = preparedTranscripts?.projections[activeTranscriptID] ?? TranscriptProjection()
     }
 
     func clearActionMessage() {
@@ -1920,7 +2131,12 @@ final class ConversationStore: ObservableObject {
                     ConversationFilter.fileKey($0.file)
                         == ConversationFilter.fileKey(selectedFile)
                 }) {
-                    if selectedMetadata != refreshed { selectedMetadata = refreshed }
+                    if selectedMetadata != refreshed {
+                        selectedMetadata = refreshed
+                        // Child references can change without the parent JSONL changing. A
+                        // preparation already in flight must merge this newer catalog snapshot.
+                        preparedTranscriptsRevision += 1
+                    }
                 } else {
                     // A selection can race a scope switch or disappear during reconciliation.
                     // Do not retain actions for a file which is no longer part of this view.
@@ -1940,15 +2156,34 @@ final class ConversationStore: ObservableObject {
         lastSearchStartedRevision = observedIndexRevision
         let startedAt = ContinuousClock.now
         let provider = repository
-        let worker = Task.detached(priority: .userInitiated) {
+        let runID = UUID()
+        activeSearchRunID = runID
+        contentSearchPhase = .preparingCandidates
+        // A background revision refresh preserves the already visible complete result set.
+        // User edits clear it before starting this run and can receive progressive prefixes.
+        let preservesExistingResults = !contentHits.isEmpty
+        let worker = Task.detached(priority: .userInitiated) { [weak self] in
             try Task.checkCancellation()
-            let value = try provider.search(query: query, limit: ConversationCatalogLimits.searchHits)
+            let value: [HistorySearchHit]
+            if let progressive = provider as? any ConversationProgressiveHistoryProviding {
+                value = try progressive.search(query: query, limit: ConversationCatalogLimits.searchHits) { [weak self] progress in
+                    // The repository never waits for the UI actor or calls back under a DB lock.
+                    // Cumulative snapshots make skipped/coalesced intermediate updates harmless.
+                    Task { @MainActor [weak self] in
+                        self?.receiveSearchProgress(progress, query: query, generation: generation,
+                            runID: runID, startedAt: startedAt, preservesExistingResults: preservesExistingResults)
+                    }
+                }
+            } else {
+                value = try provider.search(query: query, limit: ConversationCatalogLimits.searchHits)
+            }
             try Task.checkCancellation()
             return value
         }
         searchWorker = worker
         defer {
-            if searchGeneration == generation {
+            if searchGeneration == generation, activeSearchRunID == runID {
+                activeSearchRunID = nil
                 searchWorker = nil
                 searchTask = nil
                 isSearchingContent = false
@@ -1962,14 +2197,19 @@ final class ConversationStore: ObservableObject {
 
         do {
             let hits = try await worker.value
-            guard !Task.isCancelled, searchGeneration == generation, listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            guard !Task.isCancelled, searchGeneration == generation, activeSearchRunID == runID,
+                  listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
             var mapped: [String: HistorySearchHit] = [:]
             for hit in hits { mapped[ConversationFilter.fileKey(hit.file)] = hit }
             contentHits = mapped
-            searchDiagnostics = (provider as? any ConversationIndexedHistoryProviding)?.searchDiagnostics
+            searchDiagnostics = (provider as? any ConversationIndexedHistoryProviding)?.searchDiagnostics ?? searchDiagnostics
             let duration = startedAt.duration(to: .now).components
             searchDurationMilliseconds = Double(duration.seconds) * 1_000
                 + Double(duration.attoseconds) / 1_000_000_000_000_000
+            if searchFirstResultMilliseconds == nil, !hits.isEmpty {
+                searchFirstResultMilliseconds = searchDurationMilliseconds
+            }
+            contentSearchPhase = .completed
             // Publish exact matches before the first model load, which can take substantially
             // longer than a warm lexical query. A new keystroke cancels this generation.
             isSearchingContent = false
@@ -1977,8 +2217,33 @@ final class ConversationStore: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            guard searchGeneration == generation else { return }
+            guard !Task.isCancelled, searchGeneration == generation, activeSearchRunID == runID,
+                  listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
             contentSearchError = error.localizedDescription
+        }
+    }
+
+    private func receiveSearchProgress(
+        _ progress: ConversationSearchProgress, query: String, generation: UUID, runID: UUID,
+        startedAt: ContinuousClock.Instant, preservesExistingResults: Bool
+    ) {
+        guard searchGeneration == generation, activeSearchRunID == runID, isSearchingContent,
+              listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query,
+              progress.phase != .completed else { return }
+        // Unstructured delivery can reach the UI after a newer prefix or a trailing refresh.
+        // Never regress the phase, shorten a prefix, or overwrite a finished search.
+        if contentSearchPhase != .refiningResults || progress.phase != .preparingCandidates {
+            contentSearchPhase = progress.phase
+        }
+        guard !preservesExistingResults else { return }
+        if let diagnostics = progress.diagnostics { searchDiagnostics = diagnostics }
+        guard progress.hits.count > contentHits.count else { return }
+        contentHits = Dictionary(progress.hits.map { (ConversationFilter.fileKey($0.file), $0) },
+                                 uniquingKeysWith: { _, newer in newer })
+        if searchFirstResultMilliseconds == nil {
+            let duration = startedAt.duration(to: .now).components
+            searchFirstResultMilliseconds = Double(duration.seconds) * 1_000
+                + Double(duration.attoseconds) / 1_000_000_000_000_000
         }
     }
 
@@ -2015,14 +2280,26 @@ final class ConversationStore: ObservableObject {
             lastDetailLoadFinishedAt = Date()
             let value = snapshot.session
 
-            let previousMatch = detailMatchIndex >= 0 && detailMatchIndex < detailMatches.count
-                ? detailMatches[detailMatchIndex].messageIndex
-                : nil
-            let attached = Self.attachingSubagentRefs(
-                of: selectedMetadata, to: value, preserving: selectedSession
-            )
+            // Prepare derived rows, child tabs and navigation on a worker. A separate child read
+            // may finish while this is running: merge again in that case instead of replacing
+            // its newly loaded messages with an older empty child snapshot.
+            var attached: HistorySession
+            var prepared: PreparedTranscripts
+            while true {
+                let revision = preparedTranscriptsRevision
+                attached = Self.attachingSubagentRefs(
+                    of: selectedMetadata, to: value, preserving: selectedSession
+                )
+                prepared = try await prepareTranscripts(attached)
+                guard !Task.isCancelled, detailGeneration == generation,
+                      selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
+                if revision == preparedTranscriptsRevision { break }
+            }
+            let previousMatch = currentDetailMatchMessageIndex
+            preparedTranscripts = prepared
+            preparedTranscriptsRevision += 1
             selectedSession = attached
-            if !ConversationTranscriptPresentation.tabs(in: attached).contains(where: {
+            if !prepared.tabs.contains(where: {
                 $0.id == activeTranscriptID
             }) {
                 deferredTranscriptJump = nil
@@ -2057,46 +2334,115 @@ final class ConversationStore: ObservableObject {
             guard detailGeneration == generation,
                   selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
             detailState = .failed(error.localizedDescription)
+            cancelDetailSearch()
             if initialSelection { selectedSession = nil }
         }
         if detailGeneration == generation { detailWorker = nil }
     }
 
     private func rebuildDetailSearch(preservingMessageIndex: Int?, jumpToFirst: Bool) {
-        guard let activeTranscript else {
+        // A live snapshot can replace the projection while a new query is still debouncing.
+        // Restart the worker without losing that query's first-hit navigation intent.
+        cancelDetailSearch(preservingNavigationIntent: !jumpToFirst)
+        let query = detailQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard detailState == .loaded, activeTranscript != nil, !query.isEmpty else {
             detailMatches = []
             detailMatchIndex = -1
+            detailSearchNavigationIntent = nil
             return
         }
-        detailMatches = ConversationVisibleText.detailMatches(
-            in: activeTranscript.messages,
-            query: detailQuery
-        )
-        guard !detailMatches.isEmpty else {
-            detailMatchIndex = -1
-            return
+        if jumpToFirst {
+            detailSearchNavigationIntent = .init(query: query, transcriptID: activeTranscriptID,
+                                                originalJump: jumpRequest)
         }
-        if let preservingMessageIndex,
-           let index = detailMatches.firstIndex(where: { $0.messageIndex == preservingMessageIndex }) {
-            detailMatchIndex = index
-        } else {
-            detailMatchIndex = 0
+        if let intent = detailSearchNavigationIntent,
+           intent.query != query || intent.transcriptID != activeTranscriptID
+            || intent.originalJump != jumpRequest || isFollowingLatest {
+            detailSearchNavigationIntent = nil
         }
-        if jumpToFirst { selectDetailMatch(at: detailMatchIndex) }
+        let generation = detailSearchGeneration
+        let transcriptID = activeTranscriptID
+        let projection = transcriptProjection
+        let navigationIntent = detailSearchNavigationIntent
+        let delay = searchDelayNanoseconds
+        isSearchingDetail = true
+        detailSearchTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+                try Task.checkCancellation()
+                let worker = Task.detached(priority: .userInitiated) {
+                    try projection.searchIndex.matches(query: query)
+                }
+                guard let self else { worker.cancel(); return }
+                self.detailSearchWorker = worker
+                let matches = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: { worker.cancel() }
+                guard !Task.isCancelled, self.detailSearchGeneration == generation,
+                      self.detailState == .loaded,
+                      self.activeTranscriptID == transcriptID,
+                      self.transcriptProjection === projection else { return }
+                self.detailMatches = matches
+                if let preservingMessageIndex,
+                   let index = matches.firstIndex(where: { $0.messageIndex == preservingMessageIndex }) {
+                    self.detailMatchIndex = index
+                } else {
+                    self.detailMatchIndex = matches.isEmpty ? -1 : 0
+                }
+                self.isSearchingDetail = false
+                self.detailSearchTask = nil
+                self.detailSearchWorker = nil
+                self.detailSearchNavigationIntent = nil
+                if let navigationIntent, !matches.isEmpty, !self.isFollowingLatest,
+                   self.jumpRequest == navigationIntent.originalJump {
+                    self.selectDetailMatch(at: self.detailMatchIndex)
+                }
+            } catch {
+                guard let self, self.detailSearchGeneration == generation else { return }
+                self.isSearchingDetail = false
+                self.detailSearchTask = nil
+                self.detailSearchWorker = nil
+                self.detailSearchNavigationIntent = nil
+            }
+        }
+    }
+
+    private var currentDetailMatchMessageIndex: Int? {
+        detailMatches.indices.contains(detailMatchIndex) ? detailMatches[detailMatchIndex].messageIndex : nil
+    }
+
+    private func prepareTranscripts(_ session: HistorySession) async throws -> PreparedTranscripts {
+        let workerID = UUID()
+        projectionWorkerID = workerID
+        let worker = Task.detached(priority: .userInitiated) { try PreparedTranscripts.make(session) }
+        projectionWorker = worker
+        defer {
+            if projectionWorkerID == workerID { projectionWorker = nil }
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: { worker.cancel() }
+    }
+
+    private func cancelProjectionPreparation() {
+        projectionWorkerID = UUID()
+        projectionWorker?.cancel()
+        projectionWorker = nil
+    }
+
+    private func cancelDetailSearch(preservingNavigationIntent: Bool = false) {
+        detailSearchGeneration = UUID()
+        detailSearchTask?.cancel()
+        detailSearchWorker?.cancel()
+        detailSearchTask = nil
+        detailSearchWorker = nil
+        isSearchingDetail = false
+        if !preservingNavigationIntent { detailSearchNavigationIntent = nil }
     }
 
     private func jumpToFirstVisibleMessage() {
-        guard let messages = activeTranscript?.messages else { return }
-        let results = ConversationVisibleText.resultMap(in: messages)
-        let pairedIDs = ConversationVisibleText.pairedToolResultIDs(in: messages)
-        let firstVisible = messages.firstIndex(where: {
-            !ConversationVisibleText.searchableText(
-                for: $0,
-                results: results,
-                pairedToolResultIDs: pairedIDs
-            ).isEmpty
-        }) ?? 0
-        jump(to: firstVisible)
+        guard activeTranscript != nil else { return }
+        jump(to: transcriptProjection.visibleMessageIndices.first ?? 0)
     }
 
     private func selectDetailMatch(at index: Int) {
@@ -2136,11 +2482,17 @@ final class ConversationStore: ObservableObject {
 
     private func cancelTransientWork() {
         deferredTranscriptJump = nil
+        deferredTranscriptWorker?.cancel()
+        cancelProjectionPreparation()
+        cancelDetailSearch()
         contentSearchNeedsRefresh = false
         lastSearchStartedRevision = nil
         cancelSemanticRanking()
         searchDiagnostics = nil
         searchDurationMilliseconds = nil
+        searchFirstResultMilliseconds = nil
+        contentSearchPhase = nil
+        activeSearchRunID = nil
         listGeneration = UUID()
         searchGeneration = UUID()
         detailGeneration = UUID()
@@ -2157,6 +2509,7 @@ final class ConversationStore: ObservableObject {
         searchTask = nil
         searchWorker = nil
         detailWorker = nil
+        projectionWorker = nil
         indexRetryTask = nil
         contentHits = [:]
         isSearchingContent = false

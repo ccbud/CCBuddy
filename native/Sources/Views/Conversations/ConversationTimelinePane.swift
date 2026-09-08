@@ -273,6 +273,11 @@ struct ConversationTimelinePane: View {
                 .onSubmit { store.nextDetailMatch() }
                 .disabled(store.selectedSession == nil)
                 .accessibilityIdentifier("conversation.detail.search")
+                if store.isSearchingDetail {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityIdentifier("conversation.detail.search.progress")
+                }
             }
             .padding(.horizontal, Space.sm + 1)
             .frame(minWidth: 110, idealWidth: 200, maxWidth: 260, minHeight: Metrics.controlHeight)
@@ -549,7 +554,6 @@ struct ConversationTimelinePane: View {
         // Taken from the store, which computes them once per transcript. Rebuilding them here meant
         // walking every message on every redraw.
         let projection = store.transcriptProjection
-        let pairedIDs = projection.pairedToolResultIDs
         let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
             ? store.detailMatches[store.detailMatchIndex].messageIndex
             : nil
@@ -559,10 +563,9 @@ struct ConversationTimelinePane: View {
                 LazyVStack(alignment: .leading, spacing: Space.xxl) {
                     // Indices, not `enumerated()`: the latter copies the whole message array into
                     // a fresh array of tuples every time the body runs.
-                    ForEach(session.messages.indices, id: \.self) { index in
+                    ForEach(projection.visibleMessageIndices, id: \.self) { index in
                         let message = session.messages[index]
-                        if ConversationMessageView.isVisible(message, pairedToolResultIDs: pairedIDs) {
-                            ConversationMessageView(
+                        ConversationMessageView(
                                 message: message,
                                 messageIndex: index,
                                 sourceRawValue: session.metadata.source.rawValue,
@@ -572,7 +575,6 @@ struct ConversationTimelinePane: View {
                                 fontSize: CGFloat(fontSize ?? 13)
                             )
                             .id(ConversationPresentation.messageAnchor(index))
-                        }
                     }
                     Color.clear.frame(height: 1).id(ConversationPresentation.bottomAnchor)
                 }

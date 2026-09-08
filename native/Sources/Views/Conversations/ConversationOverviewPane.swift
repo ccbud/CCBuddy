@@ -100,7 +100,7 @@ struct ConversationOverviewPane: View {
             railHeading("导航")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
-                    let entries = tableOfContents(session.messages)
+                    let entries = store.transcriptProjection.tableOfContents
                     if entries.isEmpty {
                         Text("没有用户消息可供导航")
                             .font(.ccLabel())
@@ -204,16 +204,6 @@ struct ConversationOverviewPane: View {
         }
     }
 
-    private func tableOfContents(_ messages: [HistoryMessage]) -> [(index: Int, title: String, fullText: String)] {
-        messages.enumerated().compactMap { index, message in
-            guard message.role == "user", !message.isMetadata else { return nil }
-            let value = ConversationVisibleText.visibleUserText(message)
-                .split(whereSeparator: { $0.isWhitespace })
-                .joined(separator: " ")
-            guard !value.isEmpty else { return nil }
-            return (index, String(value.prefix(32)), String(value.prefix(200)))
-        }
-    }
 }
 
 private struct FlexibleOverviewTags: View {

@@ -116,6 +116,81 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertEqual(text(element("conversation.title")), "Bulk session 095")
     }
 
+    func testUnavailableSearchCacheExplainsFallbackAndStillFindsChineseText() throws {
+        // Fail the real persistent-cache initialization without a test-only engine switch.
+        // This reproduces an unavailable cache, not actual disk exhaustion on the CI host.
+        app.terminate()
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        let cache = fixtureRoot.appendingPathComponent("app-home/conversation-index-v1.sqlite3.tgrep-v2")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+        try Data("fixture blocks cache directory creation".utf8).write(to: cache, options: .withoutOverwriting)
+        let project = fixtureRoot.appendingPathComponent("history/projects/experience")
+        // Keep each message within the existing catalog projection's per-message limit,
+        // while requiring fallback to scan a genuinely long transcript before its tail hit.
+        var contents = Data()
+        for turn in 0..<600 {
+            contents.append(try liveTurn(turn, answerOverride:
+                String(repeating: "Ordinary text before the exact match. ", count: 50)))
+        }
+        contents.append(try liveTurn(600, answerOverride:
+            "系统代理 " + String(repeating: "Separate context. ", count: 40)
+                + "当前版本 remains searchable."))
+        try contents.write(to: project.appendingPathComponent("live-anchor.jsonl"))
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.buttons["conversation.session.disk:live-anchor"].waitForExistence(timeout: 20))
+
+        openSearch(query: nil)
+        pasteReplacingFocusedText("系统代理")
+        XCTAssertTrue(element("conversation.search.result.0").waitForExistence(timeout: 15))
+        XCTAssertTrue(element("search.performance.fallback").waitForExistence(timeout: 5),
+                      "A failed accelerator must not silently appear to be healthy local search")
+        XCTAssertFalse(element("conversation.search.result.1").exists)
+        pasteReplacingFocusedText("当前版本")
+        XCTAssertEqual(app.textFields["conversation.search.palette.field"].value as? String, "当前版本")
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            self.element("conversation.search.result.0").label.contains("当前版本")
+        }, "The replacement query must publish its own snippet, not leave the stale result visible")
+        app.buttons["search.performance.details"].click()
+        XCTAssertTrue(element("search.performance.fallback.reason").waitForExistence(timeout: 5))
+        XCTAssertFalse(text(element("search.performance.fallback.reason")).isEmpty)
+        keepScreenshot("native-search-explicit-cache-fallback")
+    }
+
+    func testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession() throws {
+        let file = fixtureRoot.appendingPathComponent("history/projects/experience/live-anchor.jsonl")
+        var contents = Data()
+        for turn in 0..<6_000 {
+            contents.append(try liveTurn(turn, answerOverride: turn == 5_999
+                ? "系统代理 — 当前版本 — final searchable answer." : nil))
+        }
+        try contents.write(to: file)
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(waitUntil { refresh.isEnabled })
+        refresh.click()
+        let large = app.buttons["conversation.session.disk:live-anchor"]
+        XCTAssertTrue(large.waitForExistence(timeout: 30))
+        large.click()
+        let statistics = element("conversation.statistics")
+        XCTAssertTrue(waitUntil(timeout: 20) { statistics.label.contains("12000 messages") },
+                      "The real parser and reader must publish all 12,000 messages")
+        app.typeKey("f", modifierFlags: .command)
+        pasteReplacingFocusedText("系统代理")
+        pasteReplacingFocusedText("当前版本")
+        XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "当前版本")
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            self.text(self.element("conversation.detail.search.count")).contains("1/1")
+        })
+        let tail = element("conversation.message.11999")
+        XCTAssertTrue(waitUntil(timeout: 15) { tail.exists && tail.isHittable },
+                      "The exact tail hit must be reachable without materializing every earlier row")
+        app.buttons["conversation.session.disk:beta"].click()
+        XCTAssertTrue(waitUntil(timeout: 8) { self.text(self.element("conversation.title")) == "Beta implementation" })
+        XCTAssertTrue(element("conversation.message.1").waitForExistence(timeout: 8))
+        XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "",
+                       "A completed or cancelled large search must not leak into the next session")
+    }
+
     func testFocusReadingRestoresCustomLayoutAndFindsWithinTranscript() {
         app.buttons["conversation.session.disk:beta"].click()
         XCTAssertTrue(element("conversation.message.1").waitForExistence(timeout: 10))
@@ -372,11 +447,11 @@ final class NativeSearchExperienceUITests: XCTestCase {
         try FileManager.default.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: file.path)
     }
 
-    private func liveTurn(_ index: Int) throws -> Data {
+    private func liveTurn(_ index: Int, answerOverride: String? = nil) throws -> Data {
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let answer = index == 0 ? "anchorstayneedle: Keep reading this early answer."
+        let answer = answerOverride ?? (index == 0 ? "anchorstayneedle: Keep reading this early answer."
             : "Live tail \(index). " + String(repeating:
-                "Streaming updates should never move a reader away from a deliberate search position. ", count: 6)
+                "Streaming updates should never move a reader away from a deliberate search position. ", count: 6))
         let records: [[String: Any]] = [
             ["type": "user", "uuid": "live-user-\(index)", "timestamp": timestamp,
              "sessionId": "live-anchor", "cwd": "/workspace/native-experience",
@@ -401,5 +476,25 @@ final class NativeSearchExperienceUITests: XCTestCase {
         defer { try? handle.close() }
         try handle.seekToEnd()
         try handle.write(contentsOf: liveTurn(index))
+    }
+
+    private func pasteReplacingFocusedText(_ value: String) {
+        let pasteboard = NSPasteboard.general
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        defer {
+            pasteboard.clearContents()
+            let items = saved.map { entries in
+                let item = NSPasteboardItem()
+                for (type, data) in entries { item.setData(data, forType: type) }
+                return item
+            }
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+        }
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+        app.typeKey("a", modifierFlags: .command)
+        app.typeKey("v", modifierFlags: .command)
     }
 }

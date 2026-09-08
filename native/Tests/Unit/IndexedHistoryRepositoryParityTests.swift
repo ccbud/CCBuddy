@@ -320,7 +320,142 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         XCTAssertEqual(indexedSnapshot.importedCount, 1)
     }
 
+    func testProgressiveSearchPublishesExactOrderedPrefixesAndMatchesFinalAPI() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-progressive-prefixes")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, _, _) = try makeProgressiveRepository(home: home, count: 12)
+        let expected = try repository.search(query: "系统代理", limit: 9)
+        let recorder = SearchProgressRecorder()
+        let provider: any ConversationProgressiveHistoryProviding = repository
+        let final = try provider.search(query: "系统代理", limit: 9) { recorder.append($0) }
+        let events = recorder.snapshot
+        XCTAssertEqual(final, expected)
+        XCTAssertEqual(final.count, 9)
+        XCTAssertEqual(events.first?.phase, .preparingCandidates)
+        XCTAssertNil(events.first?.diagnostics)
+        XCTAssertEqual(events.last?.phase, .completed)
+        XCTAssertEqual(events.last?.hits, final)
+        let refined = events.filter { $0.phase == .refiningResults }
+        XCTAssertEqual(refined.first?.hits, [])
+        XCTAssertEqual(refined.first(where: { !$0.hits.isEmpty })?.hits, Array(expected.prefix(1)))
+        var previousCount = 0
+        for event in events.dropFirst() {
+            XCTAssertEqual(event.hits, Array(expected.prefix(event.hits.count)))
+            XCTAssertGreaterThanOrEqual(event.hits.count, previousCount)
+            XCTAssertLessThanOrEqual(event.hits.count - previousCount, 8)
+            XCTAssertNotNil(event.diagnostics)
+            for hit in event.hits {
+                XCTAssertGreaterThan(hit.count, 0)
+                XCTAssertNotNil(hit.sequence)
+                XCTAssertFalse(hit.snippet.isEmpty)
+            }
+            previousCount = event.hits.count
+        }
+    }
+
+    func testFirstProgressiveHitArrivesBeforeAnOlderDocumentIsReadAndOutsideDatabaseLock() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-progressive-first")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, database, sessions) = try makeProgressiveRepository(home: home, count: 2)
+        var replacement = sessions[1]
+        replacement.documents[0].text = "The older transcript no longer matches."
+        let updated = replacement
+        let recorder = SearchProgressRecorder()
+        let final = try repository.search(query: "系统代理", limit: 20) { event in
+            recorder.append(event)
+            if event.phase == .refiningResults, event.hits.count == 1 {
+                // A callback delivered after full verification would be too late:
+                // the older hit would already have been included. Re-entrant catalog
+                // access also verifies that callbacks do not hold its reader lock.
+                do {
+                    _ = try database.generation()
+                    try database.replace(updated)
+                } catch { XCTFail("Progress callback could not access catalog: \(error)") }
+            }
+        }
+        XCTAssertEqual(final.map(\.file), [sessions[0].metadata.file])
+        XCTAssertEqual(recorder.snapshot.last?.hits, final)
+        XCTAssertEqual(final, try repository.search(query: "系统代理", limit: 20))
+    }
+
+    func testProgressiveSearchCancellationAfterFirstHitDoesNotPublishCompletionOrLaterHits() async throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-progressive-cancel")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, _, _) = try makeProgressiveRepository(home: home, count: 3)
+        let recorder = SearchProgressRecorder()
+        let worker = Task.detached {
+            try repository.search(query: "系统代理", limit: 1) { event in
+                recorder.append(event)
+                if event.phase == .refiningResults, !event.hits.isEmpty {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+        }
+        do {
+            _ = try await worker.value
+            XCTFail("Cancellation in the first-hit callback must abort even at the hit limit")
+        } catch is CancellationError {}
+        let events = recorder.snapshot
+        XCTAssertEqual(events.map(\.phase), [.preparingCandidates, .refiningResults, .refiningResults])
+        XCTAssertEqual(events.last?.hits.count, 1)
+        XCTAssertFalse(events.contains { $0.phase == .completed })
+        XCTAssertEqual(try repository.search(query: "系统代理", limit: 20).count, 3)
+    }
+
+    func testPrecancelledProgressiveSearchPublishesNothingAndEmptySearchCompletesOnce() async throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-progressive-empty")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, _, _) = try makeProgressiveRepository(home: home, count: 1)
+        let cancelledEvents = SearchProgressRecorder()
+        let worker = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try repository.search(query: "系统代理", limit: 20) { cancelledEvents.append($0) }
+        }
+        do {
+            _ = try await worker.value
+            XCTFail("A precancelled search must not publish preparation")
+        } catch is CancellationError {}
+        XCTAssertTrue(cancelledEvents.snapshot.isEmpty)
+        for (query, limit) in [("  ", 20), ("系统代理", 0)] {
+            let recorder = SearchProgressRecorder()
+            XCTAssertEqual(try repository.search(query: query, limit: limit) { recorder.append($0) }, [])
+            XCTAssertEqual(recorder.snapshot, [.init(phase: .completed, hits: [])])
+        }
+    }
+
     // MARK: - Fixtures
+
+    private final class SearchProgressRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [ConversationSearchProgress] = []
+        var snapshot: [ConversationSearchProgress] {
+            lock.lock()
+            defer { lock.unlock() }
+            return events
+        }
+        func append(_ event: ConversationSearchProgress) {
+            lock.lock()
+            events.append(event)
+            lock.unlock()
+        }
+    }
+
+    private func makeProgressiveRepository(home: URL, count: Int) throws
+        -> (IndexedHistoryRepository, ConversationIndexDatabase, [ConversationIndexedSession]) {
+        let scope = home.appendingPathComponent("history")
+        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        var sessions: [ConversationIndexedSession] = []
+        for index in 0..<count {
+            var value = indexedCodex(scope: scope, id: "progressive-\(index)",
+                text: "Context " + String(repeating: "系统代理 ", count: index % 3 + 1), sequence: 100 + index)
+            value.metadata.lastActivity = Date(timeIntervalSince1970: 1_800_000_000 - Double(index))
+            sessions.append(value)
+            try database.replace(value)
+        }
+        let configuration = HistoryConfiguration(historyDirs: [scope.path], homeDirectory: home,
+            importsRoot: home.appendingPathComponent("app/imports"))
+        return (IndexedHistoryRepository(configuration: configuration, database: database), database, sessions)
+    }
 
     private func indexedCodex(
         scope: URL,

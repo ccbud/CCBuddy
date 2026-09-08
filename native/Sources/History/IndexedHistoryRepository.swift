@@ -43,7 +43,7 @@ extension ConversationIndexedHistoryProviding {
 ///
 /// Detail reads deliberately bypass SQLite and use `HistorySessionLoader`, so replay, analysis,
 /// raw/ZIP export, and standalone HTML export always see the current producer-owned transcript.
-struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
+struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, ConversationProgressiveHistoryProviding, Sendable {
     let configuration: HistoryConfiguration
     let database: ConversationIndexDatabase
     let loader: HistorySessionLoader
@@ -119,8 +119,39 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
     }
 
     func search(query rawQuery: String, limit: Int = 120) throws -> [HistorySearchHit] {
+        try performSearch(query: rawQuery, limit: limit, onProgress: nil)
+    }
+
+    func search(
+        query rawQuery: String,
+        limit: Int = 120,
+        onProgress: @Sendable (ConversationSearchProgress) -> Void
+    ) throws -> [HistorySearchHit] {
+        // The optional internal sink lets the existing final-only API avoid
+        // retaining cumulative arrays. This callback never actually escapes.
+        try withoutActuallyEscaping(onProgress) { callback in
+            try performSearch(query: rawQuery, limit: limit, onProgress: callback)
+        }
+    }
+
+    private func performSearch(
+        query rawQuery: String,
+        limit: Int,
+        onProgress: (@Sendable (ConversationSearchProgress) -> Void)?
+    ) throws -> [HistorySearchHit] {
+        var diagnostics: ConversationSearchDiagnostics?
+        func publish(_ phase: ConversationSearchProgress.Phase, hits: [HistorySearchHit]) throws {
+            try Task.checkCancellation()
+            guard let onProgress else { return }
+            onProgress(ConversationSearchProgress(phase: phase, hits: hits, diagnostics: diagnostics))
+            try Task.checkCancellation()
+        }
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, limit > 0 else { return [] }
+        guard !query.isEmpty, limit > 0 else {
+            try publish(.completed, hits: [])
+            return []
+        }
+        try publish(.preparingCandidates, hits: [])
         let matcher = ConversationLiteralSearch(query: query)
 
         // Scan activity-ordered canonical sessions and return the first matching transcript per
@@ -142,8 +173,12 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
         for reference in batch.references {
             referencesByPath[reference.sessionPath, default: []].append(reference)
         }
+        if onProgress != nil { diagnostics = searchDiagnostics }
+        try publish(.refiningResults, hits: [])
 
         var hits: [HistorySearchHit] = []
+        var lastPublishedCount = 0
+        var lastPublication = ContinuousClock.now
         for metadata in sessions {
             try Task.checkCancellation()
             let path = ConversationIndexDatabase.normalizedPath(metadata.file)
@@ -175,11 +210,21 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Sendable {
                       let hit = Self.hit(for: metadata, in: document, matcher: matcher,
                         agentOverride: transcript.agent) else { continue }
                 hits.append(hit)
+                // Publish only after exact verification has produced the full
+                // count and source anchor, and after database.document released
+                // its read lock. A slow older transcript cannot hide this hit.
+                if onProgress != nil,
+                   hits.count == 1 || hits.count - lastPublishedCount >= 8
+                    || lastPublication.duration(to: .now) >= .milliseconds(50) {
+                    try publish(.refiningResults, hits: hits)
+                    lastPublishedCount = hits.count
+                    lastPublication = .now
+                }
                 break
             }
             if hits.count == limit { break }
         }
-        try Task.checkCancellation()
+        try publish(.completed, hits: hits)
         return hits
     }
 

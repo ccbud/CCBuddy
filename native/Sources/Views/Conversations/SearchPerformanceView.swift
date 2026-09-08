@@ -21,6 +21,13 @@ struct SearchPerformanceView: View {
                     .foregroundStyle(Theme.mutedForeground)
                     .accessibilityIdentifier("search.performance.duration")
             }
+            if let reason = store.searchDiagnostics?.fallbackReason {
+                Label(language.localized("加速暂不可用"), systemImage: "exclamationmark.triangle")
+                    .font(.ccLabel())
+                    .foregroundStyle(Theme.warning)
+                    .help(fallbackExplanation(reason))
+                    .accessibilityIdentifier("search.performance.fallback")
+            }
             Spacer(minLength: Space.sm)
             if store.isRankingSearch {
                 ProgressView().controlSize(.mini)
@@ -65,6 +72,23 @@ struct SearchPerformanceView: View {
                 LabeledContent(language.localized("搜索引擎"), value: lexical.engine)
                 LabeledContent(language.localized("索引文档"), value: String(lexical.indexedDocuments))
                 LabeledContent(language.localized("本次候选"), value: String(lexical.candidateCount))
+                LabeledContent(language.localized("候选检索"),
+                               value: String(format: "%.1f ms", lexical.queryMilliseconds))
+                if let reason = lexical.fallbackReason {
+                    Text(fallbackExplanation(reason))
+                        .foregroundStyle(Theme.warning)
+                        .accessibilityIdentifier("search.performance.fallback.reason")
+                    Text(language.localized("精确搜索仍可用；后续搜索会自动重试加速。"))
+                        .foregroundStyle(Theme.mutedForeground)
+                    LabeledContent(language.localized("诊断代码"), value: reason)
+                }
+            }
+            if let first = store.searchFirstResultMilliseconds {
+                LabeledContent(language.localized("首批结果"), value: String(format: "%.1f ms", first))
+                    .accessibilityIdentifier("search.performance.first.result")
+            }
+            if let complete = store.searchDurationMilliseconds {
+                LabeledContent(language.localized("完整搜索"), value: String(format: "%.1f ms", complete))
             }
             if let semantic = store.semanticDiagnostics {
                 Divider()
@@ -102,6 +126,19 @@ struct SearchPerformanceView: View {
             return language.localized("This model supports English and code queries. Keyword order is preserved for other languages.")
         case .unavailable:
             return language.localized("Local semantic model unavailable. Keyword results remain available.")
+        }
+    }
+
+    private func fallbackExplanation(_ reason: String) -> String {
+        switch reason {
+        case "lowDiskSpace":
+            return language.localized("索引所在磁盘空间不足，搜索加速已暂停。")
+        case "unsafeCache":
+            return language.localized("搜索缓存位置不可用，加速引擎未能启动。")
+        case "ioFailure":
+            return language.localized("无法读写搜索缓存，正在使用精确搜索。")
+        default:
+            return language.localized("搜索加速暂不可用，正在使用精确搜索。")
         }
     }
 }

@@ -1163,3 +1163,16 @@
 "首次使用会准备本地模型，精确搜索结果始终可用。" = "The first use prepares the local model. Exact search results stay available.";
 "本地智能排序已完成。" = "Local smart ranking is complete.";
 "分析" = "Analyze";
+/* Search acceleration recovery */
+"搜索未完成，当前显示部分结果。" = "Search is incomplete. Showing partial results.";
+"候选检索" = "Candidate lookup";
+"首批结果" = "First results";
+"完整搜索" = "Complete search";
+"可继续输入或清空搜索。" = "Keep typing or clear the search at any time.";
+"加速暂不可用" = "Acceleration paused";
+"精确搜索仍可用；后续搜索会自动重试加速。" = "Exact search remains available. Later searches automatically retry acceleration.";
+"诊断代码" = "Diagnostic code";
+"索引所在磁盘空间不足，搜索加速已暂停。" = "The index volume is low on space. Search acceleration is paused.";
+"搜索缓存位置不可用，加速引擎未能启动。" = "The search cache location is unavailable. Acceleration could not start.";
+"无法读写搜索缓存，正在使用精确搜索。" = "The search cache could not be read or written. Using exact search.";
+"搜索加速暂不可用，正在使用精确搜索。" = "Search acceleration is temporarily unavailable. Using exact search.";

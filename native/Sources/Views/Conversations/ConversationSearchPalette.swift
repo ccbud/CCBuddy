@@ -77,6 +77,16 @@ struct ConversationSearchPalette: View {
             .foregroundStyle(Theme.mutedForeground)
             .padding(.horizontal, Space.xxl)
             .padding(.vertical, Space.sm)
+            if !results.isEmpty, let error = store.contentSearchError {
+                Label(appLanguage.localized("搜索未完成，当前显示部分结果。"), systemImage: "exclamationmark.triangle")
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Space.xxl)
+                    .padding(.bottom, Space.sm)
+                    .help(appLanguage.localized(error))
+                    .accessibilityIdentifier("conversation.search.partial.error")
+            }
             content.layoutPriority(-1)
             Rectangle().fill(Theme.separator).frame(height: 1)
             footer
@@ -105,13 +115,15 @@ struct ConversationSearchPalette: View {
 
             if store.isSearchingContent || store.isRankingSearch {
                 ProgressView().controlSize(.small)
-            } else if !store.listQuery.isEmpty {
+            }
+            if !store.listQuery.isEmpty {
                 Button { store.updateListQuery("") } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(Theme.mutedForeground)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(appLanguage.localized("清空搜索"))
+                .accessibilityIdentifier("conversation.search.clear")
             }
         }
         .padding(.horizontal, Space.xxl)
@@ -130,10 +142,11 @@ struct ConversationSearchPalette: View {
             .frame(height: Self.quietHeight)
         } else if results.isEmpty {
             CCEmptyState(
-                symbol: "questionmark.circle",
-                title: appLanguage.localized("没有匹配的会话"),
-                message: store.contentSearchError.map { appLanguage.localized($0) }
-                    ?? appLanguage.localized("换个说法，或删掉几个词再试。"),
+                symbol: store.isSearchingContent ? "magnifyingglass" : "questionmark.circle",
+                title: appLanguage.localized(store.isSearchingContent ? "正在搜索会话内容…" : "没有匹配的会话"),
+                message: store.isSearchingContent ? appLanguage.localized("可继续输入或清空搜索。")
+                    : store.contentSearchError.map { appLanguage.localized($0) }
+                        ?? appLanguage.localized("换个说法，或删掉几个词再试。"),
                 showsProgress: store.isSearchingContent,
                 compact: true
             )

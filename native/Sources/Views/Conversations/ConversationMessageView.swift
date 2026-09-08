@@ -16,24 +16,7 @@ struct ConversationMessageView: View {
     let fontSize: CGFloat
 
     static func isVisible(_ message: HistoryMessage, pairedToolResultIDs: Set<String>) -> Bool {
-        message.content.contains { block in
-            if block.type == "tool_result",
-               let id = block.toolUseID,
-               pairedToolResultIDs.contains(id) {
-                return false
-            }
-            switch block.type {
-            case "text":
-                let value = message.role == "user"
-                    ? ConversationVisibleText.stripInjected(block.text ?? "")
-                    : (block.text ?? "")
-                return !value.isEmpty
-            case "thinking": return !(block.thinking ?? "").isEmpty
-            case "tool_use", "skill_load", "image": return true
-            case "tool_result": return block.content != nil
-            default: return block.raw != nil || block.text != nil || block.thinking != nil
-            }
-        }
+        ConversationVisibleText.isVisible(message, pairedToolResultIDs: pairedToolResultIDs)
     }
 
     var body: some View {
