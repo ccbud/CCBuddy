@@ -1327,6 +1327,29 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertNil(store.jumpRequest)
     }
 
+    func testUserScrollCancelsFollowingAndPendingFindNavigationWithoutCancelingSearch() async {
+        let metadata = Self.metadata(id: "manual-scroll", title: "Scroll", tags: [], file: "/tmp/manual-scroll.jsonl")
+        let provider = FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["needle first", "tail"]),
+        ])
+        let store = ConversationStore(repository: provider,
+            fileInspector: FakeConversationFileInspector(date: metadata.lastActivity),
+            searchDelayNanoseconds: 200_000_000)
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        store.jumpToLatest()
+        let revision = store.followLatestRevision
+        store.pauseFollowingLatestFromUserScroll()
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.followLatestRevision, revision)
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertEqual(store.detailMatches.map(\.messageIndex), [0])
+        XCTAssertNil(store.jumpRequest, "A delayed first-hit callback cannot reclaim the reader's position")
+        store.jumpToLatest()
+        XCTAssertTrue(store.isFollowingLatest)
+        XCTAssertEqual(store.followLatestRevision, revision + 1)
+    }
+
     func testPendingDetailSearchKeepsFirstHitNavigationAcrossLiveSnapshotRefresh() async {
         let metadata = Self.metadata(id: "refresh-find", title: "Refresh", tags: [], file: "/tmp/refresh-find.jsonl")
         let provider = FakeConversationRepository(projects: [], sessions: [

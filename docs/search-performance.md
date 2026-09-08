@@ -404,6 +404,27 @@ volume test profile (1,458 physical rows in diagnostics), not the unchanged
 benchmark snapshot. No build or XCTest run overlapped these global-search
 observations, but the original gateway app and other local agents remained active.
 
+The full CI UI suite subsequently exposed a live-following regression that the
+static long-session checks did not: asynchronous prose changed lazy-row heights
+after Latest's initial scroll, leaving a 62-message transcript before its true
+tail. The same public live-append fixture reproduced this in the local Release.
+Latest now follows actual content-size changes with coalesced, nonanimated layout
+corrections. Corrections require the current file/transcript/follow revision;
+native user scrolling immediately revokes them and any pending first-hit navigation.
+There are no timed retries and ordinary scroll-offset changes do not trigger work.
+
+The local build 100 repeated the same 60→62→64-message fixture: the early search
+anchor survived the first append, Latest reached the actual final answer, and the
+next append stayed at the tail. Scrolling up two pages then appending to 66 messages
+kept the same visible message range; another explicit Latest returned to the new
+tail. This controlled fixture supplements, rather than replaces, the real local
+agent-history checks above.
+
+The follow-up local regression passed all 815 non-helper native tests, including
+the four layout-intent tests and the delayed-find/manual-scroll regression.
+The universal Release build 100 also passed its packaged self-check (including
+tgrep and offline CPU+ANE inference) and single-instance handoff check.
+
 All reported peak RSS values are process-lifetime high-water marks, not current
 resident memory or exact allocations attributable to one operation. Subtracting
 the emitted baseline peak from the later peak does not measure allocation volume.

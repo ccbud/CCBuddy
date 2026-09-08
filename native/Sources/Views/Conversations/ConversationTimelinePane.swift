@@ -590,6 +590,12 @@ struct ConversationTimelinePane: View {
         let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
             ? store.detailMatches[store.detailMatchIndex].messageIndex
             : nil
+        let transcriptFile = store.activeTranscriptFile ?? session.metadata.file
+        let transcriptID = store.activeTranscriptID
+        let latestRequest = store.isFollowingLatest
+            ? ConversationLatestScrollRequest(file: transcriptFile, transcriptID: transcriptID,
+                                              revision: store.followLatestRevision)
+            : nil
 
         return ScrollViewReader { proxy in
             ScrollView {
@@ -616,6 +622,23 @@ struct ConversationTimelinePane: View {
                 .padding(.bottom, 68)
                 .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ConversationLatestScrollObserver(request: latestRequest) { request in
+                    guard store.isFollowingLatest,
+                          store.activeTranscriptFile == request.file,
+                          store.activeTranscriptID == request.transcriptID,
+                          store.followLatestRevision == request.revision else { return }
+                    // Correct changing lazy/Markdown heights without replaying the navigation
+                    // animation. Search anchors never authorize this following-only correction.
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        proxy.scrollTo(ConversationPresentation.bottomAnchor, anchor: .bottom)
+                    }
+                } onUserScroll: {
+                    guard store.activeTranscriptFile == transcriptFile,
+                          store.activeTranscriptID == transcriptID else { return }
+                    store.pauseFollowingLatestFromUserScroll()
+                })
             }
             .textSelection(.enabled)
             .onAppear {

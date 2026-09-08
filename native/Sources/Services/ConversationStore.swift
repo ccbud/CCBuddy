@@ -1551,6 +1551,12 @@ final class ConversationStore: ObservableObject {
         followLatestRevision += 1
     }
 
+    func pauseFollowingLatestFromUserScroll() {
+        deferredTranscriptJump = nil
+        detailSearchNavigationIntent = nil
+        if isFollowingLatest { isFollowingLatest = false }
+    }
+
     func contentHit(for metadata: HistorySessionMetadata) -> HistorySearchHit? {
         contentHits[ConversationFilter.fileKey(metadata.file)]
     }
@@ -2399,8 +2405,9 @@ final class ConversationStore: ObservableObject {
                 self.isSearchingDetail = false
                 self.detailSearchTask = nil
                 self.detailSearchWorker = nil
+                let retainsNavigationIntent = self.detailSearchNavigationIntent != nil
                 self.detailSearchNavigationIntent = nil
-                if let navigationIntent, !matches.isEmpty, !self.isFollowingLatest,
+                if let navigationIntent, retainsNavigationIntent, !matches.isEmpty, !self.isFollowingLatest,
                    self.jumpRequest == navigationIntent.originalJump {
                     self.selectDetailMatch(at: self.detailMatchIndex)
                 }
