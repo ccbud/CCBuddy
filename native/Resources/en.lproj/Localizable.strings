@@ -78,6 +78,7 @@
 "保存插件服务失败：{detail}" = "Failed to save plugin service: {detail}";
 "保存失败：{msg}" = "Save failed: {msg}";
 "保存网关开关失败，已恢复先前状态 · {error}" = "Could not save the gateway setting; the previous state was restored · {error}";
+"本次查询直接核对新增或已变化的原始记录，已确认的匹配会先显示。" = "This query verifies new or changed source records directly. Confirmed matches appear as they are found.";
 "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。" = "This query checks compressed text directly without waiting for an index. Acceleration prepares in the background for later queries.";
 "本次候选" = "Query candidates";
 "本地" = "Local";

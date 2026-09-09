@@ -552,7 +552,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
             let entry = entriesByPath[path]
             let preflight = preflight(candidate, entry: entry)
             if let preflight,
-               entry?.fingerprint == preflight.fingerprint,
+               entry?.fingerprint.matchesSourceRevision(preflight.fingerprint) == true,
                entry?.scope == candidate.directory.id {
                 manifestsByPath[path] = preflight.manifest
                 deferredReparseDeadlines.removeValue(forKey: path)
@@ -643,7 +643,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
         let changed = candidates.filter { candidate in
             let entry = entriesByPath[Self.path(of: candidate)]
             guard let preflight = preflight(candidate, entry: entry) else { return true }
-            return entry?.fingerprint != preflight.fingerprint
+            return entry?.fingerprint.matchesSourceRevision(preflight.fingerprint) != true
                 || entry?.scope != candidate.directory.id
         }
         guard !changed.isEmpty else { return }
@@ -862,7 +862,10 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 timeIntervalSince1970: Double(nanoseconds) / 1_000_000_000
             ),
             sizeBytes: sizeBytes,
-            dependencyFingerprint: snapshot.fingerprint
+            dependencyFingerprint: snapshot.fingerprint,
+            searchContentFingerprint: ConversationIndexFingerprint.contentFingerprint(
+                manifest: manifest, snapshot: snapshot
+            )
         )
     }
 

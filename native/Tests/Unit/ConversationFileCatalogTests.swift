@@ -74,7 +74,11 @@ final class ConversationFileCatalogTests: XCTestCase {
         let fixture = try Fixture()
         let catalog = try ConversationFileCatalog(file: fixture.catalog, enableTgrep: false)
         let writer = try ConversationFileCatalog(file: fixture.catalog, enableTgrep: false)
-        let original = makeSession(fixture, id: "one", text: "old body")
+        let original: ConversationIndexedSession = {
+            var value = makeSession(fixture, id: "one", text: "old body")
+            value.fingerprint.searchContentFingerprint = "body-v1:original"
+            return value
+        }()
         let companion = makeSession(fixture, id: "two", text: "unchanged companion")
         try catalog.replace(original)
         try catalog.replace(companion)
@@ -84,7 +88,11 @@ final class ConversationFileCatalogTests: XCTestCase {
         var companionUpdate = companion
         companionUpdate.metadata.title = "atomic companion title"
         companionUpdate.documents = []
-        let concurrent = makeSession(fixture, id: "one", text: "new concurrent body 👩‍💻")
+        let concurrent: ConversationIndexedSession = {
+            var value = makeSession(fixture, id: "one", text: "new concurrent body 👩‍💻")
+            value.fingerprint.searchContentFingerprint = "body-v1:concurrent"
+            return value
+        }()
         let calls = LockedValue(0)
         let latestContent = LockedValue<ConversationFileCatalog.SearchDocument?>(nil)
         catalog.metadataPreparationDidFinishForTesting = {
@@ -111,6 +119,9 @@ final class ConversationFileCatalogTests: XCTestCase {
         XCTAssertEqual(retained.reference.documentID, expected.reference.documentID)
         XCTAssertEqual(retained.chunkIDs, expected.chunkIDs)
         XCTAssertEqual(try catalog.documents(for: original.metadata.file), concurrent.documents)
+        XCTAssertEqual(try catalog.entry(for: original.metadata.file)?.fingerprint.searchContentFingerprint,
+            concurrent.fingerprint.searchContentFingerprint,
+            "A metadata CAS retry must retain the new pack's proof, never the scanner's old proof")
         XCTAssertEqual(try catalog.entry(for: original.metadata.file)?.metadata.title, update.metadata.title)
         XCTAssertEqual(try catalog.entry(for: companion.metadata.file)?.metadata.title,
             companionUpdate.metadata.title)

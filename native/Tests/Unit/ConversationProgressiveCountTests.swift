@@ -2,6 +2,23 @@ import XCTest
 @testable import CCBuddy
 
 final class ConversationProgressiveCountTests: XCTestCase {
+    func testRawRewriteAttemptClearsOldPrefixWithoutCatalogRevisionChange() {
+        var state = ConversationSearchProgressState()
+        let old = UUID(), current = UUID()
+        state.receive(.init(phase: .refiningResults, hits: [hit("old")], snapshotRevision: 9,
+            snapshotIdentity: "catalog", snapshotAttempt: old), ordinal: 1)
+        state.receive(.init(phase: .preparingCandidates, hits: [], snapshotRevision: 9,
+            snapshotIdentity: "catalog", snapshotAttempt: current), ordinal: 2)
+        XCTAssertTrue(state.hits.isEmpty)
+        XCTAssertEqual(state.phase, .preparingCandidates)
+        XCTAssertFalse(state.receive(.init(phase: .refiningResults, hits: [hit("old")], snapshotRevision: 9,
+            snapshotIdentity: "catalog", snapshotAttempt: old), ordinal: 3))
+        XCTAssertTrue(state.hits.isEmpty)
+        state.receive(.init(phase: .refiningResults, hits: [hit("new")], snapshotRevision: 9,
+            snapshotIdentity: "catalog", snapshotAttempt: current), ordinal: 4)
+        XCTAssertEqual(state.hits, [hit("new")])
+    }
+
     private func hit(_ name: String = "a", count: Int = 1, complete: Bool = false) -> HistorySearchHit {
         .init(sessionID: name, file: URL(fileURLWithPath: "/tmp/count-\(name).jsonl"), source: .claude,
               sequence: 7, snippet: "verified needle", count: count, isCountComplete: complete)

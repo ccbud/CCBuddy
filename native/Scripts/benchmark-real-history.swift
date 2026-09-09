@@ -37,6 +37,7 @@ enum RealHistoryBenchmark {
             print("""
             Usage:
               benchmark-real-history.sh --inventory|--largest|--detail
+              benchmark-real-history.sh --source-search
               benchmark-real-history.sh --inventory --catalog <private directory>
               benchmark-real-history.sh --run --catalog <private directory> [--prepare-index]
               benchmark-real-history.sh --queries --catalog <private directory> [--prepare-index]
@@ -53,6 +54,8 @@ enum RealHistoryBenchmark {
             --restore is a separate fresh-process measurement: no query/list/body prewarm occurs
             before explicit checkpoint preparation. OS filesystem caches are not flushed.
             --inventory/--largest/--detail never create or open a conversation catalog.
+            --source-search verifies fixed public queries in the largest ordinary Codex/Claude
+            JSONL; source fingerprints and a full-parser oracle are checked outside timings.
             Private source paths, titles, IDs, snippets and original text are never printed.
             Retired options: --migrate, --baseline-fts, --show-roots.
             """)
@@ -77,10 +80,11 @@ enum RealHistoryBenchmark {
         let inventory = arguments.contains("--inventory")
         let largest = arguments.contains("--largest")
         let detail = arguments.contains("--detail")
+        let sourceSearch = arguments.contains("--source-search")
         let scan = arguments.contains("--run")
         let queries = arguments.contains("--queries") || restore
             || (!scan && (fallback || progressive || finalRepository))
-        guard [inventory, largest, detail, scan, queries].filter({ $0 }).count == 1 else {
+        guard [inventory, largest, detail, sourceSearch, scan, queries].filter({ $0 }).count == 1 else {
             throw BenchmarkFailure.conflictingModes
         }
         let catalog = try catalogArgument()
@@ -117,8 +121,12 @@ enum RealHistoryBenchmark {
         defer { try? manager.removeItem(at: temporary) }
         // Preserve the historic benchmark cohort: source trees, without importing the app's
         // own library. An empty isolated imports root also avoids reading app annotation sidecars.
+        // A retained catalog's dependency identities must not refer to the launcher's disposable
+        // scratch path. Reopening uses this same isolated annotation/import namespace.
+        let importsRoot = catalog.map { $0.deletingLastPathComponent().appendingPathComponent("benchmark-app/imports") }
+            ?? temporary.appendingPathComponent("imports")
         let configuration = HistoryConfiguration(historyDirs: locations.map(\.path), homeDirectory: home,
-            importsRoot: temporary.appendingPathComponent("imports"))
+            importsRoot: importsRoot)
         let loader = HistorySessionLoader(configuration: configuration)
         let discoveryStart = ContinuousClock.now
         let candidates = loader.discoverCandidates(activeOnly: false)
@@ -139,6 +147,18 @@ enum RealHistoryBenchmark {
             "imports_excluded": true, "app_annotation_sidecars_loaded": false,
             "process_peak_rss_bytes": peakRSS()])
         if inventory { return }
+        if sourceSearch {
+            let ordinary = sized.filter { item in
+                item.0.file.pathExtension == "jsonl" && !QoderFileReader.isQoderDataPath(item.0.file)
+            }.sorted { $0.1 > $1.1 }
+            for item in ordinary {
+                guard let quick = loader.loadQuickMetadata([item.0]).first,
+                      quick.metadata.source == .codex || quick.metadata.source == .claude else { continue }
+                try measureSourceQueries(quick, loader: loader, sourceBytes: item.1)
+                return
+            }
+            throw BenchmarkFailure.emptyRepositoryScope
+        }
         if largest || detail {
             guard let largestFile = sized.max(by: { $0.1 < $1.1 }) else { return }
             let before = peakRSS(), started = ContinuousClock.now
@@ -258,7 +278,7 @@ enum RealHistoryBenchmark {
             "repository_automatically_schedules_background": repositoryMode && !arguments.contains("--fallback-repository"),
             "os_filesystem_cache_flushed": false, "only_first_query_is_first_in_pass": true,
             "repeat_queries_and_post_timing_oracles_prewarm_later_queries": true,
-            "producer_transcript_reads": false, "producer_metadata_reads_possible": repositoryMode,
+            "producer_transcript_reads_possible": repositoryMode, "producer_metadata_reads_possible": repositoryMode,
             "includes_ui_first_paint": false])
         if repositoryMode {
             let setup = ContinuousClock.now
@@ -271,7 +291,7 @@ enum RealHistoryBenchmark {
             guard !scopes.isEmpty else { throw BenchmarkFailure.emptyRepositoryScope }
             let repository = IndexedHistoryRepository(configuration: .init(historyDirs: scopes,
                 homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
-                importsRoot: database.file.appendingPathComponent("unscanned-imports")), database: database)
+                importsRoot: database.file.deletingLastPathComponent().appendingPathComponent("benchmark-app/imports")), database: database)
             let listed = try repository.listSessions(limit: ConversationCatalogLimits.searchScan)
             let physical = Set(entries.filter { !$0.scope.hasPrefix("__") }.map(\.sourcePath))
             guard listed.allSatisfy({ !$0.dirID.hasPrefix("__") && physical.contains($0.file.path) }) else {
@@ -485,6 +505,86 @@ enum RealHistoryBenchmark {
         CommandLine.arguments.contains("--require-known-hits") && requiredQueries.contains(query)
     }
 
+    static func measureSourceQueries(_ quick: QuickLoadedHistorySession,
+        loader: HistorySessionLoader, sourceBytes: Int) throws {
+        let validate = {
+            try Task.checkCancellation()
+            guard quick.manifest.snapshot() == quick.dependencySnapshot else {
+                throw ConversationCatalogError.staleRevision
+            }
+        }
+        try validate()
+        var results: [String: ConversationSearchRefinement] = [:]
+        for (ordinal, query) in requiredQueries.enumerated() {
+            let started = ContinuousClock.now
+            let baselineRSS = peakRSS()
+            var firstMilliseconds: Double?
+            var firstCount: Int?
+            let result = try ConversationSourceSearch.refine(candidate: quick.candidate,
+                metadata: quick.metadata, loader: loader, query: query, validate: validate,
+                onFirstMatch: { value in
+                    firstMilliseconds = milliseconds(since: started)
+                    if case let .hit(_, _, _, _, count) = value { firstCount = count }
+                })
+            let elapsed = milliseconds(since: started)
+            results[query] = result
+            let count: Int
+            let anchored: Bool
+            if case let .hit(_, _, sequence, _, occurrences) = result {
+                count = occurrences
+                anchored = sequence != nil
+            } else { count = 0; anchored = false }
+            emit(["phase": "authoritative_source_search", "query": query,
+                "query_ordinal": ordinal, "source": quick.metadata.source.rawValue,
+                "source_bytes": sourceBytes, "first_verified_callback_ms": firstMilliseconds.map { $0 as Any } ?? NSNull(),
+                "first_callback_count_lower_bound": firstCount.map { $0 as Any } ?? NSNull(),
+                "completed_count_ms": elapsed, "exact_occurrences": count,
+                "has_message_anchor": anchored, "source_fingerprint_unchanged": true,
+                "catalog_opened": false, "tgrep_prepared": false, "includes_ui_first_paint": false,
+                "bounded_prefix_metadata_prewarmed": true, "os_filesystem_cache_flushed": false,
+                "baseline_peak_rss_bytes": baselineRSS, "process_peak_rss_bytes": peakRSS(),
+                "memory_bound": "largest_json_record_plus_query_window"])
+        }
+
+        // Deliberately outside query timings and after their RSS samples: this oracle retains
+        // the full production parser projection and uses independent whole-text Foundation
+        // matching, not the streaming window or a potentially stale derived catalog.
+        let oracleStart = ContinuousClock.now
+        try validate()
+        let loaded = try loader.load(quick.candidate, consistency: .dependencyStable)
+        try validate()
+        for query in requiredQueries {
+            var expected = ConversationSearchRefinement.noMatch
+            for thread in loaded.projection.threads {
+                var cursor = thread.searchText.startIndex
+                var count = 0
+                var first: Range<String.Index>?
+                while cursor < thread.searchText.endIndex,
+                      let match = thread.searchText.range(of: query, options: .caseInsensitive,
+                          range: cursor..<thread.searchText.endIndex) {
+                    if first == nil { first = match }
+                    count += 1
+                    cursor = match.upperBound
+                }
+                guard let first else { continue }
+                let offset = first.lowerBound.utf16Offset(in: thread.searchText)
+                let span = thread.span(containingUTF16Offset: offset)
+                    ?? thread.messageSpans.first { $0.utf16Location >= offset } ?? thread.messageSpans.last
+                expected = .hit(transcriptID: thread.transcriptID, agentType: thread.agentType,
+                    sequence: span?.sequence,
+                    snippet: ConversationSourceSearch.snippet(in: thread.searchText, around: first), count: count)
+                break
+            }
+            guard results[query] == expected else { throw BenchmarkFailure.literalParity }
+        }
+        try validate()
+        emit(["phase": "authoritative_source_full_parser_oracle", "source_bytes": sourceBytes,
+            "public_queries_verified": requiredQueries.count, "count_snippet_anchor_parity": true,
+            "source_fingerprint_unchanged": true, "oracle_ms": milliseconds(since: oracleStart),
+            "oracle_runs_outside_query_timing": true, "process_peak_rss_includes_full_oracle": true,
+            "process_peak_rss_bytes": peakRSS()])
+    }
+
     static func measureRepositoryQuery(_ repository: IndexedHistoryRepository,
         sessions: [HistorySessionMetadata], query: String, phase: String,
         requiringFallback: Bool = false) throws {
@@ -660,7 +760,8 @@ enum RealHistoryBenchmark {
         let refs = Dictionary(grouping: references, by: { $0.sessionPath })
         let rows = Dictionary(uniqueKeysWithValues: sessions.map { (ConversationFileCatalog.normalizedPath($0.file), $0) })
         var verified = 0
-        for hit in hits {
+        // Source-backed hits require an authoritative-source oracle, never a stale body pack.
+        for hit in hits where hit.sourceMetadata == nil {
             let parentPath = ConversationFileCatalog.normalizedPath(hit.file)
             var path = parentPath
             var transcript = hit.agent

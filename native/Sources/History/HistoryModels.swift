@@ -204,11 +204,14 @@ struct HistorySearchHit: Codable, Equatable, Identifiable, Sendable {
     /// Exact total when complete; otherwise a verified lower bound, never an estimate.
     var count: Int
     var isCountComplete: Bool = true
+    /// Query-local metadata for an authorized source not yet published in the catalog. This
+    /// makes an exact source hit immediately visible/openable; it never persists a library row.
+    var sourceMetadata: HistorySessionMetadata? = nil
 
     var id: String { "\(file.path)\u{0}\(agent)" }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionID, file, source, agent, agentType, sequence, snippet, count, isCountComplete
+        case sessionID, file, source, agent, agentType, sequence, snippet, count, isCountComplete, sourceMetadata
     }
 }
 
@@ -226,6 +229,7 @@ extension HistorySearchHit {
         snippet = try values.decode(String.self, forKey: .snippet)
         count = try values.decode(Int.self, forKey: .count)
         isCountComplete = try values.decodeIfPresent(Bool.self, forKey: .isCountComplete) ?? true
+        sourceMetadata = try values.decodeIfPresent(HistorySessionMetadata.self, forKey: .sourceMetadata)
     }
 }
 

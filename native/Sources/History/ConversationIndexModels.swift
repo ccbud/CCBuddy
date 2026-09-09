@@ -7,15 +7,44 @@ struct ConversationIndexFingerprint: Codable, Equatable, Sendable {
     var modificationTime: Date
     var sizeBytes: UInt64
     var dependencyFingerprint: String?
+    /// Evidence for the immutable body pack, independent of Codex's shared annotation sidecar.
+    /// Absent in older catalogs and in metadata-only rows which have never had a complete body.
+    var searchContentFingerprint: String?
 
     init(
         modificationTime: Date,
         sizeBytes: UInt64,
-        dependencyFingerprint: String? = nil
+        dependencyFingerprint: String? = nil,
+        searchContentFingerprint: String? = nil
     ) {
         self.modificationTime = modificationTime
         self.sizeBytes = sizeBytes
         self.dependencyFingerprint = dependencyFingerprint
+        self.searchContentFingerprint = searchContentFingerprint
+    }
+
+    /// Auxiliary body evidence does not make an otherwise unchanged producer revision dirty.
+    func matchesSourceRevision(_ other: Self) -> Bool {
+        modificationTime == other.modificationTime && sizeBytes == other.sizeBytes
+            && dependencyFingerprint == other.dependencyFingerprint
+    }
+
+    static func contentFingerprint(
+        manifest: ConversationDependencyManifest, snapshot: ConversationDependencySnapshot
+    ) -> String {
+        // Only Codex's app-owned annotation sidecar is known not to affect normalized messages.
+        // All other providers/dependencies remain conservative, including child files and WALs.
+        let stamps = snapshot.stamps.filter { manifest.source != .codex || $0.role != .customMetadata }
+        return "body-v1:\(manifest.source.rawValue):"
+            + ConversationDependencySnapshot(stamps: stamps).fingerprint
+    }
+
+    static func hasSameContentOwner(_ lhs: HistorySessionMetadata, _ rhs: HistorySessionMetadata) -> Bool {
+        lhs.file.standardizedFileURL == rhs.file.standardizedFileURL && lhs.dirID == rhs.dirID
+            && lhs.source == rhs.source && lhs.sessionID == rhs.sessionID
+            && lhs.threadID == rhs.threadID && lhs.rootSessionID == rhs.rootSessionID
+            && lhs.parentThreadID == rhs.parentThreadID && lhs.forkedFromID == rhs.forkedFromID
+            && lhs.isSubagent == rhs.isSubagent
     }
 }
 

@@ -23,6 +23,53 @@ counted as new storage or erased during startup.
    handle stays queryable while new postings are prepared. Changed/uncovered
    documents are always searched directly, so an old checkpoint cannot hide them.
 
+Catalog coverage is not the same as source coverage. Query workers additionally
+discover authorized source files and compare source/dependency fingerprints. A
+quick metadata row, a source absent from the catalog, or a source changed during
+the scanner's reparse spacing is verified from the producer file; its old body
+packs do not contribute duplicate counts. This path does not wait for a full
+catalog parse or tgrep preparation. Unknown verified hits carry scoped metadata
+so the search palette can show and open them before the library scan catches up.
+If an ordinary JSONL source cannot be identified from the scanner's 256 KiB
+preview, the query worker reads its first complete decoded record and stops the
+metadata sample there. This covers a first conversation record larger than the
+preview without materializing the whole transcript; it does not change the
+scanner's startup preview budget or authorize reads outside configured roots.
+
+Source-revision fingerprints and persisted body-coverage proofs are distinct.
+For Codex, the body proof excludes the shared annotation sidecar, while retaining
+primary-file identity and all body/ownership dependencies. A sidecar-only refresh
+can reuse a proven pack only when owner, scope and trash state remain compatible;
+its refreshed dependencies are still validated before query completion. Metadata
+publication preserves the proof belonging to the actual retained pack in the
+atomic catalog snapshot, including concurrent replacement. An unchanged legacy
+source revision does not require a startup reparse; when metadata changes and a
+legacy row has no body proof, verification conservatively reads the source.
+
+For ordinary Codex and Claude JSONL, verification decodes one record at a time,
+uses the same normalized message/block text as the full parser, and retains a
+query-sized rolling window with complete-grapheme overlap. This includes JSON
+escapes and matches crossing blocks or messages. Memory is bounded by the largest
+individual decoded JSON record plus the window, not a fixed bound for arbitrary
+single-record inputs. Other adapters retain their existing permission-aware full
+parser on the query worker; they are not claimed to have streaming memory bounds.
+Source rewrites/cancellation invalidate a search attempt independently of catalog
+generation, and a retry retires the old progressive prefix. Continuously changing
+sources may require a retry; uninspected source tails cannot produce instant results.
+Progressive searches separate first-anchor discovery from complete counting for
+both catalog and source hits. Once a source yields its first exact snippet, that
+pass closes the source and proceeds to later session identities before counting
+the hits. The count pass reopens and revalidates the source; only its primitive
+answer is retained between passes, not text or a suspended decoder. This can read
+a long prefix twice when its first occurrence is late, and does not promise lower
+total scan time. Proving a source has no match still requires reading its tail.
+Completed source answers also share the existing 2 MiB bounded in-memory exact
+answer cache. Keys include the catalog identity, source path, full dependency
+fingerprint and literal-query bytes. Reuse validates source and catalog snapshots
+again; cancellation never caches a negative answer or a partial count. This avoids
+rescanning an unchanged pending source for repeated queries, but does not remove
+the first-read cost of a different literal or newly appended text.
+
 The UI distinguishes normal direct search during preparation from an actual
 accelerator failure. Query completion does not leave a spinner pretending a
 query is still running. Query replacement and session switching cancel obsolete
@@ -107,6 +154,36 @@ No private paths, session titles, IDs, queries extracted from conversations or
 snippets belong in published evidence. Filesystem caches are not flushed. Peak RSS
 is a process-lifetime high-water mark, not per-query allocation or current RSS.
 Repository publication timings do not measure UI first paint or frame rate.
+
+### Authoritative-source verification (2026-09-10)
+
+`bash native/Scripts/benchmark-real-history.sh --source-search` read the largest
+ordinary Codex/Claude JSONL in the configured local roots: a 458,822,422-byte Codex
+session. No catalog was opened and no tgrep handle was prepared. Only bounded
+quick metadata was read before timing; filesystem caches were not flushed.
+
+| Public literal | First verified callback | Complete count | Occurrences |
+| --- | ---: | ---: | ---: |
+| 系统代理 | 3,665.42 ms | 4,872.03 ms | 7 |
+| 当前版本 | 44.18 ms | 4,708.80 ms | 18 |
+
+The streaming phase reached a process peak RSS of 67,928,064 bytes (64.8 MiB).
+Both source fingerprints stayed unchanged. A subsequent complete production
+parser projection plus independent whole-text Foundation matching verified exact
+counts, snippets and message anchors for both queries. That separate oracle took
+23,132.15 ms and raised process-lifetime peak RSS to 1,171,783,680 bytes; its parsing
+and verification are outside the query timings above.
+
+These measurements establish source coverage and bounded-record behavior, not an
+instantaneous cold search claim: a first occurrence late in a 458 MB source still
+requires reading its preceding records. They are not prepared-tgrep or UI paint
+measurements. This was the single full-count streaming API with an early callback,
+not a measurement of the repository's subsequent separate first-hit/count passes.
+Retained benchmark catalogs now use a stable private
+`benchmark-app/imports` sibling for scan/reopen dependency identities; old catalogs
+created with disposable scratch imports require a new isolated scan before being
+used as a valid-manifest hot-search baseline. Catalog-only sample oracles exclude
+source-backed hits rather than comparing them against stale body packs.
 
 ## Local file-catalog results (2026-09-09)
 

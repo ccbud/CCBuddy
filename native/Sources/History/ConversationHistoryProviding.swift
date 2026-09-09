@@ -54,6 +54,9 @@ struct ConversationSearchProgress: Equatable, Sendable {
     var snapshotRevision: Int64? = nil
     /// Rebuilt file catalogs may start at the same revision; their instance identity is distinct.
     var snapshotIdentity: String? = nil
+    /// A raw source may be rewritten before the catalog publishes a revision. Attempts that
+    /// inspect authoritative sources need an independent identity to discard stale prefixes.
+    var snapshotAttempt: UUID? = nil
 }
 
 struct ConversationScopeSnapshot: Equatable, Sendable {

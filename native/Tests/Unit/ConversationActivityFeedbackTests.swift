@@ -4,15 +4,23 @@ import XCTest
 final class ConversationActivityFeedbackTests: XCTestCase {
     func testBackgroundPreparationIsDirectSearchNotAnAccelerationFailure() {
         for reason in ["indexPreparing", "indexRestoring"] {
-            XCTAssertTrue(ConversationSearchAccelerationPresentation.isPreparing(reason))
+            XCTAssertTrue(ConversationSearchAccelerationPresentation.isNormalDirectSearch(reason))
             XCTAssertEqual(ConversationSearchAccelerationPresentation.explanationKey(reason),
                 "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。")
         }
         for reason in ["unsafeCache", "lowDiskSpace", "ioFailure", "operationFailed"] {
-            XCTAssertFalse(ConversationSearchAccelerationPresentation.isPreparing(reason))
+            XCTAssertFalse(ConversationSearchAccelerationPresentation.isNormalDirectSearch(reason))
             XCTAssertNotEqual(ConversationSearchAccelerationPresentation.explanationKey(reason),
                 ConversationSearchAccelerationPresentation.explanationKey("indexPreparing"))
         }
+    }
+
+    func testFreshSourceVerificationIsNormalDirectSearchWithAnAccurateExplanation() {
+        XCTAssertTrue(ConversationSearchAccelerationPresentation.isNormalDirectSearch("sourceVerification"))
+        XCTAssertEqual(ConversationSearchAccelerationPresentation.explanationKey("sourceVerification"),
+            "本次查询直接核对新增或已变化的原始记录，已确认的匹配会先显示。")
+        XCTAssertNotEqual(ConversationSearchAccelerationPresentation.explanationKey("sourceVerification"),
+            ConversationSearchAccelerationPresentation.explanationKey("indexPreparing"))
     }
 
     func testSearchFeedbackOnlyUsesReportedStagesAndEndsWithCompletion() {

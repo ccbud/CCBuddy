@@ -129,7 +129,7 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
     /// Preserve every searchable block, including the tail of a large tool result or message.
     /// Bounded disk blocks and incremental verification control query memory; truncating the
     /// projection would silently make valid conversation fragments impossible to find.
-    private static func legacySearchText(for message: HistoryMessage) -> String {
+    static func legacySearchText(for message: HistoryMessage) -> String {
         var lines: [String] = []
         for block in message.content {
             guard var text = HistoryParsingSupport.plainText(block) ?? block.raw?.jsonString,

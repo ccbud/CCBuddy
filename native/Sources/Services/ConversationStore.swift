@@ -315,12 +315,13 @@ enum ConversationFilter {
     static func projects(
         _ projects: [HistoryProject],
         matching rawQuery: String,
-        contentHits: [String: HistorySearchHit]
+        contentHits: [String: HistorySearchHit],
+        active: String = "all"
     ) -> [HistoryProject] {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return projects }
 
-        return projects.compactMap { project in
+        return includingSourceHits(projects, hits: contentHits, active: active).compactMap { project in
             let projectMatches = contains(project.name, query) || contains(project.cwd, query)
             let sessions = project.sessions.filter { session in
                 projectMatches
@@ -343,6 +344,63 @@ enum ConversationFilter {
 
     static func fileKey(_ file: URL) -> String {
         file.standardizedFileURL.path
+    }
+
+    static func sourceMetadata(for hit: HistorySearchHit, active: String) -> HistorySessionMetadata? {
+        guard hit.count > 0, let metadata = hit.sourceMetadata,
+              fileKey(metadata.file) == fileKey(hit.file), metadata.sessionID == hit.sessionID,
+              metadata.source == hit.source, metadata.deleted == (active == "__trash__"),
+              active == "all" || active == "__trash__" || metadata.dirID == active else { return nil }
+        return metadata
+    }
+
+    static func mergingSourceNavigation(
+        into metadata: HistorySessionMetadata, hit: HistorySearchHit?, active: String
+    ) -> HistorySessionMetadata {
+        guard let hit, fileKey(hit.file) == fileKey(metadata.file),
+              let source = sourceMetadata(for: hit, active: active) else { return metadata }
+        // A file reused by a different producer/session is no longer the old catalog identity.
+        guard metadata.source == source.source, metadata.sessionID == source.sessionID else { return source }
+        var merged = metadata
+        // A newly discovered child must be loadable from an already-cataloged parent. These
+        // references come from the repository's complete scoped ownership snapshot, not raw text.
+        merged.subagentRefs = source.subagentRefs
+        merged.subagentCount = source.subagentCount
+        return merged
+    }
+
+    private static func includingSourceHits(
+        _ projects: [HistoryProject], hits: [String: HistorySearchHit], active: String
+    ) -> [HistoryProject] {
+        guard hits.values.contains(where: { $0.sourceMetadata != nil }) else { return projects }
+        var merged = projects.map { project in
+            var result = project
+            result.sessions = project.sessions.map {
+                mergingSourceNavigation(into: $0, hit: hits[fileKey($0.file)], active: active)
+            }
+            return result
+        }
+        var knownFiles = Set(merged.flatMap(\.sessions).map { fileKey($0.file) })
+        let additions = hits.compactMap { key, hit -> HistorySessionMetadata? in
+            guard key == fileKey(hit.file), let metadata = sourceMetadata(for: hit, active: active),
+                  knownFiles.insert(key).inserted else { return nil }
+            return metadata
+        }
+        guard !additions.isEmpty else { return merged }
+        // Catalog annotations win; only fresh source identity/navigation is overlaid above.
+        // Extra rows exist only for this query and disappear when its verified hits are replaced.
+        for extra in HistoryCatalogProjection.projects(from: additions) {
+            if let index = merged.firstIndex(where: { $0.cwd == extra.cwd }) {
+                merged[index].sessions += extra.sessions
+                merged[index].sessions.sort(by: HistoryCatalogProjection.searchResultComesFirst)
+                merged[index].lastActivity = max(merged[index].lastActivity, extra.lastActivity)
+            } else {
+                merged.append(extra)
+            }
+        }
+        return merged.sorted {
+            $0.lastActivity == $1.lastActivity ? $0.cwd < $1.cwd : $0.lastActivity > $1.lastActivity
+        }
     }
 
     private static func contains(_ value: String, _ query: String) -> Bool {
@@ -932,7 +990,7 @@ final class ConversationStore: ObservableObject {
     var usageHistoryDidChange: (@MainActor @Sendable () -> Void)?
 
     var filteredProjects: [HistoryProject] {
-        ConversationFilter.projects(projects, matching: listQuery, contentHits: contentHits)
+        ConversationFilter.projects(projects, matching: listQuery, contentHits: contentHits, active: historyActive)
     }
 
     var filteredSessionCount: Int {
@@ -1408,7 +1466,7 @@ final class ConversationStore: ObservableObject {
             activeTranscriptID = transcriptID
             refreshTranscriptProjection()
             loadDeferredTranscriptIfNeeded(transcriptID, jumpToSequence: searchHit.sequence,
-                                           searchQuery: searchQuery)
+                                           searchQuery: searchQuery, forceRead: true)
             detailRevision += 1
         }
         if let sequence = searchHit.sequence,
@@ -1536,7 +1594,7 @@ final class ConversationStore: ObservableObject {
         jumpLayoutRequest = nil
         activeTranscriptID = id
         refreshTranscriptProjection()
-        loadDeferredTranscriptIfNeeded(id)
+        loadDeferredTranscriptIfNeeded(id, forceRead: true)
         detailQuery = ""
         detailMatches = []
         detailMatchIndex = -1
@@ -1551,13 +1609,17 @@ final class ConversationStore: ObservableObject {
     private func loadDeferredTranscriptIfNeeded(
         _ id: ConversationTranscriptID,
         jumpToSequence: Int? = nil,
-        searchQuery: String? = nil
+        searchQuery: String? = nil,
+        forceRead: Bool = false
     ) {
         guard case .subagent(let agentID) = id,
               let subagent = selectedSession?.subagents[agentID],
               subagent.messages.isEmpty,
-              subagent.count > 0
+              subagent.count > 0 || forceRead || deferredTranscriptJump?.transcriptID == id
         else { return }
+
+        // A quick-metadata count of zero is not proof that the child body is empty. Explicit
+        // selection/search must read its authorized source; a pending jump survives parent reload.
 
         let file = subagent.file
         let childFileKey = ConversationFilter.fileKey(file)
@@ -1819,6 +1881,7 @@ final class ConversationStore: ObservableObject {
         isMutating = true
         defer { isMutating = false }
         let file = metadata.file
+        let selectionGeneration = detailGeneration
         do {
             try await Task.detached(priority: .userInitiated) {
                 try Task.checkCancellation()
@@ -1828,8 +1891,7 @@ final class ConversationStore: ObservableObject {
                 )
                 try Task.checkCancellation()
             }.value
-            await synchronizeIndex(files: [file])
-            await reloadAndReselect(file)
+            await reconcileMetadataMutation(file, selectionGeneration: selectionGeneration)
             actionMessage = "标题与标签已更新"
             actionIsError = false
         } catch is CancellationError {
@@ -1849,6 +1911,7 @@ final class ConversationStore: ObservableObject {
         isMutating = true
         defer { isMutating = false }
         let file = metadata.file
+        let selectionGeneration = detailGeneration
         let starred = !metadata.starred
         do {
             try await Task.detached(priority: .userInitiated) {
@@ -1856,8 +1919,7 @@ final class ConversationStore: ObservableObject {
                 try mutationService.updateMetadata(for: metadata, patch: .init(starred: starred))
                 try Task.checkCancellation()
             }.value
-            await synchronizeIndex(files: [file])
-            await reloadAndReselect(file)
+            await reconcileMetadataMutation(file, selectionGeneration: selectionGeneration)
             actionMessage = starred ? "已收藏会话" : "已取消收藏"
             actionIsError = false
         } catch is CancellationError {
@@ -1874,6 +1936,7 @@ final class ConversationStore: ObservableObject {
         isMutating = true
         defer { isMutating = false }
         let file = metadata.file
+        let selectionGeneration = detailGeneration
         let pinned = !metadata.pinned
         do {
             try await Task.detached(priority: .userInitiated) {
@@ -1881,8 +1944,7 @@ final class ConversationStore: ObservableObject {
                 try mutationService.updateMetadata(for: metadata, patch: .init(pinned: pinned))
                 try Task.checkCancellation()
             }.value
-            await synchronizeIndex(files: [file])
-            await reloadAndReselect(file)
+            await reconcileMetadataMutation(file, selectionGeneration: selectionGeneration)
             actionMessage = pinned ? "已置顶会话" : "已取消置顶"
             actionIsError = false
         } catch is CancellationError {
@@ -1902,10 +1964,12 @@ final class ConversationStore: ObservableObject {
                 try Task.checkCancellation()
                 try mutationService.softDelete(metadata)
             }.value
+            let mutationSearchGeneration = revokeSearchAfterSourceMutation(metadata.file)
             await synchronizeIndex(files: [metadata.file])
             usageHistoryDidChange?()
             clearSelection()
             await reload()
+            restartSearchAfterSourceMutation(generation: mutationSearchGeneration)
             actionMessage = "会话已移入回收站"
             actionIsError = false
         } catch is CancellationError {
@@ -1925,10 +1989,12 @@ final class ConversationStore: ObservableObject {
                 try Task.checkCancellation()
                 try mutationService.restore(metadata)
             }.value
+            let mutationSearchGeneration = revokeSearchAfterSourceMutation(metadata.file)
             await synchronizeIndex(files: [metadata.file])
             usageHistoryDidChange?()
             clearSelection()
             await reload()
+            restartSearchAfterSourceMutation(generation: mutationSearchGeneration)
             actionMessage = "会话已恢复"
             actionIsError = false
         } catch is CancellationError {
@@ -1948,10 +2014,12 @@ final class ConversationStore: ObservableObject {
                 try Task.checkCancellation()
                 try mutationService.permanentlyDelete(metadata)
             }.value
+            let mutationSearchGeneration = revokeSearchAfterSourceMutation(metadata.file)
             await synchronizeIndex()
             usageHistoryDidChange?()
             clearSelection()
             await reload()
+            restartSearchAfterSourceMutation(generation: mutationSearchGeneration)
             actionMessage = "会话已永久删除"
             actionIsError = false
         } catch is CancellationError {
@@ -1960,6 +2028,42 @@ final class ConversationStore: ObservableObject {
             actionMessage = "永久删除失败：\(error.localizedDescription)"
             actionIsError = true
         }
+    }
+
+    /// A successful source mutation invalidates the old search authorization immediately, before
+    /// any catalog/reload await. Otherwise query-local source metadata can resurrect the removed
+    /// row, including through a progressive callback that was already queued on the main actor.
+    /// Keep unrelated verified results visible while their replacement search runs.
+    private func revokeSearchAfterSourceMutation(_ file: URL, keepingVerifiedHit: Bool = false) -> UUID? {
+        guard !listQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        searchTask?.cancel()
+        searchWorker?.cancel()
+        searchTask = nil
+        searchWorker = nil
+        searchGeneration = UUID()
+        activeSearchRunID = nil
+        contentSearchNeedsRefresh = false
+        lastSearchStartedRevision = nil
+        let key = ConversationFilter.fileKey(file)
+        if !keepingVerifiedHit, contentHits[key] != nil { contentHits.removeValue(forKey: key) }
+        cancelSemanticRanking()
+        isSearchingContent = false
+        contentSearchPhase = nil
+        contentSearchError = nil
+        searchDiagnostics = nil
+        searchDurationMilliseconds = nil
+        searchFirstResultMilliseconds = nil
+        return searchGeneration
+    }
+
+    private func restartSearchAfterSourceMutation(generation: UUID?) {
+        guard let generation, searchGeneration == generation, !Task.isCancelled, !isSearchingContent else { return }
+        let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        // A user query/scope change during catalog reconciliation already owns its new search;
+        // this completion must not cancel or restart that newer intent. A catalog revision may
+        // also have already started the replacement run while reconciliation was awaited.
+        enqueueContentSearch(query: query)
     }
 
     func importFiles(_ files: [URL]) async {
@@ -2101,11 +2205,26 @@ final class ConversationStore: ObservableObject {
         actionIsError = !outcome.succeeded
     }
 
-    private func reloadAndReselect(_ file: URL) async {
+    private func reconcileMetadataMutation(_ file: URL, selectionGeneration: UUID) async {
+        // Annotation edits cannot invalidate a verified body match, but callbacks captured
+        // before the write must not restore the old title/star/pin on a query-local row.
+        let generation = revokeSearchAfterSourceMutation(file, keepingVerifiedHit: true)
+        await synchronizeIndex(files: [file])
+        await reloadAndReselect(file, selectionGeneration: selectionGeneration)
+        restartSearchAfterSourceMutation(generation: generation)
+    }
+
+    private func reloadAndReselect(_ file: URL, selectionGeneration: UUID) async {
         await reload()
-        guard let refreshed = projects.lazy.flatMap(\.sessions).first(where: {
+        guard detailGeneration == selectionGeneration,
+              selectedFile.map(ConversationFilter.fileKey) == ConversationFilter.fileKey(file) else { return }
+        let catalog = projects.lazy.flatMap(\.sessions).first(where: {
             ConversationFilter.fileKey($0.file) == ConversationFilter.fileKey(file)
-        }) else {
+        })
+        let source = contentHits[ConversationFilter.fileKey(file)].flatMap {
+            ConversationFilter.sourceMetadata(for: $0, active: historyActive)
+        }
+        guard let refreshed = catalog ?? source else {
             clearSelection()
             return
         }
@@ -2333,16 +2452,25 @@ final class ConversationStore: ObservableObject {
             if scopeSnapshot != snapshot.scopes { scopeSnapshot = snapshot.scopes }
             if listState != .loaded { listState = .loaded }
             if let selectedFile {
-                if let refreshed = value.lazy.flatMap(\.sessions).first(where: {
+                if let catalogMetadata = value.lazy.flatMap(\.sessions).first(where: {
                     ConversationFilter.fileKey($0.file)
                         == ConversationFilter.fileKey(selectedFile)
                 }) {
+                    let refreshed = ConversationFilter.mergingSourceNavigation(into: catalogMetadata,
+                        hit: listQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? nil : contentHits[ConversationFilter.fileKey(selectedFile)],
+                        active: historyActive)
                     if selectedMetadata != refreshed {
                         selectedMetadata = refreshed
                         // Child references can change without the parent JSONL changing. A
                         // preparation already in flight must merge this newer catalog snapshot.
                         preparedTranscriptsRevision += 1
                     }
+                } else if !listQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          let hit = contentHits[ConversationFilter.fileKey(selectedFile)],
+                          ConversationFilter.sourceMetadata(for: hit, active: historyActive) != nil {
+                    // An exact source result can be opened before its catalog row exists. A
+                    // concurrent metadata-only reload must not dismiss that valid selection.
                 } else {
                     // A selection can race a scope switch or disappear during reconciliation.
                     // Do not retain actions for a file which is no longer part of this view.
@@ -2378,7 +2506,7 @@ final class ConversationStore: ObservableObject {
                 value = try progressive.search(query: query, limit: ConversationCatalogLimits.searchHits) { [weak self] progress in
                     // The repository never waits for the UI actor or calls back under a DB lock.
                     // Cumulative snapshots make skipped/coalesced intermediate updates harmless.
-                    let ordinal = progressSequence.next()
+                    let ordinal = progressSequence.next(diagnostics: progress.diagnostics)
                     Task { @MainActor [weak self] in
                         self?.receiveSearchProgress(progress, query: query, generation: generation,
                             runID: runID, ordinal: ordinal, startedAt: startedAt,
@@ -2417,7 +2545,8 @@ final class ConversationStore: ObservableObject {
             var mapped: [String: HistorySearchHit] = [:]
             for hit in hits { mapped[ConversationFilter.fileKey(hit.file)] = hit }
             contentHits = mapped
-            searchDiagnostics = (provider as? any ConversationIndexedHistoryProviding)?.searchDiagnostics ?? searchDiagnostics
+            searchDiagnostics = progressSequence.latestDiagnostics
+                ?? (provider as? any ConversationIndexedHistoryProviding)?.searchDiagnostics ?? searchDiagnostics
             let duration = startedAt.duration(to: .now).components
             searchDurationMilliseconds = Double(duration.seconds) * 1_000
                 + Double(duration.attoseconds) / 1_000_000_000_000_000
@@ -2448,13 +2577,19 @@ final class ConversationStore: ObservableObject {
         guard searchGeneration == generation, activeSearchRunID == runID, isSearchingContent,
               listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query,
               progress.phase != .completed else { return }
+        let previousAttempt = activeSearchProgress.snapshotAttempt
         guard activeSearchProgress.receive(progress, ordinal: ordinal) else { return }
+        let restartedSourceSnapshot = previousAttempt != nil
+            && activeSearchProgress.snapshotAttempt != previousAttempt
         contentSearchPhase = activeSearchProgress.phase
-        guard !preservesExistingResults else { return }
+        guard activeSearchProgress.canPublish(preservingExistingResults: preservesExistingResults) else { return }
         if let diagnostics = progress.diagnostics { searchDiagnostics = diagnostics }
         // Same-sized prefixes can now finish occurrence counts. A restarted catalog snapshot
         // replaces the visible prefix at its first hit; it never unions old-revision answers.
-        guard !activeSearchProgress.hits.isEmpty else { return }
+        guard !activeSearchProgress.hits.isEmpty else {
+            if restartedSourceSnapshot { contentHits = [:] }
+            return
+        }
         let mapped = Dictionary(activeSearchProgress.hits.map { (ConversationFilter.fileKey($0.file), $0) },
                                 uniquingKeysWith: { _, newer in newer })
         if mapped != contentHits { contentHits = mapped }
@@ -2674,6 +2809,11 @@ final class ConversationStore: ObservableObject {
 
     private func replaceMetadata(_ metadata: HistorySessionMetadata) {
         let key = ConversationFilter.fileKey(metadata.file)
+        if var hit = contentHits[key], hit.sourceMetadata != nil,
+           hit.sessionID == metadata.sessionID, hit.source == metadata.source {
+            hit.sourceMetadata = metadata
+            contentHits[key] = hit
+        }
         for projectIndex in projects.indices {
             guard let sessionIndex = projects[projectIndex].sessions.firstIndex(where: {
                 ConversationFilter.fileKey($0.file) == key

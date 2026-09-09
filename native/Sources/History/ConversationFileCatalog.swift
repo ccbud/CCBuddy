@@ -273,7 +273,16 @@ final class ConversationFileCatalog: @unchecked Sendable {
             }
             for (path, session) in unique {
                 let previous = snapshot.records[path]
-                let record = Record(entry: makeEntry(session), pack: previous?.record?.pack,
+                var entry = makeEntry(session)
+                // Evidence belongs to the exact pack in this optimistic snapshot, never the
+                // scanner's earlier entry. A competing body replacement restarts both together.
+                if let record = previous?.record, record.pack != nil,
+                   ConversationIndexFingerprint.hasSameContentOwner(record.entry.metadata, session.metadata) {
+                    entry.fingerprint.searchContentFingerprint = record.entry.fingerprint.searchContentFingerprint
+                } else {
+                    entry.fingerprint.searchContentFingerprint = nil
+                }
+                let record = Record(entry: entry, pack: previous?.record?.pack,
                     documents: previous?.record?.documents ?? [])
                 prepared.append(try prepareHeader(record, path: path, previous: previous?.reference))
             }

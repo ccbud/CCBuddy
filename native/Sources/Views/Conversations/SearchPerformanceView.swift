@@ -3,14 +3,16 @@ import SwiftUI
 /// Query diagnostics are a snapshot, not a live build-progress feed. A direct search during
 /// background preparation is normal operation and must not look like a stalled/error state.
 enum ConversationSearchAccelerationPresentation {
-    static func isPreparing(_ reason: String) -> Bool {
-        reason == "indexPreparing" || reason == "indexRestoring"
+    static func isNormalDirectSearch(_ reason: String) -> Bool {
+        reason == "indexPreparing" || reason == "indexRestoring" || reason == "sourceVerification"
     }
 
     static func explanationKey(_ reason: String) -> String {
         switch reason {
         case "indexPreparing", "indexRestoring":
             return "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。"
+        case "sourceVerification":
+            return "本次查询直接核对新增或已变化的原始记录，已确认的匹配会先显示。"
         case "lowDiskSpace":
             return "索引所在磁盘空间不足，搜索加速已暂停。"
         case "unsafeCache":
@@ -45,13 +47,13 @@ struct SearchPerformanceView: View {
                     .accessibilityIdentifier("search.performance.duration")
             }
             if let reason = store.searchDiagnostics?.fallbackReason {
-                let preparing = ConversationSearchAccelerationPresentation.isPreparing(reason)
-                Label(language.localized(preparing ? "直接搜索" : "加速暂不可用"),
-                      systemImage: preparing ? "doc.text.magnifyingglass" : "exclamationmark.triangle")
+                let direct = ConversationSearchAccelerationPresentation.isNormalDirectSearch(reason)
+                Label(language.localized(direct ? "直接搜索" : "加速暂不可用"),
+                      systemImage: direct ? "doc.text.magnifyingglass" : "exclamationmark.triangle")
                     .font(.ccLabel())
-                    .foregroundStyle(preparing ? Theme.mutedForeground : Theme.warning)
+                    .foregroundStyle(direct ? Theme.mutedForeground : Theme.warning)
                     .help(fallbackExplanation(reason))
-                    .accessibilityIdentifier(preparing ? "search.performance.direct" : "search.performance.fallback")
+                    .accessibilityIdentifier(direct ? "search.performance.direct" : "search.performance.fallback")
             }
             Spacer(minLength: Space.sm)
             if store.isRankingSearch {
@@ -101,10 +103,10 @@ struct SearchPerformanceView: View {
                                value: String(format: "%.1f ms", lexical.queryMilliseconds))
                 if let reason = lexical.fallbackReason {
                     Text(fallbackExplanation(reason))
-                        .foregroundStyle(ConversationSearchAccelerationPresentation.isPreparing(reason)
+                        .foregroundStyle(ConversationSearchAccelerationPresentation.isNormalDirectSearch(reason)
                             ? Theme.mutedForeground : Theme.warning)
                         .accessibilityIdentifier("search.performance.fallback.reason")
-                    if !ConversationSearchAccelerationPresentation.isPreparing(reason) {
+                    if !ConversationSearchAccelerationPresentation.isNormalDirectSearch(reason) {
                         Text(language.localized("精确搜索仍可用；后续搜索会自动重试加速。"))
                             .foregroundStyle(Theme.mutedForeground)
                     }

@@ -5,10 +5,17 @@ import Foundation
 final class ConversationSearchProgressSequencer: @unchecked Sendable {
     private let lock = NSLock()
     private var ordinal: UInt64 = 0
+    private var diagnostics: ConversationSearchDiagnostics?
 
-    func next() -> UInt64 {
-        lock.withLock { ordinal += 1; return ordinal }
+    func next(diagnostics: ConversationSearchDiagnostics? = nil) -> UInt64 {
+        lock.withLock {
+            if let diagnostics { self.diagnostics = diagnostics }
+            ordinal += 1
+            return ordinal
+        }
     }
+
+    var latestDiagnostics: ConversationSearchDiagnostics? { lock.withLock { diagnostics } }
 }
 
 struct ConversationSearchProgressState {
@@ -16,16 +23,26 @@ struct ConversationSearchProgressState {
     private(set) var phase: ConversationSearchProgress.Phase = .preparingCandidates
     private(set) var snapshotRevision: Int64?
     private(set) var snapshotIdentity: String?
+    private(set) var snapshotAttempt: UUID?
+    private(set) var hasRestartedSourceSnapshot = false
+    private var retiredAttempts = Set<UUID>()
     private var lastOrdinal: UInt64 = 0
 
     @discardableResult
     mutating func receive(_ progress: ConversationSearchProgress, ordinal: UInt64) -> Bool {
         guard ordinal > lastOrdinal else { return false }
+        if let attempt = progress.snapshotAttempt, retiredAttempts.contains(attempt) { return false }
         lastOrdinal = ordinal
         if (progress.snapshotRevision != nil && progress.snapshotRevision != snapshotRevision)
-            || (progress.snapshotIdentity != nil && progress.snapshotIdentity != snapshotIdentity) {
+            || (progress.snapshotIdentity != nil && progress.snapshotIdentity != snapshotIdentity)
+            || (progress.snapshotAttempt != nil && progress.snapshotAttempt != snapshotAttempt) {
+            if let previous = snapshotAttempt, previous != progress.snapshotAttempt {
+                retiredAttempts.insert(previous)
+                hasRestartedSourceSnapshot = true
+            }
             snapshotRevision = progress.snapshotRevision
             snapshotIdentity = progress.snapshotIdentity
+            snapshotAttempt = progress.snapshotAttempt
             hits = []
             phase = .preparingCandidates
         }
@@ -48,6 +65,10 @@ struct ConversationSearchProgressState {
             hits.append(contentsOf: additional)
         }
         return true
+    }
+
+    func canPublish(preservingExistingResults: Bool) -> Bool {
+        !preservingExistingResults || hasRestartedSourceSnapshot
     }
 
     private static func stageOrder(_ phase: ConversationSearchProgress.Phase) -> Int {

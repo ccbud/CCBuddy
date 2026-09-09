@@ -131,7 +131,7 @@ actor LocalSemanticSearch: SemanticSearchRanking {
     }
 
     /// English MiniLM is not a multilingual model. Non-Latin text remains fully searchable via
-    /// tgrep/SQLite; declining its rerank avoids silently damaging Chinese/Japanese/Korean order.
+    /// tgrep and exact source/block verification; declining its rerank preserves CJK result order.
     nonisolated static func supports(query: String) -> Bool {
         let letters = query.unicodeScalars.filter { CharacterSet.letters.contains($0) }
         return !letters.isEmpty && letters.allSatisfy { $0.value < 0x0250 }

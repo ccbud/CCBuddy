@@ -20,7 +20,9 @@ struct HistoryJSONLDocument: Sendable {
             return document
         }
         do {
-            return try streamed(from: file)
+            var records: [[String: HistoryValue]] = []
+            let diagnostics = try visitRecords(from: file) { records.append($0) }
+            return HistoryJSONLDocument(records: records, diagnostics: diagnostics)
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as HistoryError {
@@ -38,13 +40,21 @@ struct HistoryJSONLDocument: Sendable {
     /// one chunk and one line alive; what survives is the records the caller asked for.
     /// Cancellation is checked between chunks and records, not for every scanned byte. A single
     /// large JSONDecoder call cannot be interrupted; cancellation is observed when it returns.
-    private static func streamed(from file: URL) throws -> HistoryJSONLDocument {
+    static func visitRecords(
+        from file: URL,
+        _ visit: ([String: HistoryValue]) throws -> Void
+    ) throws -> HistoryReadDiagnostics {
+        // This low-level entry point is deliberately unavailable for protected producer paths.
+        // Those must keep going through read(from:qoderReader:) and its permission-aware reader.
+        guard !QoderFileReader.isQoderDataPath(file) else {
+            throw HistoryError.unreadableFile(file, "Protected transcript requires its source reader")
+        }
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: file) }
         catch { throw HistoryError.unreadableFile(file, String(describing: error)) }
         defer { try? handle.close() }
 
-        var records: [[String: HistoryValue]] = []
+        var decodedLines = 0
         var malformed = 0
         let decoder = JSONDecoder()
         // A byte array rather than `Data`: scanning for newlines through `Data`'s collection
@@ -65,20 +75,22 @@ struct HistoryJSONLDocument: Sendable {
                 while index < buffer.count {
                     if buffer[index] == newlineByte {
                         try Task.checkCancellation()
-                        decode(
-                            buffer, from: lineStart, to: index,
-                            into: &records, malformed: &malformed, decoder: decoder
-                        )
+                        if let record = decodeRecord(buffer, from: lineStart, to: index,
+                                                     malformed: &malformed, decoder: decoder) {
+                            decodedLines += 1
+                            try visit(record)
+                        }
                         lineStart = index + 1
                     }
                     index += 1
                 }
                 if finalChunk, lineStart < buffer.count {
                     try Task.checkCancellation()
-                    decode(
-                        buffer, from: lineStart, to: buffer.count,
-                        into: &records, malformed: &malformed, decoder: decoder
-                    )
+                    if let record = decodeRecord(buffer, from: lineStart, to: buffer.count,
+                                                 malformed: &malformed, decoder: decoder) {
+                        decodedLines += 1
+                        try visit(record)
+                    }
                 }
             }
             if finalChunk {
@@ -107,10 +119,7 @@ struct HistoryJSONLDocument: Sendable {
         try drain(finalChunk: true)
         try Task.checkCancellation()
 
-        return HistoryJSONLDocument(
-            records: records,
-            diagnostics: HistoryReadDiagnostics(decodedLines: records.count, malformedLines: malformed)
-        )
+        return HistoryReadDiagnostics(decodedLines: decodedLines, malformedLines: malformed)
     }
 
     private static let chunkSize = 1 << 20
@@ -128,11 +137,24 @@ struct HistoryJSONLDocument: Sendable {
         malformed: inout Int,
         decoder: JSONDecoder
     ) {
+        if let record = decodeRecord(buffer, from: start, to: end,
+                                     malformed: &malformed, decoder: decoder) {
+            records.append(record)
+        }
+    }
+
+    private static func decodeRecord(
+        _ buffer: UnsafeBufferPointer<UInt8>,
+        from start: Int,
+        to end: Int,
+        malformed: inout Int,
+        decoder: JSONDecoder
+    ) -> [String: HistoryValue]? {
         var from = start
         var to = end
         while from < to, isTrimmable(buffer[from]) { from += 1 }
         while to > from, isTrimmable(buffer[to - 1]) { to -= 1 }
-        guard to > from, let base = buffer.baseAddress else { return }
+        guard to > from, let base = buffer.baseAddress else { return nil }
         // The decoder does not outlive this call, so it can read the buffer in place.
         let line = Data(
             bytesNoCopy: UnsafeMutableRawPointer(mutating: base + from),
@@ -142,9 +164,9 @@ struct HistoryJSONLDocument: Sendable {
         guard let value = try? decoder.decode(HistoryValue.self, from: line),
               let object = value.objectValue else {
             malformed += 1
-            return
+            return nil
         }
-        records.append(object)
+        return object
     }
 
     /// Kept for callers that already hold the bytes, such as the permission-protected Qoder reader.

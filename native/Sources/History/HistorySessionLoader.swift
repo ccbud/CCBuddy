@@ -145,6 +145,62 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         return loaded
     }
 
+    /// Search cannot interpret a failed bounded preview as proof that a source has no content.
+    /// Keep scanner startup's 256 KiB budget unchanged, but allow a query worker to decode the
+    /// first complete ordinary JSONL record when that preview could not identify the producer.
+    /// The visitor stops immediately after this record; it never retains the full transcript.
+    func loadSearchMetadata(_ candidates: [HistoryFileCandidate]) throws -> [QuickLoadedHistorySession] {
+        try Task.checkCancellation()
+        let authorized = try candidates.map { requested -> HistoryFileCandidate in
+            try Task.checkCancellation()
+            var candidate = try pathResolver.validatedCandidate(for: requested.file)
+            guard candidate.directory.id == requested.directory.id else {
+                throw HistoryError.invalidPath(requested.file)
+            }
+            candidate.formatHint = requested.formatHint ?? candidate.formatHint
+            return candidate
+        }
+        var loaded = loadQuickMetadata(authorized)
+        try Task.checkCancellation()
+        let known = Set(loaded.map { $0.candidate.file.standardizedFileURL.path })
+        for requested in authorized where !known.contains(requested.file.standardizedFileURL.path) {
+            try Task.checkCancellation()
+            guard requested.formatHint != .antigravity, requested.formatHint != .qoder,
+                  !QoderFileReader.isQoderDataPath(requested.file) else { continue }
+            var candidate = try pathResolver.validatedCandidate(for: requested.file)
+            guard candidate.directory.id == requested.directory.id else {
+                throw HistoryError.invalidPath(requested.file)
+            }
+            candidate.formatHint = requested.formatHint ?? candidate.formatHint
+            let dependency = ConversationSourceDependency(file: candidate.file, role: .primaryTranscript)
+            let before = ConversationDependencyStamp.read(dependency)
+            var sample: HistoryJSONLDocument?
+            do {
+                _ = try HistoryJSONLDocument.visitRecords(from: candidate.file) { record in
+                    sample = HistoryJSONLDocument(records: [record],
+                        diagnostics: .init(decodedLines: 1, malformedLines: 0))
+                    throw SearchMetadataSample.complete
+                }
+            } catch SearchMetadataSample.complete {}
+            try Task.checkCancellation()
+            guard let sample else { continue }
+            do {
+                let value = try loadQuickMetadata(candidate, sampledDocument: sample)
+                guard value.dependencySnapshot.stamp(for: candidate.file, role: .primaryTranscript) == before else {
+                    throw HistorySessionLoadError.dependenciesChanged(candidate.file)
+                }
+                loaded.append(value)
+            } catch HistoryError.unsupportedTranscript {
+                // A structurally valid unrelated JSON object is still not a conversation.
+                continue
+            }
+        }
+        try Task.checkCancellation()
+        return loaded
+    }
+
+    private enum SearchMetadataSample: Error { case complete }
+
     func load(
         _ candidate: HistoryFileCandidate,
         consistency: HistorySessionLoadConsistency = .dependencyStable
@@ -274,7 +330,8 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     }
 
     private func loadQuickMetadata(
-        _ candidate: HistoryFileCandidate
+        _ candidate: HistoryFileCandidate,
+        sampledDocument: HistoryJSONLDocument? = nil
     ) throws -> QuickLoadedHistorySession {
         let facts = try HistoryFileFacts.read(candidate.file, records: [])
         let adapter: any ConversationSourceAdapter
@@ -291,7 +348,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
                 appDataRoot: configuration.appDataRoot
             )
         } else {
-            let document = try quickDocument(candidate)
+            let document = try sampledDocument ?? quickDocument(candidate)
             adapter = try adapters.adapter(for: candidate, document: document)
             let session = try adapter.parse(ConversationSourceParseInput(
                 candidate: candidate,

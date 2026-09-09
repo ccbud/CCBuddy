@@ -36,6 +36,9 @@ final class ConversationSearchRefinementCache: @unchecked Sendable {
         var queryUTF8: Data
         var options: UInt
         var localeIdentifier: String?
+        /// Present only for raw-source answers. Full dependency identity includes replacement-
+        /// sensitive file stamps and subagent sidecars, not just mtime/size or a catalog revision.
+        var sourceFingerprint: String? = nil
         var algorithmVersion: Int = 1
 
         init(reference: ConversationIndexDocumentReference, query: String,
@@ -49,9 +52,22 @@ final class ConversationSearchRefinementCache: @unchecked Sendable {
             self.localeIdentifier = localeIdentifier
         }
 
+        init(source: ConversationSourceSearchCoverage.Source, catalogIdentity: String?, query: String) {
+            self.catalogIdentity = catalogIdentity
+            // Allocated catalog document IDs are strictly positive. Reserve zero for an answer
+            // spanning an authoritative source's first matching main/embedded transcript.
+            documentID = 0
+            sessionPath = ConversationFileCatalog.normalizedPath(source.candidate.file)
+            transcriptID = "source"
+            queryUTF8 = Data(query.utf8)
+            options = String.CompareOptions.caseInsensitive.rawValue
+            localeIdentifier = nil
+            sourceFingerprint = source.dependencySnapshot.fingerprint
+        }
+
         var retainedBytes: Int {
             (catalogIdentity?.utf8.count ?? 0) + sessionPath.utf8.count + transcriptID.utf8.count + queryUTF8.count
-                + (localeIdentifier?.utf8.count ?? 0)
+                + (localeIdentifier?.utf8.count ?? 0) + (sourceFingerprint?.utf8.count ?? 0)
         }
     }
 
@@ -287,6 +303,8 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
                     onProgress: onProgress)
             } catch ConversationCatalogError.staleRevision where attempt < 2 {
                 try Task.checkCancellation()
+            } catch HistorySessionLoadError.dependenciesChanged where attempt < 2 {
+                try Task.checkCancellation()
             }
         }
         throw ConversationCatalogError.staleRevision
@@ -297,14 +315,26 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         onProgress: (@Sendable (ConversationSearchProgress) -> Void)?
     ) throws -> [HistorySearchHit] {
         var diagnostics: ConversationSearchDiagnostics?
+        // Source rewrites can invalidate an attempt without a catalog mutation. This token is
+        // stable for its entire prefix and changes only when performSearch actually retries.
+        let snapshotAttempt = UUID()
         let revision = try database.searchIndexRevision()
         let catalogIdentity = revision.identity
         let generation = revision.generation
+        func validateSource(_ source: ConversationSourceSearchCoverage.Source) throws {
+            try Task.checkCancellation()
+            guard source.manifest.snapshot() == source.dependencySnapshot,
+                  try database.generation() == generation,
+                  try database.catalogIdentity() == catalogIdentity else {
+                throw ConversationCatalogError.staleRevision
+            }
+        }
         func publish(_ phase: ConversationSearchProgress.Phase, hits: [HistorySearchHit]) throws {
             try Task.checkCancellation()
             guard let onProgress else { return }
             onProgress(ConversationSearchProgress(phase: phase, hits: hits,
-                diagnostics: diagnostics, snapshotRevision: generation, snapshotIdentity: catalogIdentity))
+                diagnostics: diagnostics, snapshotRevision: generation, snapshotIdentity: catalogIdentity,
+                snapshotAttempt: snapshotAttempt))
             try Task.checkCancellation()
         }
         try publish(.preparingCandidates, hits: [])
@@ -317,9 +347,16 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         // the catalog for the matching documents themselves made a single keystroke materialize
         // every transcript that matched — the whole indexed corpus for a common word — first
         // as Swift strings. Cold candidate lookup never waits for a tgrep rebuild.
-        let sessions = try listSessions(limit: ConversationCatalogLimits.searchScan)
-            .sorted(by: HistoryCatalogProjection.searchResultComesFirst)
         let filter = activeFilter
+        let coverage = try ConversationSourceSearchCoverage.snapshot(loader: loader,
+            entries: database.listEntries(deleted: nil, limit: .max),
+            scope: filter.scope, deleted: filter.deleted)
+        let canonical = HistoryCatalogProjection.canonicalizedCodexSessions(coverage.metadata,
+            homeDirectory: configuration.homeDirectory)
+        let nested = HistoryCatalogProjection.nestingSubagentRollouts(canonical)
+        let sessions = HistoryCatalogProjection.limitedKeepingCodexAncestors(
+            HistoryCatalogProjection.activityOrdered(nested), limit: ConversationCatalogLimits.searchScan)
+            .sorted(by: HistoryCatalogProjection.searchResultComesFirst)
         let batch = try database.candidateDocumentReferences(
             for: query,
             scope: filter.scope,
@@ -336,11 +373,17 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         for reference in batch.references {
             referencesByPath[reference.sessionPath, default: []].append(reference)
         }
-        if onProgress != nil { diagnostics = searchDiagnostics }
+        if onProgress != nil {
+            diagnostics = searchDiagnostics
+            if !coverage.sourcesByPath.isEmpty {
+                diagnostics?.usedFallback = true
+                diagnostics?.fallbackReason = "sourceVerification"
+            }
+        }
         try publish(.refiningResults, hits: [])
 
         var hits: [HistorySearchHit] = []
-        var pending: [(index: Int, reference: ConversationIndexDocumentReference)] = []
+        var pending: [(index: Int, transcript: SearchTranscript)] = []
         var lastPublishedCount = 0
         var lastPublication = ContinuousClock.now
         for metadata in sessions {
@@ -351,20 +394,60 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             // child hit to the parent row, using the same key as its lazy tab.
             // These refs come from the already scope/trash-filtered projection;
             // never resolve a parent relationship across directory boundaries.
-            var transcripts: [(reference: ConversationIndexDocumentReference, agent: String?)] =
-                (referencesByPath[path] ?? [])
-                    .sorted(by: ConversationFileCatalog.referenceComesFirst)
-                    .map { ($0, nil) }
+            var transcripts: [SearchTranscript] = []
+            func appendTranscripts(path: String, agent: String? = nil, mainOnly: Bool = false) {
+                if let source = coverage.sourcesByPath[path] {
+                    // The source replaces this session's old packs; adding it to their counts
+                    // would double-count the prefix and retain removed/replaced source text.
+                    transcripts.append(.source(source, agent: agent))
+                } else {
+                    transcripts.append(contentsOf: (referencesByPath[path] ?? [])
+                        .filter { !mainOnly || $0.transcriptID == "main" }
+                        .sorted(by: ConversationFileCatalog.referenceComesFirst)
+                        .map { .catalog($0, agent: agent) })
+                }
+            }
+            appendTranscripts(path: path)
             if metadata.source == .codex {
                 for child in metadata.subagentRefs {
                     let childPath = ConversationFileCatalog.normalizedPath(child.file)
-                    for reference in referencesByPath[childPath] ?? [] where reference.transcriptID == "main" {
-                        transcripts.append((reference, child.threadID))
-                    }
+                    appendTranscripts(path: childPath, agent: child.threadID, mainOnly: true)
                 }
             }
             for transcript in transcripts {
-                let reference = transcript.reference
+                if case let .source(source, agent) = transcript {
+                    let validate = { try validateSource(source) }
+                    let cache = database.searchRefinementCache
+                    let key = ConversationSearchRefinementCache.Key(source: source,
+                        catalogIdentity: catalogIdentity, query: query)
+                    try validate()
+                    let refinement: ConversationSearchRefinement
+                    let isComplete: Bool
+                    if let cached = cache.lookup(key), cached.generation == generation {
+                        try validate()
+                        refinement = cached.result
+                        cache.recordValidatedHit()
+                        isComplete = true
+                    } else {
+                        refinement = try ConversationSourceSearch.refine(candidate: source.candidate,
+                            metadata: source.metadata, loader: loader, query: query,
+                            countingOccurrences: onProgress == nil, validate: validate)
+                        try validate()
+                        isComplete = onProgress == nil || refinement == .noMatch
+                        if isComplete { try cache.store(refinement, for: key, generation: generation) }
+                    }
+                    try validate()
+                    guard var hit = refinement.hit(for: metadata, agentOverride: agent,
+                                                   isCountComplete: isComplete) else { continue }
+                    hit.sourceMetadata = metadata
+                    if !isComplete { pending.append((hits.count, transcript)) }
+                    hits.append(hit)
+                    try publish(.refiningResults, hits: hits)
+                    lastPublishedCount = hits.count
+                    lastPublication = .now
+                    break
+                }
+                guard case let .catalog(reference, agent) = transcript else { continue }
                 try Task.checkCancellation()
                 let cache = database.searchRefinementCache
                 let key = ConversationSearchRefinementCache.Key(reference: reference, query: query)
@@ -391,9 +474,9 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
                     if isComplete { try cache.store(refinement, for: key, generation: generation) }
                 }
                 try Task.checkCancellation()
-                guard let hit = refinement.hit(for: metadata, agentOverride: transcript.agent,
+                guard let hit = refinement.hit(for: metadata, agentOverride: agent,
                     isCountComplete: isComplete) else { continue }
-                if !isComplete { pending.append((hits.count, reference)) }
+                if !isComplete { pending.append((hits.count, transcript)) }
                 hits.append(hit)
                 // Callbacks are outside the database lock. First-hit publication is immediate;
                 // subsequent identities are batched without delaying the first usable result.
@@ -412,13 +495,25 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             try publish(.countingOccurrences, hits: hits)
             lastPublication = .now
             for (ordinal, item) in pending.enumerated() {
-                let refinement = try refine(reference: item.reference, query: query,
-                    matcher: matcher, countingOccurrences: true)
-                guard case let .hit(_, _, _, _, count) = refinement else {
+                let refinement: ConversationSearchRefinement
+                let key: ConversationSearchRefinementCache.Key
+                switch item.transcript {
+                case let .catalog(reference, _):
+                    refinement = try refine(reference: reference, query: query,
+                        matcher: matcher, countingOccurrences: true)
+                    key = .init(reference: reference, query: query)
+                case let .source(source, _):
+                    refinement = try ConversationSourceSearch.refine(candidate: source.candidate,
+                        metadata: source.metadata, loader: loader, query: query,
+                        validate: { try validateSource(source) })
+                    key = .init(source: source, catalogIdentity: catalogIdentity, query: query)
+                }
+                guard case let .hit(_, _, sequence, snippet, count) = refinement,
+                      sequence == hits[item.index].sequence, snippet == hits[item.index].snippet else {
                     throw ConversationCatalogError.staleRevision
                 }
                 try database.searchRefinementCache.store(refinement,
-                    for: .init(reference: item.reference, query: query), generation: generation)
+                    for: key, generation: generation)
                 hits[item.index].count = count
                 hits[item.index].isCountComplete = true
                 if ordinal == 0 || ordinal == pending.count - 1
@@ -432,8 +527,19 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
               try database.catalogIdentity() == catalogIdentity else {
             throw ConversationCatalogError.staleRevision
         }
+        for source in coverage.validationSources {
+            try Task.checkCancellation()
+            guard source.manifest.snapshot() == source.dependencySnapshot else {
+                throw ConversationCatalogError.staleRevision
+            }
+        }
         try publish(.completed, hits: hits)
         return hits
+    }
+
+    private enum SearchTranscript {
+        case catalog(ConversationIndexDocumentReference, agent: String?)
+        case source(ConversationSourceSearchCoverage.Source, agent: String?)
     }
 
     private func refine(reference: ConversationIndexDocumentReference, query: String,
