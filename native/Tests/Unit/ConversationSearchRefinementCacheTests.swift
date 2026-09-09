@@ -79,16 +79,19 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
     }
 
     func testFalsePositiveCandidatesCacheNoMatchWithoutInventingResults() throws {
-        let fixture = try makeFixture()
-        guard fixture.database.supportsTrigramSearch else { throw XCTSkip("SQLite trigram tokenizer unavailable") }
-        try fixture.database.replace(fixture.session(text: "needle separated from phrase"))
-        XCTAssertFalse(try fixture.database.candidateDocumentReferences(for: "needle phrase").references.isEmpty)
-        XCTAssertTrue(try fixture.repository.search(query: "needle phrase").isEmpty)
+        let fixture = try makeFixture(enableTgrep: true)
+        XCTAssertTrue(fixture.database.supportsTrigramSearch, "The bundled tgrep path must actually run")
+        // All four byte trigrams occur, but not as the contiguous literal. This is a
+        // deliberate mask-free tgrep collision, not a retired FTS token-query assumption.
+        try fixture.database.replace(fixture.session(text: "abc bcd cde def"))
+        XCTAssertFalse(try fixture.database.candidateDocumentReferences(for: "abcdef").references.isEmpty)
+        XCTAssertEqual(fixture.database.searchDiagnostics.engine, "tgrep")
+        XCTAssertTrue(try fixture.repository.search(query: "abcdef").isEmpty)
         XCTAssertEqual(fixture.cache.statistics.stores, 1)
-        XCTAssertTrue(try fixture.repository.search(query: "needle phrase").isEmpty)
+        XCTAssertTrue(try fixture.repository.search(query: "abcdef").isEmpty)
         XCTAssertEqual(fixture.cache.statistics.validatedHits, 1)
-        try fixture.database.replace(fixture.session(text: "needle phrase now exists"))
-        XCTAssertEqual(try fixture.repository.search(query: "needle phrase").first?.count, 1)
+        try fixture.database.replace(fixture.session(text: "abcdef now exists"))
+        XCTAssertEqual(try fixture.repository.search(query: "abcdef").first?.count, 1)
     }
 
     func testSkinnySnapshotValidationSkipsDocumentAndRejectsWrongIdentity() throws {
@@ -286,8 +289,9 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         }
     }
 
-    private func makeFixture(cache: ConversationSearchRefinementCache = .init()) throws -> Fixture {
-        let fixture = try Fixture(cache: cache)
+    private func makeFixture(cache: ConversationSearchRefinementCache = .init(),
+                             enableTgrep: Bool = false) throws -> Fixture {
+        let fixture = try Fixture(cache: cache, enableTgrep: enableTgrep)
         // Teardown runs after test locals and awaited task handles have released their DB copies.
         // Keep the fixture alive until then, close both owned connections, and only then unlink.
         addTeardownBlock { try fixture.cleanup() }
@@ -304,13 +308,13 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         var repository: IndexedHistoryRepository { repositoryStorage! }
         let cache: ConversationSearchRefinementCache
 
-        init(cache: ConversationSearchRefinementCache = .init()) throws {
+        init(cache: ConversationSearchRefinementCache = .init(), enableTgrep: Bool = false) throws {
             root = try HistoryTestSupport.temporaryDirectory("exact-refinement-cache")
             scope = root.appendingPathComponent("history")
             otherScope = root.appendingPathComponent("other-history")
             self.cache = cache
             let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"),
-                enableTgrep: false, searchRefinementCache: cache)
+                enableTgrep: enableTgrep, searchRefinementCache: cache)
             databaseStorage = database
             repositoryStorage = IndexedHistoryRepository(configuration: .init(
                 historyDirs: [scope.path, otherScope.path], homeDirectory: root,

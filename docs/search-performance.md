@@ -8,10 +8,18 @@ transitive dependencies. A release carries arm64 and x86_64 slices of
 
 ## Search path
 
-The existing SQLite catalog remains the authoritative derived store. tgrep is
+The SQLite catalog remains the authoritative derived store. tgrep is
 an in-process candidate generator over the catalog's normalized search
 projections, including subagents. It does not crawl the producer's directories,
 start a server, execute a command, or change a user's CLI configuration.
+
+The current schema stores logical transcript identity separately from physical
+search blocks. Blocks target 32 KiB of UTF-8 and split only at Swift `Character`
+boundaries; an indivisible larger grapheme is the one oversized-block exception.
+Each byte has one stored owner. The body is independently LZFSE-compressed, or
+stored raw when compression would not reduce it, with transcript-global UTF-16
+coordinates and intersecting message spans. There is no second full-text column
+or FTS index in the completed schema. Compression is not encryption.
 
 Global search is not an unrestricted scan of every byte in the original files.
 The existing catalog projection retains at most 32 KiB of UTF-8 search text per
@@ -25,17 +33,23 @@ catalog byte limits; it still follows the reader's content and tool-pairing rule
 not raw-file byte-search semantics.
 
 On the first eligible search without a valid checkpoint, the catalog streams
-each transcript into tgrep. This initial preparation is not instantaneous and
+decoded blocks into tgrep, each with up to 64 following `Character`s of lookahead.
+Only a scalar-aligned, at-most-64-byte normalized query prefix drives the candidate
+index; the full original query remains the exact-match authority. Lookahead is
+assembled during reads rather than stored as duplicate body text. Exact refinement
+reads candidate blocks with query-sized lookahead, counts a match only in the block
+owning its start, and carries nonoverlapping-match progress across block boundaries.
+Long queries are not truncated during verification. This initial preparation is not instantaneous and
 is measured separately from restored and warm queries below.
 A live overlay flushes after 64 MiB of input, and subsequent compactions use
 upstream's streaming merge into memory-mapped postings. This bounds overlay
-growth independently of the total archive; a single large transcript can
-temporarily exceed the threshold. Original transcript text is never kept in
-the tgrep index. Its files contain trigram postings and numeric SQLite IDs.
+growth independently of the total archive; one indivisible block and its lookahead
+can exceed the target. Original transcript text is never kept in the tgrep index.
+Its files contain trigram postings and numeric SQLite block IDs.
 
-The sibling `.tgrep-v2` cache directory is set to mode `0700` before any index
+The sibling `.tgrep-chunks-v1` cache directory is set to mode `0700` before any index
 data is written. Completed index files form an immutable, persistent checkpoint;
-the manifest stores only numeric row IDs and SHA-256 identity fingerprints,
+the manifest stores only numeric block IDs and SHA-256 identity fingerprints,
 not paths or transcript content. Reopening validates all sealed files with
 streaming BLAKE3 checksums, checks the normalization version, and reconciles
 every lightweight SQLite identity before trusting the cache. This deliberately
@@ -48,17 +62,26 @@ partially written checkpoint files cause rebuilding. Cache roots, lock files,
 and pointer/metadata reads reject symlinks. A lifetime file lock admits one
 publisher; a simultaneous database instance gets its own private temporary
 overlay. Successful publication reclaims abandoned sealed checkpoints without
-touching another instance's working directory. Working overlays are removed
-on normal close; a killed process can leave a private temporary directory.
+touching another instance's working directory. Each new working directory has a
+private, single-link lease file bound to the cache-root and workspace device/inode
+identities. Its process holds an exclusive advisory lock for the workspace lifetime.
+A separate short-lived registry lock serializes workspace creation and recovery.
+Publishers and secondary instances can reclaim a dead peer's unlocked, validated
+workspace without waiting for checkpoint publication. Recovery does not use PID
+or age guesses: live leases, legacy unmarked directories, malformed identity
+markers, symlinks, nonprivate permissions and unsupported filesystem nodes are
+not treated as abandoned caches. Directory-relative, no-follow traversal checks
+identities before deletion; the lease is removed last so interrupted cleanup can
+be retried. Normal close also removes its own workspace while holding the lease.
 These are derived caches, not encrypted storage, and contain no plaintext
 transcript copies or queries. Validation protects reopen, not arbitrary external
 modification of already memory-mapped files while the app is running.
 
-At an unchanged catalog generation, tgrep candidate lookup reads one generation
+At an unchanged catalog/storage revision, tgrep candidate lookup reads one revision
 integer and queries the mmap index without rereading the corpus. Exact matching
-still reads candidate text; common terms can cover much of the corpus. At a changed
-generation, it enumerates small document identities and reads text only for
-added or replaced transcripts. Removed IDs are pruned before the generation
+still decodes candidate blocks; common terms can cover much of the corpus. At a changed
+revision, it enumerates small block identities and reads text only for
+added or replaced blocks. Removed IDs are pruned before the revision
 becomes searchable. The generation, changed text, and candidate references are
 read within one SQLite snapshot. Detail retrieval also checks the session and
 transcript identities, preventing a reused SQLite row ID from attributing a
@@ -81,16 +104,191 @@ UTF-16 units use cancellation-bounded Foundation windows. The long-query thresho
 selects an algorithm, not a search-length limit.
 Queries whose folded UTF-8 form contains fewer than three bytes use the literal
 path. One- and two-character CJK queries use tgrep's byte trigrams. Unavailable or
-failed tgrep libraries also use a bound Foundation literal matcher in SQLite;
-SQLite's ASCII-only `lower()` no longer decides literal fallback matches.
+failed tgrep libraries use the same exact matcher over sequential decoded blocks;
+SQLite's ASCII-only `lower()` does not decide literal fallback matches. There is
+no FTS fallback or query-time creation of an FTS index.
 Cancelled synchronization is discarded and can be retried by the next query.
 
 `ConversationSearchDiagnostics` reports the engine actually used, total
-indexed documents, candidate count, incremental document count, candidate
-generation latency, checkpoint restoration, cumulative normalization/index-build
-time, and fallback state. It contains no query text.
+indexed blocks, incremental block count, candidate generation latency, checkpoint
+restoration, cumulative normalization/index-build time, and fallback state.
+Candidate counts describe indexed blocks on the tgrep path, but logical transcripts
+on literal fallback; an unconverted legacy transcript contributes one candidate in
+a mixed migration snapshot, not its as-yet-unindexed block count. Diagnostics contain
+no query text.
+
+### Resumable migration and delivery (2026-09-09)
+
+Opening a legacy catalog installs lightweight identity/migration metadata; it does
+not synchronously rewrite the entire body store. Idle maintenance first commits
+legacy-text conversion in resumable passes, targeting at most 128 blocks
+or 250 ms of block conversion. The budget is checked between blocks, not a hard
+wall-clock deadline: one indivisible oversized grapheme, slow I/O or header decoding
+can exceed it. Each block transaction persists byte, UTF-16 and ordinal
+progress. An interrupted giant transcript resumes at the committed offset. Until a
+transcript is complete, searches use bounded legacy reads; converted transcripts
+use compressed blocks. Migration reads only the existing derived SQLite text, not
+the producer history. A storage revision invalidates block-index state without
+pretending that unchanged transcript content is a new semantic catalog generation.
+
+The legacy body table is removed only after all documents are converted; the
+obsolete FTS index is then dropped. Activity requests a yield after committed text
+blocks and does not roll back useful work. The atomic FTS drop is interrupted only
+by stop/lifecycle cancellation, not ordinary file activity, which would otherwise
+restart a large drop indefinitely. It can occupy the background writer for longer
+than a conversion pass: concurrent WAL metadata/search reads remain available while
+new writes may queue.
+
+Low-space guards, cancellable SQLite work, WAL checkpoints and durable pending
+flags govern cleanup. New catalogs use incremental vacuum; a sufficiently wasteful
+old catalog may require a one-time, capacity-guarded full vacuum to adopt that mode.
+Incremental reclamation commits 256-page microbatches, then checks activity and a
+cooperative 250 ms reclamation budget. A microbatch must reach SQLite completion
+before yielding, and pending remains set until the freelist is drained. Neither
+that budget nor the conversion budget is a hard wall-clock limit. The separate
+FTS-drop and one-time full vacuum operations are cancellable but are not promised
+to finish within either budget. A low-space or busy pass must not be reported as
+completed migration.
+
+Progressive search first publishes openable hits with verified identity, first
+match, snippet and message anchor. An incomplete count is a real lower bound, marked
+`isCountComplete: false`, never an estimate. Ordered result identities and their
+first-match presentation stay stable within one snapshot while remaining rows arrive
+and counts complete. Counts never decrease; the completed callback and final-only
+API contain full exact counts. This avoids waiting for a giant transcript's complete
+count before the first usable result. Cache hits can already have complete counts.
+Candidate preparation, first visible publication, first complete count and complete
+search are separate metrics; none measures frame paint.
 
 ## Real local-history validation
+
+### Compressed-block snapshot (2026-09-09)
+
+The owner's stable, stopped preview catalog was copied with SQLite backup, including
+its committed WAL. Only that private derived copy was migrated and queried. No raw
+history, catalog, title, session identifier, path or screenshot is included in the
+repository. This is a different snapshot from the historical measurements below;
+the numbers must not be presented as a controlled before/after latency speedup.
+
+An independent read-only verifier, importing no application code, checked all
+1,571 session rows (including raw metadata bytes), 1,458 logical transcripts,
+25,216 chunk ordinals/UTF-16 layouts and 324,441 unique message spans. Streaming
+SHA-256 matched every transcript: 800,222,570 decoded bytes before and after,
+229,758,399 stored body bytes after compression. All identity, body, metadata,
+span, layout and state mismatch counts were zero. Three content-stamp rebases
+matched exactly the migration's identity-trigger mapping. The final catalog had
+no FTS or legacy-body table, no freelist pages and no pending maintenance.
+
+| Storage on the same private snapshot | Bytes |
+| --- | ---: |
+| Before: legacy SQLite + WAL + SHM, excluding any old tgrep cache | 4,277,129,216 |
+| After migration: SQLite + WAL + SHM | 301,764,608 |
+| After index publication and process close: SQLite + tgrep, unique file inodes | 1,103,203,033 |
+| Same final files: allocated inode blocks | 1,116,127,232 |
+
+SQLite alone is 92.9% smaller. The completed SQLite-plus-tgrep snapshot is 74.2%
+smaller than even the old SQLite-only baseline. Hard-linked checkpoint files are
+counted once by device/inode, not once per directory entry; allocated blocks are
+not an APFS clone-exclusive storage claim. There were zero working directories
+after normal process close. This snapshot did not include an older `.tgrep-v2`
+cache: these figures do not promise automatic deletion of legacy, unmarked caches
+in an existing installation.
+
+Two optimized production-repository processes queried the same migrated catalog.
+The first had no tgrep checkpoint; the second restored the published checkpoint.
+Scope resolution prewarmed metadata, exposing 331 canonical live sessions across
+seven physical roots. The index covered all 25,216 stored blocks. The system's
+filesystem cache was not flushed or controlled. Times below measure repository
+callbacks, including callback contract validation, not Store delivery or frame paint.
+
+| Query and state | First openable hit | First complete hit count | Entire result count complete |
+| --- | ---: | ---: | ---: |
+| 系统代理: first search, no checkpoint | 49,901.8 ms | 49,992.2 ms | 50,000.0 ms |
+| 系统代理: first search after process restart | 603.5 ms | 779.1 ms | 789.6 ms |
+| 当前版本: first use of keyword, in the two prepared-index processes | 31.5–56.6 ms | 157.9–350.1 ms | 242.0–475.6 ms |
+| 系统代理: repeated, exact-result cache populated | 17.5–19.1 ms | 17.5–19.1 ms | 25.2–27.5 ms |
+| 当前版本: repeated, exact-result cache populated | 18.7–18.9 ms | 18.7–18.9 ms | 26.4–27.0 ms |
+
+These are individual observations, not percentiles. The first search's 49,884.9 ms
+candidate preparation includes 8,712.7 ms cumulative normalization and 32,827.1 ms
+trigram construction. That initial setup remains substantial; it is not hidden
+inside a warm-query claim. Restored preparation was 586.7 ms with zero normalization
+or trigram rebuild. Peak process RSS was 1,004,863,488 bytes for initial construction
+plus all queries, versus 73,891,840 bytes in the restored process.
+
+Both runs returned eight canonical sessions / 172 occurrences for 系统代理 and
+48 sessions / 475 occurrences for 当前版本. Every first-time keyword published a
+verified lower bound before completing counts. Callback identity/anchor/snippet
+prefixes remained stable, counts never decreased, and all final counts were complete.
+The final-only API agreed after each timed call. Beyond the benchmark's small sampled
+oracle, a separate read-only harness compared whole-original-text Foundation matching
+against production chunk decoding/matching for **every** logical document, outside all
+performance measurements. Across all 1,458 transcripts, 系统代理 matched 22 documents /
+351 occurrences and 当前版本 matched 165 documents / 858 occurrences, with zero
+per-document count or first-UTF-16-offset differences. These raw catalog totals include
+hidden/deleted/nested transcripts and are not the canonical visible-session totals above.
+An independently built tgrep index included every expected match-start-owning block:
+106 of 211 candidates for 系统代理 and 436 of 486 for 当前版本, with zero missing blocks.
+That validates the postings superset independently; it is not an additional run of the
+production candidate SQL path or a full snippet oracle.
+
+Paths, identifiers, mixed-script phrases and common terms were also exercised.
+In the restored process, `ConversationIndexDatabase` delivered first/final results
+in 30.4/192.0 ms, `native/Sources` in 230.7/1,170.9 ms and `Swift 代码` in
+40.3/336.0 ms. A very common `error` query covered 21,420 candidate blocks and
+125,392 occurrences in the 200 returned sessions: first publication took 443.4 ms
+and full counting 4,122.3 ms. Progressive delivery does not make corpus-wide exact
+counting instantaneous, remove the 200-result cap or expand the stored projection.
+
+The final Debug app module was also exercised through the real
+`HistorySessionLoader → ConversationStore.select → PreparedTranscripts → detail search`
+chain, using the largest actual source (458,822,422 bytes, 16,921 normalized messages,
+8,888 visible rows). An isolated provider selected real large/small histories without
+starting a gateway or changing any original file. Integrity hashing pre-read the files,
+so these are not cold filesystem-cache results.
+
+| Actual Store operation | Elapsed | Maximum MainActor heartbeat gap |
+| --- | ---: | ---: |
+| Initial large-session load and UI-data projection | 6,391.6 ms | 16.8 ms |
+| In-session 系统代理: 2 messages / 7 occurrences | 811.3 ms | 11.8 ms |
+| In-session 当前版本: 16 messages / 18 occurrences | 731.3 ms | 11.1 ms |
+| Switch to small session while a search is still active | 7.2 ms | 7.2 ms |
+| Reopen the large session | 6,321.7 ms | 15.1 ms |
+| Refresh an appended private small-session copy | 99.0 ms | 11.1 ms |
+
+Detail timings include the production 90 ms debounce. Every matching message and
+occurrence count agreed with a separate Foundation visible-text oracle, run outside
+timing; first/next/previous navigation and rejection of stale search completions passed.
+The detail text cache remained at its 8 MiB bound. Appending only to the private copy
+added one message and two occurrences, correctly reflected by refresh and automatic
+research. SHA-256, size and modification time of both original sources were unchanged.
+The 10 ms heartbeat measures main-actor availability, not visual FPS or frame paint.
+Loading a half-gigabyte transcript still costs seconds even though the main actor remains
+responsive; this test does not claim instantaneous detail loading or replace native UI E2E.
+
+Final local native regression ran all 868 tests successfully, with zero skipped tests
+and no retries, including all 11 real Bifrost/CLI integration cases. It caught and fixed
+an initialization-order issue: a fresh catalog must select incremental vacuum **before**
+enabling WAL, otherwise SQLite retains non-reclaiming mode 0. The two reclamation
+regressions then passed with mode 2 and committed 256-page reclamation batches.
+The unsigned universal package passed all eight required self-checks, including real
+tgrep matching and bundled semantic inference under the CPU+ANE compute policy.
+
+Local UI launch diagnostics separately identified cross-process fixtures in the runner's
+protected temporary directory; UI fixtures now use unique, atomic mode-0700 directories
+under the shared system temporary location. No privacy or signing policy was changed.
+The subsequent local runner timed out enabling system automation before executing any
+UI case, so that attempt is not counted as a UI pass. The PR's clean macOS CI supplies
+the complete, zero-skip native UI gate and exact-head verification record.
+
+### Historical whole-transcript measurements (2026-09-07–08)
+
+The dated measurements below record the previous whole-transcript/FTS-era schema
+on September 7–8. They preserve the observed baseline and its limitations; they
+are not measurements of the September 9 compressed-block architecture. The newer
+private snapshot has 1,571 catalog rows, 802.8 MiB allocated to the legacy body table, 3,233.5 MiB
+in the old FTS data table and 1,044,213 SQLite pages before migration. Its changed
+sample must not be compared with the earlier row counts as a controlled speedup.
 
 With the owner's permission, the production loader scanned their actual
 Claude, Codex, Qoder, Grok, Copilot, and Antigravity histories on an arm64
@@ -253,9 +451,10 @@ beyond the current per-message limits. The fallback UI fixture separately builds
 a fresh index from many messages below the limit, with the Chinese phrases in a
 distinct final message; it does not rely on searching a clipped giant message.
 
-Search now publishes an ordered prefix as soon as the first result has its **full**
+At that stage, search published an ordered prefix as soon as the first result had its **full**
 exact count within the stored projection, snippet and message anchor. Later batches
-only extend that prefix; the final-only API remains authoritative. Query/run generation guards prevent late
+only extended that prefix; the September 9 path above separates first visibility
+from count completion. The final-only API remains authoritative. Query/run generation guards prevent late
 callbacks from replacing a newer query, a cleared palette or a completed result.
 Automatic catalog refreshes retain already visible results. The UI reports candidate,
 first-result publication and full-search times separately; publication is not frame paint.
@@ -438,6 +637,8 @@ All reported peak RSS values are process-lifetime high-water marks, not current
 resident memory or exact allocations attributable to one operation. Subtracting
 the emitted baseline peak from the later peak does not measure allocation volume.
 
+## Running the current benchmark
+
 By default, the benchmark emits aggregate timings and fixed public query terms only.
 The explicit `--show-roots` option also prints private source paths for local
 inspection; do not publish that output.
@@ -449,22 +650,66 @@ bash native/Scripts/benchmark-real-history.sh --detail
 bash native/Scripts/benchmark-real-history.sh --run
 ```
 
-`--queries --catalog <benchmark.sqlite3>` can reuse a benchmark-owned private
-snapshot to compare first preparation with a second-process checkpoint reopen.
-`--baseline-fts` compares ASCII queries with `enableTgrep: false` on that same
-snapshot; the emitted `engine` identifies whether FTS was actually available
-and ready rather than silently calling a literal scan an FTS comparison.
+All supplied-catalog modes require a regular, single-hardlink, current-user-owned
+file named `benchmark.sqlite3`, directly inside a current-user-owned private
+`native/build/ccbuddy-query-benchmark.<suffix>/` directory. Symlink aliases and live
+application catalogs are rejected. Create a consistent private copy with SQLite's
+backup API, not a filesystem copy of a running WAL database. The storage probe may
+initialize WAL sidecars on this private copy, but its connection is query-only and
+never creates a missing catalog. No supplied-catalog mode starts discovery,
+producer imports, watchers or reconciliation.
+
+`--migrate --catalog <private benchmark.sqlite3>` explicitly runs pending derived
+storage migration on that copy, emits anonymous progress and finishes only when
+maintenance, legacy rows and legacy tables are gone. The default deadline is one
+hour; `--migration-timeout-seconds` accepts a positive limit up to two hours. Three
+consecutive passes without observed progress fail with a privacy-safe blocked
+reason rather than spinning forever or declaring success under low disk space or
+locking. All errors exit nonzero with an anonymous type/reason, not a stack trap
+containing private paths. Prefer migration-only first, then new query processes, to
+keep migration cost out of first-query timing:
+
+```sh
+bash native/Scripts/benchmark-real-history.sh --migrate \
+  --catalog native/build/ccbuddy-query-benchmark.EXAMPLE/benchmark.sqlite3
+bash native/Scripts/benchmark-real-history.sh --progressive-repository \
+  --catalog native/build/ccbuddy-query-benchmark.EXAMPLE/benchmark.sqlite3
+```
+
+`EXAMPLE` is a placeholder for an existing validated private backup, not a directory
+the script populates with live data. Storage output includes SQLite page/freelist
+metadata and final logical-document, physical-block and compressed/decoded body
+totals. Disk accounting uses `lstat` and deduplicates regular files by device/inode
+across the database, WAL/SHM and both old/new tgrep cache directories. Hard-linked
+working/checkpoint files count once. `unique_inode_allocated_bytes` sums
+`st_blocks * 512`; it is not an APFS clone-exclusive or whole-volume space metric.
+Symlinks are skipped, and no transcript BLOBs, filenames or contents are emitted.
+
+`--queries --catalog <private benchmark.sqlite3>` reuses the copy to compare first
+preparation with a second-process checkpoint reopen. `_first_query_warm_index`
+means the first timed use of that term after index preparation, not a repeated-query
+cache hit; `_repeat_query` is explicitly separate. `--baseline-fts` is retired and
+fails explicitly: the current schema no longer maintains FTS, and historical FTS
+numbers above are not silently substituted with literal fallback timings.
 `--queries --repository --catalog <benchmark.sqlite3>` runs the actual production
 facade and the post-timing Foundation sample oracle, without starting watchers
-or reconciliation. Any parity mismatch makes the benchmark fail. All these
-snapshot modes require the explicitly named, private benchmark-owned derived
-database; they do not accept a live application's catalog.
+or reconciliation. Any parity mismatch makes the benchmark fail.
 
-`--progressive-repository --catalog <benchmark.sqlite3>` measures the two fixed
-CJK queries above, both first and repeated delivery, and rejects empty result sets
-or progressive/final parity failures. `--fallback-repository` requires a private
+`--progressive-repository --catalog <benchmark.sqlite3>` measures the fixed terms
+`系统代理`, `当前版本`, `native/Sources`, `ConversationIndexDatabase`, `Swift 代码`,
+`error`, `搜索`, `工具`, `代码`, `performance` and `Swift`, then repeats the first two.
+Only `系统代理` and `当前版本` require nonempty results in the owner-authorized corpus;
+the other public terms may legitimately be absent. Every callback checks stable
+prefix identity/anchor/snippet, nondecreasing counts and irreversible count completion.
+The completed result must have all counts complete and exactly equal the untimed
+final-only API, which runs after the timed progressive call. That oracle can warm
+later queries and repeats. Output separates first visible hit from first complete
+hit and records the first-hit phase/count-completeness flag.
+
+`--fallback-repository` requires a private
 snapshot without an existing tgrep cache and installs a temporary regular-file
-obstacle; it does not simulate an actual full disk. `--detail` measures the largest
+obstacle at the `.tgrep-chunks-v1` path; it does not simulate an actual full disk.
+Cleanup removes only that unchanged owned obstacle. `--detail` measures the largest
 authorized real source through the production detail loader, excluding Store
 projection and UI first paint. Do not compare it to selection-to-visible latency.
 
@@ -489,6 +734,12 @@ row-ID reuse, scope/trash/subagent filtering, NUL-safe literal fallback, and
 candidate sets larger than the 400-parameter SQLite batch size. Rust bridge
 tests additionally cover disk/overlay merges, sealed checkpoint recovery,
 unpublished working changes, concurrent publication leases, truncated postings,
-symlink protection, and private cache cleanup. Hosted tests cover restart with
+symlink protection, and private cache cleanup. Real subprocess tests kill publishers
+and secondary readers, recover unlocked workspaces without disturbing live peers,
+and preserve the last committed checkpoint after unpublished flushes. Threaded
+creation/recovery exercises the registry bootstrap race; a duplicated-descriptor
+test covers prompt publisher-lock release despite inherited open-file descriptions.
+Unmarked, moved, hardlinked and malformed workspace fixtures are retained or rejected
+conservatively. Hosted tests cover restart with
 zero reindexing, same-generation SQLite recreation, damaged manifests, and
 symlink rejection with exact Unicode fallback.

@@ -3,6 +3,7 @@ import Foundation
 /// Read-only history contract shared by the native store and catalog tools.
 protocol ConversationHistoryProviding: Sendable {
     func listProjects(limit: Int) throws -> [HistoryProject]
+    /// Returns only finished exact results; every hit has isCountComplete == true.
     func search(query: String, limit: Int) throws -> [HistorySearchHit]
     func getSession(file: URL) throws -> HistorySession
     func conversationScopeSnapshot() -> ConversationScopeSnapshot?
@@ -30,16 +31,27 @@ struct ConversationSearchProgress: Equatable, Sendable {
         /// Includes catalog snapshot/candidate preparation, a cold index build,
         /// or an exact fallback scan; it does not imply a percentage of completion.
         case preparingCandidates
+        /// Candidate verification may publish a first exact match before its total is counted.
         case refiningResults
+        /// Candidate verification is finished; only exact occurrence totals remain in progress.
+        case countingOccurrences
+        /// Every returned occurrence count is complete. No later callback is allowed.
         case completed
     }
 
     var phase: Phase
-    /// An activity-ordered prefix of the final results. Each hit already has its
-    /// complete occurrence count, exact transcript/message anchor, and snippet.
+    /// A cumulative activity-ordered prefix of the final result identities. Each hit already has
+    /// an exact transcript/message anchor and snippet and can be opened immediately. Its count is
+    /// a verified lower bound until isCountComplete becomes true. Later snapshots can update
+    /// counts in place and append identities, but never reorder/remove hits or change their first
+    /// anchor/snippet. Complete counts cannot regress to incomplete counts. A completed snapshot
+    /// and the final return value must contain only complete counts.
     var hits: [HistorySearchHit]
     /// Candidate preparation measurements are available once refinement begins.
     var diagnostics: ConversationSearchDiagnostics? = nil
+    /// Catalog snapshot used by this batch. A different non-nil revision restarts the prefix;
+    /// hits from the prior revision must never be merged into this snapshot's results.
+    var snapshotRevision: Int64? = nil
 }
 
 struct ConversationScopeSnapshot: Equatable, Sendable {

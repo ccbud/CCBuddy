@@ -609,6 +609,7 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var searchFirstResultMilliseconds: Double?
     @Published private(set) var contentSearchPhase: ConversationSearchProgress.Phase?
     private var activeSearchRunID: UUID?
+    private var activeSearchProgress = ConversationSearchProgressState()
     private var activeSearchFirstResultMilliseconds: Double?
     @Published private(set) var semanticRankingEnabled = false
     @Published private(set) var semanticDiagnostics: SemanticSearchDiagnostics?
@@ -855,7 +856,9 @@ final class ConversationStore: ObservableObject {
     private func scheduleSemanticRanking() {
         cancelSemanticRanking()
         let query = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard semanticRankingEnabled, !query.isEmpty else { return }
+        guard semanticRankingEnabled, !query.isEmpty, contentSearchError == nil,
+              searchDurationMilliseconds != nil,
+              contentHits.values.allSatisfy(\.isCountComplete) else { return }
         let search = searchGeneration
         let ranking = semanticGeneration
         let ranker = semanticRanker
@@ -2165,11 +2168,13 @@ final class ConversationStore: ObservableObject {
         let provider = repository
         let runID = UUID()
         activeSearchRunID = runID
+        activeSearchProgress = ConversationSearchProgressState()
         activeSearchFirstResultMilliseconds = nil
         contentSearchPhase = .preparingCandidates
         // A background revision refresh preserves the already visible complete result set.
         // User edits clear it before starting this run and can receive progressive prefixes.
         let preservesExistingResults = !contentHits.isEmpty
+        let progressSequence = ConversationSearchProgressSequencer()
         let worker = Task.detached(priority: .userInitiated) { [weak self] in
             try Task.checkCancellation()
             let value: [HistorySearchHit]
@@ -2177,9 +2182,11 @@ final class ConversationStore: ObservableObject {
                 value = try progressive.search(query: query, limit: ConversationCatalogLimits.searchHits) { [weak self] progress in
                     // The repository never waits for the UI actor or calls back under a DB lock.
                     // Cumulative snapshots make skipped/coalesced intermediate updates harmless.
+                    let ordinal = progressSequence.next()
                     Task { @MainActor [weak self] in
                         self?.receiveSearchProgress(progress, query: query, generation: generation,
-                            runID: runID, startedAt: startedAt, preservesExistingResults: preservesExistingResults)
+                            runID: runID, ordinal: ordinal, startedAt: startedAt,
+                            preservesExistingResults: preservesExistingResults)
                     }
                 }
             } else {
@@ -2207,6 +2214,10 @@ final class ConversationStore: ObservableObject {
             let hits = try await worker.value
             guard !Task.isCancelled, searchGeneration == generation, activeSearchRunID == runID,
                   listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            guard hits.allSatisfy({ $0.isCountComplete && $0.count > 0 }) else {
+                contentSearchError = "搜索次数统计尚未完成，请重试。"
+                return
+            }
             var mapped: [String: HistorySearchHit] = [:]
             for hit in hits { mapped[ConversationFilter.fileKey(hit.file)] = hit }
             contentHits = mapped
@@ -2235,22 +2246,22 @@ final class ConversationStore: ObservableObject {
     }
 
     private func receiveSearchProgress(
-        _ progress: ConversationSearchProgress, query: String, generation: UUID, runID: UUID,
+        _ progress: ConversationSearchProgress, query: String, generation: UUID, runID: UUID, ordinal: UInt64,
         startedAt: ContinuousClock.Instant, preservesExistingResults: Bool
     ) {
         guard searchGeneration == generation, activeSearchRunID == runID, isSearchingContent,
               listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query,
               progress.phase != .completed else { return }
-        // Unstructured delivery can reach the UI after a newer prefix or a trailing refresh.
-        // Never regress the phase, shorten a prefix, or overwrite a finished search.
-        if contentSearchPhase != .refiningResults || progress.phase != .preparingCandidates {
-            contentSearchPhase = progress.phase
-        }
+        guard activeSearchProgress.receive(progress, ordinal: ordinal) else { return }
+        contentSearchPhase = activeSearchProgress.phase
         guard !preservesExistingResults else { return }
         if let diagnostics = progress.diagnostics { searchDiagnostics = diagnostics }
-        guard progress.hits.count > contentHits.count else { return }
-        contentHits = Dictionary(progress.hits.map { (ConversationFilter.fileKey($0.file), $0) },
-                                 uniquingKeysWith: { _, newer in newer })
+        // Same-sized prefixes can now finish occurrence counts. A restarted catalog snapshot
+        // replaces the visible prefix at its first hit; it never unions old-revision answers.
+        guard !activeSearchProgress.hits.isEmpty else { return }
+        let mapped = Dictionary(activeSearchProgress.hits.map { (ConversationFilter.fileKey($0.file), $0) },
+                                uniquingKeysWith: { _, newer in newer })
+        if mapped != contentHits { contentHits = mapped }
         if activeSearchFirstResultMilliseconds == nil {
             let duration = startedAt.duration(to: .now).components
             let milliseconds = Double(duration.seconds) * 1_000

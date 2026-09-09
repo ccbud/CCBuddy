@@ -311,7 +311,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(try database.scopeSummaries().map(\.scope), ["two"])
     }
 
-    func testSchemaVersionMismatchRebuildsDerivedRows() throws {
+    func testNewerSchemaIsRejectedWithoutDeletingUserMetadata() throws {
         let fixture = try Fixture()
         var database: ConversationIndexDatabase? = try .init(file: fixture.database)
         _ = try database?.replace(indexed(file: fixture.source, id: "old", scope: "scope"))
@@ -322,9 +322,9 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(sqlite3_exec(raw, "PRAGMA user_version = 999", nil, nil, nil), SQLITE_OK)
         sqlite3_close(raw)
 
-        let rebuilt = try ConversationIndexDatabase(file: fixture.database)
-        XCTAssertFalse(try rebuilt.hasRows())
-        XCTAssertEqual(try rebuilt.generation(), 0)
+        XCTAssertThrowsError(try ConversationIndexDatabase(file: fixture.database))
+        XCTAssertEqual(try readInteger("SELECT COUNT(*) FROM conversation_sessions", from: fixture.database), 1)
+        XCTAssertEqual(try userVersion(fixture.database), 999)
     }
 
     func testProjectionInvalidationAdvancesOnlyGeneration() throws {
@@ -394,7 +394,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 1)
         XCTAssertGreaterThanOrEqual(warmSize + 4_096, legacySize)
 
-        try migrated.finishFullScanMaintenance()
+        try finishMigration(migrated)
         XCTAssertEqual(try migrated.generation(), legacyGeneration)
         XCTAssertEqual(try migrated.entry(for: fixture.source), legacyEntry)
         XCTAssertEqual(try migrated.documents(for: fixture.source), legacyDocuments)
@@ -407,7 +407,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         )
     }
 
-    func testDeferredFTSMaintenanceCanBeCancelledWhileWaitingForAnotherWriter() throws {
+    func testDeferredLegacyIndexRemovalCanBeCancelledWhileWaitingForAnotherWriter() throws {
         let fixture = try Fixture()
         var database: ConversationIndexDatabase? = try .init(file: fixture.database)
         _ = try database?.replace(indexed(file: fixture.source, id: "warm", scope: "scope"))
@@ -428,10 +428,6 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         )
         let blocker = try XCTUnwrap(blockerHandle)
         defer { sqlite3_close(blocker) }
-        try executeRaw(
-            "UPDATE conversation_catalog_state SET fts_dirty = 1 WHERE singleton = 1",
-            database: blocker
-        )
         try executeRaw("BEGIN IMMEDIATE", database: blocker)
         var blockerCommitted = false
         defer {
@@ -490,7 +486,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
 
         try executeRaw("ROLLBACK", database: blocker)
         blockerCommitted = true
-        try migrated.finishFullScanMaintenance()
+        try finishMigration(migrated)
         XCTAssertEqual(try catalogStateValue("one_time_compaction_pending", fixture.database), 0)
     }
 
@@ -563,7 +559,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
                 INTEGER NOT NULL DEFAULT 1 CHECK (one_time_compaction_pending IN (0, 1));
             UPDATE conversation_catalog_state SET maintenance_pending = 1,
                 one_time_compaction_pending = 1 WHERE singleton = 1;
-            PRAGMA user_version = \(ConversationIndexDatabase.schemaVersion);
+            PRAGMA user_version = 4;
             COMMIT;
             """,
             database: migrator
@@ -575,6 +571,254 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(probe.generations, [1])
         XCTAssertEqual(try userVersion(fixture.database), ConversationIndexDatabase.schemaVersion)
         XCTAssertTrue(try ConversationIndexDatabase(file: fixture.database).hasRows())
+    }
+
+    func testLegacyMigrationRetainsUserFlagsAndResumesCursorWithoutSemanticRevisionChange() throws {
+        let fixture = try Fixture()
+        var original = indexed(file: fixture.source, id: "migration-cursor", scope: "scope")
+        original.metadata.starred = true
+        original.metadata.pinned = true
+        original.metadata.tags = ["keep-user-tag", "收藏"]
+        let text = String(repeating: "needle 👩‍💻 e\u{301} payload\n", count: 15_000)
+        original.documents = [makeDocument(text: text)]
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        try database?.replace(original)
+        database = nil
+        try prepareVersionOneCatalog(fixture.database)
+        let migrated = try ConversationIndexDatabase(file: fixture.database, enableTgrep: false)
+        let generation = try migrated.generation()
+        let reference = try XCTUnwrap(migrated.candidateDocumentReferences(for: "needle").references.first)
+        let first = try migrated.searchChunkWindows(reference: reference, query: "needle")
+        var cursor = try XCTUnwrap(first.nextCursor)
+        let consumed = first.windows.reduce(0) { $0 + $1.ownedUTF16Length }
+        try finishMigration(migrated)
+        XCTAssertEqual(try migrated.generation(), generation,
+            "Physical migration must not repeatedly invalidate an unchanged interactive search")
+        var remainder = ""
+        while true {
+            let batch = try migrated.searchChunkWindows(reference: reference, query: "needle", cursor: cursor)
+            for window in batch.windows {
+                let end = String.Index(utf16Offset: window.ownedUTF16Length, in: window.text)
+                remainder.append(contentsOf: window.text[..<end])
+            }
+            guard let next = batch.nextCursor else { break }
+            cursor = next
+        }
+        let suffixStart = String.Index(utf16Offset: consumed, in: text)
+        XCTAssertEqual(remainder, String(text[suffixStart...]))
+        XCTAssertEqual(try migrated.entry(for: fixture.source)?.metadata, original.metadata)
+        XCTAssertEqual(try migrated.documents(for: fixture.source), original.documents)
+        XCTAssertEqual(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'conversation_documents_fts%' OR name = 'conversation_documents_legacy'", from: fixture.database), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.source.path),
+            "The synthetic producer does not exist: migration must use the old SQLite text only")
+    }
+
+    func testLegacyMigrationCancellationAndLowCapacityKeepSourceForRetry() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        let original = indexed(file: fixture.source, id: "capacity-retry", scope: "scope")
+        try database?.replace(original)
+        database = nil
+        try prepareVersionOneCatalog(fixture.database)
+        var capacity: Int64 = 0
+        let migrated = try ConversationIndexDatabase(file: fixture.database, enableTgrep: false,
+            tgrepRuntime: .init(availableCapacity: { _ in capacity }))
+        XCTAssertThrowsError(try migrated.finishFullScanMaintenance(isCancelled: { true })) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertThrowsError(try migrated.finishFullScanMaintenance(
+            shouldYield: { true }, isCancelled: { true }
+        )) {
+            XCTAssertTrue($0 is CancellationError,
+                "Lifecycle cancellation must take precedence over an activity yield")
+        }
+        try migrated.finishFullScanMaintenance()
+        XCTAssertTrue(try migrated.maintenanceIsPending())
+        XCTAssertEqual(try readInteger("SELECT COUNT(*) FROM conversation_documents_legacy", from: fixture.database), 1)
+        XCTAssertEqual(try migrated.documents(for: fixture.source), original.documents)
+        capacity = .max
+        try finishMigration(migrated)
+        XCTAssertFalse(try migrated.maintenanceIsPending())
+        XCTAssertEqual(try migrated.documents(for: fixture.source), original.documents)
+    }
+
+    func testIncrementalMaintenanceConsumesAllReturnedRowsBeforeFinalizing() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 2,
+            "A fresh catalog must select its incremental pointer-map layout before enabling WAL")
+        try database.replace(indexed(file: fixture.source, id: "multi-page-vacuum", scope: "scope"))
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(fixture.database.path, &raw), SQLITE_OK)
+        let handle = try XCTUnwrap(raw)
+        try executeRaw("""
+            CREATE TABLE obsolete_payload(body BLOB);
+            INSERT INTO obsolete_payload VALUES(zeroblob(8388608));
+            DROP TABLE obsolete_payload;
+            PRAGMA wal_checkpoint(TRUNCATE);
+            """, database: handle)
+        sqlite3_close(handle)
+        let before = try readInteger("PRAGMA freelist_count", from: fixture.database)
+        XCTAssertGreaterThan(before, 100)
+        XCTAssertLessThan(before, 8192)
+        try database.finishFullScanMaintenance()
+        let after = try readInteger("PRAGMA freelist_count", from: fixture.database)
+        XCTAssertGreaterThan(before - after, 100,
+            "Consume every SQLITE_ROW, not only the first reclaimed page")
+        try finishMigration(database)
+        XCTAssertEqual(try readInteger("PRAGMA freelist_count", from: fixture.database), 0)
+        XCTAssertFalse(try database.maintenanceIsPending())
+    }
+
+    func testIncrementalCatalogKeepsMaintenancePendingUntilLargeFreelistIsReclaimed() throws {
+        let fixture = try Fixture()
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        try database?.replace(indexed(file: fixture.source, id: "reclaim", scope: "scope"))
+        database = nil
+        try prepareVersionOneCatalog(fixture.database)
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(fixture.database.path, &raw), SQLITE_OK)
+        let handle = try XCTUnwrap(raw)
+        // Manufacture reclaimable pages through public SQL only. FTS shadow tables are
+        // private implementation details and defensive SQLite correctly refuses direct writes.
+        try executeRaw("""
+            PRAGMA auto_vacuum = INCREMENTAL;
+            VACUUM;
+            CREATE TABLE obsolete_payload(body BLOB);
+            INSERT INTO obsolete_payload VALUES(zeroblob(100663296));
+            DROP TABLE obsolete_payload;
+            PRAGMA wal_checkpoint(TRUNCATE);
+            """, database: handle)
+        sqlite3_close(handle)
+        let originalBytes = try fileSize(fixture.database)
+        let migrated = try ConversationIndexDatabase(file: fixture.database)
+        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 2)
+        // First commit the tiny legacy document, then retire its tables and reclaim exactly
+        // one activity-bounded micro-batch. This assertion must not depend on disk speed.
+        try migrated.finishFullScanMaintenance(shouldYield: { true })
+        try migrated.finishFullScanMaintenance(shouldYield: { true })
+        XCTAssertTrue(try migrated.maintenanceIsPending(),
+            "One bounded reclamation pass must not mark a 96 MiB freelist fully reclaimed")
+        XCTAssertGreaterThan(try readInteger("PRAGMA freelist_count", from: fixture.database), 0)
+        try finishMigration(migrated)
+        XCTAssertEqual(try readInteger("PRAGMA freelist_count", from: fixture.database), 0)
+        XCTAssertLessThan(try fileSize(fixture.database), originalBytes / 2)
+    }
+
+    func testContinuousActivityCommitsConversionBeforeRetiringFTSAndVacuumStillAdvances() throws {
+        let fixture = try Fixture()
+        var original = indexed(file: fixture.source, id: "busy-producer", scope: "scope")
+        original.documents = [makeDocument(text: String(repeating: "busy needle payload ", count: 6_000))]
+        var database: ConversationIndexDatabase? = try .init(file: fixture.database)
+        try database?.replace(original)
+        database = nil
+        try prepareVersionOneCatalog(fixture.database)
+        let migrated = try ConversationIndexDatabase(file: fixture.database)
+        let generation = try migrated.generation()
+        var observedConvertedBeforeDrop = false
+        for _ in 0..<256 {
+            // Model a producer that always has another activity event pending.
+            try migrated.finishFullScanMaintenance(shouldYield: { true })
+            let converted = try readInteger("SELECT COUNT(*) FROM conversation_documents WHERE storage_version = 0", from: fixture.database) == 0
+            let hasFTS = try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE name = 'conversation_documents_fts'", from: fixture.database) != 0
+            if converted, hasFTS { observedConvertedBeforeDrop = true }
+            if try !migrated.maintenanceIsPending() { break }
+        }
+        XCTAssertTrue(observedConvertedBeforeDrop,
+            "Searchable compressed text must be committed before the long atomic retirement")
+        XCTAssertFalse(try migrated.maintenanceIsPending(), "Continuous activity must not starve retirement")
+        XCTAssertEqual(try migrated.generation(), generation)
+        XCTAssertEqual(try migrated.documents(for: fixture.source), original.documents)
+        XCTAssertEqual(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'conversation_documents_fts%'", from: fixture.database), 0)
+    }
+
+    func testActivityYieldKeepsEachVacuumMicroBatchCommitted() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        XCTAssertEqual(try readInteger("PRAGMA auto_vacuum", from: fixture.database), 2,
+            "Activity-bounded reclamation requires a genuinely incremental fresh catalog")
+        try database.replace(indexed(file: fixture.source, id: "busy-reclaim", scope: "scope"))
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(fixture.database.path, &raw), SQLITE_OK)
+        let handle = try XCTUnwrap(raw)
+        try executeRaw("""
+            CREATE TABLE obsolete_payload(body BLOB);
+            INSERT INTO obsolete_payload VALUES(zeroblob(8388608));
+            DROP TABLE obsolete_payload;
+            PRAGMA wal_checkpoint(TRUNCATE);
+            """, database: handle)
+        sqlite3_close(handle)
+        var previous = try readInteger("PRAGMA freelist_count", from: fixture.database)
+        for _ in 0..<32 {
+            try database.finishFullScanMaintenance(shouldYield: { true })
+            let current = try readInteger("PRAGMA freelist_count", from: fixture.database)
+            XCTAssertLessThan(current, previous, "Every activity-interrupted pass must retain reclaimed pages")
+            previous = current
+            if current == 0 { break }
+        }
+        XCTAssertEqual(previous, 0)
+        XCTAssertFalse(try database.maintenanceIsPending())
+    }
+
+    func testAtomicFTSRetirementIgnoresActivityButStopInterruptsAndWALSearchRemainsAvailable() throws {
+        let fixture = try Fixture()
+        let database = try ConversationIndexDatabase(file: fixture.database)
+        try database.replace(indexed(file: fixture.source, id: "retirement-needle", scope: "scope"))
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(fixture.database.path, &raw), SQLITE_OK)
+        let blocker = try XCTUnwrap(raw)
+        defer { sqlite3_close(blocker) }
+        try executeRaw("""
+            CREATE VIRTUAL TABLE conversation_documents_fts USING fts5(search_text);
+            INSERT INTO conversation_documents_fts(search_text) VALUES('obsolete needle');
+            BEGIN IMMEDIATE;
+            """, database: blocker)
+        defer { try? executeRaw("ROLLBACK", database: blocker) }
+        let cancellation = DatabaseCancellationProbe()
+        let result = DatabaseMaintenanceResultProbe()
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup()
+        finished.enter()
+        DispatchQueue.global(qos: .utility).async {
+            started.signal()
+            result.run {
+                try database.finishFullScanMaintenance(shouldYield: { true },
+                    isCancelled: { cancellation.isCancelled() })
+            }
+            finished.leave()
+        }
+        defer { cancellation.cancel(); _ = finished.wait(timeout: .now() + 2) }
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(finished.wait(timeout: .now() + 0.15), .timedOut,
+            "Activity must not cancel/restart the atomic DROP while it waits for a writer")
+        let reads = DatabaseMaintenanceResultProbe()
+        let readFinished = DispatchGroup()
+        readFinished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            reads.run {
+                let rows = try database.listEntries(scope: "scope", deleted: nil, limit: 1)
+                let references = try database.candidateDocumentReferences(for: "needle").references
+                guard rows.count == 1, let reference = references.first else {
+                    throw NSError(domain: "retirement-read-identity", code: 1)
+                }
+                let windows = try database.searchChunkWindows(reference: reference, query: "needle")
+                guard windows.windows.contains(where: { $0.text.contains("needle") }) else {
+                    throw NSError(domain: "retirement-read-search", code: 2)
+                }
+            }
+            readFinished.leave()
+        }
+        XCTAssertEqual(readFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertNil(reads.error, "Metadata and actual exact-search input must remain readable during retirement")
+        let stopStarted = DispatchTime.now().uptimeNanoseconds
+        cancellation.cancel()
+        XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+        XCTAssertLessThan(Double(DispatchTime.now().uptimeNanoseconds - stopStarted) / 1e9, 0.5)
+        XCTAssertTrue(result.error is CancellationError, String(describing: result.error))
+        XCTAssertTrue(try database.maintenanceIsPending())
+        try executeRaw("ROLLBACK", database: blocker)
+        try database.finishFullScanMaintenance(shouldYield: { true })
+        XCTAssertEqual(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE name = 'conversation_documents_fts'", from: fixture.database), 0)
     }
 
     private func fileSize(_ file: URL) throws -> UInt64 {
@@ -622,6 +866,15 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         discardedBytes: Int = 0,
         liveBytes: Int = 0
     ) throws {
+        // Manufacture the actual pre-chunk layout, not a v5 layout carrying a v1 number.
+        var current: ConversationIndexDatabase? = try .init(file: file, enableTgrep: false)
+        var rows: [(String, ConversationIndexDocument)] = []
+        for entry in try current!.listEntries(deleted: nil, limit: .max) {
+            for document in try current!.documents(forPath: entry.sourcePath) {
+                rows.append((entry.sourcePath, document))
+            }
+        }
+        current = nil
         var database: OpaquePointer?
         guard sqlite3_open(file.path, &database) == SQLITE_OK, let database else {
             throw NSError(domain: "ConversationIndexDatabaseTests", code: 5)
@@ -630,6 +883,23 @@ final class ConversationIndexDatabaseTests: XCTestCase {
         try executeRaw(
             """
             BEGIN IMMEDIATE;
+            DROP TRIGGER IF EXISTS conversation_documents_content_stamp;
+            DROP TABLE conversation_search_chunks;
+            DROP INDEX conversation_documents_session_order;
+            ALTER TABLE conversation_documents RENAME TO chunk_identities;
+            CREATE TABLE conversation_documents (
+                id INTEGER PRIMARY KEY,
+                session_path TEXT NOT NULL,
+                transcript_id TEXT NOT NULL,
+                agent_type TEXT,
+                sort_order INTEGER NOT NULL,
+                search_text TEXT NOT NULL,
+                message_spans_json BLOB NOT NULL,
+                UNIQUE(session_path, transcript_id)
+            );
+            DROP TABLE chunk_identities;
+            CREATE VIRTUAL TABLE conversation_documents_fts USING fts5(
+                search_text, content='conversation_documents', content_rowid='id', tokenize='trigram');
             ALTER TABLE conversation_catalog_state RENAME TO conversation_catalog_state_v2;
             CREATE TABLE conversation_catalog_state (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -637,7 +907,7 @@ final class ConversationIndexDatabaseTests: XCTestCase {
                 fts_dirty INTEGER NOT NULL CHECK (fts_dirty IN (0, 1))
             );
             INSERT INTO conversation_catalog_state(singleton, generation, fts_dirty)
-                SELECT singleton, generation, fts_dirty FROM conversation_catalog_state_v2;
+                SELECT singleton, generation, 0 FROM conversation_catalog_state_v2;
             DROP TABLE conversation_catalog_state_v2;
             PRAGMA user_version = 1;
             COMMIT;
@@ -646,6 +916,30 @@ final class ConversationIndexDatabaseTests: XCTestCase {
             """,
             database: database
         )
+        for (path, document) in rows {
+            var statement: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(database, """
+                INSERT INTO conversation_documents(session_path, transcript_id, agent_type,
+                    sort_order, search_text, message_spans_json) VALUES (?, ?, ?, ?, ?, ?)
+                """, -1, &statement, nil), SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            path.withCString { _ = sqlite3_bind_text(statement, 1, $0, -1, transient) }
+            document.transcriptID.withCString { _ = sqlite3_bind_text(statement, 2, $0, -1, transient) }
+            if let agentType = document.agentType {
+                agentType.withCString { _ = sqlite3_bind_text(statement, 3, $0, -1, transient) }
+            } else { sqlite3_bind_null(statement, 3) }
+            sqlite3_bind_int64(statement, 4, Int64(document.sortOrder))
+            let text = Array(document.text.utf8)
+            text.withUnsafeBufferPointer {
+                _ = sqlite3_bind_text(statement, 5, UnsafeRawPointer($0.baseAddress!).assumingMemoryBound(to: CChar.self),
+                    Int32($0.count), transient)
+            }
+            let spans = try JSONEncoder().encode(document.messageSpans)
+            spans.withUnsafeBytes { _ = sqlite3_bind_blob(statement, 6, $0.baseAddress, Int32($0.count), transient) }
+            XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+        }
+        try executeRaw("PRAGMA wal_checkpoint(TRUNCATE)", database: database)
         if liveBytes > 0 {
             try executeRaw(
                 """
@@ -667,6 +961,14 @@ final class ConversationIndexDatabaseTests: XCTestCase {
                 database: database
             )
         }
+    }
+
+    private func finishMigration(_ database: ConversationIndexDatabase) throws {
+        for _ in 0..<256 {
+            try database.finishFullScanMaintenance()
+            if try !database.maintenanceIsPending() { return }
+        }
+        XCTFail("Synthetic migration did not finish within bounded passes")
     }
 
     private func executeRaw(_ sql: String, database: OpaquePointer) throws {

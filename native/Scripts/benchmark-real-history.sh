@@ -26,4 +26,6 @@ xcrun swiftc -O -parse-as-library -module-name RealHistoryBenchmark \
   "${sources[@]}" "$ROOT/native/Scripts/benchmark-real-history.swift" \
   -o "$bundle/Contents/MacOS/history-benchmark"
 codesign --force --sign - "$bundle" >/dev/null 2>&1
-TMPDIR="$work" CCBUD_BENCHMARK_SCRATCH="$work" "$bundle/Contents/MacOS/history-benchmark" "$@"
+TMPDIR="$work" CCBUD_BENCHMARK_SCRATCH="$work" \
+  CCBUD_BENCHMARK_BUILD_ROOT="$ROOT/native/build" \
+  "$bundle/Contents/MacOS/history-benchmark" "$@"

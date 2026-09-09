@@ -11,9 +11,8 @@ struct ConversationSearchPalette: View {
     let focusSession: ConversationSearchFocusSession
     let dismiss: (_ restoringFocus: Bool) -> Void
 
-    @State private var highlighted = 0
+    @State private var selection = ConversationSearchSelection()
     @State private var keyMonitor: Any?
-    @State private var highlightedFile: String?
     @State private var windowNumber: Int?
 
     private static let width: CGFloat = 720
@@ -43,15 +42,12 @@ struct ConversationSearchPalette: View {
             }
         }
         .onAppear {
+            selection.reconcile(files: results.map { ConversationFilter.fileKey($0.file) })
             windowNumber = NSApp.keyWindow?.windowNumber
             installKeyMonitor()
         }
         .onChange(of: results.map { ConversationFilter.fileKey($0.file) }) { files in
-            if let highlightedFile, let index = files.firstIndex(of: highlightedFile) {
-                highlighted = index
-            } else {
-                highlighted = min(highlighted, max(0, files.count - 1))
-            }
+            selection.reconcile(files: files)
         }
         .onDisappear(perform: removeKeyMonitor)
         .accessibilityElement(children: .contain)
@@ -111,8 +107,7 @@ struct ConversationSearchPalette: View {
                     get: { store.listQuery },
                     set: { value in
                         store.updateListQuery(value)
-                        highlighted = 0
-                        highlightedFile = nil
+                        selection.reset()
                     }
                 ),
                 focusSession: focusSession,
@@ -123,7 +118,7 @@ struct ConversationSearchPalette: View {
                 ProgressView().controlSize(.small)
             }
             if !store.listQuery.isEmpty {
-                Button { store.updateListQuery("") } label: {
+                Button { store.updateListQuery(""); selection.reset() } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(Theme.mutedForeground)
                 }
@@ -170,7 +165,7 @@ struct ConversationSearchPalette: View {
                     .padding(Space.sm)
                 }
                 .frame(minHeight: 120, maxHeight: Self.resultsHeight)
-                .onChange(of: highlighted) { index in
+                .onChange(of: selection.index) { index in
                     withAnimation(reduceMotion ? nil : CCMotion.feedback) { proxy.scrollTo(index, anchor: .center) }
                 }
             }
@@ -179,7 +174,7 @@ struct ConversationSearchPalette: View {
 
     private func row(_ session: HistorySessionMetadata, index: Int) -> some View {
         let hit = store.contentHit(for: session)
-        let selected = index == highlighted
+        let selected = index == selection.index
         return Button {
             open(session)
         } label: {
@@ -197,6 +192,7 @@ struct ConversationSearchPalette: View {
                         Text(verbatim: "·")
                         Text(ConversationPresentation.relativeDate(session.lastActivity, language: appLanguage))
                         Spacer(minLength: 0)
+                        if let hit { ConversationSearchCountLabel(hit: hit) }
                     }
                     .font(.ccLabel())
                     .foregroundStyle(Theme.mutedForeground)
@@ -224,6 +220,7 @@ struct ConversationSearchPalette: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityValue(hit.map { ConversationSearchCountPresentation.label(for: $0, language: appLanguage) } ?? "")
         .accessibilityIdentifier("conversation.search.result.\(index)")
     }
 
@@ -282,15 +279,12 @@ struct ConversationSearchPalette: View {
     }
 
     func moveHighlight(by offset: Int) {
-        let count = results.count
-        guard count > 0 else { return }
-        highlighted = min(max(0, highlighted + offset), count - 1)
-        highlightedFile = ConversationFilter.fileKey(results[highlighted].file)
+        selection.move(by: offset, files: results.map { ConversationFilter.fileKey($0.file) })
     }
 
     func openHighlighted() {
-        guard results.indices.contains(highlighted) else { return }
-        open(results[highlighted])
+        guard results.indices.contains(selection.index) else { return }
+        open(results[selection.index])
     }
 
     private func open(_ session: HistorySessionMetadata) {

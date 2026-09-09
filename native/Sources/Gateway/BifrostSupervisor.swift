@@ -440,6 +440,9 @@ actor BifrostSupervisor {
         resources.process = nil
         let drainAfterExit = resources.didLaunchProcess && child?.isRunning == false
         finishOutputCapture(resources, drainAfterExit: drainAfterExit)
+        // NWListener.cancel() only requests cancellation. A successor must not bind this
+        // generation's public port until Network has actually released its listener.
+        await resources.proxy.waitUntilStopped()
         resources.isDisposed = true
         resources.isDisposing = false
         retiringResources.removeAll { $0 === resources }
@@ -1681,10 +1684,12 @@ private final class LoopbackPortReservation: @unchecked Sendable {
 /// A streaming loopback reverse proxy. It parses only HTTP request boundaries so aliases can be
 /// rewritten on persistent connections; request bodies, response bytes, SSE, and upgraded streams
 /// continue directly between the caller and the pinned Bifrost process.
-private final class LegacyGatewayCompatibilityProxy: @unchecked Sendable {
+final class LegacyGatewayCompatibilityProxy: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.ccbud.gateway.compatibility-proxy")
     private let lock = NSLock()
+    private var isStopped = false
     private var listener: NWListener?
+    private var listenerCancellation: LegacyGatewayProxyCancellation?
     private var connections: [UUID: LegacyGatewayProxyConnection] = [:]
     private var backendPort: NWEndpoint.Port?
     private let modelRouting: LegacyModelRoutingCompatibility
@@ -1710,29 +1715,12 @@ private final class LegacyGatewayCompatibilityProxy: @unchecked Sendable {
             host: NWEndpoint.Host("127.0.0.1"), port: publicEndpointPort
         )
         let listener = try NWListener(using: parameters)
-        self.backendPort = backendEndpointPort
-        self.listener = listener
 
         do {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, Error>) in
-                let readiness = LegacyGatewayProxyReadiness(continuation)
-                listener.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        readiness.succeed()
-                    case .failed(let error):
-                        readiness.fail(error)
-                    case .cancelled:
-                        readiness.fail(LegacyGatewayProxyError.listenerStopped)
-                    default:
-                        break
-                    }
-                }
-                listener.newConnectionHandler = { [weak self] connection in
-                    self?.accept(connection)
-                }
-                listener.start(queue: queue)
+                beginListening(listener, backendPort: backendEndpointPort,
+                    readiness: LegacyGatewayProxyReadiness(continuation))
             }
         } catch {
             stop()
@@ -1742,6 +1730,7 @@ private final class LegacyGatewayCompatibilityProxy: @unchecked Sendable {
 
     func stop() {
         lock.lock()
+        isStopped = true
         let listener = self.listener
         self.listener = nil
         backendPort = nil
@@ -1751,6 +1740,55 @@ private final class LegacyGatewayCompatibilityProxy: @unchecked Sendable {
 
         listener?.cancel()
         activeConnections.forEach { $0.cancel() }
+    }
+
+    /// Idempotent, including never-started and failed-start proxies. Keep the cancellation
+    /// latch after detaching the listener so concurrent disposal callers await the same event.
+    func waitUntilStopped() async {
+        await cancellationSnapshot()?.wait()
+    }
+
+    private func cancellationSnapshot() -> LegacyGatewayProxyCancellation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return listenerCancellation
+    }
+
+    private func beginListening(_ listener: NWListener, backendPort: NWEndpoint.Port,
+                                readiness: LegacyGatewayProxyReadiness) {
+        let cancellation = LegacyGatewayProxyCancellation()
+        // Install handlers and start atomically with respect to stop(). In particular, a
+        // concurrent stop must never cancel before the final-state handler is installed.
+        lock.lock()
+        // A proxy belongs to one supervisor generation. Its async start can reach this
+        // point after that generation's disposal already returned with no listener yet.
+        guard !isStopped else {
+            lock.unlock()
+            listener.cancel()
+            readiness.fail(LegacyGatewayProxyError.listenerStopped)
+            return
+        }
+        self.backendPort = backendPort
+        self.listener = listener
+        listenerCancellation = cancellation
+        listener.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                readiness.succeed()
+            case .failed(let error):
+                readiness.fail(error)
+            case .cancelled:
+                cancellation.finish()
+                readiness.fail(LegacyGatewayProxyError.listenerStopped)
+            default:
+                break
+            }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.accept(connection)
+        }
+        listener.start(queue: queue)
+        lock.unlock()
     }
 
     private func accept(_ client: NWConnection) {
@@ -1780,6 +1818,34 @@ private final class LegacyGatewayCompatibilityProxy: @unchecked Sendable {
         lock.lock()
         connections.removeValue(forKey: id)
         lock.unlock()
+    }
+}
+
+private final class LegacyGatewayProxyCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if finished {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        finished = true
+        let pending = waiters
+        waiters.removeAll()
+        lock.unlock()
+        pending.forEach { $0.resume() }
     }
 }
 

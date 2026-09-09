@@ -3,6 +3,102 @@ import XCTest
 
 @MainActor
 final class ConversationSearchExperienceTests: XCTestCase {
+    func testFirstMatchCountCanCompleteInPlaceWhileSearchAndSelectionStayActive() async throws {
+        let provider = ScriptedCountSearchRepository()
+        defer { provider.releaseAll() }
+        let ranker = ControlledSemanticRanker()
+        let store = ConversationStore(repository: provider, semanticRanker: ranker, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.setSemanticRankingEnabled(true)
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        let first = try XCTUnwrap(store.contentHits.values.first)
+        XCTAssertFalse(first.isCountComplete)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertTrue(store.isSearchingContent)
+        XCTAssertFalse(store.isRankingSearch)
+        XCTAssertNil(store.searchDurationMilliseconds)
+        let selected = try XCTUnwrap(store.orderedSearchSessions.first)
+        await store.select(selected, searchHit: first)
+        let initialJump = store.jumpRequest
+
+        provider.release(to: 1)
+        await waitUntil { store.contentHits.values.first?.isCountComplete == true }
+        XCTAssertEqual(store.contentHits.count, 1, "A same-length publication must update the existing result")
+        XCTAssertEqual(store.contentHits.values.first?.count, 5)
+        XCTAssertEqual(store.contentHits.values.first?.id, first.id)
+        XCTAssertEqual(store.selectedFile, selected.file)
+        XCTAssertEqual(store.jumpRequest, initialJump, "Counting cannot navigate the open transcript again")
+        XCTAssertTrue(store.isSearchingContent, "A finished count is not a finished repository search")
+        XCTAssertEqual(store.contentSearchPhase, .countingOccurrences)
+        XCTAssertFalse(store.isRankingSearch, "Partial publications must not trigger semantic reordering")
+        provider.releaseAll()
+        await waitUntil { !store.isSearchingContent && store.isRankingSearch }
+        XCTAssertEqual(store.contentSearchPhase, .completed)
+        XCTAssertEqual(store.contentHits.values.first?.count, 5)
+        await ranker.complete()
+    }
+
+    func testIncompleteFinalValueNeverClaimsSearchCompletionOrStartsRanking() async {
+        let provider = ScriptedCountSearchRepository(incompleteFinal: true)
+        defer { provider.releaseAll() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.setSemanticRankingEnabled(true)
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        provider.releaseAll()
+        await waitUntil { !store.isSearchingContent }
+        XCTAssertFalse(store.contentHits.values.first?.isCountComplete ?? true)
+        XCTAssertNotEqual(store.contentSearchPhase, .completed)
+        XCTAssertNil(store.searchDurationMilliseconds)
+        XCTAssertNotNil(store.contentSearchError)
+        XCTAssertFalse(store.isRankingSearch)
+    }
+
+    func testSnapshotRestartReplacesOldResultInsteadOfMixingCounts() async throws {
+        let provider = ScriptedCountSearchRepository(restartsSnapshot: true)
+        defer { provider.releaseAll() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.values.first?.sessionID == "a" }
+        provider.release(to: 1)
+        await waitUntil { store.contentSearchPhase == .preparingCandidates }
+        XCTAssertEqual(store.contentHits.values.first?.sessionID, "a", "Old visuals remain until a new prefix is ready")
+        provider.release(to: 2)
+        await waitUntil { store.contentHits.values.first?.sessionID == "b" }
+        XCTAssertEqual(store.contentHits.count, 1)
+        XCTAssertFalse(store.contentHits.values.contains { $0.sessionID == "a" })
+        XCTAssertFalse(try XCTUnwrap(store.contentHits.values.first).isCountComplete)
+        provider.releaseAll()
+        await waitUntil { !store.isSearchingContent }
+        XCTAssertEqual(store.contentHits.values.first?.sessionID, "b")
+        XCTAssertEqual(store.contentHits.values.first?.count, 5)
+        XCTAssertTrue(store.contentHits.values.allSatisfy(\.isCountComplete))
+    }
+
+    func testLateOccurrenceCountCannotRepopulateANewQueryOrClearedSearch() async {
+        for query in ["replacement", ""] {
+            let provider = ScriptedCountSearchRepository()
+            defer { provider.releaseAll() }
+            let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+            await store.reload()
+            store.updateListQuery("cache")
+            await waitUntil { store.contentHits.count == 1 }
+            store.updateListQuery(query)
+            provider.releaseAll()
+            await waitUntil { provider.didFinish && !store.isSearchingContent }
+            XCTAssertEqual(store.listQuery, query)
+            if query.isEmpty {
+                XCTAssertTrue(store.contentHits.isEmpty)
+                XCTAssertNil(store.contentSearchPhase)
+            } else {
+                XCTAssertTrue(store.contentHits.values.allSatisfy { $0.snippet == query && $0.isCountComplete })
+            }
+        }
+    }
+
     func testProgressiveFailureRetainsVerifiedHitsButNeverLooksComplete() async {
         let provider = GatedProgressiveSearchRepository(failsAfterPrefix: true)
         defer { provider.release() }
@@ -215,6 +311,88 @@ final class ConversationSearchExperienceTests: XCTestCase {
         }
         XCTAssertTrue(condition())
     }
+}
+
+/// Deterministic repository-side gates make the UI contract test independent of machine speed.
+/// No production delay or special search path is introduced for these tests.
+private final class ScriptedCountSearchRepository: ConversationProgressiveHistoryProviding, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var permittedStep = 0
+    private var finished = false
+    private let incompleteFinal: Bool
+    private let restartsSnapshot: Bool
+
+    init(incompleteFinal: Bool = false, restartsSnapshot: Bool = false) {
+        self.incompleteFinal = incompleteFinal
+        self.restartsSnapshot = restartsSnapshot
+    }
+
+    var didFinish: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return finished
+    }
+
+    func release(to step: Int) {
+        condition.lock()
+        permittedStep = max(permittedStep, step)
+        condition.broadcast()
+        condition.unlock()
+    }
+    func releaseAll() { release(to: .max) }
+
+    private func wait(for step: Int) throws {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(10)
+        while permittedStep < step, condition.wait(until: deadline) {}
+        let allowed = permittedStep >= step
+        condition.unlock()
+        if !allowed { throw FixtureError.timedOut }
+    }
+
+    func listProjects(limit: Int) throws -> [HistoryProject] {
+        try SearchExperienceRepository().listProjects(limit: limit)
+    }
+
+    func getSession(file: URL) throws -> HistorySession {
+        let metadata = try listProjects(limit: 1)[0].sessions.first { $0.file == file }!
+        return HistorySession(metadata: metadata, messages: [])
+    }
+
+    func search(query: String, limit: Int) throws -> [HistorySearchHit] {
+        try SearchExperienceRepository().search(query: query, limit: limit).map {
+            var value = $0; value.snippet = query; return value
+        }
+    }
+
+    func search(query: String, limit: Int,
+                onProgress: @Sendable (ConversationSearchProgress) -> Void) throws -> [HistorySearchHit] {
+        guard query == "cache" else { return try search(query: query, limit: limit) }
+        defer {
+            condition.lock(); finished = true; condition.unlock()
+        }
+        let available = try search(query: query, limit: limit)
+        var first = available[0]
+        first.isCountComplete = false
+        onProgress(.init(phase: .refiningResults, hits: [first], snapshotRevision: 1))
+        try wait(for: 1)
+        var final = restartsSnapshot ? available[1] : first
+        let revision: Int64 = restartsSnapshot ? 2 : 1
+        if restartsSnapshot {
+            onProgress(.init(phase: .preparingCandidates, hits: [], snapshotRevision: revision))
+            try wait(for: 2)
+            final.isCountComplete = false
+            onProgress(.init(phase: .refiningResults, hits: [final], snapshotRevision: revision))
+            try wait(for: 3)
+        }
+        final.count = incompleteFinal ? 1 : 5
+        final.isCountComplete = !incompleteFinal
+        onProgress(.init(phase: .countingOccurrences, hits: [final], snapshotRevision: revision))
+        onProgress(.init(phase: .completed, hits: [final], snapshotRevision: revision))
+        try wait(for: restartsSnapshot ? 4 : 2)
+        return [final]
+    }
+
+    private enum FixtureError: Error { case timedOut }
 }
 
 private final class GatedIndexedSearchRepository: ConversationIndexedHistoryProviding, @unchecked Sendable {

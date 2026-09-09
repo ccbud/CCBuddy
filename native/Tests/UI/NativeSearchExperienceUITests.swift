@@ -9,8 +9,7 @@ final class NativeSearchExperienceUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        fixtureRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-native-experience-\(UUID().uuidString)", isDirectory: true)
+        fixtureRoot = try UITestFixtureDirectory.make(named: "native-experience")
         let history = fixtureRoot.appendingPathComponent("history", isDirectory: true)
         let project = history.appendingPathComponent("projects/experience", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -56,6 +55,10 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(text(element("search.performance.duration")).contains("ms"))
         XCTAssertTrue(element("conversation.search.result.1").waitForExistence(timeout: 10))
         XCTAssertFalse(element("conversation.search.result.2").exists, "Only message bodies containing the exact query match")
+        XCTAssertTrue(waitUntil {
+            self.element("conversation.search.result.0").value as? String == "2 matches"
+                && self.element("conversation.search.result.1").value as? String == "1 match"
+        }, "Finished results must expose exact occurrence totals, not a first-match lower bound")
 
         app.typeKey(.downArrow, modifierFlags: [])
         app.typeKey(.upArrow, modifierFlags: [])
@@ -121,7 +124,12 @@ final class NativeSearchExperienceUITests: XCTestCase {
         // This reproduces an unavailable cache, not actual disk exhaustion on the CI host.
         app.terminate()
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
-        let cache = fixtureRoot.appendingPathComponent("app-home/conversation-index-v1.sqlite3.tgrep-v2")
+        let cache = fixtureRoot.appendingPathComponent("app-home/conversation-index-v1.sqlite3.tgrep-chunks-v1")
+        // The test app may already have created this disposable index. Replace only
+        // this test's cache after termination; its source history and SQLite catalog remain.
+        if FileManager.default.fileExists(atPath: cache.path) {
+            try FileManager.default.removeItem(at: cache)
+        }
         XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
         try Data("fixture blocks cache directory creation".utf8).write(to: cache, options: .withoutOverwriting)
         let project = fixtureRoot.appendingPathComponent("history/projects/experience")

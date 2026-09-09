@@ -1181,3 +1181,12 @@
 "搜索缓存位置不可用，加速引擎未能启动。" = "The search cache location is unavailable. Acceleration could not start.";
 "无法读写搜索缓存，正在使用精确搜索。" = "The search cache could not be read or written. Using exact search.";
 "搜索加速暂不可用，正在使用精确搜索。" = "Search acceleration is temporarily unavailable. Using exact search.";
+/* Progressive exact occurrence counting */
+"正在统计全部匹配次数…" = "Counting all matches…";
+"{count} 处匹配" = "{count} matches";
+"1 处匹配" = "1 match";
+"至少 {count} 处匹配" = "At least {count} matches";
+"至少 1 处匹配" = "At least 1 match";
+"匹配次数统计完成。" = "The occurrence count is complete.";
+"已确认匹配，完整次数尚未统计完成。" = "A match is verified. Its total count is not complete yet.";
+"搜索次数统计尚未完成，请重试。" = "Search returned an unfinished occurrence count. Please retry.";

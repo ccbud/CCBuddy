@@ -31,7 +31,7 @@ Reads local histories from **Claude Code, Codex CLI, Qoder CLI, Grok Build CLI, 
 
 ## Fast search, local intelligence
 
-- **Embedded tgrep** narrows full-text candidates with a Rust trigram index. CC Buddy checks the original text to preserve Unicode matching, snippets and message positions. Incremental updates avoid rebuilding unchanged documents; SQLite remains the fallback. The search palette shows the engine and measured query time.
+- **Embedded tgrep, without SQLite FTS** narrows full-text candidates to independently compressed text blocks. Exact verification preserves Unicode matching, snippets and message positions; the first usable results appear before occurrence counts finish. SQLite keeps metadata and compressed text, while a bounded literal scan handles unavailable acceleration. The search palette shows real search stages and measured latency. [Architecture and real-history measurements](docs/search-performance.md).
 - **Apple Neural Engine through Core ML** powers optional offline semantic ordering of the first 32 results for English and code queries. A bundled 22.6 MB MiniLM weight file needs no account or download. Keyword results appear first and remain available while the model prepares; disabling smart ordering restores their original order. Intel uses CPU inference, and non-Latin queries keep keyword order.
 
 On an Apple M4, Core ML's compute plan preferred ANE for 147 of 155 reported operations. A warm new-query rerank with three cached candidates took a median 0.774 ms versus 1.836 ms on CPU in the recorded run. The interface distinguishes anticipated placement from hardware-utilization telemetry. See [model details, limitations and reproducible measurements](native/SEMANTIC_SEARCH.md).

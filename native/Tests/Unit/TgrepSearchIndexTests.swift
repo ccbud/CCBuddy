@@ -18,7 +18,7 @@ final class TgrepSearchIndexTests: XCTestCase {
         XCTAssertEqual(try database?.candidateDocumentReferences(for: "search phrase").references.count, 1)
         XCTAssertEqual(database?.searchDiagnostics.incrementallyIndexedDocuments, 0)
         XCTAssertEqual(database?.searchDiagnostics.restoredFromCache, true)
-        let cache = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".tgrep-v2")
+        let cache = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".tgrep-chunks-v1")
         let active = try String(contentsOf: cache.appendingPathComponent("active"), encoding: .utf8)
         let manifest = try String(contentsOf: cache.appendingPathComponent(active)
             .appendingPathComponent("ccbuddy-manifest.json"), encoding: .utf8)
@@ -63,7 +63,7 @@ final class TgrepSearchIndexTests: XCTestCase {
         try database?.replace(session(root: root, id: "retained", text: "intact original search phrase"))
         _ = try database?.candidateDocumentReferences(for: "search phrase")
         database = nil
-        let cache = root.appendingPathComponent("index.sqlite3.tgrep-v2")
+        let cache = root.appendingPathComponent("index.sqlite3.tgrep-chunks-v1")
         let active = try String(contentsOf: cache.appendingPathComponent("active"), encoding: .utf8)
         try Data("{partial".utf8).write(to: cache.appendingPathComponent(active).appendingPathComponent("ccbuddy-manifest.json"))
         database = try ConversationIndexDatabase(file: file)
@@ -78,7 +78,7 @@ final class TgrepSearchIndexTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let target = root.appendingPathComponent("untouched")
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
-        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("index.sqlite3.tgrep-v2"),
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("index.sqlite3.tgrep-chunks-v1"),
             withDestinationURL: target)
         let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"))
         try database.replace(session(root: root, id: "unicode", text: "Straße and 搜索"))
@@ -203,7 +203,7 @@ final class TgrepSearchIndexTests: XCTestCase {
             XCTAssertTrue(result.usedFallback)
             XCTAssertEqual(database.searchDiagnostics.engine, "Literal")
         }
-        XCTAssertTrue(try database.candidateDocumentReferences(for: "absent word").references.isEmpty)
+        XCTAssertTrue(try database.candidateDocuments(for: "absent word").documents.isEmpty)
     }
 
     func testBroadCandidateResultExceedingABatchDoesNotLoseDocuments() throws {
@@ -378,7 +378,7 @@ final class TgrepSearchIndexTests: XCTestCase {
         database = nil
     }
 
-    func testLegacyWriterMetadataAndDocumentMutationsMaintainContentStamps() throws {
+    func testIndependentChunkWriterMaintainsContentStamps() throws {
         let root = try HistoryTestSupport.temporaryDirectory("tgrep-legacy-writer")
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("index.sqlite3")
@@ -388,8 +388,9 @@ final class TgrepSearchIndexTests: XCTestCase {
         var raw: OpaquePointer?
         XCTAssertEqual(sqlite3_open(file.path, &raw), SQLITE_OK)
         defer { sqlite3_close(raw) }
-        // Simulate an older v4 app, which has no knowledge of the new side table.
+        // An independent writer preserves the same content-stamp SQL boundary.
         XCTAssertEqual(sqlite3_exec(raw, """
+            PRAGMA foreign_keys = ON;
             BEGIN IMMEDIATE;
             UPDATE conversation_sessions SET indexed_at = indexed_at + 1;
             UPDATE conversation_catalog_state SET generation = generation + 1;
@@ -401,9 +402,13 @@ final class TgrepSearchIndexTests: XCTestCase {
             BEGIN IMMEDIATE;
             UPDATE conversation_sessions SET indexed_at = indexed_at + 1;
             DELETE FROM conversation_documents;
-            INSERT INTO conversation_documents(session_path, transcript_id, sort_order, search_text, message_spans_json)
-            SELECT source_path, 'main', 0, 'replacement legacy phrase', X'5B5D' FROM conversation_sessions;
-            UPDATE conversation_catalog_state SET generation = generation + 1, fts_dirty = 1;
+            INSERT INTO conversation_documents(session_path, transcript_id, sort_order)
+            SELECT source_path, 'main', 0 FROM conversation_sessions;
+            INSERT INTO conversation_search_chunks(document_id, ordinal, utf16_location, utf16_length,
+                codec, decoded_bytes, body, message_spans_json)
+            SELECT id, 0, 0, length('replacement legacy phrase'), 0, length('replacement legacy phrase'),
+                CAST('replacement legacy phrase' AS BLOB), X'5B5D' FROM conversation_documents;
+            UPDATE conversation_catalog_state SET generation = generation + 1;
             COMMIT;
             """, nil, nil, nil), SQLITE_OK)
         XCTAssertTrue(try database.candidateDocumentReferences(for: "original").references.isEmpty)
@@ -411,24 +416,21 @@ final class TgrepSearchIndexTests: XCTestCase {
         XCTAssertEqual(try database.candidateDocumentReferences(for: "replacement").references.count, 1)
     }
 
-    func testCancelledLiteralScanReleasesReaderForNextCatalogOperation() async throws {
+    func testCancelledChunkScanReleasesReaderForNextCatalogOperation() async throws {
         let root = try HistoryTestSupport.temporaryDirectory("tgrep-literal-cancellation")
         defer { try? FileManager.default.removeItem(at: root) }
         let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"), enableTgrep: false)
         try database.replace(session(root: root, id: "large", text:
-            String(repeating: "payload without target ", count: 1_000_000)))
-        let (started, continuation) = AsyncStream<Void>.makeStream()
+            String(repeating: "payload without target ", count: 10_000)))
+        let reference = try XCTUnwrap(database.candidateDocumentReferences(for: "zz").references.first)
         let worker = Task.detached {
-            continuation.yield(())
-            continuation.finish()
-            return try database.candidateDocumentReferences(for: "系统")
+            let first = try database.searchChunkWindows(reference: reference, query: "zz")
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try database.searchChunkWindows(reference: reference, query: "zz", cursor: first.nextCursor)
         }
-        for await _ in started { break }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-        worker.cancel()
         do {
             _ = try await worker.value
-            XCTFail("A cancelled UDF scan must throw, not return a partial candidate set")
+            XCTFail("A cancelled block scan must throw, not return a partial page")
         } catch is CancellationError {}
         XCTAssertGreaterThan(try database.generation(), 0)
         XCTAssertEqual(try database.candidateDocumentReferences(for: "pa").references.count, 1)

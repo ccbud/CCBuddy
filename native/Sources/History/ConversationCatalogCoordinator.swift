@@ -371,7 +371,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             ConversationIndexScanCancellation
         ) throws -> ConversationIndexScanResult
     ) throws -> ConversationIndexScanResult {
-        database.cancelDeferredMaintenance()
+        database.yieldDeferredMaintenanceForActivity()
         if let identifier {
             guard isCurrent(identifier) else { throw CancellationError() }
             publish(.started(revision: scanner.generation), identifier: identifier)

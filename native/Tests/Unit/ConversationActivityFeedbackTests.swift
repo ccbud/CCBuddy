@@ -6,6 +6,7 @@ final class ConversationActivityFeedbackTests: XCTestCase {
         XCTAssertEqual(ConversationActivityStage.searchStage(for: nil), .preparingSearch)
         XCTAssertEqual(ConversationActivityStage.searchStage(for: .preparingCandidates), .preparingSearch)
         XCTAssertEqual(ConversationActivityStage.searchStage(for: .refiningResults), .refiningSearch)
+        XCTAssertEqual(ConversationActivityStage.searchStage(for: .countingOccurrences), .countingSearchOccurrences)
         XCTAssertNil(ConversationActivityStage.searchStage(for: .completed))
     }
 

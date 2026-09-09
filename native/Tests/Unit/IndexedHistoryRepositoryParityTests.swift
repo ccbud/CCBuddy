@@ -324,10 +324,10 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         let home = try HistoryTestSupport.temporaryDirectory("indexed-progressive-prefixes")
         defer { try? FileManager.default.removeItem(at: home) }
         let (repository, _, _) = try makeProgressiveRepository(home: home, count: 12)
-        let expected = try repository.search(query: "系统代理", limit: 9)
         let recorder = SearchProgressRecorder()
         let provider: any ConversationProgressiveHistoryProviding = repository
         let final = try provider.search(query: "系统代理", limit: 9) { recorder.append($0) }
+        let expected = try repository.search(query: "系统代理", limit: 9)
         let events = recorder.snapshot
         XCTAssertEqual(final, expected)
         XCTAssertEqual(final.count, 9)
@@ -337,17 +337,24 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         XCTAssertEqual(events.last?.hits, final)
         let refined = events.filter { $0.phase == .refiningResults }
         XCTAssertEqual(refined.first?.hits, [])
-        XCTAssertEqual(refined.first(where: { !$0.hits.isEmpty })?.hits, Array(expected.prefix(1)))
+        XCTAssertEqual(refined.first(where: { !$0.hits.isEmpty })?.hits.map(\.id),
+            Array(expected.prefix(1)).map(\.id))
+        XCTAssertFalse(try XCTUnwrap(refined.first(where: { !$0.hits.isEmpty })?.hits.first).isCountComplete)
+        XCTAssertTrue(events.contains { $0.phase == .countingOccurrences })
         var previousCount = 0
         for event in events.dropFirst() {
-            XCTAssertEqual(event.hits, Array(expected.prefix(event.hits.count)))
+            XCTAssertEqual(event.hits.map(\.id), Array(expected.prefix(event.hits.count)).map(\.id))
             XCTAssertGreaterThanOrEqual(event.hits.count, previousCount)
             XCTAssertLessThanOrEqual(event.hits.count - previousCount, 8)
             XCTAssertNotNil(event.diagnostics)
-            for hit in event.hits {
+            for (offset, hit) in event.hits.enumerated() {
                 XCTAssertGreaterThan(hit.count, 0)
                 XCTAssertNotNil(hit.sequence)
                 XCTAssertFalse(hit.snippet.isEmpty)
+                XCTAssertEqual(hit.sequence, expected[offset].sequence)
+                XCTAssertEqual(hit.snippet, expected[offset].snippet)
+                XCTAssertLessThanOrEqual(hit.count, expected[offset].count)
+                if hit.isCountComplete { XCTAssertEqual(hit, expected[offset]) }
             }
             previousCount = event.hits.count
         }
@@ -363,7 +370,7 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         let recorder = SearchProgressRecorder()
         let final = try repository.search(query: "系统代理", limit: 20) { event in
             recorder.append(event)
-            if event.phase == .refiningResults, event.hits.count == 1 {
+            if event.phase == .refiningResults, event.hits.count == 1, recorder.claimMutation() {
                 // A callback delivered after full verification would be too late:
                 // the older hit would already have been included. Re-entrant catalog
                 // access also verifies that callbacks do not hold its reader lock.
@@ -376,6 +383,149 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         XCTAssertEqual(final.map(\.file), [sessions[0].metadata.file])
         XCTAssertEqual(recorder.snapshot.last?.hits, final)
         XCTAssertEqual(final, try repository.search(query: "系统代理", limit: 20))
+        XCTAssertEqual(Set(recorder.snapshot.compactMap(\.snapshotRevision)).count, 2,
+            "A live update must restart the snapshot, never mix generations")
+    }
+
+    func testFirstHitPrecedesDenseLongTranscriptCountAndOnlyCompleteAnswerIsCached() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-progressive-dense")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, database, sessions) = try makeProgressiveRepository(home: home, count: 1)
+        var session = sessions[0]
+        session.documents[0].text = String(repeating: "系统代理 /src/search_index.swift 当前版本\n", count: 30_000)
+        try database.replace(session)
+        let recorder = SearchProgressRecorder()
+        let final = try repository.search(query: "系统代理", limit: 1) { event in
+            recorder.append(event)
+            if event.phase == .refiningResults, let hit = event.hits.first {
+                XCTAssertEqual(hit.count, 1)
+                XCTAssertFalse(hit.isCountComplete)
+                XCTAssertEqual(database.searchRefinementCache.statistics.stores, 0)
+            }
+        }
+        XCTAssertEqual(final.first?.count, 30_000)
+        XCTAssertEqual(final.first?.isCountComplete, true)
+        XCTAssertEqual(database.searchRefinementCache.statistics.stores, 1)
+        let counts = recorder.snapshot.filter { $0.phase == .countingOccurrences }
+        XCTAssertEqual(counts.first?.hits.first?.isCountComplete, false)
+        XCTAssertEqual(counts.last?.hits.first?.isCountComplete, true)
+        XCTAssertEqual(counts.first?.hits.map(\.id), counts.last?.hits.map(\.id))
+    }
+
+    func testReplacementDuringCountingRestartsAnchorsAndCachesOnlyTheNewCompleteCount() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-counting-replacement")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, database, sessions) = try makeProgressiveRepository(home: home, count: 1)
+        let query = "系统代理"
+        var original = sessions[0]
+        original.documents[0].text = "Original prefix 系统代理 outdated 系统代理."
+        original.documents[0].messageSpans = [.init(sequence: 101, messageIndex: 0,
+            utf16Location: 0, utf16Length: original.documents[0].text.utf16.count, role: "assistant")]
+        let oldGeneration = try database.replace(original)
+        let oldReference = try XCTUnwrap(database.candidateDocumentReferences(for: query).references.first)
+        let oldKey = ConversationSearchRefinementCache.Key(reference: oldReference, query: query)
+        var replacement = original
+        replacement.documents[0].text = "Replacement prefix 系统代理 changed 系统代理 final 系统代理."
+        replacement.documents[0].messageSpans = [.init(sequence: 909, messageIndex: 0,
+            utf16Location: 0, utf16Length: replacement.documents[0].text.utf16.count, role: "assistant")]
+        let updated = replacement
+        let originalSnippet = original.documents[0].text
+        let cache = database.searchRefinementCache
+        let recorder = SearchProgressRecorder()
+        let final = try repository.search(query: query, limit: 1) { event in
+            recorder.append(event)
+            if event.phase == .countingOccurrences,
+               event.hits.first?.isCountComplete == false, recorder.claimMutation() {
+                XCTAssertEqual(event.snapshotRevision, oldGeneration)
+                XCTAssertEqual(event.hits.first?.sequence, 101)
+                XCTAssertEqual(event.hits.first?.snippet, originalSnippet)
+                XCTAssertEqual(event.hits.first?.count, 1)
+                XCTAssertEqual(cache.statistics.stores, 0,
+                    "A verified first occurrence must not be cached as an exact total")
+                XCTAssertNil(cache.lookup(oldKey))
+                do {
+                    let replacementGeneration = try database.replace(updated)
+                    XCTAssertGreaterThan(replacementGeneration, oldGeneration)
+                } catch { XCTFail("Counting callback could not replace its transcript: \(error)") }
+            }
+        }
+        let newGeneration = try database.generation()
+        XCTAssertGreaterThan(newGeneration, oldGeneration)
+        let expected = HistorySearchHit(sessionID: updated.metadata.sessionID,
+            file: updated.metadata.file, source: updated.metadata.source,
+            agent: "main", sequence: 909, snippet: updated.documents[0].text,
+            count: 3, isCountComplete: true)
+        XCTAssertEqual(final, [expected])
+        let events = recorder.snapshot
+        XCTAssertEqual(Set(events.compactMap(\.snapshotRevision)), [oldGeneration, newGeneration])
+        let oldEvents = events.filter { $0.snapshotRevision == oldGeneration }
+        XCTAssertTrue(oldEvents.contains { $0.phase == .countingOccurrences })
+        XCTAssertFalse(oldEvents.contains { $0.phase == .completed })
+        for hit in oldEvents.flatMap(\.hits) {
+            XCTAssertEqual(hit.id, expected.id, "The replaced transcript retains its result identity")
+            XCTAssertEqual(hit.sequence, 101)
+            XCTAssertEqual(hit.snippet, originalSnippet)
+            XCTAssertEqual(hit.count, 1)
+            XCTAssertFalse(hit.isCountComplete, "No old-revision callback may receive the replacement's count")
+        }
+        for hit in events.filter({ $0.snapshotRevision == newGeneration }).flatMap(\.hits) {
+            XCTAssertEqual(hit.sequence, expected.sequence)
+            XCTAssertEqual(hit.snippet, expected.snippet)
+            XCTAssertEqual(hit.count, hit.isCountComplete ? 3 : 1)
+        }
+        XCTAssertEqual(events.last?.phase, .completed)
+        XCTAssertEqual(events.last?.hits, final)
+        XCTAssertEqual(cache.statistics.stores, 1)
+        XCTAssertEqual(cache.statistics.entries, 1)
+        XCTAssertEqual(cache.statistics.validatedHits, 0)
+        let newReference = try XCTUnwrap(database.candidateDocumentReferences(for: query).references.first)
+        let entry = try XCTUnwrap(cache.lookup(.init(reference: newReference, query: query)))
+        XCTAssertEqual(entry.generation, newGeneration)
+        XCTAssertEqual(entry.result.hit(for: updated.metadata, agentOverride: nil), expected)
+        if let reusedRow = cache.lookup(oldKey) {
+            XCTAssertEqual(reusedRow.generation, newGeneration,
+                "SQLite row-ID reuse must not preserve the old partial answer")
+        }
+
+        let warmRecorder = SearchProgressRecorder()
+        XCTAssertEqual(try repository.search(query: query, limit: 1) { warmRecorder.append($0) }, final)
+        XCTAssertEqual(cache.statistics.stores, 1)
+        XCTAssertEqual(cache.statistics.validatedHits, 1)
+        XCTAssertEqual(Set(warmRecorder.snapshot.compactMap(\.snapshotRevision)), [newGeneration])
+        XCTAssertFalse(warmRecorder.snapshot.contains { $0.phase == .countingOccurrences })
+        XCTAssertTrue(warmRecorder.snapshot.flatMap(\.hits).allSatisfy(\.isCountComplete))
+    }
+
+    func testChunkedSearchPreservesBoundaryLongLiteralUnicodeAnchorsAndSnippets() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-chunk-parity")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, database, sessions) = try makeProgressiveRepository(home: home, count: 1)
+        let examples: [(String, String)] = [
+            (String(repeating: "x", count: 32_765) + "系统代理_current/v2 系统代理_current/v2", "系统代理_current/v2"),
+            (String(repeating: "x", count: 32_766) + "cafe\u{301} CAFÉ café", "café"),
+            (String(repeating: "x", count: 32_767) + String(repeating: "跨界Z", count: 200),
+                String(repeating: "跨界Z", count: 80)),
+            (String(repeating: "a", count: 150_000), String(repeating: "a", count: 40_001)),
+            (String(repeating: "x", count: 32_767) + "ﬃ ffi FFI", "ffi"),
+        ]
+        for (text, query) in examples {
+            var session = sessions[0]
+            session.documents[0].text = text
+            session.documents[0].messageSpans = [.init(sequence: 314, messageIndex: 0,
+                utf16Location: 0, utf16Length: text.utf16.count, role: "assistant")]
+            try database.replace(session)
+            let exact = try XCTUnwrap(ConversationLiteralSearch(query: query).match(in: text))
+            let hit = try XCTUnwrap(repository.search(query: query).first)
+            XCTAssertEqual(hit.count, exact.count, query)
+            XCTAssertEqual(hit.sequence, 314)
+            XCTAssertTrue(hit.isCountComplete)
+            let start = text.index(exact.range.lowerBound, offsetBy: -56, limitedBy: text.startIndex) ?? text.startIndex
+            let end = text.index(exact.range.upperBound, offsetBy: 56, limitedBy: text.endIndex) ?? text.endIndex
+            let snippet = (start > text.startIndex ? "…" : "")
+                + text[start..<end].split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+                + (end < text.endIndex ? "…" : "")
+            XCTAssertEqual(hit.snippet, snippet)
+        }
     }
 
     func testProgressiveSearchCancellationAfterFirstHitDoesNotPublishCompletionOrLaterHits() async throws {
@@ -428,6 +578,14 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
     private final class SearchProgressRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var events: [ConversationSearchProgress] = []
+        private var didMutate = false
+        func claimMutation() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !didMutate else { return false }
+            didMutate = true
+            return true
+        }
         var snapshot: [ConversationSearchProgress] {
             lock.lock()
             defer { lock.unlock() }

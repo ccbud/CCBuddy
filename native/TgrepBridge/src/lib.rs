@@ -8,9 +8,11 @@
 
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::ffi::c_void;
+use std::ffi::{CStr, CString, OsStr, OsString, c_void};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -83,6 +85,417 @@ const CHECKPOINT_FILES: [&str; 4] = [
     "ccbuddy-manifest.json",
 ];
 
+const WORKING_PREFIX: &str = "ccbuddy-tgrep-";
+const WORKING_LEASE: &str = ".ccbuddy-working-lease-v1";
+const WORKING_REGISTRY: &str = ".ccbuddy-working-registry-v1";
+
+fn unsafe_cache_io() -> std::io::Error {
+    std::io::Error::other(UnsafeCache)
+}
+
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn component_name(name: &OsStr) -> std::io::Result<CString> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(unsafe_cache_io());
+    }
+    CString::new(bytes).map_err(|_| unsafe_cache_io())
+}
+
+fn open_at(parent: &std::fs::File, name: &OsStr, flags: i32) -> std::io::Result<std::fs::File> {
+    let name = component_name(name)?;
+    // All traversal is relative to an already-open directory. Never follow a final
+    // symlink; NONBLOCK also prevents a replaced lease FIFO from hanging startup.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+}
+
+fn open_directory(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+fn open_directory_at(parent: &std::fs::File, name: &OsStr) -> std::io::Result<std::fs::File> {
+    open_at(parent, name, libc::O_RDONLY | libc::O_DIRECTORY)
+}
+
+fn private_regular_file(file: &std::fs::File) -> std::io::Result<bool> {
+    let metadata = file.metadata()?;
+    Ok(metadata.is_file()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.nlink() == 1
+        && metadata.permissions().mode() & 0o777 == 0o600)
+}
+
+fn open_private_lock(parent: &std::fs::File, name: &str) -> std::io::Result<std::fs::File> {
+    // Separate lookup from exclusive creation. Concurrent O_CREAT|O_NOFOLLOW
+    // opens can transiently report ENOENT on macOS while another thread creates
+    // the entry. O_EXCL gives us a definite winner and a safe reopen for peers.
+    for _ in 0..16 {
+        let file = match open_at(parent, OsStr::new(name), libc::O_RDWR) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match open_at(
+                    parent,
+                    OsStr::new(name),
+                    libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                ) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        if !private_regular_file(&file)? {
+            return Err(unsafe_cache_io());
+        }
+        return Ok(file);
+    }
+    Err(unsafe_cache_io())
+}
+
+fn exclusive_lock(file: &std::fs::File, nonblocking: bool) -> std::io::Result<bool> {
+    loop {
+        let flags = libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 };
+        if unsafe { libc::flock(file.as_raw_fd(), flags) } == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EWOULDBLOCK) if nonblocking => return Ok(false),
+            _ => return Err(error),
+        }
+    }
+}
+
+struct PublisherLease(std::fs::File);
+
+impl Drop for PublisherLease {
+    fn drop(&mut self) {
+        // A concurrent posix_spawn can briefly inherit the file description before
+        // CLOEXEC closes it in the child. Merely closing the parent's fd can then
+        // leave a finished publisher spuriously "alive" for a same-process reopen.
+        // This wrapper drops last in Engine, after its workspace is gone; explicitly
+        // relinquish this owner's lock rather than relying on the last fd closing.
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn working_lease_contents(
+    parent: &std::fs::File,
+    directory: &std::fs::File,
+) -> std::io::Result<Vec<u8>> {
+    let root = parent.metadata()?;
+    let working = directory.metadata()?;
+    Ok(format!(
+        "ccbuddy-working-lease-v1\n{}:{}\n{}:{}\n",
+        root.dev(),
+        root.ino(),
+        working.dev(),
+        working.ino()
+    )
+    .into_bytes())
+}
+
+fn directory_names(directory: &std::fs::File) -> std::io::Result<Vec<OsString>> {
+    // openat(".") obtains a fresh directory cursor. dup() would share the offset
+    // and could make a second validation/deletion pass silently miss entries.
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    let stream = unsafe { libc::fdopendir(file.as_raw_fd()) };
+    if stream.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let _ = file.into_raw_fd(); // fdopendir owns it after success.
+    struct DirectoryStream(*mut libc::DIR);
+    impl Drop for DirectoryStream {
+        fn drop(&mut self) {
+            unsafe {
+                libc::closedir(self.0);
+            }
+        }
+    }
+    let stream = DirectoryStream(stream);
+    let mut names = Vec::new();
+    loop {
+        // readdir_r is deprecated; errno distinguishes an error from end-of-directory.
+        #[cfg(target_os = "macos")]
+        unsafe {
+            *libc::__error() = 0;
+        }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            *libc::__errno_location() = 0;
+        }
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(0) {
+                return Err(error);
+            }
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    Ok(names)
+}
+
+fn entry_stat(parent: &std::fs::File, name: &OsStr) -> std::io::Result<libc::stat> {
+    let name = component_name(name)?;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { metadata.assume_init() })
+}
+
+fn entry_matches(
+    parent: &std::fs::File,
+    name: &OsStr,
+    file: &std::fs::File,
+) -> std::io::Result<bool> {
+    let entry = entry_stat(parent, name)?;
+    let opened = file.metadata()?;
+    Ok(entry.st_dev as u64 == opened.dev() && entry.st_ino == opened.ino())
+}
+
+fn unlink_at(parent: &std::fs::File, name: &OsStr, directory: bool) -> std::io::Result<()> {
+    let name = component_name(name)?;
+    if unsafe {
+        libc::unlinkat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            if directory { libc::AT_REMOVEDIR } else { 0 },
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn walk_working_tree(
+    directory: &std::fs::File,
+    device: u64,
+    remove: bool,
+    depth: usize,
+) -> std::io::Result<()> {
+    if depth > 32 {
+        return Err(unsafe_cache_io());
+    }
+    for name in directory_names(directory)? {
+        let metadata = entry_stat(directory, &name)?;
+        if metadata.st_uid != unsafe { libc::geteuid() } || metadata.st_dev as u64 != device {
+            return Err(unsafe_cache_io());
+        }
+        match metadata.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => {
+                let child = open_directory_at(directory, &name)?;
+                if !entry_matches(directory, &name, &child)? {
+                    return Err(unsafe_cache_io());
+                }
+                walk_working_tree(&child, device, remove, depth + 1)?;
+                if remove {
+                    if !entry_matches(directory, &name, &child)? {
+                        return Err(unsafe_cache_io());
+                    }
+                    unlink_at(directory, &name, true)?;
+                }
+            }
+            libc::S_IFREG => {
+                // Unlinking a workspace's immutable postings hard link preserves its
+                // published checkpoint (and never writes through to the shared inode).
+                // Keep the lease until all bulky data is gone. A reaper killed halfway
+                // through deletion must leave a recognizable, resumable workspace.
+                if remove && !(depth == 0 && name == WORKING_LEASE) {
+                    unlink_at(directory, &name, false)?;
+                }
+            }
+            _ => return Err(unsafe_cache_io()), // Symlinks, sockets, FIFOs and devices are not ours.
+        }
+    }
+    Ok(())
+}
+
+fn valid_working_lease(
+    parent: &std::fs::File,
+    name: &OsStr,
+    directory: &std::fs::File,
+    lease: &std::fs::File,
+) -> std::io::Result<bool> {
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+        || !entry_matches(parent, name, directory)?
+        || !private_regular_file(lease)?
+        || !entry_matches(directory, OsStr::new(WORKING_LEASE), lease)?
+    {
+        return Ok(false);
+    }
+    let expected = working_lease_contents(parent, directory)?;
+    if lease.metadata()?.len() != expected.len() as u64 {
+        return Ok(false);
+    }
+    use std::os::unix::fs::FileExt;
+    let mut actual = vec![0; expected.len()];
+    lease.read_exact_at(&mut actual, 0)?;
+    Ok(actual == expected)
+}
+
+fn remove_leased_working_directory(
+    parent: &std::fs::File,
+    name: &OsStr,
+    directory: &std::fs::File,
+    lease: &std::fs::File,
+) -> std::io::Result<()> {
+    if !valid_working_lease(parent, name, directory, lease)? {
+        return Err(unsafe_cache_io());
+    }
+    let device = directory.metadata()?.dev();
+    // Preflight the whole tree before deleting anything. A malformed or symlinked
+    // legacy/foreign layout stays untouched; the deletion pass checks again.
+    walk_working_tree(directory, device, false, 0)?;
+    if !valid_working_lease(parent, name, directory, lease)? {
+        return Err(unsafe_cache_io());
+    }
+    walk_working_tree(directory, device, true, 0)?;
+    if !entry_matches(parent, name, directory)? {
+        return Err(unsafe_cache_io());
+    }
+    if !valid_working_lease(parent, name, directory, lease)? {
+        return Err(unsafe_cache_io());
+    }
+    unlink_at(directory, OsStr::new(WORKING_LEASE), false)?;
+    unlink_at(parent, name, true)
+}
+
+fn reclaim_abandoned_working_directories(parent: &std::fs::File) -> std::io::Result<()> {
+    for name in directory_names(parent)? {
+        let Some(name_string) = name.to_str() else {
+            continue;
+        };
+        let Some(suffix) = name_string.strip_prefix(WORKING_PREFIX) else {
+            continue;
+        };
+        if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            continue;
+        }
+        // Missing/invalid leases include old versions' workspaces: no age or PID
+        // heuristic can prove those inactive, so leave them alone.
+        let Ok(directory) = open_directory_at(parent, &name) else {
+            continue;
+        };
+        let Ok(lease) = open_at(&directory, OsStr::new(WORKING_LEASE), libc::O_RDWR) else {
+            continue;
+        };
+        if !valid_working_lease(parent, &name, &directory, &lease).unwrap_or(false)
+            || !exclusive_lock(&lease, true).unwrap_or(false)
+        {
+            continue;
+        }
+        let _ = remove_leased_working_directory(parent, &name, &directory, &lease);
+        // The kernel releases the lease only after cleanup, including error paths.
+    }
+    Ok(())
+}
+
+struct WorkingDirectory {
+    path: PathBuf,
+    parent: std::fs::File,
+    name: OsString,
+    directory: std::fs::File,
+    lease: std::fs::File,
+}
+
+impl WorkingDirectory {
+    fn new(parent: Option<&Path>) -> std::io::Result<Self> {
+        let parent_path = parent
+            .map(Path::to_owned)
+            .unwrap_or_else(std::env::temp_dir)
+            .canonicalize()?;
+        let parent = open_directory(&parent_path)?;
+        let temporary = tempfile::Builder::new()
+            .prefix(WORKING_PREFIX)
+            .tempdir_in(&parent_path)?;
+        let name = temporary.path().file_name().unwrap().to_owned();
+        let directory = open_directory_at(&parent, &name)?;
+        if !same_file(
+            &directory.metadata()?,
+            &std::fs::symlink_metadata(temporary.path())?,
+        ) {
+            return Err(unsafe_cache_io());
+        }
+        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        let mut lease = open_at(
+            &directory,
+            OsStr::new(WORKING_LEASE),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+        )?;
+        exclusive_lock(&lease, false)?;
+        lease.write_all(&working_lease_contents(&parent, &directory)?)?;
+        lease.sync_all()?;
+        directory.sync_all()?;
+        Ok(Self {
+            path: temporary.keep(),
+            parent,
+            name,
+            directory,
+            lease,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkingDirectory {
+    fn drop(&mut self) {
+        // Keep the exclusive file description alive until after removal. Startup
+        // reapers therefore cannot race a still-live Engine, even in this process.
+        let _ =
+            remove_leased_working_directory(&self.parent, &self.name, &self.directory, &self.lease);
+    }
+}
+
 fn checkpoint_checksums(directory: &Path) -> std::io::Result<String> {
     let mut checksums = String::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -126,14 +539,14 @@ fn read_small_regular_file(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> 
 
 struct Engine {
     index: HybridIndex,
-    directory: tempfile::TempDir,
+    directory: WorkingDirectory,
     pending_bytes: usize,
     sequence: u64,
     active_directory: Option<std::path::PathBuf>,
     persistent_root: Option<PathBuf>,
     checkpoint: Option<PathBuf>,
     manifest: Vec<u8>,
-    _lease: Option<std::fs::File>,
+    _lease: Option<PublisherLease>,
 }
 
 impl Engine {
@@ -144,13 +557,7 @@ impl Engine {
     fn new_in(parent: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         // Harden before any postings are written; no history paths or query
         // text are used in its name. It is removed when the database closes.
-        let mut builder = tempfile::Builder::new();
-        builder.prefix("ccbuddy-tgrep-");
-        let directory = match parent {
-            Some(parent) => builder.tempdir_in(parent)?,
-            None => builder.tempdir()?,
-        };
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let directory = WorkingDirectory::new(parent)?;
         let initial = directory.path().join("index-0");
         append_overlay_to_index(
             directory.path(),
@@ -175,31 +582,43 @@ impl Engine {
     }
 
     fn persistent(root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        if let Ok(metadata) = std::fs::symlink_metadata(root) {
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(UnsafeCache.into());
+        match std::fs::symlink_metadata(root) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(UnsafeCache.into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(root)?
             }
-        } else {
-            std::fs::create_dir_all(root)?;
+            Err(error) => return Err(error.into()),
         }
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
-        let lease = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(root.join("lock"))?;
-        let owns_lease =
-            unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-        let mut engine = Self::new_in(Some(root))?;
+        let root_handle = open_directory(root)?;
+        if root_handle.metadata()?.uid() != unsafe { libc::geteuid() } {
+            return Err(UnsafeCache.into());
+        }
+        root_handle.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        let root_path = root.canonicalize()?;
+        if !same_file(
+            &root_handle.metadata()?,
+            &std::fs::symlink_metadata(&root_path)?,
+        ) {
+            return Err(UnsafeCache.into());
+        }
+        let root = root_path.as_path();
+        let lease = open_private_lock(&root_handle, "lock")?;
+        let owns_lease = exclusive_lock(&lease, true)?;
+        let mut engine = {
+            // Independent of the lifetime publisher lease: every publisher and
+            // secondary coordinates workspace creation with opportunistic reaping.
+            let registry = open_private_lock(&root_handle, WORKING_REGISTRY)?;
+            exclusive_lock(&registry, false)?;
+            reclaim_abandoned_working_directories(&root_handle)?;
+            Self::new_in(Some(root))?
+        };
         if !owns_lease {
             // Another database instance can use an isolated overlay on the same
             // volume without racing publication of the persistent checkpoint.
             return Ok(engine);
         }
-        engine._lease = Some(lease);
+        engine._lease = Some(PublisherLease(lease));
         engine.persistent_root = Some(root.to_owned());
         if let Ok(pointer) = read_small_regular_file(&root.join("active"), 128) {
             let name = String::from_utf8_lossy(&pointer);
@@ -224,18 +643,15 @@ impl Engine {
                     });
                 if intact {
                     engine.checkpoint = Some(checkpoint.clone());
-                    if let Ok(index) = HybridIndex::open(&checkpoint, root) {
-                        if let Ok(metadata) =
+                    if let Ok(index) = HybridIndex::open(&checkpoint, root)
+                        && let Ok(metadata) =
                             std::fs::metadata(checkpoint.join("ccbuddy-manifest.json"))
-                        {
-                            if metadata.len() <= 16 * 1024 * 1024 {
-                                engine.manifest =
-                                    std::fs::read(checkpoint.join("ccbuddy-manifest.json"))
-                                        .unwrap_or_default();
-                                engine.index = index;
-                                engine.active_directory = None;
-                            }
-                        }
+                        && metadata.len() <= 16 * 1024 * 1024
+                    {
+                        engine.manifest = std::fs::read(checkpoint.join("ccbuddy-manifest.json"))
+                            .unwrap_or_default();
+                        engine.index = index;
+                        engine.active_directory = None;
                     }
                 }
             }
@@ -439,6 +855,8 @@ pub extern "C" fn ccbuddy_tgrep_create() -> *mut c_void {
     })
 }
 
+/// # Safety
+/// `bytes` must reference `length` readable bytes for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_create_persistent(
     bytes: *const u8,
@@ -454,6 +872,9 @@ pub unsafe extern "C" fn ccbuddy_tgrep_create_persistent(
     })
 }
 
+/// # Safety
+/// `engine` must be a live handle, with no concurrent mutation or destruction.
+/// Non-null `output` must reference `capacity` writable bytes, disjoint from the handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_copy_manifest(
     engine: *mut c_void,
@@ -475,6 +896,9 @@ pub unsafe extern "C" fn ccbuddy_tgrep_copy_manifest(
     })
 }
 
+/// # Safety
+/// `engine` must be an exclusively accessed live handle. `bytes` must reference
+/// `length` readable bytes and must not alias the handle's mutable storage.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_persist(
     engine: *mut c_void,
@@ -493,6 +917,9 @@ pub unsafe extern "C" fn ccbuddy_tgrep_persist(
     })
 }
 
+/// # Safety
+/// A non-null handle must have been returned by this library and must be destroyed
+/// exactly once, after all access to it has stopped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_destroy(engine: *mut c_void) {
     if !engine.is_null() {
@@ -502,6 +929,9 @@ pub unsafe extern "C" fn ccbuddy_tgrep_destroy(engine: *mut c_void) {
     }
 }
 
+/// # Safety
+/// `engine` must be an exclusively accessed live handle. `bytes` must reference
+/// `length` readable bytes and must not alias the handle's mutable storage.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_upsert(
     engine: *mut c_void,
@@ -521,6 +951,9 @@ pub unsafe extern "C" fn ccbuddy_tgrep_upsert(
     })
 }
 
+/// # Safety
+/// `engine` must be an exclusively accessed live handle. When `count` is nonzero,
+/// `ids` must reference that many aligned, readable i64 values disjoint from the handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_retain(
     engine: *mut c_void,
@@ -546,6 +979,11 @@ pub unsafe extern "C" fn ccbuddy_tgrep_retain(
 
 /// Caller owns `output`; return the required capacity, or -1 on failure. Calls
 /// are serialized by the catalog read lock, so a capacity retry is consistent.
+///
+/// # Safety
+/// `engine` must be a live handle without concurrent mutation or destruction.
+/// `bytes` must reference `length` readable bytes; non-null `output` must reference
+/// `capacity` aligned, writable i64 values disjoint from the handle and input.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ccbuddy_tgrep_query(
     engine: *mut c_void,
@@ -690,6 +1128,10 @@ mod tests {
             engine.flush().unwrap(); // crash before manifest/pointer publication
         }
         let mut reopened = Engine::persistent(root.path()).unwrap();
+        assert!(
+            reopened.persistent_root.is_some(),
+            "first checkpoint reopen unexpectedly found another live publisher lease"
+        );
         assert_eq!(reopened.manifest, b"manifest-one");
         assert_eq!(reopened.search("committed"), vec![1]);
         assert!(reopened.search("unpublished").is_empty());
@@ -698,6 +1140,10 @@ mod tests {
         reopened.persist(b"manifest-two").unwrap();
         drop(reopened);
         let latest = Engine::persistent(root.path()).unwrap();
+        assert!(
+            latest.persistent_root.is_some(),
+            "checkpoint reopen unexpectedly found another live publisher lease"
+        );
         assert_eq!(latest.manifest, b"manifest-two");
         assert_eq!(latest.search("published replacement"), vec![1]);
         assert!(latest.search("committed").is_empty());
@@ -774,6 +1220,501 @@ mod tests {
         let engine = Engine::persistent(&target).unwrap();
         assert!(engine.manifest.is_empty());
         assert_eq!(std::fs::read(&untouched).unwrap(), b"checkpoint-unowned");
+    }
+
+    fn working_paths(root: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(WORKING_PREFIX)
+            })
+            .collect()
+    }
+
+    /// A completed v1 lease with no remaining owner. This models the on-disk
+    /// state after exit without relying on a PID, wall clock, or leaked test fd.
+    fn abandoned_working_directory(root: &Path) -> PathBuf {
+        let temporary = tempfile::Builder::new()
+            .prefix(WORKING_PREFIX)
+            .tempdir_in(root)
+            .unwrap();
+        let parent = open_directory(root).unwrap();
+        let directory = open_directory(temporary.path()).unwrap();
+        directory
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let mut lease = open_at(
+            &directory,
+            OsStr::new(WORKING_LEASE),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+        )
+        .unwrap();
+        exclusive_lock(&lease, false).unwrap();
+        lease
+            .write_all(&working_lease_contents(&parent, &directory).unwrap())
+            .unwrap();
+        std::fs::create_dir(temporary.path().join("index-1")).unwrap();
+        std::fs::write(
+            temporary.path().join("index-1/index.bin"),
+            b"discardable postings",
+        )
+        .unwrap();
+        temporary.keep()
+    }
+
+    #[test]
+    fn normal_exit_removes_working_hardlinks_without_changing_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = Engine::persistent(root.path()).unwrap();
+        engine
+            .upsert(19, b"immutable checkpoint survives working unlink")
+            .unwrap();
+        engine.flush().unwrap();
+        engine.persist(b"sealed manifest").unwrap();
+        let working = engine.directory.path().to_owned();
+        let source = engine.active_directory.as_ref().unwrap().join("index.bin");
+        let sealed = engine.checkpoint.as_ref().unwrap().join("index.bin");
+        assert!(same_file(
+            &std::fs::metadata(&source).unwrap(),
+            &std::fs::metadata(&sealed).unwrap()
+        ));
+        assert_eq!(std::fs::metadata(&sealed).unwrap().nlink(), 2);
+        let checksum = checkpoint_checksums(engine.checkpoint.as_ref().unwrap()).unwrap();
+        drop(engine);
+        assert!(!working.exists());
+        assert_eq!(std::fs::metadata(&sealed).unwrap().nlink(), 1);
+        assert_eq!(
+            checkpoint_checksums(sealed.parent().unwrap()).unwrap(),
+            checksum
+        );
+        let reopened = Engine::persistent(root.path()).unwrap();
+        assert_eq!(reopened.manifest, b"sealed manifest");
+        assert_eq!(reopened.search("immutable checkpoint"), vec![19]);
+        drop(reopened);
+        assert!(working_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn completed_publisher_releases_lease_even_with_a_spawn_inherited_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let mut publisher = Engine::persistent(root.path()).unwrap();
+        publisher.upsert(1, b"publisher exited normally").unwrap();
+        publisher.flush().unwrap();
+        publisher.persist(b"published before spawn").unwrap();
+        // dup models the same open file description inherited during posix_spawn.
+        // It is not another Engine and must not keep a completed publisher alive.
+        let inherited = publisher._lease.as_ref().unwrap().0.try_clone().unwrap();
+        drop(publisher);
+        let replacement = Engine::persistent(root.path()).unwrap();
+        assert!(replacement.persistent_root.is_some());
+        assert_eq!(replacement.manifest, b"published before spawn");
+        assert_eq!(replacement.search("publisher exited"), vec![1]);
+        drop(inherited);
+    }
+
+    #[test]
+    fn repeated_startups_reclaim_only_proven_abandoned_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        let stale: Vec<_> = (0..5)
+            .map(|_| abandoned_working_directory(root.path()))
+            .collect();
+        let legacy = root.path().join("ccbuddy-tgrep-legacy");
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("unowned"), b"preserve legacy").unwrap();
+        for _ in 0..4 {
+            let engine = Engine::persistent(root.path()).unwrap();
+            assert!(stale.iter().all(|path| !path.exists()));
+            assert_eq!(
+                working_paths(root.path()).len(),
+                2,
+                "one live workspace plus untouched legacy"
+            );
+            drop(engine);
+            assert_eq!(working_paths(root.path()), vec![legacy.clone()]);
+        }
+        assert_eq!(
+            std::fs::read(legacy.join("unowned")).unwrap(),
+            b"preserve legacy"
+        );
+    }
+
+    #[test]
+    fn reaper_preserves_invalid_identity_permissions_hardlinks_and_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel");
+        std::fs::write(&sentinel, b"outside data stays untouched").unwrap();
+        let malformed = abandoned_working_directory(root.path());
+        std::fs::write(malformed.join(WORKING_LEASE), b"not a recognized lease").unwrap();
+        let permissive = abandoned_working_directory(root.path());
+        std::fs::set_permissions(
+            permissive.join(WORKING_LEASE),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let linked_lease = abandoned_working_directory(root.path());
+        std::fs::hard_link(
+            linked_lease.join(WORKING_LEASE),
+            outside.path().join("lease-alias"),
+        )
+        .unwrap();
+        let nested_symlink = abandoned_working_directory(root.path());
+        symlink(
+            outside.path(),
+            nested_symlink.join("index-1/foreign-directory"),
+        )
+        .unwrap();
+        let symlinked_lease = abandoned_working_directory(root.path());
+        std::fs::remove_file(symlinked_lease.join(WORKING_LEASE)).unwrap();
+        symlink(&sentinel, symlinked_lease.join(WORKING_LEASE)).unwrap();
+        let moved = abandoned_working_directory(outside.path());
+        let moved_here = root.path().join(moved.file_name().unwrap());
+        std::fs::rename(&moved, &moved_here).unwrap();
+        let symlinked_directory = root.path().join("ccbuddy-tgrep-linked");
+        symlink(outside.path(), &symlinked_directory).unwrap();
+        let engine = Engine::persistent(root.path()).unwrap();
+        for path in [
+            &malformed,
+            &permissive,
+            &linked_lease,
+            &nested_symlink,
+            &symlinked_lease,
+            &moved_here,
+        ] {
+            assert_eq!(
+                std::fs::read(path.join("index-1/index.bin")).unwrap(),
+                b"discardable postings",
+                "unsafe layouts must not even be partially deleted"
+            );
+        }
+        assert!(
+            std::fs::symlink_metadata(&symlinked_directory)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read(&sentinel).unwrap(),
+            b"outside data stays untouched"
+        );
+        drop(engine);
+    }
+
+    #[test]
+    fn anchored_cleanup_refuses_replaced_directory_and_out_of_bounds_names() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Engine::persistent(root.path()).unwrap();
+        let original_path = engine.directory.path().to_owned();
+        let moved = root.path().join("renamed-owned-workspace");
+        std::fs::rename(&original_path, &moved).unwrap();
+        std::fs::create_dir(&original_path).unwrap();
+        std::fs::write(original_path.join("foreign"), b"replacement directory").unwrap();
+        for name in ["..", ".", "../outside", "/outside", "a/b"] {
+            assert!(open_directory_at(&engine.directory.parent, OsStr::new(name)).is_err());
+            assert!(unlink_at(&engine.directory.parent, OsStr::new(name), true).is_err());
+        }
+        drop(engine);
+        assert_eq!(
+            std::fs::read(original_path.join("foreign")).unwrap(),
+            b"replacement directory"
+        );
+        assert!(
+            moved.join(WORKING_LEASE).exists(),
+            "a replacement path must not cause deletion of another directory"
+        );
+    }
+
+    #[test]
+    fn interrupted_cleanup_keeps_lease_until_bulky_files_are_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let stale = abandoned_working_directory(root.path());
+        let directory = open_directory(&stale).unwrap();
+        walk_working_tree(&directory, directory.metadata().unwrap().dev(), true, 0).unwrap();
+        assert_eq!(
+            directory_names(&directory).unwrap(),
+            vec![OsString::from(WORKING_LEASE)]
+        );
+        // The next process recognizes and finishes the interrupted cleanup.
+        let engine = Engine::persistent(root.path()).unwrap();
+        assert!(!stale.exists());
+        drop(engine);
+    }
+
+    #[test]
+    fn registry_lock_rejects_symlinks_and_hardlink_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let sentinel = root.path().join("foreign-lock");
+        std::fs::write(&sentinel, b"foreign lock contents").unwrap();
+        std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let registry = root.path().join(WORKING_REGISTRY);
+        std::os::unix::fs::symlink(&sentinel, &registry).unwrap();
+        assert!(Engine::persistent(root.path()).is_err());
+        std::fs::remove_file(&registry).unwrap();
+        std::fs::hard_link(&sentinel, &registry).unwrap();
+        assert!(Engine::persistent(root.path()).is_err());
+        std::fs::remove_file(&registry).unwrap();
+        let fifo = CString::new(registry.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(
+            Engine::persistent(root.path()).is_err(),
+            "a replaced lock FIFO must be rejected without blocking"
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"foreign lock contents");
+        assert!(working_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn concurrent_creators_and_reapers_never_remove_a_live_workspace() {
+        use std::sync::{Arc, Barrier};
+        let root = tempfile::tempdir().unwrap();
+        let start = Arc::new(Barrier::new(9));
+        let workers: Vec<_> = (0..8)
+            .map(|worker| {
+                let root = root.path().to_owned();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    for iteration in 0..6 {
+                        let mut engine = Engine::persistent(&root).unwrap();
+                        let text = format!("unique-worker-{worker}-iteration-{iteration}-marker");
+                        engine.upsert(worker, text.as_bytes()).unwrap();
+                        engine.flush().unwrap();
+                        engine.persist(b"concurrent checkpoint").unwrap();
+                        assert!(engine.directory.path().exists());
+                        assert_eq!(engine.search(&text), vec![worker]);
+                    }
+                })
+            })
+            .collect();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(working_paths(root.path()).is_empty());
+    }
+
+    struct WorkspaceProcess {
+        child: std::process::Child,
+        lines: std::sync::mpsc::Receiver<String>,
+        reader: Option<std::thread::JoinHandle<()>>,
+        workspace: PathBuf,
+        is_publisher: bool,
+    }
+
+    impl WorkspaceProcess {
+        fn start(root: &Path) -> Self {
+            use std::io::BufRead;
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::workspace_process_fixture",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("CCBUD_TGREP_TEST_WORKSPACE_ROOT", root)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .unwrap();
+            let output = child.stdout.take().unwrap();
+            let (send, lines) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(output).lines() {
+                    let Ok(line) = line else {
+                        break;
+                    };
+                    if send.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let mut process = Self {
+                child,
+                lines,
+                reader: Some(reader),
+                workspace: PathBuf::new(),
+                is_publisher: false,
+            };
+            let ready = process.wait_for("LEASE_READY:");
+            let (name, owner) = ready
+                .strip_prefix("LEASE_READY:")
+                .unwrap()
+                .split_once(':')
+                .unwrap();
+            assert!(name.starts_with(WORKING_PREFIX));
+            component_name(OsStr::new(name)).unwrap();
+            process.workspace = root.join(name);
+            process.is_publisher = owner == "true";
+            process
+        }
+
+        fn wait_for(&self, prefix: &str) -> String {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let line = self.lines.recv_timeout(remaining).expect(
+                    "child fixture must reach explicit readiness within its bounded startup budget",
+                );
+                // libtest may prefix the first stdout line with the test name.
+                if let Some(offset) = line.find(prefix) {
+                    return line[offset..].to_owned();
+                }
+            }
+        }
+
+        fn verify_alive(&mut self) {
+            self.child.stdin.as_mut().unwrap().write_all(b"V").unwrap();
+            assert_eq!(self.wait_for("LEASE_ALIVE"), "LEASE_ALIVE");
+        }
+
+        fn prepare_unpublished_change(&mut self) {
+            self.child.stdin.as_mut().unwrap().write_all(b"U").unwrap();
+            assert_eq!(self.wait_for("LEASE_UNPUBLISHED"), "LEASE_UNPUBLISHED");
+        }
+
+        fn kill(&mut self) {
+            use std::os::unix::process::ExitStatusExt;
+            self.child.kill().unwrap();
+            assert_eq!(self.child.wait().unwrap().signal(), Some(libc::SIGKILL));
+        }
+
+        fn finish(&mut self) {
+            self.child.stdin.as_mut().unwrap().write_all(b"Q").unwrap();
+            assert_eq!(self.wait_for("LEASE_DROPPED"), "LEASE_DROPPED");
+            assert!(self.child.wait().unwrap().success());
+        }
+    }
+
+    impl Drop for WorkspaceProcess {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            if let Some(reader) = self.reader.take() {
+                let _ = reader.join();
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_process_fixture() {
+        let Some(root) = std::env::var_os("CCBUD_TGREP_TEST_WORKSPACE_ROOT") else {
+            return;
+        };
+        let mut engine = Engine::persistent(Path::new(&root)).unwrap();
+        engine.upsert(73, b"live child fixture postings").unwrap();
+        engine.flush().unwrap();
+        engine.persist(b"child checkpoint").unwrap();
+        println!(
+            "LEASE_READY:{}:{}",
+            engine.directory.name.to_str().unwrap(),
+            engine.persistent_root.is_some()
+        );
+        std::io::stdout().flush().unwrap();
+        let mut command = [0];
+        while std::io::stdin().read_exact(&mut command).is_ok() {
+            if command[0] == b'Q' {
+                break;
+            }
+            if command[0] == b'U' {
+                engine.upsert(73, b"unpublished child replacement").unwrap();
+                engine.flush().unwrap();
+                println!("LEASE_UNPUBLISHED");
+                std::io::stdout().flush().unwrap();
+                continue;
+            }
+            assert_eq!(command[0], b'V');
+            assert!(engine.directory.path().exists());
+            assert_eq!(engine.search("live child fixture"), vec![73]);
+            println!("LEASE_ALIVE");
+            std::io::stdout().flush().unwrap();
+        }
+        let path = engine.directory.path().to_owned();
+        drop(engine);
+        assert!(!path.exists());
+        println!("LEASE_DROPPED");
+        std::io::stdout().flush().unwrap();
+    }
+
+    #[test]
+    fn killed_publisher_is_reclaimed_and_its_hardlinked_checkpoint_recovers() {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = WorkspaceProcess::start(root.path());
+        assert!(child.is_publisher);
+        let secondary = Engine::persistent(root.path()).unwrap();
+        assert!(secondary.persistent_root.is_none());
+        child.verify_alive();
+        drop(secondary);
+        child.verify_alive();
+        child.prepare_unpublished_change();
+        child.kill();
+        assert!(
+            child.workspace.exists(),
+            "SIGKILL must leave a genuine abandoned workspace"
+        );
+        let recovered = Engine::persistent(root.path()).unwrap();
+        assert!(!child.workspace.exists());
+        assert_eq!(recovered.manifest, b"child checkpoint");
+        assert_eq!(recovered.search("live child fixture"), vec![73]);
+        assert!(recovered.search("unpublished child replacement").is_empty());
+        drop(recovered);
+        assert!(working_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn publisher_replacement_preserves_live_secondary_in_another_process() {
+        let root = tempfile::tempdir().unwrap();
+        let mut publisher = Engine::persistent(root.path()).unwrap();
+        publisher.upsert(1, b"parent publisher checkpoint").unwrap();
+        publisher.flush().unwrap();
+        publisher.persist(b"parent checkpoint").unwrap();
+        let mut child = WorkspaceProcess::start(root.path());
+        assert!(!child.is_publisher);
+        child.verify_alive();
+        drop(publisher);
+        let replacement = Engine::persistent(root.path()).unwrap();
+        assert!(replacement.persistent_root.is_some());
+        assert_eq!(replacement.manifest, b"parent checkpoint");
+        assert_eq!(replacement.search("parent publisher"), vec![1]);
+        child.verify_alive();
+        child.finish();
+        assert!(!child.workspace.exists());
+        drop(replacement);
+        assert!(working_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn secondary_reaper_cleans_killed_peer_without_touching_active_instances() {
+        let root = tempfile::tempdir().unwrap();
+        let mut publisher = Engine::persistent(root.path()).unwrap();
+        publisher.upsert(1, b"active publisher contents").unwrap();
+        publisher.flush().unwrap();
+        publisher.persist(b"active manifest").unwrap();
+        let mut active_secondary = Engine::persistent(root.path()).unwrap();
+        active_secondary
+            .upsert(2, b"active secondary contents")
+            .unwrap();
+        active_secondary.flush().unwrap();
+        let mut child = WorkspaceProcess::start(root.path());
+        assert!(!child.is_publisher);
+        child.kill();
+        assert!(child.workspace.exists());
+        let reaper = Engine::persistent(root.path()).unwrap();
+        assert!(reaper.persistent_root.is_none());
+        assert!(!child.workspace.exists());
+        assert!(publisher.directory.path().exists());
+        assert!(active_secondary.directory.path().exists());
+        assert_eq!(publisher.search("active publisher"), vec![1]);
+        assert_eq!(active_secondary.search("active secondary"), vec![2]);
+        drop(reaper);
+        drop(active_secondary);
+        drop(publisher);
+        assert!(working_paths(root.path()).is_empty());
     }
 
     #[test]

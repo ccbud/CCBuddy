@@ -208,12 +208,8 @@ struct ConversationListPane: View {
                         }
 
                         if store.isSearchingContent {
-                            HStack(spacing: 7) {
-                                ProgressView().controlSize(.mini)
-                                Text("正在搜索会话内容…")
-                            }
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.mutedForeground)
+                            ConversationSearchActivityFeedback(phase: store.contentSearchPhase,
+                                hasVerifiedResults: !store.contentHits.isEmpty)
                             .padding(12)
                         } else if let error = store.contentSearchError {
                             Label(
@@ -336,6 +332,7 @@ struct ConversationSessionRow: View {
                             .foregroundStyle(Theme.danger)
                     }
                     Spacer(minLength: 0)
+                    if let hit { ConversationSearchCountLabel(hit: hit) }
                     Text(activityRelative)
                         .help(appLanguage.localized("更新于 \(activityAbsolute)"))
                 }
@@ -367,6 +364,7 @@ struct ConversationSessionRow: View {
         .buttonStyle(ConversationPressableButtonStyle())
         .onHover { hovering = $0 }
         .accessibilityLabel("\(metadata.title)，\(sourceName)")
+        .accessibilityValue(hit.map { ConversationSearchCountPresentation.label(for: $0, language: appLanguage) } ?? "")
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier(metadata.conversationRowAccessibilityIdentifier)
     }

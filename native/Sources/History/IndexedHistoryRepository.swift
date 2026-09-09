@@ -14,11 +14,12 @@ enum ConversationSearchRefinement: Equatable, Sendable {
         }
     }
 
-    func hit(for metadata: HistorySessionMetadata, agentOverride: String?) -> HistorySearchHit? {
+    func hit(for metadata: HistorySessionMetadata, agentOverride: String?,
+             isCountComplete: Bool = true) -> HistorySearchHit? {
         guard case let .hit(transcriptID, agentType, sequence, snippet, count) = self else { return nil }
         return HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file, source: metadata.source,
             agent: agentOverride ?? transcriptID, agentType: agentType, sequence: sequence,
-            snippet: snippet, count: count)
+            snippet: snippet, count: count, isCountComplete: isCountComplete)
     }
 }
 
@@ -268,20 +269,41 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         limit: Int,
         onProgress: (@Sendable (ConversationSearchProgress) -> Void)?
     ) throws -> [HistorySearchHit] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        try Task.checkCancellation()
+        guard !query.isEmpty, limit > 0 else {
+            onProgress?(.init(phase: .completed, hits: []))
+            try Task.checkCancellation()
+            return []
+        }
+        let matcher = ConversationLiteralSearch(query: query)
+        // Each attempt is one catalog generation. Live writes can invalidate an in-flight
+        // count, but never authorize merging old anchors with a new transcript's contents.
+        for attempt in 0..<3 {
+            do {
+                return try searchSnapshot(query: query, matcher: matcher, limit: limit,
+                    onProgress: onProgress)
+            } catch ConversationIndexDatabaseError.staleRevision where attempt < 2 {
+                try Task.checkCancellation()
+            }
+        }
+        throw ConversationIndexDatabaseError.staleRevision
+    }
+
+    private func searchSnapshot(
+        query: String, matcher: ConversationLiteralSearch, limit: Int,
+        onProgress: (@Sendable (ConversationSearchProgress) -> Void)?
+    ) throws -> [HistorySearchHit] {
         var diagnostics: ConversationSearchDiagnostics?
+        let generation = try database.generation()
         func publish(_ phase: ConversationSearchProgress.Phase, hits: [HistorySearchHit]) throws {
             try Task.checkCancellation()
             guard let onProgress else { return }
-            onProgress(ConversationSearchProgress(phase: phase, hits: hits, diagnostics: diagnostics))
+            onProgress(ConversationSearchProgress(phase: phase, hits: hits,
+                diagnostics: diagnostics, snapshotRevision: generation))
             try Task.checkCancellation()
         }
-        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, limit > 0 else {
-            try publish(.completed, hits: [])
-            return []
-        }
         try publish(.preparingCandidates, hits: [])
-        let matcher = ConversationLiteralSearch(query: query)
 
         // Scan activity-ordered canonical sessions and return the first matching transcript per
         // session. The scan window matches the stream's window so search can never claim fewer
@@ -298,6 +320,9 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             scope: filter.scope,
             deleted: filter.deleted
         )
+        guard try database.generation() == generation else {
+            throw ConversationIndexDatabaseError.staleRevision
+        }
         var referencesByPath: [String: [ConversationIndexDocumentReference]] = [:]
         for reference in batch.references {
             referencesByPath[reference.sessionPath, default: []].append(reference)
@@ -306,6 +331,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         try publish(.refiningResults, hits: [])
 
         var hits: [HistorySearchHit] = []
+        var pending: [(index: Int, reference: ConversationIndexDocumentReference)] = []
         var lastPublishedCount = 0
         var lastPublication = ContinuousClock.now
         for metadata in sessions {
@@ -334,28 +360,34 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
                 let cache = database.searchRefinementCache
                 let key = ConversationSearchRefinementCache.Key(reference: reference, query: query)
                 let cached = cache.lookup(key)
-                guard let read = try database.refinementDocument(
-                    reference: reference, cachedGeneration: cached?.generation
-                ) else { continue }
+                guard let currentGeneration = try database.refinementGeneration(reference: reference),
+                      currentGeneration == generation else {
+                    throw ConversationIndexDatabaseError.staleRevision
+                }
                 let refinement: ConversationSearchRefinement
-                switch read {
-                case .unchanged:
+                let isComplete: Bool
+                if let cached, cached.generation == generation {
                     // Only the generation/identity check can authorize reuse. The local value
                     // remains valid even if another search concurrently evicts its cache entry.
-                    guard let cached else { continue }
                     refinement = cached.result
                     cache.recordValidatedHit()
-                case let .document(generation, document):
-                    refinement = Self.refine(document, matcher: matcher)
+                    isComplete = true
+                } else {
+                    // The first pass only verifies one occurrence. Counting is a separate,
+                    // cancellable pass over candidate blocks, after usable results are visible.
+                    refinement = try refine(reference: reference, query: query, matcher: matcher,
+                        countingOccurrences: onProgress == nil)
                     try Task.checkCancellation()
-                    try cache.store(refinement, for: key, generation: generation)
+                    isComplete = onProgress == nil || refinement == .noMatch
+                    if isComplete { try cache.store(refinement, for: key, generation: generation) }
                 }
                 try Task.checkCancellation()
-                guard let hit = refinement.hit(for: metadata, agentOverride: transcript.agent) else { continue }
+                guard let hit = refinement.hit(for: metadata, agentOverride: transcript.agent,
+                    isCountComplete: isComplete) else { continue }
+                if !isComplete { pending.append((hits.count, reference)) }
                 hits.append(hit)
-                // Publish only after exact verification has produced the full
-                // count and source anchor, and after database.document released
-                // its read lock. A slow older transcript cannot hide this hit.
+                // Callbacks are outside the database lock. First-hit publication is immediate;
+                // subsequent identities are batched without delaying the first usable result.
                 if onProgress != nil,
                    hits.count == 1 || hits.count - lastPublishedCount >= 8
                     || lastPublication.duration(to: .now) >= .milliseconds(50) {
@@ -367,29 +399,74 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             }
             if hits.count == limit { break }
         }
+        if !pending.isEmpty {
+            try publish(.countingOccurrences, hits: hits)
+            lastPublication = .now
+            for (ordinal, item) in pending.enumerated() {
+                let refinement = try refine(reference: item.reference, query: query,
+                    matcher: matcher, countingOccurrences: true)
+                guard case let .hit(_, _, _, _, count) = refinement else {
+                    throw ConversationIndexDatabaseError.staleRevision
+                }
+                try database.searchRefinementCache.store(refinement,
+                    for: .init(reference: item.reference, query: query), generation: generation)
+                hits[item.index].count = count
+                hits[item.index].isCountComplete = true
+                if ordinal == 0 || ordinal == pending.count - 1
+                    || lastPublication.duration(to: .now) >= .milliseconds(50) {
+                    try publish(.countingOccurrences, hits: hits)
+                    lastPublication = .now
+                }
+            }
+        }
+        guard try database.generation() == generation else {
+            throw ConversationIndexDatabaseError.staleRevision
+        }
         try publish(.completed, hits: hits)
         return hits
     }
 
-    private static func refine(
-        _ document: ConversationIndexDocument,
-        matcher: ConversationLiteralSearch
-    ) -> ConversationSearchRefinement {
-        // FTS and the short-query fallback are candidate generators; only this literal match
-        // decides whether the transcript is really a result.
-        guard let match = matcher.match(in: document.text) else {
-            return .noMatch
-        }
-        let range = match.range
-        let offset = range.lowerBound.utf16Offset(in: document.text)
-        let span = Self.span(at: offset, in: document.messageSpans)
-        return .hit(
-            transcriptID: document.transcriptID,
-            agentType: document.agentType,
-            sequence: span?.sequence,
-            snippet: Self.snippet(in: document.text, around: range, context: 56),
-            count: match.count
-        )
+    private func refine(reference: ConversationIndexDocumentReference, query: String,
+                        matcher: ConversationLiteralSearch, countingOccurrences: Bool) throws
+        -> ConversationSearchRefinement {
+        var cursor: ConversationIndexSearchCursor?
+        var resumeUTF16 = 0
+        var count = 0
+        var first: (sequence: Int?, snippet: String)?
+        repeat {
+            try Task.checkCancellation()
+            let batch = try database.searchChunkWindows(reference: reference, query: query,
+                cursor: cursor, limit: countingOccurrences ? 8 : 1)
+            for window in batch.windows {
+                try Task.checkCancellation()
+                guard let match = matcher.match(in: window.text,
+                    countingOccurrences: countingOccurrences,
+                    startingAtUTF16: max(0, resumeUTF16 - window.globalUTF16Start),
+                    ownedUTF16Length: window.ownedUTF16Length) else {
+                    try Task.checkCancellation()
+                    continue
+                }
+                if first == nil {
+                    let offset = window.globalUTF16Start
+                        + match.range.lowerBound.utf16Offset(in: window.text)
+                    let matchLength = match.range.upperBound.utf16Offset(in: window.text)
+                        - match.range.lowerBound.utf16Offset(in: window.text)
+                    guard let snippet = try database.searchChunkSnippet(reference: reference,
+                        offsetUTF16: offset, matchLengthUTF16: matchLength, context: 56) else {
+                        throw ConversationIndexDatabaseError.staleRevision
+                    }
+                    first = (Self.span(at: offset, in: window.messageSpans)?.sequence, snippet)
+                }
+                count += match.count
+                resumeUTF16 = window.globalUTF16Start + match.lastUTF16End
+                if !countingOccurrences { break }
+            }
+            cursor = batch.nextCursor
+        } while cursor != nil && (countingOccurrences || first == nil)
+        try Task.checkCancellation()
+        guard let first else { return .noMatch }
+        return .hit(transcriptID: reference.transcriptID, agentType: reference.agentType,
+            sequence: first.sequence, snippet: first.snippet, count: count)
     }
 
     func getSession(file: URL) throws -> HistorySession {
@@ -487,26 +564,4 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         return spans.first(where: { $0.utf16Location >= utf16Offset }) ?? spans.last
     }
 
-    private static func snippet(
-        in text: String,
-        around match: Range<String.Index>,
-        context: Int
-    ) -> String {
-        let start = text.index(
-            match.lowerBound,
-            offsetBy: -context,
-            limitedBy: text.startIndex
-        ) ?? text.startIndex
-        let end = text.index(
-            match.upperBound,
-            offsetBy: context,
-            limitedBy: text.endIndex
-        ) ?? text.endIndex
-        let body = text[start..<end]
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-        return (start > text.startIndex ? "…" : "")
-            + body
-            + (end < text.endIndex ? "…" : "")
-    }
 }

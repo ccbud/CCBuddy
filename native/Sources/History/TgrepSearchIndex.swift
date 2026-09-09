@@ -4,7 +4,7 @@ import Foundation
 
 /// Observable measurements of candidate generation, without retaining the user's query.
 struct ConversationSearchDiagnostics: Equatable, Sendable {
-    var engine: String = "SQLite"
+    var engine: String = "Literal"
     var indexedDocuments: Int = 0
     var candidateCount: Int = 0
     var queryMilliseconds: Double = 0

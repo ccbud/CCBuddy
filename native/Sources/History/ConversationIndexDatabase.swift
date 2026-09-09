@@ -143,8 +143,8 @@ struct ConversationIndexScopeSummary: Equatable, Sendable {
     var lastActivity: Date
 }
 
-/// FTS is deliberately only a candidate generator. The caller performs its normal Foundation
-/// string match on `document.text`, then uses the spans to produce snippets and exact navigation.
+/// Compatibility result for detail/non-hot callers. Search uses block references and performs
+/// exact Foundation-compatible verification before publishing a match.
 struct ConversationIndexDocumentCandidate: Equatable, Sendable {
     var entry: ConversationIndexEntry
     var document: ConversationIndexDocument
@@ -157,12 +157,8 @@ struct ConversationIndexCandidateBatch: Equatable, Sendable {
 
 /// A search candidate identified without reading the transcript it points at.
 ///
-/// The catalog stores one aggregate document per transcript, so `search_text` is by far the
-/// largest column in the database — hundreds of megabytes on a normal multi-month library.
-/// Selecting it for every candidate made one query cost the size of the whole library rather than
-/// the size of the result: SQLite had to hold every matching row to satisfy the ordering, and the
-/// caller then materialized the same text again as Swift strings. Candidates are therefore located
-/// by identity first, and only the documents actually needed are read back, one at a time.
+/// Logical transcript identity plus selected physical blocks. Candidate generation selects no
+/// text: only independently compressed blocks needed by exact refinement are decoded afterwards.
 struct ConversationIndexDocumentReference: Equatable, Sendable {
     var documentID: Int64
     var sessionPath: String
@@ -170,6 +166,9 @@ struct ConversationIndexDocumentReference: Equatable, Sendable {
     var agentType: String?
     var sortOrder: Int
     var lastActivity: Date
+    /// nil means scan every bounded block (short-query, unavailable engine, or migration).
+    var candidateChunkIDs: [Int64]? = nil
+    var catalogGeneration: Int64? = nil
 }
 
 struct ConversationIndexCandidateReferenceBatch: Equatable, Sendable {
@@ -189,6 +188,7 @@ struct ConversationIndexReconciliation: Equatable, Sendable {
 }
 
 enum ConversationIndexDatabaseError: LocalizedError, Sendable {
+    case staleRevision
     case invalidDatabaseURL(URL)
     case unsafeDatabaseFile(URL)
     case invalidRecord(String)
@@ -198,6 +198,8 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .staleRevision:
+            return "Conversation index changed during search; retry the query."
         case .invalidDatabaseURL(let url):
             return "Conversation index is not a local file URL: \(url.absoluteString)"
         case .unsafeDatabaseFile(let url):
@@ -221,12 +223,9 @@ enum ConversationIndexDatabaseError: LocalizedError, Sendable {
 /// mutations while an independent query-only connection keeps list/detail reads responsive during
 /// indexing. WAL provides the snapshot boundary between them.
 final class ConversationIndexDatabase: @unchecked Sendable {
-    /// Version 2 preserves the warm derived index while adding bounded deferred-maintenance
-    /// markers. Version 1 could retain gigabytes of obsolete FTS segments after replacement.
-    /// Version 3 adds `starred` and `pinned` to the encoded session metadata. Synthesized `Decodable` does not
-    /// fall back to a property's default value for a missing key, so blobs written by version 2
-    /// would fail to decode; the catalog is disposable and is simply rebuilt instead.
-    static let schemaVersion: Int32 = 4
+    /// Version 5 preserves metadata and migrates legacy whole-transcript text to independently
+    /// compressed blocks. tgrep is the sole postings index; obsolete FTS is retired off-thread.
+    static let schemaVersion: Int32 = 5
 
     let file: URL
     let searchRefinementCache: ConversationSearchRefinementCache
@@ -237,9 +236,9 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private let connection: OpaquePointer
     private var readConnection: OpaquePointer?
     private var maintenanceToken: UUID?
+    private var maintenanceActivityEpoch: UInt64 = 0
     private let metadataEncoder: JSONEncoder
     private let metadataDecoder: JSONDecoder
-    private var trigramFTSAvailable = false
     private let enableTgrep: Bool
     private var tgrep: TgrepSearchIndex?
     private let tgrepRuntime: TgrepRuntime
@@ -280,6 +279,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private let metadataDecodeCacheLock = NSLock()
     private var metadataDecodeCache: [String: (indexedAt: Double, metadata: HistorySessionMetadata)] = [:]
     private static let metadataDecodeCacheLimit = 20_000
+    private let legacyHeaderCacheLock = NSLock()
+    /// Legacy bodies/spans are immutable until removed; new writes are always storage_version=1.
+    /// Retain at most one modest header, never transcript text or an unbounded collection.
+    private var legacyHeaderCache: (id: Int64, header: LegacyHeader)?
 
     init(file: URL, enableTgrep: Bool = true, tgrepRuntime: TgrepRuntime = .init(),
          searchRefinementCache: ConversationSearchRefinementCache = .init()) throws {
@@ -315,10 +318,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
         do {
             try configureConnection()
-            trigramFTSAvailable = probeTrigramFTS()
             try initializeSchema()
             readConnection = try Self.openReadConnection(standardized)
-            if let readConnection { Self.registerLiteralMatcher(on: readConnection) }
             try hardenPermissions()
         } catch {
             if let readConnection { sqlite3_close(readConnection) }
@@ -346,7 +347,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     var supportsTrigramSearch: Bool {
-        withLock { trigramFTSAvailable }
+        enableTgrep && TgrepSearchIndex.isAvailable
     }
 
     var searchDiagnostics: ConversationSearchDiagnostics {
@@ -380,11 +381,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             let metadata = try metadataEncoder.encode(session.metadata)
             let fileSize = try sqliteInteger(session.fingerprint.sizeBytes, field: "file size")
             let indexedAt = Date()
-            let ftsWasDirty = try int64Value(
-                "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
-            ) != 0
-            let preserveDirtyFTS = !trigramFTSAvailable || ftsWasDirty
-
             let result = try transaction {
                 try execute(
                     """
@@ -424,31 +420,28 @@ final class ConversationIndexDatabase: @unchecked Sendable {
 
                 try removeDocuments(for: path)
                 for document in session.documents.sorted(by: Self.documentComesFirst) {
-                    let spans = try metadataEncoder.encode(document.messageSpans)
                     try execute(
                         """
                         INSERT INTO conversation_documents (
-                            session_path, transcript_id, agent_type, sort_order,
-                            search_text, message_spans_json
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            session_path, transcript_id, agent_type, sort_order, storage_version
+                        ) VALUES (?, ?, ?, ?, 1)
                         """,
                         bindings: [
                             .text(path),
                             .text(document.transcriptID),
                             document.agentType.map(SQLiteValue.text) ?? .null,
                             .integer(Int64(document.sortOrder)),
-                            .text(document.text),
-                            .blob(spans),
                         ]
                     )
-                    if trigramFTSAvailable {
-                        try execute(
-                            "INSERT INTO conversation_documents_fts(rowid, search_text) VALUES (?, ?)",
-                            bindings: [.integer(sqlite3_last_insert_rowid(connection)), .text(document.text)]
-                        )
+                    let documentID = sqlite3_last_insert_rowid(connection)
+                    var ordinal = 0
+                    try ConversationSearchChunk.forEachPart(of: document.text) { part in
+                        try Task.checkCancellation()
+                        try insertChunk(documentID: documentID, ordinal: ordinal, part: part,
+                            spans: document.messageSpans)
+                        ordinal += 1
                     }
                 }
-                try markFTSState(dirty: preserveDirtyFTS)
                 try markMaintenancePending()
                 return try advanceGeneration()
             }
@@ -528,7 +521,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         try withLock {
             let paths = Array(Set(paths.map { Self.normalizedPath($0) })).sorted()
             guard !paths.isEmpty else { return 0 }
-            let preserveDirtyFTS = try shouldKeepFTSDirty()
             let removed = try transaction {
                 var removed = 0
                 for path in paths {
@@ -540,7 +532,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     removed += Int(sqlite3_changes(connection))
                 }
                 if removed > 0 {
-                    try markFTSState(dirty: preserveDirtyFTS)
                     try markMaintenancePending()
                     _ = try advanceGeneration()
                 }
@@ -582,7 +573,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 )
             }
 
-            let preserveDirtyFTS = try shouldKeepFTSDirty()
             let nextGeneration = try transaction {
                 for path in removedPaths {
                     try removeDocuments(for: path)
@@ -591,7 +581,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                         bindings: [.text(path), .text(scope)]
                     )
                 }
-                try markFTSState(dirty: preserveDirtyFTS)
                 try markMaintenancePending()
                 return try advanceGeneration()
             }
@@ -771,7 +760,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 throw sqliteError("read document", status, connection: connection)
             }
             do {
-                return try decodeDocument(statement, offset: 0)
+                return try decodeDocument(statement, offset: 0, connection: connection)
             } catch ConversationIndexDatabaseError.corruptRow(_) {
                 return nil
             }
@@ -820,7 +809,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 throw sqliteError("read refinement document", status, connection: connection)
             }
             do {
-                return .document(generation: generation, try decodeDocument(statement, offset: 0))
+                return .document(generation: generation, try decodeDocument(statement, offset: 0, connection: connection))
             } catch ConversationIndexDatabaseError.corruptRow(_) {
                 return nil
             }
@@ -844,7 +833,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     throw sqliteError("read documents", status, connection: connection)
                 }
                 do {
-                    result.append(try decodeDocument(statement, offset: 0))
+                    result.append(try decodeDocument(statement, offset: 0, connection: connection))
                 } catch ConversationIndexDatabaseError.corruptRow(_) {
                     continue
                 }
@@ -852,12 +841,230 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Returns the identity of documents which may contain a literal query. FTS safely narrows
-    /// queries whose every whitespace-delimited segment is at least three characters; short
-    /// queries and hosts without the trigram tokenizer use a bound `instr` expression instead.
-    ///
-    /// Callers read the transcripts they still need through `document(id:)`. That keeps peak
-    /// memory at one transcript instead of the entire matching corpus.
+    /// Validates a cached refinement without touching compressed text.
+    func refinementGeneration(reference: ConversationIndexDocumentReference) throws -> Int64? {
+        try withReadLock { connection in
+            let statement = try prepare("""
+                SELECT s.generation FROM conversation_documents d CROSS JOIN conversation_catalog_state s
+                WHERE s.singleton = 1 AND d.id = ? AND d.session_path = ? AND d.transcript_id = ?
+                """, bindings: [.integer(reference.documentID), .text(reference.sessionPath),
+                    .text(reference.transcriptID)], connection: connection)
+            defer { sqlite3_finalize(statement) }
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("refinement generation", status, connection: connection)
+            }
+            let generation = sqlite3_column_int64(statement, 0)
+            if let expected = reference.catalogGeneration, expected != generation {
+                throw ConversationIndexDatabaseError.staleRevision
+            }
+            return generation
+        }
+    }
+
+    /// A batch is one SQLite snapshot. Neither candidates nor a cursor may silently cross a
+    /// writer revision; the repository can restart instead of publishing mixed-version counts.
+    func searchChunkWindows(
+        reference: ConversationIndexDocumentReference, query: String,
+        cursor: ConversationIndexSearchCursor? = nil, limit: Int = 1
+    ) throws -> ConversationIndexSearchWindowBatch {
+        try withReadLock { connection in
+            try Task.checkCancellation()
+            guard sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("begin chunk snapshot", sqlite3_errcode(connection), connection: connection)
+            }
+            defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil) }
+            let generation = try int64Value(
+                "SELECT generation FROM conversation_catalog_state WHERE singleton = 1", connection: connection)
+            for expected in [reference.catalogGeneration, cursor?.generation].compactMap({ $0 }) {
+                guard expected == generation else { throw ConversationIndexDatabaseError.staleRevision }
+            }
+            let identity = try prepare("""
+                SELECT storage_version FROM conversation_documents
+                WHERE id = ? AND session_path = ? AND transcript_id = ?
+                """, bindings: [.integer(reference.documentID), .text(reference.sessionPath),
+                    .text(reference.transcriptID)], connection: connection)
+            defer { sqlite3_finalize(identity) }
+            let status = sqlite3_step(identity)
+            if status == SQLITE_DONE {
+                return ConversationIndexSearchWindowBatch(windows: [], nextCursor: nil, generation: generation)
+            }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("chunk identity", status, connection: connection)
+            }
+            var position = cursor ?? ConversationIndexSearchCursor()
+            position.generation = generation
+            let lookahead = ConversationSearchChunk.lookaheadCharacters(for: query)
+            var windows: [ConversationIndexSearchWindow] = []
+            if sqlite3_column_int(identity, 0) == 0 {
+                let header = try legacyHeader(documentID: reference.documentID, connection: connection)
+                while position.legacyByteOffset < header.bytes, windows.count < max(1, limit) {
+                    try Task.checkCancellation()
+                    let owned = try legacyPart(documentID: reference.documentID,
+                        byteOffset: position.legacyByteOffset, totalBytes: header.bytes, connection: connection)
+                    var text = owned
+                    var suffixOffset = position.legacyByteOffset + owned.utf8.count
+                    var remaining = lookahead
+                    while remaining > 0, suffixOffset < header.bytes {
+                        try Task.checkCancellation()
+                        let suffix = try legacyPart(documentID: reference.documentID,
+                            byteOffset: suffixOffset, totalBytes: header.bytes, connection: connection)
+                        let prefix = suffix.prefix(remaining)
+                        text.append(contentsOf: prefix)
+                        remaining -= prefix.count
+                        suffixOffset += suffix.utf8.count
+                    }
+                    windows.append(ConversationIndexSearchWindow(
+                        chunkID: -Int64(position.nextOrdinal + 1), text: text,
+                        globalUTF16Start: position.legacyUTF16Offset, ownedUTF16Length: owned.utf16.count,
+                        messageSpans: ConversationSearchChunk.spans(header.spans,
+                            location: position.legacyUTF16Offset, length: text.utf16.count), generation: generation))
+                    position.nextOrdinal += 1
+                    position.legacyByteOffset += owned.utf8.count
+                    position.legacyUTF16Offset += owned.utf16.count
+                }
+                return ConversationIndexSearchWindowBatch(windows: windows,
+                    nextCursor: position.legacyByteOffset < header.bytes ? position : nil, generation: generation)
+            }
+            let selected = reference.candidateChunkIDs.map(Set.init)
+            let statement = try prepare("""
+                SELECT id, ordinal FROM conversation_search_chunks
+                WHERE document_id = ? AND ordinal >= ? ORDER BY ordinal
+                """, bindings: [.integer(reference.documentID), .integer(Int64(position.nextOrdinal))],
+                connection: connection)
+            defer { sqlite3_finalize(statement) }
+            var hasNext = false
+            while true {
+                try Task.checkCancellation()
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("chunk page", status, connection: connection)
+                }
+                let id = sqlite3_column_int64(statement, 0)
+                let ordinal = Int(sqlite3_column_int64(statement, 1))
+                if let selected, !selected.contains(id) { continue }
+                if windows.count == max(1, limit) { hasNext = true; break }
+                guard let window = try readStoredWindow(documentID: reference.documentID,
+                    ordinal: ordinal, lookahead: lookahead, generation: generation,
+                    connection: connection) else { continue }
+                windows.append(window)
+                position.nextOrdinal = ordinal + 1
+            }
+            return ConversationIndexSearchWindowBatch(windows: windows,
+                nextCursor: hasNext ? position : nil, generation: generation)
+        }
+    }
+
+    /// Only the first hit asks for surrounding text. Normal candidate pages never decode a
+    /// preceding block just to build a snippet that may not be displayed.
+    func searchChunkSnippet(reference: ConversationIndexDocumentReference, offsetUTF16: Int,
+                            matchLengthUTF16: Int, context: Int = 56) throws -> String? {
+        try withReadLock { connection in
+            guard offsetUTF16 >= 0, matchLengthUTF16 > 0 else { return nil }
+            guard sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("begin snippet snapshot", sqlite3_errcode(connection), connection: connection)
+            }
+            defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil) }
+            let generation = try int64Value(
+                "SELECT generation FROM conversation_catalog_state WHERE singleton = 1", connection: connection)
+            if let expected = reference.catalogGeneration, expected != generation {
+                throw ConversationIndexDatabaseError.staleRevision
+            }
+            let identity = try prepare("""
+                SELECT storage_version FROM conversation_documents
+                WHERE id = ? AND session_path = ? AND transcript_id = ?
+                """, bindings: [.integer(reference.documentID), .text(reference.sessionPath),
+                    .text(reference.transcriptID)], connection: connection)
+            defer { sqlite3_finalize(identity) }
+            guard sqlite3_step(identity) == SQLITE_ROW else { return nil }
+            var text = ""
+            var globalStart = 0
+            var hasMoreAfter = false
+            let radius = max(0, context)
+            if sqlite3_column_int(identity, 0) == 0 {
+                let header = try legacyHeader(documentID: reference.documentID, connection: connection)
+                var byteOffset = 0
+                var utf16Offset = 0
+                var tail = ""
+                while byteOffset < header.bytes {
+                    try Task.checkCancellation()
+                    let part = try legacyPart(documentID: reference.documentID, byteOffset: byteOffset,
+                        totalBytes: header.bytes, connection: connection)
+                    byteOffset += part.utf8.count
+                    if text.isEmpty, utf16Offset + part.utf16.count <= offsetUTF16 {
+                        tail = String((tail + part).suffix(radius + 1))
+                        utf16Offset += part.utf16.count
+                        continue
+                    }
+                    if text.isEmpty {
+                        globalStart = utf16Offset - tail.utf16.count
+                        text = tail
+                    }
+                    text.append(part)
+                    let matchEnd = offsetUTF16 - globalStart + matchLengthUTF16
+                    if text.utf16.count >= matchEnd {
+                        let end = String.Index(utf16Offset: matchEnd, in: text)
+                        if text[end...].count > radius || byteOffset == header.bytes {
+                            hasMoreAfter = byteOffset < header.bytes
+                            break
+                        }
+                    }
+                    utf16Offset += part.utf16.count
+                }
+            } else {
+                let ordinal = try int64Value("""
+                    SELECT COALESCE(MAX(ordinal), 0) FROM conversation_search_chunks
+                    WHERE document_id = ? AND utf16_location <= ?
+                    """, bindings: [.integer(reference.documentID), .integer(Int64(offsetUTF16))],
+                    connection: connection)
+                guard let current = try readStoredWindow(documentID: reference.documentID,
+                    ordinal: Int(ordinal), lookahead: 0, generation: generation,
+                    connection: connection) else { return nil }
+                text = current.text
+                globalStart = current.globalUTF16Start
+                var previous = Int(ordinal) - 1
+                while previous >= 0 {
+                    let start = String.Index(utf16Offset: offsetUTF16 - globalStart, in: text)
+                    if text[..<start].count > radius { break }
+                    guard let part = try readStoredWindow(documentID: reference.documentID,
+                        ordinal: previous, lookahead: 0, generation: generation,
+                        connection: connection) else { break }
+                    let suffix = String(part.text.suffix(radius + 1))
+                    text = suffix + text
+                    globalStart -= suffix.utf16.count
+                    if suffix.utf16.count < part.ownedUTF16Length { break }
+                    previous -= 1
+                }
+                var next = Int(ordinal) + 1
+                while true {
+                    let matchEnd = offsetUTF16 - globalStart + matchLengthUTF16
+                    if text.utf16.count >= matchEnd {
+                        let end = String.Index(utf16Offset: matchEnd, in: text)
+                        if text[end...].count > radius { hasMoreAfter = true; break }
+                    }
+                    guard let part = try readStoredWindow(documentID: reference.documentID,
+                        ordinal: next, lookahead: 0, generation: generation,
+                        connection: connection) else { break }
+                    text.append(part.text)
+                    next += 1
+                }
+            }
+            let localStart = offsetUTF16 - globalStart
+            guard localStart >= 0, localStart + matchLengthUTF16 <= text.utf16.count else { return nil }
+            let lower = String.Index(utf16Offset: localStart, in: text)
+            let upper = String.Index(utf16Offset: localStart + matchLengthUTF16, in: text)
+            let start = text.index(lower, offsetBy: -radius, limitedBy: text.startIndex) ?? text.startIndex
+            let end = text.index(upper, offsetBy: radius, limitedBy: text.endIndex) ?? text.endIndex
+            let body = text[start..<end].split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            return (globalStart > 0 || start > text.startIndex ? "…" : "") + body
+                + (hasMoreAfter || end < text.endIndex ? "…" : "")
+        }
+    }
+
+    /// tgrep is the sole postings index. The exact fallback deliberately returns lightweight
+    /// identities, not whole transcripts; callers verify only bounded, independently decoded blocks.
     func candidateDocumentReferences(
         for rawQuery: String,
         scope: String? = nil,
@@ -874,111 +1081,50 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             }
             let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else {
-                return ConversationIndexCandidateReferenceBatch(
-                    references: [],
-                    usedFallback: false
-                )
+                return ConversationIndexCandidateReferenceBatch(references: [], usedFallback: false)
             }
-
-            // A read transaction binds the tgrep generation, incremental text
-            // reads, and returned IDs to the same SQLite snapshot even while
-            // the independent writer publishes a new catalog revision.
+            guard sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil) == SQLITE_OK else {
+                throw TgrepSearchIndex.Failure.operationFailed
+            }
+            defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil) }
+            let generation = try int64Value(
+                "SELECT generation FROM conversation_catalog_state WHERE singleton = 1",
+                connection: connection)
             let retryReady = tgrepRetryAfter.map { tgrepRuntime.now() >= $0 } ?? true
             if enableTgrep, retryReady, TgrepSearchIndex.canIndex(query) {
                 do {
-                    guard sqlite3_exec(connection, "BEGIN DEFERRED", nil, nil, nil) == SQLITE_OK else {
-                        throw TgrepSearchIndex.Failure.operationFailed
-                    }
-                    defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil) }
                     let updated = try synchronizeTgrep(connection: connection)
                     guard let tgrep else { throw TgrepSearchIndex.Failure.unavailable }
-                    let ids = try tgrep.candidates(for: query)
+                    let ids = try tgrep.candidates(for: ConversationSearchChunk.candidatePrefix(query))
                     try Task.checkCancellation()
-                    var references: [ConversationIndexDocumentReference] = []
-                    // Bound SQLite variable counts for older system libraries.
-                    for offset in stride(from: 0, to: ids.count, by: 400) {
-                        references.append(contentsOf: try queryCandidateReferences(
-                            query: query, scope: scope, source: source, deleted: deleted,
-                            useFTS: false, connection: connection,
-                            documentIDs: Array(ids[offset..<min(ids.count, offset + 400)])
-                        ))
-                    }
+                    let references = try queryChunkCandidateReferences(scope: scope, source: source,
+                        deleted: deleted, chunkIDs: ids, generation: generation, connection: connection)
                     latestSearchDiagnostics = ConversationSearchDiagnostics(
                         engine: "tgrep", indexedDocuments: tgrep.documentCount,
-                        candidateCount: references.count,
+                        candidateCount: references.reduce(0) { $0 + ($1.candidateChunkIDs?.count ?? 1) },
                         incrementallyIndexedDocuments: updated, usedFallback: false,
                         cumulativeNormalizationMilliseconds: tgrep.normalizationMilliseconds,
                         cumulativeTrigramBuildMilliseconds: tgrep.trigramBuildMilliseconds,
-                        restoredFromCache: tgrep.restoredFromCache
-                    )
+                        restoredFromCache: tgrep.restoredFromCache)
                     tgrepFailure = nil
                     tgrepRetryAfter = nil
                     return ConversationIndexCandidateReferenceBatch(references: references, usedFallback: false)
                 } catch is CancellationError {
-                    // A cancelled incremental build is incomplete, but a later
-                    // search may retry; cancellation is not an engine failure.
                     tgrep = nil
                     throw CancellationError()
                 } catch {
-                    // Partial synchronization must never become an authoritative
-                    // empty candidate set. Drop it and retain exact local search.
                     tgrep = nil
                     try Task.checkCancellation()
                     tgrepFailure = (error as? TgrepSearchIndex.Failure) ?? .operationFailed
                     tgrepRetryAfter = tgrepRuntime.now().addingTimeInterval(tgrepRuntime.retryInterval)
-                    latestSearchDiagnostics = ConversationSearchDiagnostics(
-                        engine: "Literal", usedFallback: true,
-                        fallbackReason: tgrepFailure?.rawValue, tgrepRetryAfter: tgrepRetryAfter
-                    )
                 }
             }
-
-            let segments = query.split(whereSeparator: \.isWhitespace).map(String.init)
-            let ftsIsReady = try int64Value(
-                "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1",
-                connection: connection
-            ) == 0
-            let canUseFTS = trigramFTSAvailable
-                // If tgrep failed, preserve Foundation's complete Unicode
-                // semantics. FTS case folding alone can miss expansions such
-                // as Straße/STRASSE, so failure falls through to the literal UDF.
-                && tgrepFailure == nil
-                && ftsIsReady
-                && !segments.isEmpty
-                && segments.allSatisfy { $0.count >= 3 }
-                && !query.unicodeScalars.contains(where: { $0.value == 0 })
-            if canUseFTS {
-                do {
-                    let references = try queryCandidateReferences(
-                        query: query, scope: scope, source: source, deleted: deleted,
-                        useFTS: true, connection: connection
-                    )
-                    latestSearchDiagnostics = ConversationSearchDiagnostics(
-                        engine: "SQLite FTS", candidateCount: references.count,
-                        usedFallback: enableTgrep
-                    )
-                    return ConversationIndexCandidateReferenceBatch(
-                        references: references,
-                        usedFallback: false
-                    )
-                } catch {
-                    try Task.checkCancellation()
-                    // A copied database can contain an FTS table unsupported by the current
-                    // SQLite runtime. The ordinary document table is always a safe fallback.
-                }
-            }
-            let references = try queryCandidateReferences(
-                query: query, scope: scope, source: source, deleted: deleted,
-                useFTS: false, connection: connection
-            )
+            let references = try queryChunkCandidateReferences(scope: scope, source: source,
+                deleted: deleted, chunkIDs: nil, generation: generation, connection: connection)
             latestSearchDiagnostics = ConversationSearchDiagnostics(
                 engine: "Literal", candidateCount: references.count, usedFallback: true,
-                fallbackReason: tgrepFailure?.rawValue, tgrepRetryAfter: tgrepRetryAfter
-            )
-            return ConversationIndexCandidateReferenceBatch(
-                references: references,
-                usedFallback: true
-            )
+                fallbackReason: tgrepFailure?.rawValue, tgrepRetryAfter: tgrepRetryAfter)
+            return ConversationIndexCandidateReferenceBatch(references: references, usedFallback: true)
         }
     }
 
@@ -1008,7 +1154,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                     id: reference.documentID,
                     expectedSessionPath: reference.sessionPath,
                     expectedTranscriptID: reference.transcriptID
-                  ) else { continue }
+                  ), ConversationLiteralSearch(query: rawQuery).firstMatch(in: document.text) != nil else { continue }
             documents.append(
                 ConversationIndexDocumentCandidate(entry: entry, document: document)
             )
@@ -1033,7 +1179,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         return lhs.sessionPath < rhs.sessionPath
     }
 
-    /// Invalidates canonical list projection without touching transcript documents or FTS rows.
+    /// Invalidates canonical list projection without touching transcript blocks.
     /// Codex's shared state database uses this when its preferred rollout mapping changes.
     @discardableResult
     func invalidateProjection() throws -> Int64 {
@@ -1048,6 +1194,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     /// full VACUUM; pending bits make repeated unchanged scans no-ops, and maintenance never
     /// advances generation.
     func finishFullScanMaintenance(
+        shouldYield: @escaping ConversationIndexScanCancellation = { false },
         isCancelled: @escaping ConversationIndexScanCancellation = { false }
     ) throws {
         try withLock {
@@ -1062,26 +1209,21 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             ) != 0
             guard maintenancePending || oneTimeCompactionPending else { return }
 
-            // FTS rebuild and compaction can temporarily need another database-sized copy.
-            // Low disk is a normal condition for a disposable cache: leave the retry marker
-            // set and keep serving bounded fallback search instead of risking ENOSPC.
-            guard hasCapacityForMaintenance() else { return }
-
-            if trigramFTSAvailable {
-                let dirty = try int64Value(
-                    "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
-                ) != 0
-                if dirty {
-                    try executeCancellableMaintenance(
-                        "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                            + "VALUES ('rebuild')",
-                        cancellation: cancellation
-                    )
-                    try markFTSState(dirty: false)
-                    try cancellation.check()
-                }
+            // Preserve useful progress before attempting a potentially long atomic DROP.
+            // Activity yields only between committed blocks; lifecycle cancellation is separate.
+            guard try migrateLegacyBlocks(cancellation: cancellation, shouldYield: shouldYield) else { return }
+            // Retire the obsolete index off the main thread. DROP cannot commit piecemeal, so
+            // activity does not repeatedly roll it back; only stop/lifecycle cancellation
+            // interrupts it. The separate WAL reader remains available while writers queue.
+            if try tableExists("conversation_documents_fts") {
+                guard hasCapacityForMigration() else { return }
+                try executeCancellableMaintenance("DROP TABLE conversation_documents_fts",
+                    cancellation: cancellation)
+                try cancellation.check()
+                _ = try checkpointWALTruncating(cancellation: cancellation)
             }
-
+            // VACUUM can temporarily need another database-sized copy. Migration itself only
+            // needs bounded headroom, so low space never prevents already-free pages being reused.
             if oneTimeCompactionPending {
                 // New catalogs are created with incremental auto-vacuum and reclaim pages on
                 // every pass below. A catalog created before that, however, cannot be switched:
@@ -1096,7 +1238,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 // which already reserves twice the file size for exactly this copy.
                 try execute("PRAGMA auto_vacuum = INCREMENTAL")
                 if try int64Value("PRAGMA auto_vacuum") == 0, try wastesEnoughToVacuum() {
-                    try execute("VACUUM")
+                    guard hasCapacityForMaintenance() else { return }
+                    try executeCancellableMaintenance("VACUUM", cancellation: cancellation)
                 }
                 try execute(
                     "UPDATE conversation_catalog_state SET one_time_compaction_pending = 0 "
@@ -1105,28 +1248,35 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 try cancellation.check()
             }
 
-            if trigramFTSAvailable {
-                try executeCancellableMaintenance(
-                    "INSERT INTO conversation_documents_fts(conversation_documents_fts) "
-                        + "VALUES ('optimize')",
-                    cancellation: cancellation
-                )
-                try cancellation.check()
-            }
             try executeCancellableMaintenance(
                 "PRAGMA optimize",
                 cancellation: cancellation
             )
             try cancellation.check()
-            // This also reclaims pages freed by the FTS optimize which follows a successful
-            // one-time VACUUM. It is bounded on every subsequent maintenance pass.
-            try executeCancellableMaintenance(
-                "PRAGMA incremental_vacuum(8192)",
-                cancellation: cancellation
-            )
+            // Each micro-batch reaches SQLITE_DONE and commits before checking activity.
+            // Repeated file events can therefore never roll back all reclamation progress.
+            let reclaimStarted = ContinuousClock.now
+            repeat {
+                try executeCancellableMaintenance(
+                    "PRAGMA incremental_vacuum(256)",
+                    cancellation: cancellation
+                )
+                try cancellation.check()
+                if shouldYield() { break }
+            } while try int64Value("PRAGMA auto_vacuum") == 2
+                && int64Value("PRAGMA freelist_count") > 0
+                && reclaimStarted.duration(to: .now) < .milliseconds(250)
             try cancellation.check()
             guard try checkpointWALTruncating(cancellation: cancellation) else {
                 try cancellation.check()
+                return
+            }
+
+            // incremental_vacuum is a bounded pass, not proof that the freelist is empty.
+            // Keep the durable retry bit until an incremental-mode catalog actually shrinks;
+            // retiring a multi-GB old index must not stop after reclaiming its first micro-batch.
+            if try int64Value("PRAGMA auto_vacuum") == 2,
+               try int64Value("PRAGMA freelist_count") > 0 {
                 return
             }
 
@@ -1161,21 +1311,113 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Schedules cache-only cleanup after the interactive scan has gone idle. Rescheduling is a
-    /// cancellation signal for an older pass; list/search reads continue on their own connection.
+    private func hasCapacityForMigration() -> Bool {
+        guard let available = tgrepRuntime.availableCapacity(file.deletingLastPathComponent()) else { return true }
+        return available >= 16 * 1_024 * 1_024
+    }
+
+    func maintenanceIsPending() throws -> Bool {
+        try withReadLock { connection in
+            try int64Value("""
+                SELECT maintenance_pending OR one_time_compaction_pending
+                FROM conversation_catalog_state WHERE singleton = 1
+                """, connection: connection) != 0
+        }
+    }
+
+    /// A bounded pass commits progress per physical block. A cancellation never requires
+    /// reprocessing a giant transcript and never deletes the only authoritative derived text.
+    private func migrateLegacyBlocks(cancellation: SQLiteCancellationContext,
+                                     shouldYield: ConversationIndexScanCancellation) throws -> Bool {
+        guard try tableExists("conversation_documents_legacy") else { return true }
+        guard hasCapacityForMigration() else { return false }
+        let started = ContinuousClock.now
+        var processed = 0
+        while processed < 128, started.duration(to: .now) < .milliseconds(250) {
+            try cancellation.check()
+            let statement = try prepare("""
+                SELECT id, migration_byte_offset, migration_utf16_offset, migration_ordinal
+                FROM conversation_documents WHERE storage_version = 0 ORDER BY id LIMIT 1
+                """, bindings: [])
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE {
+                sqlite3_finalize(statement)
+                try executeCancellableMaintenance("DROP TABLE conversation_documents_legacy",
+                    cancellation: cancellation)
+                return true
+            }
+            guard status == SQLITE_ROW else {
+                sqlite3_finalize(statement)
+                throw sqliteError("migration identity", status)
+            }
+            let id = sqlite3_column_int64(statement, 0)
+            let byteOffset = Int(sqlite3_column_int64(statement, 1))
+            let utf16Offset = Int(sqlite3_column_int64(statement, 2))
+            let ordinal = Int(sqlite3_column_int64(statement, 3))
+            sqlite3_finalize(statement)
+            let header = try legacyHeader(documentID: id, connection: connection)
+            let text = try legacyPart(documentID: id, byteOffset: byteOffset,
+                totalBytes: header.bytes, connection: connection)
+            try cancellation.check()
+            let nextByte = byteOffset + text.utf8.count
+            let nextUTF16 = utf16Offset + text.utf16.count
+            try migrationTransaction(cancellation: cancellation) {
+                try cancellation.check()
+                try insertChunk(documentID: id, ordinal: ordinal,
+                    part: .init(text: text, utf16Location: utf16Offset, utf16Length: text.utf16.count),
+                    spans: header.spans)
+                if nextByte >= header.bytes {
+                    try execute("UPDATE conversation_documents SET storage_version = 1 WHERE id = ?",
+                        bindings: [.integer(id)])
+                    try execute("DELETE FROM conversation_documents_legacy WHERE id = ?",
+                        bindings: [.integer(id)])
+                    try execute("UPDATE conversation_catalog_state SET storage_revision = storage_revision + 1 WHERE singleton = 1")
+                } else {
+                    try execute("""
+                        UPDATE conversation_documents SET migration_byte_offset = ?,
+                            migration_utf16_offset = ?, migration_ordinal = ? WHERE id = ?
+                        """, bindings: [.integer(Int64(nextByte)), .integer(Int64(nextUTF16)),
+                            .integer(Int64(ordinal + 1)), .integer(id)])
+                }
+                try cancellation.check()
+            }
+            processed += 1
+            // Even an already-raised activity signal permits one bounded committed unit,
+            // preventing a continuously active producer from starving physical conversion.
+            if shouldYield() { return false }
+            if processed % 16 == 0 {
+                _ = try checkpointWALTruncating(cancellation: cancellation)
+                guard hasCapacityForMigration() else { return false }
+            }
+        }
+        return false
+    }
+
+    /// Schedules cache-only cleanup after an idle delay. Activity yields between committed units;
+    /// lifecycle cancellation stops the pass. List/search reads use their own WAL connection.
     func scheduleDeferredMaintenance(after delay: TimeInterval = 8) {
         let token = UUID()
         maintenanceStateLock.lock()
+        guard maintenanceToken == nil else { maintenanceStateLock.unlock(); return }
         maintenanceToken = token
         maintenanceStateLock.unlock()
         Self.deferredMaintenanceQueue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
             guard let self, self.isMaintenanceCurrent(token) else { return }
-            try? self.finishFullScanMaintenance { [weak self] in
+            let activity = self.maintenanceActivitySnapshot()
+            try? self.finishFullScanMaintenance(shouldYield: { [weak self] in
+                self?.maintenanceActivitySnapshot() != activity
+            }, isCancelled: { [weak self] in
                 self?.isMaintenanceCurrent(token) != true
-            }
+            })
             self.maintenanceStateLock.lock()
-            if self.maintenanceToken == token { self.maintenanceToken = nil }
+            let remainsCurrent = self.maintenanceToken == token
+            if remainsCurrent { self.maintenanceToken = nil }
             self.maintenanceStateLock.unlock()
+            // A bounded migration pass or unavailable headroom remains retryable without a
+            // new filesystem event. Lifecycle cancellation never schedules its successor.
+            if remainsCurrent, (try? self.maintenanceIsPending()) == true {
+                self.scheduleDeferredMaintenance(after: 2)
+            }
         }
     }
 
@@ -1185,17 +1427,31 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         maintenanceStateLock.unlock()
     }
 
+    /// Interactive work asks a running pass to yield, without resetting its scheduled deadline.
+    /// Per-block migration commits survive this yield, so frequent file events cannot repeatedly
+    /// restart a giant transcript or postpone the maintenance timer forever.
+    func yieldDeferredMaintenanceForActivity() {
+        maintenanceStateLock.lock()
+        maintenanceActivityEpoch &+= 1
+        maintenanceStateLock.unlock()
+    }
+
+    private func maintenanceActivitySnapshot() -> UInt64 {
+        maintenanceStateLock.lock()
+        defer { maintenanceStateLock.unlock() }
+        return maintenanceActivityEpoch
+    }
+
     /// Clears only derived catalog/search data. Producer files are never opened or modified.
     @discardableResult
     func rebuild() throws -> Int64 {
         try withLock {
             let generation = try transaction {
-                if trigramFTSAvailable {
-                    try execute("DELETE FROM conversation_documents_fts")
+                if try tableExists("conversation_documents_legacy") {
+                    try execute("DELETE FROM conversation_documents_legacy")
                 }
                 try execute("DELETE FROM conversation_documents")
                 try execute("DELETE FROM conversation_sessions")
-                try markFTSState(dirty: !trigramFTSAvailable)
                 try markMaintenancePending()
                 return try advanceGeneration()
             }
@@ -1212,6 +1468,11 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         guard timeout == SQLITE_OK else { throw sqliteError("set busy timeout", timeout) }
         try execute("PRAGMA busy_timeout = 3000")
         try execute("PRAGMA foreign_keys = ON")
+        // WAL writes the initial database header even before tables exist. Select the
+        // pointer-map layout first: setting auto_vacuum after journal_mode=WAL leaves a
+        // fresh catalog in NONE mode, where every later incremental_vacuum is a no-op.
+        // Existing non-incremental catalogs still use the deferred one-time migration.
+        try execute("PRAGMA auto_vacuum = INCREMENTAL")
         try execute("PRAGMA journal_mode = WAL")
         try execute("PRAGMA synchronous = NORMAL")
         // Not MEMORY. Every temporary b-tree, sorter overflow and VACUUM working copy is sized by
@@ -1222,98 +1483,35 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     private func initializeSchema() throws {
-        try execute("PRAGMA auto_vacuum = INCREMENTAL")
-        // BEGIN IMMEDIATE is the cross-process migration lock. Version and column inspection must
-        // happen after it is acquired: another process may have completed v1 -> v2 while this
-        // connection was waiting, in which case this connection simply observes version 2.
+        // Only schema/identity rows move at open. Multi-GB text conversion and obsolete
+        // index removal belong to cancellable background maintenance, never the main thread.
         try transaction {
             let version = try int64Value("PRAGMA user_version")
-            if version == 1 {
-                try migrateVersionOneSchema()
-            } else if version != Int64(Self.schemaVersion) {
-                if trigramFTSAvailable {
-                    try execute("DROP TABLE IF EXISTS conversation_documents_fts")
-                }
-                try execute("DROP TABLE IF EXISTS conversation_content_stamps")
-                try execute("DROP TABLE IF EXISTS conversation_documents")
-                try execute("DROP TABLE IF EXISTS conversation_sessions")
-                try execute("DROP TABLE IF EXISTS conversation_catalog_state")
+            guard version <= Int64(Self.schemaVersion) else {
+                throw ConversationIndexDatabaseError.invalidRecord("newer catalog schema")
+            }
+            if version > 0, version < Int64(Self.schemaVersion) {
+                let generation = try currentGeneration()
+                try execute("DROP TRIGGER IF EXISTS conversation_documents_content_stamp")
+                try execute("DROP INDEX IF EXISTS conversation_documents_session_order")
+                try execute("ALTER TABLE conversation_documents RENAME TO conversation_documents_legacy")
+                try execute("DROP TABLE conversation_catalog_state")
                 try createBaseSchema()
-                if version != 0 {
-                    try execute(
-                        "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
-                            + "one_time_compaction_pending = 1 WHERE singleton = 1"
-                    )
-                }
-                try execute("PRAGMA user_version = \(Self.schemaVersion)")
+                try execute("""
+                    INSERT INTO conversation_documents(id, session_path, transcript_id, agent_type,
+                        sort_order, storage_version)
+                    SELECT id, session_path, transcript_id, agent_type, sort_order, 0
+                    FROM conversation_documents_legacy
+                    """)
+                try execute("""
+                    UPDATE conversation_catalog_state SET generation = ?, maintenance_pending = 1,
+                        one_time_compaction_pending = 1 WHERE singleton = 1
+                    """, bindings: [.integer(generation)])
             } else {
                 try createBaseSchema()
             }
+            try execute("PRAGMA user_version = \(Self.schemaVersion)")
         }
-
-        guard trigramFTSAvailable else {
-            try markFTSState(dirty: true)
-            return
-        }
-        let hadFTSTable = try int64Value(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master "
-                + "WHERE type = 'table' AND name = 'conversation_documents_fts')"
-        ) != 0
-        try execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS conversation_documents_fts USING fts5(
-                search_text,
-                content = 'conversation_documents',
-                content_rowid = 'id',
-                tokenize = 'trigram case_sensitive 0'
-            )
-            """
-        )
-        let dirty = try int64Value(
-            "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
-        ) != 0
-        if !hadFTSTable || dirty {
-            let documentCount = try int64Value(
-                "SELECT COUNT(*) FROM conversation_documents"
-            )
-            // Opening the app must never synchronously rebuild a potentially multi-gigabyte FTS
-            // table. An empty catalog is already complete; otherwise ordinary `instr` search is
-            // the safe fallback until explicitly deferred maintenance gets idle time.
-            try markFTSState(dirty: documentCount > 0)
-            if documentCount > 0 { try markMaintenancePending() }
-        }
-    }
-
-    private func migrateVersionOneSchema() throws {
-        // Called only while initializeSchema() owns BEGIN IMMEDIATE. Keeping these reads beside
-        // their ALTER statements prevents two processes from acting on the same stale schema.
-        let hasMaintenancePending = try tableHasColumn(
-            "maintenance_pending",
-            in: "conversation_catalog_state"
-        )
-        let hasOneTimeCompactionPending = try tableHasColumn(
-            "one_time_compaction_pending",
-            in: "conversation_catalog_state"
-        )
-        if !hasMaintenancePending {
-            try execute(
-                "ALTER TABLE conversation_catalog_state ADD COLUMN maintenance_pending "
-                    + "INTEGER NOT NULL DEFAULT 1 CHECK (maintenance_pending IN (0, 1))"
-            )
-        }
-        if !hasOneTimeCompactionPending {
-            try execute(
-                "ALTER TABLE conversation_catalog_state ADD COLUMN "
-                    + "one_time_compaction_pending INTEGER NOT NULL DEFAULT 1 "
-                    + "CHECK (one_time_compaction_pending IN (0, 1))"
-            )
-        }
-        try execute(
-            "UPDATE conversation_catalog_state SET maintenance_pending = 1, "
-                + "one_time_compaction_pending = 1 WHERE singleton = 1"
-        )
-        try execute("PRAGMA user_version = \(Self.schemaVersion)")
-        try createBaseSchema()
     }
 
     private func createBaseSchema() throws {
@@ -1322,7 +1520,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS conversation_catalog_state (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 generation INTEGER NOT NULL,
-                fts_dirty INTEGER NOT NULL CHECK (fts_dirty IN (0, 1)),
+                storage_revision INTEGER NOT NULL DEFAULT 0,
                 maintenance_pending INTEGER NOT NULL CHECK (maintenance_pending IN (0, 1)),
                 one_time_compaction_pending INTEGER NOT NULL
                     CHECK (one_time_compaction_pending IN (0, 1))
@@ -1331,8 +1529,8 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         )
         try execute(
             "INSERT OR IGNORE INTO conversation_catalog_state("
-                + "singleton, generation, fts_dirty, maintenance_pending, "
-                + "one_time_compaction_pending) VALUES (1, 0, 0, 0, 0)"
+                + "singleton, generation, maintenance_pending, "
+                + "one_time_compaction_pending) VALUES (1, 0, 0, 0)"
         )
         try execute(
             """
@@ -1373,8 +1571,10 @@ final class ConversationIndexDatabase: @unchecked Sendable {
                 transcript_id TEXT NOT NULL,
                 agent_type TEXT,
                 sort_order INTEGER NOT NULL,
-                search_text TEXT NOT NULL,
-                message_spans_json BLOB NOT NULL,
+                storage_version INTEGER NOT NULL DEFAULT 1 CHECK (storage_version IN (0, 1)),
+                migration_byte_offset INTEGER NOT NULL DEFAULT 0,
+                migration_utf16_offset INTEGER NOT NULL DEFAULT 0,
+                migration_ordinal INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(session_path, transcript_id)
             )
             """
@@ -1383,6 +1583,20 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             "CREATE INDEX IF NOT EXISTS conversation_documents_session_order "
                 + "ON conversation_documents(session_path, sort_order, transcript_id)"
         )
+        try execute("""
+            CREATE TABLE IF NOT EXISTS conversation_search_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL REFERENCES conversation_documents(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                utf16_location INTEGER NOT NULL,
+                utf16_length INTEGER NOT NULL,
+                codec INTEGER NOT NULL,
+                decoded_bytes INTEGER NOT NULL,
+                body BLOB NOT NULL,
+                message_spans_json BLOB NOT NULL,
+                UNIQUE(document_id, ordinal)
+            )
+            """)
         // Additive v4 migration: this small side table snapshots the existing stamp
         // without rewriting multi-GB document rows. Matching legacy stamps retain a
         // warm checkpoint; a pre-migration metadata refresh may require one safe reindex.
@@ -1414,21 +1628,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         )
     }
 
-    private func probeTrigramFTS() -> Bool {
-        try? execute("DROP TABLE IF EXISTS temp.ccbud_trigram_probe")
-        do {
-            try execute(
-                "CREATE VIRTUAL TABLE temp.ccbud_trigram_probe "
-                    + "USING fts5(value, tokenize = 'trigram case_sensitive 0')"
-            )
-            try execute("DROP TABLE temp.ccbud_trigram_probe")
-            return true
-        } catch {
-            try? execute("DROP TABLE IF EXISTS temp.ccbud_trigram_probe")
-            return false
-        }
-    }
-
     // MARK: - Queries
 
     private static let entrySelect = """
@@ -1438,7 +1637,7 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         """
 
     private static let documentSelect = """
-        SELECT d.transcript_id, d.agent_type, d.sort_order, d.search_text, d.message_spans_json
+        SELECT d.transcript_id, d.agent_type, d.sort_order, d.id, d.storage_version
         FROM conversation_documents d
         """
 
@@ -1472,97 +1671,65 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Deliberately selects no transcript text and imposes no ordering.
-    ///
-    /// `search_text` is the one unbounded column in the catalog, and an `ORDER BY` over it forces
-    /// SQLite to hold every matching row at once — on a real library that is hundreds of megabytes
-    /// for a single keystroke, and the caller re-sorts the candidates anyway. Rows here are small
-    /// and fixed size, so the whole candidate set costs a few hundred kilobytes.
-    private func queryCandidateReferences(
-        query: String,
-        scope: String?,
-        source: HistorySource?,
-        deleted: Bool?,
-        useFTS: Bool,
-        connection: OpaquePointer,
-        documentIDs: [Int64]? = nil
+    private func queryChunkCandidateReferences(
+        scope: String?, source: HistorySource?, deleted: Bool?, chunkIDs: [Int64]?,
+        generation: Int64, connection: OpaquePointer
     ) throws -> [ConversationIndexDocumentReference] {
-        var bindings: [SQLiteValue] = []
         var conditions: [String] = []
-        let from: String
-        if useFTS {
-            from = """
-                FROM conversation_documents_fts
-                JOIN conversation_documents d ON d.id = conversation_documents_fts.rowid
+        var bindings: [SQLiteValue] = []
+        if let scope { conditions.append("s.scope = ?"); bindings.append(.text(scope)) }
+        if let source { conditions.append("s.source = ?"); bindings.append(.text(source.rawValue)) }
+        if let deleted { conditions.append("s.deleted = ?"); bindings.append(.integer(deleted ? 1 : 0)) }
+        var byDocument: [Int64: ConversationIndexDocumentReference] = [:]
+        func read(extra: [String], extraBindings: [SQLiteValue], joinsChunks: Bool) throws {
+            let allConditions = conditions + extra
+            let predicate = allConditions.isEmpty ? "" : " WHERE " + allConditions.joined(separator: " AND ")
+            let sql = """
+                SELECT d.id, d.session_path, d.transcript_id, d.agent_type, d.sort_order,
+                    s.last_activity, d.storage_version,
+                """ + (joinsChunks ? " c.id" : " NULL") + """
+                 FROM conversation_documents d
                 JOIN conversation_sessions s ON s.source_path = d.session_path
-                """
-            let expression = query
-                .split(whereSeparator: \.isWhitespace)
-                .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-                .joined(separator: " AND ")
-            conditions.append("conversation_documents_fts MATCH ?")
-            bindings.append(.text(expression))
+                """ + (joinsChunks ? " JOIN conversation_search_chunks c ON c.document_id = d.id" : "") + predicate
+            let statement = try prepare(sql, bindings: bindings + extraBindings, connection: connection)
+            defer { sqlite3_finalize(statement) }
+            while true {
+                try Task.checkCancellation()
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else {
+                    throw sqliteError("read chunk candidates", status, connection: connection)
+                }
+                let documentID = sqlite3_column_int64(statement, 0)
+                let legacy = sqlite3_column_int(statement, 6) == 0
+                if byDocument[documentID] == nil {
+                    byDocument[documentID] = ConversationIndexDocumentReference(
+                        documentID: documentID,
+                        sessionPath: try textColumn(statement, 1, field: "session_path"),
+                        transcriptID: try textColumn(statement, 2, field: "transcript_id"),
+                        agentType: optionalTextColumn(statement, 3),
+                        sortOrder: Int(sqlite3_column_int64(statement, 4)),
+                        lastActivity: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
+                        candidateChunkIDs: legacy || chunkIDs == nil ? nil : [],
+                        catalogGeneration: generation)
+                }
+                if joinsChunks { byDocument[documentID]?.candidateChunkIDs?.append(sqlite3_column_int64(statement, 7)) }
+            }
+        }
+        if let chunkIDs {
+            // Legacy text has no postings until its physical conversion completes.
+            try read(extra: ["d.storage_version = 0"], extraBindings: [], joinsChunks: false)
+            for offset in stride(from: 0, to: chunkIDs.count, by: 400) {
+                let ids = Array(chunkIDs[offset..<min(chunkIDs.count, offset + 400)])
+                let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+                try read(extra: ["d.storage_version = 1", "c.id IN (\(placeholders))"],
+                    extraBindings: ids.map(SQLiteValue.integer), joinsChunks: true)
+            }
         } else {
-            from = """
-                FROM conversation_documents d
-                JOIN conversation_sessions s ON s.source_path = d.session_path
-                """
-            if let documentIDs {
-                guard !documentIDs.isEmpty else { return [] }
-                conditions.append("d.id IN (\(documentIDs.map { _ in "?" }.joined(separator: ",")))")
-                bindings.append(contentsOf: documentIDs.map(SQLiteValue.integer))
-            } else {
-                conditions.append("ccbud_literal_contains(d.search_text, ?) = 1")
-                bindings.append(.text(query))
-            }
+            // Exact fallback needs one logical identity, not a scan of every block identity.
+            try read(extra: [], extraBindings: [], joinsChunks: false)
         }
-        if let scope {
-            conditions.append("s.scope = ?")
-            bindings.append(.text(scope))
-        }
-        if let source {
-            conditions.append("s.source = ?")
-            bindings.append(.text(source.rawValue))
-        }
-        if let deleted {
-            conditions.append("s.deleted = ?")
-            bindings.append(.integer(deleted ? 1 : 0))
-        }
-
-        let sql = """
-            SELECT d.id, d.session_path, d.transcript_id, d.agent_type, d.sort_order,
-                   s.last_activity
-            \(from)
-            WHERE \(conditions.joined(separator: " AND "))
-            """
-        let statement = try prepare(sql, bindings: bindings, connection: connection)
-        defer { sqlite3_finalize(statement) }
-        var result: [ConversationIndexDocumentReference] = []
-        while true {
-            try Task.checkCancellation()
-            let status = sqlite3_step(statement)
-            if status == SQLITE_INTERRUPT, Task.isCancelled { throw CancellationError() }
-            if status == SQLITE_DONE { return result }
-            guard status == SQLITE_ROW else {
-                throw sqliteError(
-                    useFTS ? "search FTS" : "search documents",
-                    status,
-                    connection: connection
-                )
-            }
-            guard let sessionPath = try? textColumn(statement, 1, field: "session_path"),
-                  let transcriptID = try? textColumn(statement, 2, field: "transcript_id") else {
-                continue
-            }
-            result.append(ConversationIndexDocumentReference(
-                documentID: sqlite3_column_int64(statement, 0),
-                sessionPath: sessionPath,
-                transcriptID: transcriptID,
-                agentType: optionalTextColumn(statement, 3),
-                sortOrder: Int(sqlite3_column_int64(statement, 4)),
-                lastActivity: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
-            ))
-        }
+        return Array(byDocument.values)
     }
 
     /// Scans small document identities at a new catalog revision, reading text
@@ -1571,33 +1738,27 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     /// active SQLite snapshot and the read lock for this entire operation.
     private func synchronizeTgrep(connection: OpaquePointer) throws -> Int {
         let revision = try int64Value(
-            "SELECT generation FROM conversation_catalog_state WHERE singleton = 1",
-            connection: connection
-        )
+            "SELECT generation + storage_revision FROM conversation_catalog_state WHERE singleton = 1",
+            connection: connection)
         if tgrep == nil {
             tgrep = try tgrepRuntime.makeIndex(file.deletingLastPathComponent()
-                .appendingPathComponent(file.lastPathComponent + ".tgrep-v2", isDirectory: true))
+                .appendingPathComponent(file.lastPathComponent + ".tgrep-chunks-v1", isDirectory: true))
         }
         guard let tgrep else { throw TgrepSearchIndex.Failure.unavailable }
         if tgrep.revision == revision { return 0 }
         if !tgrep.restoredFromCache, tgrep.documentCount == 0,
            let available = tgrepRuntime.availableCapacity(file.deletingLastPathComponent()) {
             let databaseBytes = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            // A conservative early guard, not a promised upper bound: upstream streaming
-            // merges temporarily retain old and new postings. Small catalogs still work on
-            // constrained disks; a multi-GB cold rebuild needs meaningful free headroom.
             let required = 64 * 1_024 * 1_024 + min(Int64(databaseBytes), 512 * 1_024 * 1_024)
             guard available >= required else { throw TgrepSearchIndex.Failure.lowDiskSpace }
         }
-
-        let statement = try prepare(
-            """
-            SELECT d.id, d.session_path, d.transcript_id, s.indexed_at
-            FROM conversation_documents d
+        let statement = try prepare("""
+            SELECT c.id, d.session_path, d.transcript_id, s.indexed_at, c.ordinal, d.id
+            FROM conversation_search_chunks c
+            JOIN conversation_documents d ON d.id = c.document_id
             JOIN conversation_content_stamps s ON s.session_path = d.session_path
-            """,
-            bindings: [], connection: connection
-        )
+            WHERE d.storage_version = 1
+            """, bindings: [], connection: connection)
         defer { sqlite3_finalize(statement) }
         var stamps: [Int64: TgrepSearchIndex.Stamp] = [:]
         var updated = 0
@@ -1606,83 +1767,26 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { break }
             guard status == SQLITE_ROW else {
-                throw sqliteError("synchronize tgrep identities", status, connection: connection)
+                throw sqliteError("synchronize chunk identities", status, connection: connection)
             }
             let id = sqlite3_column_int64(statement, 0)
             let stamp = TgrepSearchIndex.Stamp(
                 path: try textColumn(statement, 1, field: "session_path"),
-                transcript: try textColumn(statement, 2, field: "transcript_id"),
-                indexedAt: sqlite3_column_double(statement, 3)
-            )
+                transcript: try textColumn(statement, 2, field: "transcript_id")
+                    + ":chunk:" + String(id),
+                indexedAt: sqlite3_column_double(statement, 3))
             stamps[id] = stamp
             guard !tgrep.contains(id: id, stamp: stamp) else { continue }
-            let textStatement = try prepare(
-                "SELECT search_text FROM conversation_documents WHERE id = ?",
-                bindings: [.integer(id)], connection: connection
-            )
-            defer { sqlite3_finalize(textStatement) }
-            guard sqlite3_step(textStatement) == SQLITE_ROW else {
-                throw TgrepSearchIndex.Failure.operationFailed
-            }
-            let text = try textColumn(textStatement, 0, field: "search_text")
-            try tgrep.upsert(id: id, text: text)
+            let ordinal = Int(sqlite3_column_int64(statement, 4))
+            let documentID = sqlite3_column_int64(statement, 5)
+            guard let window = try readStoredWindow(documentID: documentID, ordinal: ordinal,
+                lookahead: ConversationSearchChunk.indexLookaheadCharacters, generation: revision,
+                connection: connection) else { throw TgrepSearchIndex.Failure.operationFailed }
+            try tgrep.upsert(id: id, text: window.text)
             updated += 1
         }
         try tgrep.commit(revision: revision, stamps: stamps)
         return updated
-    }
-
-    /// SQLite's built-in lower() only handles ASCII; using it for fallback
-    /// quietly lost Cyrillic, accented-case, and canonical-equivalence hits.
-    /// This bound deterministic function shares the final result's Foundation
-    /// semantics, and sqlite3_value_bytes preserves embedded NUL characters.
-    private static func registerLiteralMatcher(on connection: OpaquePointer) {
-        sqlite3_create_function_v2(
-            connection, "ccbud_literal_contains", 2,
-            SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil,
-            { context, count, arguments in
-                guard count == 2, let arguments else {
-                    sqlite3_result_int(context, 0)
-                    return
-                }
-                func value(_ index: Int) -> String? {
-                    guard let bytes = sqlite3_value_text(arguments[index]) else { return nil }
-                    return String(decoding: UnsafeBufferPointer(
-                        start: bytes, count: Int(sqlite3_value_bytes(arguments[index]))
-                    ), as: UTF8.self)
-                }
-                guard !Task.isCancelled else {
-                    sqlite3_result_error_code(context, SQLITE_INTERRUPT)
-                    return
-                }
-                guard let text = value(0), let query = value(1), !query.isEmpty else {
-                    sqlite3_result_int(context, 0)
-                    return
-                }
-                let matcher: LiteralMatcherBox
-                if let cached = sqlite3_get_auxdata(context, 1) {
-                    matcher = Unmanaged<LiteralMatcherBox>.fromOpaque(cached).takeUnretainedValue()
-                } else {
-                    matcher = LiteralMatcherBox(query: query)
-                    // SQLite may discard auxdata immediately. The local strong reference
-                    // keeps this row's matcher alive regardless of its caching decision.
-                    sqlite3_set_auxdata(context, 1, Unmanaged.passRetained(matcher).toOpaque(), {
-                        if let pointer = $0 { Unmanaged<LiteralMatcherBox>.fromOpaque(pointer).release() }
-                    })
-                }
-                let found = matcher.search.firstMatch(in: text) != nil
-                if Task.isCancelled {
-                    sqlite3_result_error_code(context, SQLITE_INTERRUPT)
-                } else {
-                    sqlite3_result_int(context, found ? 1 : 0)
-                }
-            }, nil, nil, nil
-        )
-    }
-
-    private final class LiteralMatcherBox {
-        let search: ConversationLiteralSearch
-        init(query: String) { search = ConversationLiteralSearch(query: query) }
     }
 
     private func decodeEntry(
@@ -1702,10 +1806,12 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         } else {
             let metadataData = try blobColumn(statement, offset + 5, field: "metadata_json")
             do {
-                metadata = try metadataDecoder.decode(
-                    HistorySessionMetadata.self,
-                    from: metadataData
-                )
+                if let current = try? metadataDecoder.decode(HistorySessionMetadata.self, from: metadataData) {
+                    metadata = current
+                } else {
+                    metadata = try metadataDecoder.decode(HistorySessionMetadata.self,
+                        from: compatibleMetadataData(metadataData))
+                }
             } catch {
                 throw ConversationIndexDatabaseError.corruptRow(
                     "metadata JSON for \(path): \(error.localizedDescription)"
@@ -1726,6 +1832,22 @@ final class ConversationIndexDatabase: @unchecked Sendable {
             ),
             indexedAt: Date(timeIntervalSince1970: indexedAtSeconds)
         )
+    }
+
+    /// Older metadata encoded before these user-facing flags existed must remain readable.
+    /// Existing values (including stars, pins and tags) are never overwritten or defaulted.
+    private func compatibleMetadataData(_ data: Data) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return data }
+        let defaults: [String: Any] = ["starred": false, "pinned": false, "subagentRefs": [],
+            "canonicalThreadIDValid": false, "tags": [], "isSubagent": false, "subagentCount": 0,
+            "imported": false, "deleted": false, "messageCount": 0,
+            "diagnostics": ["decodedLines": 0, "malformedLines": 0]]
+        var changed = false
+        for (key, value) in defaults where object[key] == nil {
+            object[key] = value
+            changed = true
+        }
+        return changed ? try JSONSerialization.data(withJSONObject: object) : data
     }
 
     private func cachedMetadata(path: String, indexedAt: Double) -> HistorySessionMetadata? {
@@ -1750,43 +1872,209 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         metadataDecodeCache[path] = (indexedAt, metadata)
     }
 
-    private func decodeDocument(
-        _ statement: OpaquePointer,
-        offset: Int32
-    ) throws -> ConversationIndexDocument {
-        let transcriptID = try textColumn(statement, offset, field: "transcript_id")
-        let spanData = try blobColumn(statement, offset + 4, field: "message_spans_json")
-        let spans: [ConversationIndexMessageSpan]
-        do {
-            spans = try metadataDecoder.decode([ConversationIndexMessageSpan].self, from: spanData)
-        } catch {
-            throw ConversationIndexDatabaseError.corruptRow(
-                "message spans for \(transcriptID): \(error.localizedDescription)"
-            )
+    private struct LegacyHeader {
+        var bytes: Int
+        var spans: [ConversationIndexMessageSpan]
+    }
+
+    private func legacyHeader(documentID: Int64, connection: OpaquePointer) throws -> LegacyHeader {
+        legacyHeaderCacheLock.lock()
+        let cached = legacyHeaderCache
+        legacyHeaderCacheLock.unlock()
+        if cached?.id == documentID, let cached { return cached.header }
+        let blob = try openLegacyBlob(documentID: documentID, connection: connection)
+        defer { sqlite3_blob_close(blob) }
+        let byteCount = Int(sqlite3_blob_bytes(blob))
+        let statement = try prepare("""
+            SELECT message_spans_json
+            FROM conversation_documents_legacy WHERE id = ?
+            """, bindings: [.integer(documentID)], connection: connection)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw ConversationIndexDatabaseError.corruptRow("missing legacy transcript")
         }
-        return ConversationIndexDocument(
-            transcriptID: transcriptID,
+        let spanData = try blobColumn(statement, 0, field: "message_spans_json")
+        let header = LegacyHeader(bytes: byteCount,
+            spans: try metadataDecoder.decode([ConversationIndexMessageSpan].self,
+                from: spanData))
+        if spanData.count <= 4 * 1_024 * 1_024 {
+            legacyHeaderCacheLock.lock()
+            legacyHeaderCache = (documentID, header)
+            legacyHeaderCacheLock.unlock()
+        }
+        return header
+    }
+
+    private func openLegacyBlob(documentID: Int64, connection: OpaquePointer) throws -> OpaquePointer {
+        var blob: OpaquePointer?
+        let status = sqlite3_blob_open(connection, "main", "conversation_documents_legacy",
+            "search_text", documentID, 0, &blob)
+        guard status == SQLITE_OK, let blob else {
+            throw sqliteError("open legacy incremental blob", status, connection: connection)
+        }
+        return blob
+    }
+
+    /// SQLite's incremental blob API also reads TEXT columns, without OP_Column materializing
+    /// the entire value for every substr. Keep the last decoded grapheme for the following read
+    /// until its complete boundary is known.
+    private func legacyPart(documentID: Int64, byteOffset: Int, totalBytes: Int,
+                            connection: OpaquePointer) throws -> String {
+        guard byteOffset < totalBytes else { return "" }
+        let blob = try openLegacyBlob(documentID: documentID, connection: connection)
+        defer { sqlite3_blob_close(blob) }
+        var requested = min(totalBytes - byteOffset, ConversationSearchChunk.targetBytes + 4_096)
+        while true {
+            try Task.checkCancellation()
+            var data = Data(count: requested)
+            let status = data.withUnsafeMutableBytes {
+                sqlite3_blob_read(blob, $0.baseAddress!, Int32(requested), Int32(byteOffset))
+            }
+            guard status == SQLITE_OK else {
+                throw sqliteError("read legacy incremental blob", status, connection: connection)
+            }
+            var decoded = String(data: data, encoding: .utf8)
+            for _ in 0..<3 where decoded == nil && !data.isEmpty {
+                data.removeLast()
+                decoded = String(data: data, encoding: .utf8)
+            }
+            guard let text = decoded else {
+                throw ConversationIndexDatabaseError.corruptRow("legacy UTF-8")
+            }
+            let atEnd = byteOffset + requested >= totalBytes
+            var cursor = text.startIndex
+            var bytes = 0
+            var end = cursor
+            while cursor < text.endIndex {
+                let next = text.index(after: cursor)
+                if !atEnd, next == text.endIndex { break }
+                let width = text[cursor..<next].utf8.count
+                if bytes > 0, bytes + width > ConversationSearchChunk.targetBytes { break }
+                bytes += width
+                end = next
+                cursor = next
+            }
+            if end > text.startIndex { return String(text[..<end]) }
+            if atEnd { return text }
+            // Only an indivisible oversized grapheme may exceed the target, never an
+            // ordinary long transcript. Double safely until a complete boundary is visible.
+            let remaining = totalBytes - byteOffset
+            requested = requested > remaining / 2 ? remaining : requested * 2
+        }
+    }
+
+    private func insertChunk(documentID: Int64, ordinal: Int, part: ConversationSearchChunk.Part,
+                             spans: [ConversationIndexMessageSpan]) throws {
+        let encoded = ConversationSearchCompression.encode(part.text)
+        let localSpans = ConversationSearchChunk.spans(spans, location: part.utf16Location,
+            length: part.utf16Length)
+        try execute("""
+            INSERT INTO conversation_search_chunks(document_id, ordinal, utf16_location,
+                utf16_length, codec, decoded_bytes, body, message_spans_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, bindings: [.integer(documentID), .integer(Int64(ordinal)),
+                .integer(Int64(part.utf16Location)), .integer(Int64(part.utf16Length)),
+                .integer(Int64(encoded.codec)), .integer(Int64(encoded.decodedBytes)),
+                .blob(encoded.bytes), .blob(try metadataEncoder.encode(localSpans))])
+    }
+
+    private func readStoredWindow(documentID: Int64, ordinal: Int, lookahead: Int,
+                                  generation: Int64, connection: OpaquePointer)
+        throws -> ConversationIndexSearchWindow? {
+        let statement = try prepare("""
+            SELECT id, ordinal, utf16_location, utf16_length, codec, decoded_bytes, body,
+                message_spans_json
+            FROM conversation_search_chunks WHERE document_id = ? AND ordinal >= ? ORDER BY ordinal
+            """, bindings: [.integer(documentID), .integer(Int64(ordinal))], connection: connection)
+        defer { sqlite3_finalize(statement) }
+        var result: ConversationIndexSearchWindow?
+        var remaining = max(0, lookahead)
+        var spans: [Int: ConversationIndexMessageSpan] = [:]
+        while true {
+            try Task.checkCancellation()
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { break }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("read compressed chunk", status, connection: connection)
+            }
+            if result != nil, remaining == 0 { break }
+            let text = try ConversationSearchCompression.decode(
+                blobColumn(statement, 6, field: "chunk body"),
+                codec: Int(sqlite3_column_int64(statement, 4)),
+                decodedBytes: Int(sqlite3_column_int64(statement, 5)))
+            let decodedSpans = try metadataDecoder.decode([ConversationIndexMessageSpan].self,
+                from: blobColumn(statement, 7, field: "message_spans_json"))
+            for span in decodedSpans { spans[span.sequence] = span }
+            if result == nil {
+                guard Int(sqlite3_column_int64(statement, 1)) == ordinal else { return nil }
+                guard text.utf16.count == Int(sqlite3_column_int64(statement, 3)) else {
+                    throw ConversationIndexDatabaseError.corruptRow("chunk UTF-16 size")
+                }
+                result = ConversationIndexSearchWindow(chunkID: sqlite3_column_int64(statement, 0),
+                    text: text, globalUTF16Start: Int(sqlite3_column_int64(statement, 2)),
+                    ownedUTF16Length: Int(sqlite3_column_int64(statement, 3)),
+                    messageSpans: [], generation: generation)
+            } else {
+                let prefix = text.prefix(remaining)
+                result?.text.append(contentsOf: prefix)
+                remaining -= prefix.count
+            }
+        }
+        if var value = result {
+            value.messageSpans = ConversationSearchChunk.spans(spans.values.sorted {
+                $0.utf16Location < $1.utf16Location
+            },
+                location: value.globalUTF16Start, length: value.text.utf16.count)
+            return value
+        }
+        return nil
+    }
+
+    /// Compatibility/detail callers may reconstruct a logical transcript; search never uses it.
+    private func decodeDocument(_ statement: OpaquePointer, offset: Int32,
+                                connection: OpaquePointer) throws -> ConversationIndexDocument {
+        let transcriptID = try textColumn(statement, offset, field: "transcript_id")
+        let documentID = sqlite3_column_int64(statement, offset + 3)
+        var text = ""
+        var spans: [Int: ConversationIndexMessageSpan] = [:]
+        if sqlite3_column_int(statement, offset + 4) == 0 {
+            let header = try legacyHeader(documentID: documentID, connection: connection)
+            for span in header.spans { spans[span.sequence] = span }
+            var byteOffset = 0
+            while byteOffset < header.bytes {
+                let part = try legacyPart(documentID: documentID, byteOffset: byteOffset,
+                    totalBytes: header.bytes, connection: connection)
+                text.append(part)
+                byteOffset += part.utf8.count
+            }
+        } else {
+            var ordinal = 0
+            while let part = try readStoredWindow(documentID: documentID, ordinal: ordinal,
+                lookahead: 0, generation: 0, connection: connection) {
+                text.append(part.text)
+                for span in part.messageSpans { spans[span.sequence] = span }
+                ordinal += 1
+            }
+        }
+        return ConversationIndexDocument(transcriptID: transcriptID,
             agentType: optionalTextColumn(statement, offset + 1),
-            sortOrder: Int(sqlite3_column_int64(statement, offset + 2)),
-            text: try textColumn(statement, offset + 3, field: "search_text"),
-            messageSpans: spans
-        )
+            sortOrder: Int(sqlite3_column_int64(statement, offset + 2)), text: text,
+            messageSpans: spans.values.sorted { $0.utf16Location < $1.utf16Location })
     }
 
     // MARK: - Mutations and validation
 
     private func removeDocuments(for path: String) throws {
-        if trigramFTSAvailable {
-            try execute(
-                "DELETE FROM conversation_documents_fts WHERE rowid IN "
-                    + "(SELECT id FROM conversation_documents WHERE session_path = ?)",
-                bindings: [.text(path)]
-            )
+        if try tableExists("conversation_documents_legacy") {
+            try execute("DELETE FROM conversation_documents_legacy WHERE session_path = ?",
+                bindings: [.text(path)])
         }
-        try execute(
-            "DELETE FROM conversation_documents WHERE session_path = ?",
-            bindings: [.text(path)]
-        )
+        try execute("DELETE FROM conversation_documents WHERE session_path = ?", bindings: [.text(path)])
+    }
+
+    private func tableExists(_ table: String) throws -> Bool {
+        try int64Value("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            bindings: [.text(table)]) != 0
     }
 
     private func validate(_ session: ConversationIndexedSession) throws {
@@ -1855,20 +2143,6 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         return try currentGeneration()
     }
 
-    private func markFTSState(dirty: Bool) throws {
-        try execute(
-            "UPDATE conversation_catalog_state SET fts_dirty = ? WHERE singleton = 1",
-            bindings: [.integer(dirty ? 1 : 0)]
-        )
-    }
-
-    private func shouldKeepFTSDirty() throws -> Bool {
-        let wasDirty = try int64Value(
-            "SELECT fts_dirty FROM conversation_catalog_state WHERE singleton = 1"
-        ) != 0
-        return !trigramFTSAvailable || wasDirty
-    }
-
     private func markMaintenancePending() throws {
         try execute(
             "UPDATE conversation_catalog_state SET maintenance_pending = 1 WHERE singleton = 1"
@@ -1899,17 +2173,16 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     }
 
     private func hasCapacityForMaintenance() -> Bool {
-        let values = try? file.deletingLastPathComponent().resourceValues(
-            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
-        )
-        guard let available = values?.volumeAvailableCapacityForImportantUsage else {
+        guard let available = tgrepRuntime.availableCapacity(file.deletingLastPathComponent()) else {
             // Capacity probes are advisory; unsupported filesystems should retain existing
             // cancellable behavior rather than permanently disabling maintenance.
             return true
         }
-        let fileSize = ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size])
-            as? NSNumber)?.int64Value ?? 0
-        let reserve = max(Int64(256 * 1_024 * 1_024), fileSize * 2)
+        // VACUUM copies live pages, not the multi-GB freelist it is about to remove.
+        let pages = (try? int64Value("PRAGMA page_count")) ?? 0
+        let free = (try? int64Value("PRAGMA freelist_count")) ?? 0
+        let pageSize = (try? int64Value("PRAGMA page_size")) ?? 4_096
+        let reserve = max(Int64(256 * 1_024 * 1_024), max(0, pages - free) * pageSize * 2)
         return available > reserve
     }
 
@@ -2079,6 +2352,22 @@ final class ConversationIndexDatabase: @unchecked Sendable {
         }
     }
 
+    /// Keep cancellation responsive when a competing writer owns the transaction lock.
+    /// Once acquired, one ordinary compressed block commits before activity is considered.
+    private func migrationTransaction<T>(cancellation: SQLiteCancellationContext,
+                                         _ body: () throws -> T) throws -> T {
+        try executeCancellableMaintenance("BEGIN IMMEDIATE", cancellation: cancellation)
+        do {
+            let result = try body()
+            try cancellation.check()
+            try execute("COMMIT")
+            return result
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
     /// Runs a potentially long maintenance statement with cooperative cancellation both while
     /// SQLite executes virtual-machine instructions and while it waits for another connection.
     private func executeCancellableMaintenance(
@@ -2145,9 +2434,17 @@ final class ConversationIndexDatabase: @unchecked Sendable {
     private func execute(_ sql: String, bindings: [SQLiteValue] = []) throws {
         let statement = try prepare(sql, bindings: bindings)
         defer { sqlite3_finalize(statement) }
-        let status = sqlite3_step(statement)
-        guard status == SQLITE_DONE || status == SQLITE_ROW else {
-            throw sqliteError("execute statement", status)
+        // Some mutating PRAGMAs expose progress as result rows. In particular,
+        // incremental_vacuum(N) reclaims one page per SQLITE_ROW; finalizing after
+        // the first row silently turns an 8192-page pass into a one-page pass.
+        // Maintenance's progress handler and cross-thread interrupt remain installed
+        // for the entire loop, so consuming results does not weaken cancellation.
+        while true {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return }
+            guard status == SQLITE_ROW else {
+                throw sqliteError("execute statement", status)
+            }
         }
     }
 

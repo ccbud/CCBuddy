@@ -7,11 +7,13 @@ enum ConversationActivityStage: Equatable {
     case searchingMessages
     case preparingSearch
     case refiningSearch
+    case countingSearchOccurrences
 
     static func searchStage(for phase: ConversationSearchProgress.Phase?) -> Self? {
         switch phase {
         case .completed: return nil
         case .refiningResults: return .refiningSearch
+        case .countingOccurrences: return .countingSearchOccurrences
         case .preparingCandidates, nil: return .preparingSearch
         }
     }
@@ -22,6 +24,7 @@ enum ConversationActivityStage: Equatable {
         case .searchingMessages: return "正在搜索消息内容…"
         case .preparingSearch: return "正在查找候选会话…"
         case .refiningSearch: return "正在核对匹配内容…"
+        case .countingSearchOccurrences: return "正在统计全部匹配次数…"
         }
     }
 
@@ -31,7 +34,7 @@ enum ConversationActivityStage: Equatable {
             return "正在本机整理消息与工具记录，可随时切换其他会话。"
         case .searchingMessages:
             return "可继续输入或清空搜索。"
-        case .preparingSearch, .refiningSearch:
+        case .preparingSearch, .refiningSearch, .countingSearchOccurrences:
             return hasVerifiedResults
                 ? "已找到的结果可先打开，也可继续输入。"
                 : "可继续输入或清空搜索。"

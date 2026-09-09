@@ -31,13 +31,14 @@ flowchart TD
     A[Configured CLI history roots] --> B[Source adapters and parsers]
     B --> C[SQLite conversation catalog]
     W[Filesystem watcher and reconciliation] --> B
-    C --> D[Catalog search documents]
+    C --> D[Independently compressed text blocks]
     D --> E[tgrep trigram candidates]
-    D --> F[SQLite fallback]
+    D --> F[Bounded literal fallback]
     E --> G[Scope filter and original-text verification]
     F --> G
     G --> H[Immediate keyword results]
-    H --> I{Smart ordering enabled?}
+    H --> N[Complete exact occurrence counts]
+    N --> I{Smart ordering enabled?}
     I -->|No| J[Search palette]
     I -->|English/code; up to 32 candidates| K[Local Core ML MiniLM]
     K --> J
@@ -66,28 +67,36 @@ the dependency lockfile. The app loads only its signed
 `Contents/Frameworks/libccbuddy_tgrep.dylib`; it does not launch a shell, search `PATH`,
 or depend on a developer's checkout.
 
-The Swift catalog supplies case-folded, canonically normalized UTF-8 search documents and
-numeric SQLite IDs. Rust combines a bounded live overlay with memory-mapped trigram
-postings. A sibling `.tgrep-v2` directory with mode `0700` holds immutable persistent
+The Swift catalog stores logical transcript identities separately from approximately
+32 KiB, independently LZFSE-compressed UTF-8 blocks. It supplies case-folded, canonically
+normalized blocks with boundary lookahead and numeric SQLite chunk IDs. Rust combines a
+bounded live overlay with memory-mapped trigram postings. A sibling `.tgrep-chunks-v1`
+directory with mode `0700` holds immutable persistent
 checkpoints; its manifest stores numeric IDs and hashed identities, not transcript text
 or paths. It does not walk history roots or keep another copy of complete transcripts.
 The first eligible query restores a valid checkpoint or builds the derived index, and
-later queries synchronize changed/deleted documents by catalog revision. Reopen checks
+later queries synchronize changed/deleted blocks by catalog and storage revision. Reopen checks
 file integrity, normalization version and SQLite identities before trusting a checkpoint.
 Temporary working overlays are removed on normal close; committed checkpoints survive
-app restarts. A concurrent publisher uses a separate private overlay.
+app restarts. A concurrent publisher uses a separate private overlay. Validated lifetime
+leases allow abandoned new-format workspaces to be reclaimed without deleting active
+workspaces. Legacy unmarked caches are conservatively retained.
 
 Queries whose normalized UTF-8 form contains at least three **bytes** can use tgrep,
 including one- and two-character Han terms. A SQLite read transaction binds index
 synchronization and candidate IDs to a consistent catalog snapshot. Swift then verifies
-the candidates against original text and applies visibility filters. Short queries and
-unavailable/incompatible acceleration use a bound Foundation literal matcher in SQLite;
-an explicitly disabled tgrep path can still use a ready SQLite FTS index. Engine failures
+the candidates against decoded text blocks and applies visibility filters. Short queries and
+unavailable/incompatible acceleration use the same exact matcher over sequential bounded
+blocks. There is no SQLite FTS creation, update or query fallback. Legacy body conversion,
+FTS retirement and space reclamation happen in resumable background maintenance. Engine failures
 do not turn a partially built index into authoritative empty results. The palette reports
 the engine, indexed-document/candidate counts and measured query duration.
 
-Exact verification counts complete, nonoverlapping occurrences and retains original
-snippets and UTF-16 message anchors. Folded Codex child-rollout hits keep the visible
+Exact verification first publishes a usable match with a marked count lower bound, then
+counts complete, nonoverlapping occurrences without delaying opening the result. Match
+starts belong to one block; query-sized lookahead preserves cross-block matches. Original
+snippets and UTF-16 message anchors remain stable while counts finish. Revision changes
+restart the result prefix instead of mixing snapshots. Folded Codex child-rollout hits keep the visible
 parent row and the child transcript key for navigation. [Search performance](search-performance.md)
 separates cold import, checkpoint restoration, candidate generation, exact matching and
 production repository timings, including their limitations.

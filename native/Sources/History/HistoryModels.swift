@@ -201,9 +201,32 @@ struct HistorySearchHit: Codable, Equatable, Identifiable, Sendable {
     /// Parser-stable message position within `agent`; indexed hits use it for exact navigation.
     var sequence: Int? = nil
     var snippet: String
+    /// Exact total when complete; otherwise a verified lower bound, never an estimate.
     var count: Int
+    var isCountComplete: Bool = true
 
     var id: String { "\(file.path)\u{0}\(agent)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, file, source, agent, agentType, sequence, snippet, count, isCountComplete
+    }
+}
+
+extension HistorySearchHit {
+    /// Older stored hits predate progressive counting and already contain a complete count.
+    /// Keeping this initializer in an extension preserves the source-compatible memberwise init.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try values.decode(String.self, forKey: .sessionID)
+        file = try values.decode(URL.self, forKey: .file)
+        source = try values.decode(HistorySource.self, forKey: .source)
+        agent = try values.decodeIfPresent(String.self, forKey: .agent) ?? "main"
+        agentType = try values.decodeIfPresent(String.self, forKey: .agentType)
+        sequence = try values.decodeIfPresent(Int.self, forKey: .sequence)
+        snippet = try values.decode(String.self, forKey: .snippet)
+        count = try values.decode(Int.self, forKey: .count)
+        isCountComplete = try values.decodeIfPresent(Bool.self, forKey: .isCountComplete) ?? true
+    }
 }
 
 struct HistoryDirectory: Codable, Equatable, Identifiable, Sendable {

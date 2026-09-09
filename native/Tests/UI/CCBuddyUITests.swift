@@ -7,9 +7,7 @@ final class CCBuddyUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        isolatedHome = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-xcui-home-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: isolatedHome, withIntermediateDirectories: true)
+        isolatedHome = try UITestFixtureDirectory.make(named: "home")
         app = makeIsolatedApplication()
         terminateAppIfRunning()
         app.launchEnvironment["CCBUD_MONITOR_UI_FIXTURE"] = "1"
@@ -70,8 +68,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testProviderHeroReadsFullHistoryUsageInsteadOfMonitorBuffer() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-usage-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "usage")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -106,8 +103,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testMenuBarStatusAndPanelReadLocalizedHistoryUsage() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-menubar-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "menubar")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -361,8 +357,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testWakeConversationWorkbenchVisualStates() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-wake-workbench-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "wake-workbench")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -452,8 +447,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testLibraryGroupsCollapseAndComeBack() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-rail-groups-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "rail-groups")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -585,8 +579,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testDeterministicVisualParityScreenshots() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-visual-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "visual")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)

@@ -3,6 +3,58 @@ import XCTest
 @testable import CCBuddy
 
 final class ConversationLiteralSearchTests: XCTestCase {
+    func testPathsPunctuationAndMixedHanQueriesKeepLiteralFoundationSemantics() {
+        let samples = [
+            #"HTTP_PROXY http_proxy /api/v1.2?mode=on C:\\temp\\file [a]+(b)* {x} $^ | \\E"#,
+            "系统代理_HTTP_PROXY/v1.2 系统代理_http_proxy/v1.2 系统代理_HTTP_PROXY/v1.2",
+            "Version_当前版本/神 Version_当前版本/神 VERSION_当前版本/神",
+            "ss/SS ß/ſs ffi_ﬃ STRASSE/straße foo\0bar foo\r\nbar",
+            "_\u{0301}_ .\u{0338}. /\u{200D}/ \u{0600}___ 系统\u{FE0F}_proxy 系统_proxy",
+        ]
+        let queries = ["HTTP_PROXY", "/api/v1.2?mode=on", #"C:\\temp\\file"#,
+                       "[a]+(b)*", "{x}", "$^", "|", #"\\E"#, "系统代理_HTTP_PROXY/v1.2",
+                       "version_当前版本/神", "ss/ss", "ffi_ffi", "strasse/strasse",
+                       "foo\0bar", "foo\r\nbar", "__", "..", "//", "系统_proxy"]
+        for sample in samples {
+            for query in queries { assertParity(text: sample, query: query) }
+        }
+    }
+
+    func testOwnedBlockStartsCountCrossingMatchesOnlyOnce() {
+        for (text, query) in [
+            (String(repeating: "a", count: 17), "aaa"),
+            ("系统代理/系统代理/系统代理/系统代理", "代理/系统"),
+            ("é!é!é!é!é!", "é!é!"),
+            ("ſs_ss_ß_ss_ss", "ss_ss"),
+            ("𠀀神𠀀神𠀀神𠀀神", "𠀀神𠀀")
+        ] {
+            for blockCharacters in [1, 2, 3, 5] {
+                let matcher = ConversationLiteralSearch(query: query)
+                let expected = matcher.match(in: text)
+                var cursor = text.startIndex
+                var resume = 0
+                var count = 0
+                var firstOffset: Int?
+                while cursor < text.endIndex {
+                    let end = text.index(cursor, offsetBy: blockCharacters, limitedBy: text.endIndex) ?? text.endIndex
+                    let globalStart = cursor.utf16Offset(in: text)
+                    // Unlimited right context here isolates ownership from the storage window builder.
+                    let window = String(text[cursor...])
+                    let owned = end.utf16Offset(in: text) - globalStart
+                    if let match = matcher.match(in: window, startingAtUTF16: max(0, resume - globalStart),
+                                                 ownedUTF16Length: owned) {
+                        if firstOffset == nil { firstOffset = globalStart + match.range.lowerBound.utf16Offset(in: window) }
+                        count += match.count
+                        resume = globalStart + match.lastUTF16End
+                    }
+                    cursor = end
+                }
+                XCTAssertEqual(count, expected?.count ?? 0, "\(query) / block \(blockCharacters)")
+                XCTAssertEqual(firstOffset, expected?.range.lowerBound.utf16Offset(in: text))
+            }
+        }
+    }
+
     func testFastCandidatesPreserveFoundationUnicodeAndGraphemeSemantics() {
         let samples = [
             "ERROR error Error errors error\u{0301} error\u{0338} error",
