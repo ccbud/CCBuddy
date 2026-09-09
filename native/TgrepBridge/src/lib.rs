@@ -1362,6 +1362,13 @@ mod tests {
     /// A completed v1 lease with no remaining owner. This models the on-disk
     /// state after exit without relying on a PID, wall clock, or leaked test fd.
     fn abandoned_working_directory(root: &Path) -> PathBuf {
+        abandoned_working_directory_observing_lease(root, |_| {})
+    }
+
+    fn abandoned_working_directory_observing_lease(
+        root: &Path,
+        observe_lease: impl FnOnce(&std::fs::File),
+    ) -> PathBuf {
         let temporary = tempfile::Builder::new()
             .prefix(WORKING_PREFIX)
             .tempdir_in(root)
@@ -1387,6 +1394,11 @@ mod tests {
             b"discardable postings",
         )
         .unwrap();
+        observe_lease(&lease);
+        // Parallel process fixtures can inherit this open file description before
+        // CLOEXEC runs. Closing only our fd would leave the "abandoned" fixture
+        // spuriously locked; explicitly finish its owner before publishing it.
+        assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_UN) }, 0);
         temporary.keep()
     }
 
@@ -1567,6 +1579,23 @@ mod tests {
         let engine = Engine::persistent(root.path()).unwrap();
         assert!(!stale.exists());
         drop(engine);
+    }
+
+    #[test]
+    fn abandoned_fixture_is_reapable_with_a_spawn_inherited_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inherited = None;
+        let stale = abandoned_working_directory_observing_lease(root.path(), |lease| {
+            // Model the shared open file description inherited before CLOEXEC.
+            inherited = Some(lease.try_clone().unwrap());
+        });
+        let engine = Engine::persistent(root.path()).unwrap();
+        assert!(
+            !stale.exists(),
+            "a fixture marked abandoned must not retain a live lock through an inherited fd"
+        );
+        drop(engine);
+        drop(inherited);
     }
 
     #[test]
