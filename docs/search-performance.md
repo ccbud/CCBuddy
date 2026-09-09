@@ -242,7 +242,7 @@ The reader changes add ten source-scoped layout-intent, resident-input and Store
 cancellation regressions. Local app and test bundles compile, but local
 XCTest/IDE control-session handshakes have failed before any business test starts;
 these are not 912-test passes. Local UI XCTest also did not initialize.
-CI requires at least 912 native tests and all 27 UI cases for the exact
+CI now requires at least 919 native tests and all 27 UI cases for the exact
 PR head. Manual checks and an earlier commit's build are not substitutes for that
 requirement.
 
@@ -267,6 +267,22 @@ states and both diff sides. A new UI regression separately requires six native
 double-click/Cmd-C operations, exact clipboard contents and restoration of the
 original clipboard. Accessibility checks and final Release/hosted-CI verification
 remain required.
+
+The `2bba76b` hosted run passed all 912 native tests, including 11 installed-CLI
+E2Es, and 25 of 27 UI tests. Native selection/copy passed. The two failures were
+the initial paired-output owner's accessibility visibility and reading back the
+search field in the 12,000-message case; neither is treated as a pass. Packaging
+steps after the failed UI gate did not run.
+
+The follow-up isolates the reader behind a constant-time presentation-input
+equality boundary and reuses each row's existing `ForEach` identity. Unrelated
+Store and search-field focus changes no longer rebuild the entire reader. Seven
+new unit regressions cover content revision, source, query, font and navigation
+invalidation. An isolated Debug check of the 16,921-message source completed global
+`系统代理` in 871.3 ms, preserved both detail-query counts below, and accepted
+three real PageUp events that revoked the old search anchor. These timings are
+not a Release comparison. The paired-owner external accessibility issue remains
+unresolved in this check; a successful build or lower idle CPU does not fix it.
 
 In the current Release app, a live conversation advanced from 3,710 to 3,723
 messages while showing approximately 6.4 million tokens. In-session searches for

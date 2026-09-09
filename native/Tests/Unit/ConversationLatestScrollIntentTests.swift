@@ -95,6 +95,16 @@ final class ConversationLatestScrollIntentTests: XCTestCase {
         XCTAssertEqual(request().anchor, .bottom)
     }
 
+    func testNativeListScrollIdentityMatchesForEachWithoutASecondContentID() {
+        let jump = jumpRequest(index: 12_191)
+        XCTAssertEqual(jump.scrollID, AnyHashable(12_191),
+                       "Message scrolling must reuse the Int identity provided by ForEach")
+        XCTAssertNotEqual(jump.scrollID, AnyHashable(jump.anchorID),
+                          "The diagnostic/layout string is not a second row identity")
+        XCTAssertEqual(request().scrollID, AnyHashable(ConversationPresentation.bottomAnchor),
+                       "The one footer row keeps its explicit bottom identity")
+    }
+
     @MainActor
     func testActualDelayedLayoutChangesCoalesceWithoutRepeatingUnchangedFrames() async {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),

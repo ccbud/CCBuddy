@@ -18,6 +18,15 @@ struct ConversationScrollLayoutRequest: Equatable {
         }
     }
 
+    /// Reuse ForEach's data identity instead of adding a second content ID to every List row.
+    /// Only the single bottom spacer needs its own explicit string identity.
+    var scrollID: AnyHashable {
+        switch target {
+        case .latest: AnyHashable(ConversationPresentation.bottomAnchor)
+        case .message(let jump): AnyHashable(jump.messageIndex)
+        }
+    }
+
     // Align the message's origin, not its center: asynchronous tool/Markdown preparation can
     // enlarge the owner row itself far beyond a viewport without moving its heading away.
     var anchor: UnitPoint {

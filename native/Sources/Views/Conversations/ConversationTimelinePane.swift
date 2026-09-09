@@ -7,7 +7,6 @@ struct ConversationTimelinePane: View {
     @ObservedObject var columns: ColumnLayout
     var fontSize: Int?
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appLanguage) private var appLanguage
     @State private var showingMetadataEditor = false
     @State private var confirmingPermanentDelete = false
@@ -584,135 +583,27 @@ struct ConversationTimelinePane: View {
     }
 
     private func timeline(_ session: HistorySession) -> some View {
-        // Taken from the store, which computes them once per transcript. Rebuilding them here meant
-        // walking every message on every redraw.
-        let projection = store.transcriptProjection
         let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
             ? store.detailMatches[store.detailMatchIndex].messageIndex
             : nil
         let transcriptFile = store.activeTranscriptFile ?? session.metadata.file
-        let transcriptID = store.activeTranscriptID
-        let layoutRequest = store.scrollLayoutRequest
-
-        return ScrollViewReader { proxy in
-            let layoutObserver = ConversationScrollLayoutObserver(request: layoutRequest) { request in
-                guard store.scrollLayoutRequest == request else { return }
-                // Correct the still-active row's asynchronous height without replaying navigation.
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo(request.anchorID, anchor: request.anchor)
-                }
-            }
-
-            // A native row container owns virtualization and row-height invalidation. Keep the
-            // complete projected transcript: a search can still address every visible owner ID.
-            List {
-                ForEach(projection.visibleMessageIndices, id: \.self) { index in
-                    let message = session.messages[index]
-                    let anchor = ConversationPresentation.messageAnchor(index)
-                    ConversationMessageView(
-                        message: message,
-                        messageIndex: index,
-                        sourceRawValue: session.metadata.source.rawValue,
-                        projection: projection,
-                        searchQuery: store.detailQuery,
-                        isCurrentSearchMatch: currentMatch == index,
-                        fontSize: CGFloat(fontSize ?? 13)
-                    )
-                    .padding(.horizontal, Space.xl)
-                    .padding(.top, index == projection.visibleMessageIndices.first ? Space.xxl : 0)
-                    .padding(.bottom, Space.xxl)
-                    .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        // List's outer background is not inside its native scroll view. The
-                        // active row supplies that scope without adding a second scroll view.
-                        if layoutRequest?.anchorID == anchor { layoutObserver.accessibilityHidden(true) }
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("conversation.message.\(index)")
-                    .id(anchor)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                }
-                // Include the floating controls' clearance in Latest's actual target row.
-                Color.clear.frame(height: 68)
-                    .background {
-                        if layoutRequest == nil || layoutRequest?.anchorID == ConversationPresentation.bottomAnchor {
-                            layoutObserver.accessibilityHidden(true)
-                        }
-                    }
-                    .id(ConversationPresentation.bottomAnchor)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 1)
-            .background(ConversationScrollInputObserver(
-                scope: .init(file: transcriptFile, transcriptID: transcriptID)
-            ) { scope in
-                guard store.activeTranscriptFile == scope.file,
-                      store.activeTranscriptID == scope.transcriptID else { return }
-                store.pauseFollowingLatestFromUserScroll()
-            }.accessibilityHidden(true))
-            .onAppear {
-                if let request = store.scrollLayoutRequest {
-                    proxy.scrollTo(request.anchorID, anchor: request.anchor)
-                }
-            }
-            .onChange(of: store.jumpLayoutRequest) { request in
-                guard let request, store.scrollLayoutRequest == request else { return }
-                scroll(proxy, to: request.anchorID, anchor: request.anchor)
-            }
-            .onChange(of: store.followLatestRevision) { _ in
-                guard store.isFollowingLatest else { return }
-                scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
-            }
-            .accessibilityIdentifier("conversation.timeline.scroll")
-            .overlay(alignment: .bottomTrailing) {
-                HStack(spacing: Space.xs) {
-                    Button {
-                        NotificationCenter.default.post(name: .ccbudToggleFocusMode, object: nil)
-                    } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    }
-                    .buttonStyle(.ccIcon)
-                    .help(appLanguage.localized("专注阅读") + " · ⌘⇧S")
-                    .accessibilityLabel(appLanguage.localized("专注阅读"))
-                    .accessibilityIdentifier("conversation.focus")
-                    Button {
-                        store.jumpToLatest()
-                    } label: {
-                        Label(appLanguage.localized("最新消息"), systemImage: "arrow.down")
-                            .font(.ccCaption(.medium))
-                            .padding(.horizontal, Space.sm)
-                            .frame(height: Metrics.controlHeight)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("conversation.jump.latest")
-                }
-                .padding(Space.xs)
-                .ccGlass(radius: Radius.panel, interactive: true)
-                .padding(Space.md)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
-        .padding(.horizontal, Space.md)
-        .padding(.bottom, Space.md)
-    }
-
-    private func scroll(_ proxy: ScrollViewProxy, to id: String, anchor: UnitPoint) {
-        if reduceMotion {
-            proxy.scrollTo(id, anchor: anchor)
-        } else {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: anchor) }
-        }
+        return ConversationTimelineReader(
+            messages: session.messages,
+            inputs: .init(
+                projection: store.transcriptProjection,
+                scope: .init(file: transcriptFile, transcriptID: store.activeTranscriptID),
+                sourceRawValue: session.metadata.source.rawValue,
+                query: store.detailQuery,
+                currentMatch: currentMatch,
+                fontSize: CGFloat(fontSize ?? 13),
+                layoutRequest: store.scrollLayoutRequest,
+                jumpLayoutRequest: store.jumpLayoutRequest,
+                isFollowingLatest: store.isFollowingLatest,
+                followLatestRevision: store.followLatestRevision
+            ),
+            store: store
+        )
+        .equatable()
     }
 
     private func toolbarButton(
