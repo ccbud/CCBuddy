@@ -275,9 +275,10 @@ The unsigned universal package passed all eight required self-checks, including 
 tgrep matching and bundled semantic inference under the CPU+ANE compute policy.
 
 Local UI launch diagnostics separately identified cross-process fixtures in the runner's
-protected temporary directory; UI fixtures now use unique, atomic mode-0700 directories
-under the shared system temporary location. No privacy or signing policy was changed.
-The subsequent local runner timed out enabling system automation before executing any
+protected temporary directory. Fixtures use unique, atomic mode-0700 directories within
+XCTest's permitted temporary root; directly writing the shared `/private/tmp` root is
+not permitted by the CI runner's sandbox. No privacy, sandbox or signing policy was changed.
+The final local runner attempt timed out enabling system automation before executing any
 UI case, so that attempt is not counted as a UI pass. The PR's clean macOS CI supplies
 the complete, zero-skip native UI gate and exact-head verification record.
 
