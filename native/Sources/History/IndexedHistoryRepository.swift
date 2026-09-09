@@ -314,6 +314,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         // every transcript that matched — the whole indexed corpus for a common word — first
         // inside SQLite and then again as Swift strings.
         let sessions = try listSessions(limit: ConversationCatalogLimits.searchScan)
+            .sorted(by: HistoryCatalogProjection.searchResultComesFirst)
         let filter = activeFilter
         let batch = try database.candidateDocumentReferences(
             for: query,

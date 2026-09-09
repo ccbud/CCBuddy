@@ -339,6 +339,21 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         sessions.sorted(by: sessionComesFirst)
     }
 
+    /// Progressive search and its UI must agree on every tie-breaker. The catalog's historical
+    /// ordering uses creation time and descending producer IDs; applying that order to search
+    /// prefixes and then reversing ties in the palette moves its selected row as batches arrive.
+    /// Preserve search's existing activity-descending, stable-ID-ascending presentation policy.
+    static func searchResultComesFirst(
+        _ lhs: HistorySessionMetadata,
+        _ rhs: HistorySessionMetadata
+    ) -> Bool {
+        if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
+        if lhs.id != rhs.id { return lhs.id < rhs.id }
+        // Imported/copied transcripts can share producer IDs. Avoid an input-order-dependent
+        // tie without normalizing URLs repeatedly inside the sort comparator.
+        return lhs.file.path < rhs.file.path
+    }
+
     static func projects(
         from sessions: [HistorySessionMetadata]
     ) -> [HistoryProject] {

@@ -3,6 +3,104 @@ import XCTest
 @testable import CCBuddy
 
 final class IndexedHistoryRepositoryParityTests: XCTestCase {
+    func testEqualActivitySearchPrefixesAndLimitFollowPresentationOrderWithoutChangingCatalogOrder() throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-search-tie-order")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, sessions) = try makeEqualActivityRepository(home: home, count: 225)
+        let expected = sessions.map(\.metadata.file)
+        XCTAssertEqual(try repository.listSessions(limit: .max).map(\.file), Array(expected.reversed()),
+            "The catalog retains its existing creation-time/producer-ID ordering")
+        let recorder = SearchProgressRecorder()
+        let final = try repository.search(query: "deepcatalogneedle", limit: 200) { recorder.append($0) }
+        XCTAssertEqual(final.map(\.file), Array(expected.prefix(200)),
+            "The hit limit must be applied after the same tie-breaker used by the palette")
+        let prefixes = recorder.snapshot.filter { !$0.hits.isEmpty }
+        XCTAssertGreaterThan(prefixes.count, 2)
+        XCTAssertEqual(prefixes.first?.hits.count, 1)
+        for event in prefixes {
+            XCTAssertEqual(event.hits.map(\.file), Array(expected.prefix(event.hits.count)),
+                "A published prefix cannot be reversed by the UI before later batches arrive")
+        }
+        XCTAssertEqual(try repository.search(query: "deepcatalogneedle", limit: 200), final,
+            "Warm/final-only search has the same membership and order")
+        XCTAssertEqual(try repository.listSessions(limit: .max).map(\.file), Array(expected.reversed()))
+    }
+
+    @MainActor
+    func testSearchOrderingBreaksDuplicateProducerIDsBySourcePath() async throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-search-duplicate-id-order")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, sessions) = try makeEqualActivityRepository(home: home, count: 12,
+                                                                    duplicateStableIDs: true)
+        XCTAssertEqual(Set(sessions.map(\.metadata.id)).count, 1)
+        let expected = sessions.map(\.metadata.file)
+        let store = ConversationStore(repository: SearchPrefixGatedRepository(repository: repository,
+                                                                               thresholds: []))
+        await store.reload()
+        XCTAssertEqual(store.orderedSearchSessions.map(\.file), expected)
+        let recorder = SearchProgressRecorder()
+        XCTAssertEqual(try repository.search(query: "deepcatalogneedle", limit: 12) { recorder.append($0) }
+            .map(\.file), expected)
+        for event in recorder.snapshot {
+            XCTAssertEqual(event.hits.map(\.file), Array(expected.prefix(event.hits.count)))
+        }
+    }
+
+    @MainActor
+    func testEqualActivityProgressiveStoreKeepsInitialAndKeyboardHighlightsInPlace() async throws {
+        let home = try HistoryTestSupport.temporaryDirectory("indexed-search-store-tie-order")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (repository, sessions) = try makeEqualActivityRepository(home: home, count: 96)
+        let provider = SearchPrefixGatedRepository(repository: repository, thresholds: [1, 49, 96])
+        defer { provider.release(through: .max) }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.updateListQuery("deepcatalogneedle")
+        let expectedFiles = sessions.map { ConversationFilter.fileKey($0.metadata.file) }
+        var automaticSelection = ConversationSearchSelection()
+        var keyboardSelection = ConversationSearchSelection()
+
+        for step in 1...3 {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while ContinuousClock.now < deadline,
+                  provider.blockedStep != step || store.contentHits.count != provider.blockedCount {
+                try await Task.sleep(nanoseconds: 2_000_000)
+            }
+            XCTAssertEqual(provider.blockedStep, step)
+            let count = provider.blockedCount
+            XCTAssertEqual(store.contentHits.count, count)
+            XCTAssertGreaterThan(count, 0)
+            let files = store.orderedSearchSessions.map { ConversationFilter.fileKey($0.file) }
+            XCTAssertEqual(files, Array(expectedFiles.prefix(count)))
+            automaticSelection.reconcile(files: files)
+            keyboardSelection.reconcile(files: files)
+            XCTAssertEqual(automaticSelection.index, 0,
+                "Untouched search must not scroll into the middle of a tied result set")
+            XCTAssertEqual(automaticSelection.file, expectedFiles.first)
+            if step == 2 { keyboardSelection.move(by: 8, files: files) }
+            if step >= 2 {
+                XCTAssertEqual(keyboardSelection.index, 8)
+                XCTAssertEqual(keyboardSelection.file, expectedFiles[8])
+            }
+            provider.release(through: step)
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while store.isSearchingContent, ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertFalse(store.isSearchingContent)
+        XCTAssertNil(store.contentSearchError)
+        XCTAssertEqual(store.contentHits.count, 96)
+        XCTAssertTrue(store.contentHits.values.allSatisfy(\.isCountComplete))
+        let finalFiles = store.orderedSearchSessions.map { ConversationFilter.fileKey($0.file) }
+        XCTAssertEqual(finalFiles, expectedFiles)
+        automaticSelection.reconcile(files: finalFiles)
+        keyboardSelection.reconcile(files: finalFiles)
+        XCTAssertEqual(automaticSelection.index, 0)
+        XCTAssertEqual(keyboardSelection.index, 8)
+        store.updateListQuery("")
+    }
+
     func testScopeCountsUseVisibleCodexTreesWithoutCrossScopeOrTrashFolding() throws {
         let home = try HistoryTestSupport.temporaryDirectory("indexed-visible-counts")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -574,6 +672,81 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    /// Pauses the real repository only after a callback has been delivered, never under its DB
+    /// lock. Thresholds tolerate an extra time-based publication without relying on test sleeps.
+    private final class SearchPrefixGatedRepository: ConversationProgressiveHistoryProviding, @unchecked Sendable {
+        private let repository: IndexedHistoryRepository
+        private let thresholds: [Int]
+        private let condition = NSCondition()
+        private var releasedStep = 0
+        private var reachedStep = 0
+        private var reachedCount = 0
+        private var timedOut = false
+
+        init(repository: IndexedHistoryRepository, thresholds: [Int]) {
+            self.repository = repository
+            self.thresholds = thresholds
+        }
+        var blockedStep: Int { condition.lock(); defer { condition.unlock() }; return reachedStep }
+        var blockedCount: Int { condition.lock(); defer { condition.unlock() }; return reachedCount }
+        func release(through step: Int) {
+            condition.lock()
+            releasedStep = max(releasedStep, step)
+            condition.broadcast()
+            condition.unlock()
+        }
+        func listProjects(limit: Int) throws -> [HistoryProject] { try repository.listProjects(limit: limit) }
+        func getSession(file: URL) throws -> HistorySession { try repository.getSession(file: file) }
+        func search(query: String, limit: Int) throws -> [HistorySearchHit] {
+            try repository.search(query: query, limit: limit)
+        }
+        func search(query: String, limit: Int,
+                    onProgress: @Sendable (ConversationSearchProgress) -> Void) throws -> [HistorySearchHit] {
+            let result = try repository.search(query: query, limit: limit) { event in
+                onProgress(event)
+                condition.lock()
+                defer { condition.unlock() }
+                guard reachedStep < thresholds.count, !timedOut,
+                      event.phase != .completed, event.hits.count >= thresholds[reachedStep] else { return }
+                reachedStep += 1
+                reachedCount = event.hits.count
+                let deadline = Date().addingTimeInterval(10)
+                while releasedStep < reachedStep, condition.wait(until: deadline) {}
+                timedOut = releasedStep < reachedStep
+            }
+            condition.lock()
+            let failed = timedOut
+            condition.unlock()
+            if failed { throw GateError.timedOut }
+            return result
+        }
+        private enum GateError: Error { case timedOut }
+    }
+
+    private func makeEqualActivityRepository(home: URL, count: Int, duplicateStableIDs: Bool = false) throws
+        -> (IndexedHistoryRepository, [ConversationIndexedSession]) {
+        let scope = home.appendingPathComponent("history")
+        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        let activity = Date(timeIntervalSince1970: 1_800_000_000)
+        var sessions: [ConversationIndexedSession] = []
+        for index in 0..<count {
+            var value = indexedCodex(scope: scope, id: String(format: "bulk-%03d", index),
+                text: "deepcatalogneedle is present in the complete result set.")
+            value.metadata.lastActivity = activity
+            // Creation time is intentionally opposite to search's stable-ID tie-breaker.
+            value.metadata.createdAt = activity.addingTimeInterval(Double(index))
+            if duplicateStableIDs {
+                value.metadata.id = "disk:shared-producer-id"
+                value.metadata.source = .claude
+            }
+            sessions.append(value)
+        }
+        for value in sessions.reversed() { try database.replace(value) }
+        let configuration = HistoryConfiguration(historyDirs: [scope.path], homeDirectory: home,
+            importsRoot: home.appendingPathComponent("app/imports"))
+        return (IndexedHistoryRepository(configuration: configuration, database: database), sessions)
+    }
 
     private final class SearchProgressRecorder: @unchecked Sendable {
         private let lock = NSLock()

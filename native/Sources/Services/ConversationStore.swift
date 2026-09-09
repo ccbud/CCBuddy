@@ -822,16 +822,17 @@ final class ConversationStore: ObservableObject {
     /// bounded leading results; it never hides a literal hit or invents a transcript location.
     var orderedSearchSessions: [HistorySessionMetadata] {
         let sessions = filteredProjects.flatMap(\.sessions)
-        func recentFirst(_ lhs: HistorySessionMetadata, _ rhs: HistorySessionMetadata) -> Bool {
-            lhs.lastActivity == rhs.lastActivity ? lhs.id < rhs.id : lhs.lastActivity > rhs.lastActivity
+        guard !semanticRanks.isEmpty else {
+            return sessions.sorted(by: HistoryCatalogProjection.searchResultComesFirst)
         }
-        guard !semanticRanks.isEmpty else { return sessions.sorted(by: recentFirst) }
         // Normalizing a file URL inside the comparator multiplies its cost by O(n log n).
         // Compute ranks once per row, and leave the ordinary recency path free of URL work.
         return sessions.map { session in
             (session: session, rank: semanticRanks[ConversationFilter.fileKey(session.file)] ?? Int.max)
         }.sorted {
-            $0.rank == $1.rank ? recentFirst($0.session, $1.session) : $0.rank < $1.rank
+            $0.rank == $1.rank
+                ? HistoryCatalogProjection.searchResultComesFirst($0.session, $1.session)
+                : $0.rank < $1.rank
         }.map(\.session)
     }
 

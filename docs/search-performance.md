@@ -157,6 +157,11 @@ first-match presentation stay stable within one snapshot while remaining rows ar
 and counts complete. Counts never decrease; the completed callback and final-only
 API contain full exact counts. This avoids waiting for a giant transcript's complete
 count before the first usable result. Cache hits can already have complete counts.
+The repository and palette share the same activity-descending, stable-ID-ascending
+search order, with a source-path tie-breaker for duplicate IDs. This order is applied
+before the hit limit and before publishing prefixes; ordinary catalog ordering is
+unchanged. Without this shared policy, tied sessions could be reversed in the UI
+as each batch arrived, shifting the retained selection into the middle of the list.
 Candidate preparation, first visible publication, first complete count and complete
 search are separate metrics; none measures frame paint.
 
