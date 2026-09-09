@@ -95,6 +95,78 @@ final class ConversationProgressiveCountTests: XCTestCase {
         XCTAssertEqual(state.hits, [hit()])
     }
 
+    func testSlowSourceCanInsertBeforeHotResultsWithoutRegressingTheirCounts() {
+        var state = ConversationSearchProgressState()
+        let finished = hit("hot", count: 5, complete: true)
+        state.receive(.init(phase: .refiningResults, hits: [finished, hit("later")]), ordinal: 1)
+        state.receive(.init(phase: .refiningResults, hits: [hit("source"), hit("hot"),
+            hit("later", count: 3, complete: true)]), ordinal: 2)
+        XCTAssertEqual(state.hits, [hit("source"), finished, hit("later", count: 3, complete: true)])
+    }
+
+    func testSameSnapshotCanReorderIdentitiesWhileRefiningCounts() {
+        var state = ConversationSearchProgressState()
+        state.receive(.init(phase: .refiningResults, hits: [hit("b"), hit("a")]), ordinal: 1)
+        state.receive(.init(phase: .countingOccurrences,
+            hits: [hit("a", count: 4, complete: true), hit("b", count: 2)]), ordinal: 2)
+        XCTAssertEqual(state.hits, [hit("a", count: 4, complete: true), hit("b", count: 2)])
+    }
+
+    func testSameIdentityPublishesDiscoveredChildNavigationWithoutRegressingExactCount() {
+        var state = ConversationSearchProgressState()
+        var original = hit("parent", count: 5, complete: true)
+        let date = Date(timeIntervalSince1970: 100)
+        original.sourceMetadata = .init(id: "parent", file: original.file, source: .claude,
+            dirID: "fixture", dirLabel: "Fixture", sessionID: "parent", project: "Fixture",
+            title: "Parent", autoTitle: "Parent", createdAt: date, lastActivity: date, sizeBytes: 100)
+        state.receive(.init(phase: .refiningResults, hits: [original]), ordinal: 1)
+        var refreshed = original
+        refreshed.count = 1
+        refreshed.isCountComplete = false
+        refreshed.sourceMetadata?.subagentRefs = [.init(
+            file: URL(fileURLWithPath: "/tmp/count-child.jsonl"), threadID: "child",
+            title: "New child", messageCount: 2, lastActivity: date)]
+        refreshed.sourceMetadata?.subagentCount = 1
+        state.receive(.init(phase: .countingOccurrences, hits: [refreshed]), ordinal: 2)
+        XCTAssertEqual(state.hits.first?.sourceMetadata, refreshed.sourceMetadata)
+        XCTAssertEqual(state.hits.first?.count, 5)
+        XCTAssertEqual(state.hits.first?.isCountComplete, true)
+        XCTAssertEqual(state.hits.first?.sequence, original.sequence)
+        XCTAssertEqual(state.hits.first?.snippet, original.snippet)
+    }
+
+    func testIncompleteSnapshotCannotWithdrawAnAlreadyVerifiedIdentity() {
+        var state = ConversationSearchProgressState()
+        let original = [hit("a"), hit("b")]
+        state.receive(.init(phase: .refiningResults, hits: original), ordinal: 1)
+        state.receive(.init(phase: .refiningResults, hits: [hit("b", count: 5)]), ordinal: 2)
+        XCTAssertEqual(state.hits, original)
+    }
+
+    func testDuplicateIdentitiesAndUnverifiedInsertionsCannotCorruptCumulativeResults() {
+        var state = ConversationSearchProgressState()
+        state.receive(.init(phase: .refiningResults, hits: [hit("hot")]), ordinal: 1)
+        state.receive(.init(phase: .refiningResults, hits: [hit("source"), hit("hot"), hit("source")]), ordinal: 2)
+        XCTAssertEqual(state.hits, [hit("hot")])
+        state.receive(.init(phase: .refiningResults, hits: [hit("source", count: 0), hit("hot")]), ordinal: 3)
+        XCTAssertEqual(state.hits, [hit("hot")])
+    }
+
+    func testReorderingCannotChangeAnExistingSourcesIdentityOrAnchor() {
+        let mutations: [(inout HistorySearchHit) -> Void] = [
+            { $0.source = .codex }, { $0.sessionID = "replacement" },
+            { $0.agentType = "replacement" }, { $0.sequence = 99 }, { $0.snippet = "replacement" },
+        ]
+        for mutate in mutations {
+            var state = ConversationSearchProgressState()
+            state.receive(.init(phase: .refiningResults, hits: [hit("hot")]), ordinal: 1)
+            var changed = hit("hot", count: 7, complete: true)
+            mutate(&changed)
+            state.receive(.init(phase: .refiningResults, hits: [hit("source"), changed]), ordinal: 2)
+            XCTAssertEqual(state.hits, [hit("hot")])
+        }
+    }
+
     func testKeyboardSelectionSurvivesCountUpdatesAppendsAndSemanticReordering() {
         var selection = ConversationSearchSelection()
         selection.reconcile(files: ["a", "b"])

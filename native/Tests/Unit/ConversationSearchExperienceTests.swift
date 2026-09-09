@@ -142,6 +142,57 @@ final class ConversationSearchExperienceTests: XCTestCase {
         XCTAssertNotNil(store.searchFirstResultMilliseconds)
     }
 
+    func testTerminalCatalogInvalidationSynchronouslyWithdrawsUnusablePrefix() async {
+        await assertInvalidatedPrefixIsWithdrawn(ConversationCatalogError.staleRevision)
+    }
+
+    func testTerminalSourceInvalidationSynchronouslyWithdrawsUnusablePrefix() async {
+        await assertInvalidatedPrefixIsWithdrawn(HistorySessionLoadError.dependenciesChanged(
+            URL(fileURLWithPath: "/fixture/changed-search.jsonl")))
+    }
+
+    private func assertInvalidatedPrefixIsWithdrawn(_ error: Error) async {
+        let provider = GatedProgressiveSearchRepository(terminalError: error)
+        defer { provider.release() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.setSemanticRankingEnabled(true)
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        XCTAssertNotNil(store.searchFirstResultMilliseconds)
+        // Deliberately throw without a withdrawal callback. The Store cannot rely on one
+        // reaching the main actor before worker completion retires the active run ID.
+        provider.release()
+        await waitUntil { !store.isSearchingContent }
+        XCTAssertTrue(store.contentHits.isEmpty)
+        XCTAssertNotNil(store.contentSearchError)
+        XCTAssertNil(store.contentSearchPhase)
+        XCTAssertNil(store.searchDurationMilliseconds)
+        XCTAssertNil(store.searchFirstResultMilliseconds)
+        XCTAssertFalse(store.isRankingSearch)
+        XCTAssertTrue(store.semanticRanks.isEmpty)
+    }
+
+    func testLateSourceInvalidationCannotWithdrawANewerQueriesValidResults() async {
+        let provider = GatedProgressiveSearchRepository(terminalError: HistorySessionLoadError.dependenciesChanged(
+            URL(fileURLWithPath: "/fixture/changed-search.jsonl")))
+        defer { provider.release() }
+        let store = ConversationStore(repository: provider, searchDelayNanoseconds: 0)
+        await store.reload()
+        store.updateListQuery("cache")
+        await waitUntil { store.contentHits.count == 1 }
+        store.updateListQuery("replacement")
+        await waitUntil { !store.isSearchingContent && store.contentHits.count == 2 }
+        provider.release()
+        await waitUntil { provider.finishedOldCall }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(store.listQuery, "replacement")
+        XCTAssertNil(store.contentSearchError)
+        XCTAssertEqual(store.contentHits.count, 2)
+        XCTAssertTrue(store.contentHits.values.allSatisfy { $0.snippet == "replacement" })
+        XCTAssertEqual(store.contentSearchPhase, .completed)
+    }
+
     func testDeactivatedProgressiveWorkerCannotPublishALateFailure() async throws {
         let provider = GatedProgressiveSearchRepository(failsAfterPrefix: true)
         defer { provider.release() }
@@ -503,9 +554,13 @@ private actor ControlledSemanticRanker: SemanticSearchRanking {
 private final class GatedProgressiveSearchRepository: ConversationProgressiveHistoryProviding, @unchecked Sendable {
     private let condition = NSCondition()
     private let failsAfterPrefix: Bool
+    private let terminalError: Error?
     private var released = false
     private var finished = false
-    init(failsAfterPrefix: Bool = false) { self.failsAfterPrefix = failsAfterPrefix }
+    init(failsAfterPrefix: Bool = false, terminalError: Error? = nil) {
+        self.failsAfterPrefix = failsAfterPrefix
+        self.terminalError = terminalError
+    }
     var finishedOldCall: Bool {
         condition.lock()
         defer { condition.unlock() }
@@ -540,11 +595,11 @@ private final class GatedProgressiveSearchRepository: ConversationProgressiveHis
             let wasReleased = released
             condition.unlock()
             guard wasReleased else { throw FixtureError.timedOut }
-            if failsAfterPrefix {
+            if failsAfterPrefix || terminalError != nil {
                 condition.lock()
                 finished = true
                 condition.unlock()
-                throw FixtureError.interruptedRead
+                throw terminalError ?? FixtureError.interruptedRead
             }
             // Intentionally deliver after cancellation to exercise the store's stale-result guard.
             onProgress(.init(phase: .refiningResults, hits: hits, diagnostics: diagnostics))

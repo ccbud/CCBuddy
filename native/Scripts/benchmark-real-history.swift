@@ -17,15 +17,32 @@ enum RealHistoryBenchmark {
         "native/Sources", "ConversationFileCatalog", "Swift 代码", "error", "搜索",
         "工具", "代码", "performance", "Swift",
     ]
+    private static let postTimingParityFailures = PostTimingParityFailures()
+    private static let transientQueryFailures = PostTimingParityFailures()
+
+    private final class PostTimingParityFailures: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func record() { lock.withLock { value += 1 } }
+        var count: Int { lock.withLock { value } }
+    }
 
     static func main() async {
-        do { try await run() }
+        do {
+            try await run()
+            // A separate live-source comparison can differ after a valid timed snapshot.
+            // Keep collecting subsequent query/preparation evidence, but never turn that
+            // difference into a parity pass or a successful process exit.
+            if transientQueryFailures.count != 0 { throw BenchmarkFailure.queryExecutionFailure }
+            if postTimingParityFailures.count != 0 { throw BenchmarkFailure.progressiveParity }
+        }
         catch {
             var row: [String: Any] = ["phase": "failed",
                 "error_type": String(describing: type(of: error))]
             // Only value-free local reason codes are safe to describe. Cocoa/producer errors
             // can contain full paths or content and must never be serialized here.
             if let known = error as? BenchmarkFailure { row["reason"] = String(describing: known) }
+            else if let reason = safeProductionFailureReason(error) { row["reason"] = reason }
             emit(row)
             exit(1)
         }
@@ -44,6 +61,12 @@ enum RealHistoryBenchmark {
               benchmark-real-history.sh --restore --prepare-index --catalog <private directory>
             Query options: --repository | --progressive-repository | --fallback-repository
             Optional: --require-known-hits (require the two fixed public Chinese phrases).
+            Narrow restored profiles: --only-primary-query, --only-required-queries, --only-broad-query, --core-queries.
+            Stat-only coverage audit: --coverage-profile --catalog <private directory>.
+            Post-timing parity differences are reported per query; measurements continue,
+            then the process exits nonzero if any such comparison failed.
+            Typed source-revision execution failures likewise remain failures while later
+            measurement phases continue; other execution/invariant failures stop immediately.
             Compile only: benchmark-real-history.sh --compile-only
             A catalog must be named catalog inside a mode-0700, same-owner directory named
             native/build/ccbuddy-query-benchmark.<random>. Create its parent with mktemp -d.
@@ -80,22 +103,27 @@ enum RealHistoryBenchmark {
         let inventory = arguments.contains("--inventory")
         let largest = arguments.contains("--largest")
         let detail = arguments.contains("--detail")
+        let coverageProfile = arguments.contains("--coverage-profile")
         let sourceSearch = arguments.contains("--source-search")
         let scan = arguments.contains("--run")
         let queries = arguments.contains("--queries") || restore
             || (!scan && (fallback || progressive || finalRepository))
-        guard [inventory, largest, detail, sourceSearch, scan, queries].filter({ $0 }).count == 1 else {
+        guard [inventory, largest, detail, sourceSearch, coverageProfile, scan, queries].filter({ $0 }).count == 1 else {
             throw BenchmarkFailure.conflictingModes
         }
         let catalog = try catalogArgument()
         if let catalog {
             try validatePrivateCatalog(catalog, allowMissing: scan)
-        } else if scan || queries {
+        } else if scan || queries || coverageProfile {
             throw BenchmarkFailure.invalidCatalog
         }
         if inventory, let catalog {
             emit(["phase": "catalog_inventory", "storage": try catalogInventory(catalog),
                 "disk": diskFootprint(catalog), "opens_catalog": false, "producer_reads": false])
+            return
+        }
+        if coverageProfile, let catalog {
+            try profileCoverage(ConversationFileCatalog(file: catalog, enableTgrep: false))
             return
         }
         if let catalog, queries {
@@ -182,8 +210,9 @@ enum RealHistoryBenchmark {
         }
         guard let catalog else { throw BenchmarkFailure.invalidCatalog }
         let database = try ConversationFileCatalog(file: catalog, enableTgrep: !fallback)
+        let observedLoader = ScanFailureProbe(loader: loader)
         let scanner = ConversationIndexScanner(configuration: configuration, database: database,
-            loader: loader, reparseSpacing: .immediate)
+            loader: observedLoader, reparseSpacing: .immediate)
         let started = ContinuousClock.now
         let firstMetadata = FirstMetadataProbe()
         let result = try scanner.scanAll(onProgress: { progress in
@@ -197,6 +226,9 @@ enum RealHistoryBenchmark {
         emit(["phase": "catalog_scan_complete", "elapsed_ms": milliseconds(since: started),
             "first_metadata_published_ms": firstMetadata.elapsed.map { $0 as Any } ?? NSNull(),
             "discovered": result.discovered, "parsed": result.parsed, "failed": result.failed,
+            "failed_load_attempt_kinds": observedLoader.attemptKinds,
+            "unresolved_source_failure_kinds": observedLoader.unresolvedKinds,
+            "unclassified_failed_sources": max(0, result.failed - observedLoader.unresolvedCount),
             "unchanged": result.unchanged, "metadata_published": result.metadataPublished,
             "complete": result.failed == 0 && result.deferred == 0,
             "postings_preparation_started": false, "producer_transcripts_read_only": true,
@@ -263,12 +295,24 @@ enum RealHistoryBenchmark {
             "included_in_query_timings": false])
         emit(["phase": "complete", "elapsed_ms": milliseconds(since: started),
             "catalog_retained_for_next_process": true, "disk": diskFootprint(database.file),
+            "measurements_complete": true,
+            "validation_passed": postTimingParityFailures.count == 0 && transientQueryFailures.count == 0,
+            "post_timing_parity_failures": postTimingParityFailures.count,
+            "transient_query_execution_failures": transientQueryFailures.count,
             "process_peak_rss_bytes": peakRSS()])
     }
 
     private static func queryPass(_ database: ConversationFileCatalog, arguments: Set<String>,
         phase: String, producerScanPrewarmed: Bool, preparationPrewarmed: Bool,
         precedingQueryPass: Bool, repositoryMode: Bool, queries: [String], includeRepeats: Bool) throws {
+        let queries = arguments.contains("--only-primary-query") ? queries.filter { $0 == requiredQueries[0] }
+            : arguments.contains("--only-required-queries") ? queries.filter { requiredQueries.contains($0) }
+            : arguments.contains("--only-broad-query") ? queries.filter { $0 == "error" }
+            : arguments.contains("--core-queries") ? queries.filter { requiredQueries.contains($0) || $0 == "error" } : queries
+        let includeRepeats = includeRepeats && !arguments.contains("--only-primary-query")
+            && !arguments.contains("--only-required-queries")
+            && !arguments.contains("--only-broad-query")
+            && !arguments.contains("--core-queries")
         emit(["phase": phase + "_query_contract", "search_backend": repositoryMode ? "repository" : "direct_blocks",
             "metadata_cache_prewarmed_by_preparation": preparationPrewarmed,
             "body_os_cache_may_be_warm_from_prior_query_pass": precedingQueryPass,
@@ -292,18 +336,43 @@ enum RealHistoryBenchmark {
             let repository = IndexedHistoryRepository(configuration: .init(historyDirs: scopes,
                 homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
                 importsRoot: database.file.deletingLastPathComponent().appendingPathComponent("benchmark-app/imports")), database: database)
+            let configuredRoots = Set(sourceLocations(home: repository.configuration.homeDirectory).map(\.path))
+            let resolvedScopes = Set(scopes.map {
+                HistoryPathResolver.expandTilde($0, homeDirectory: repository.configuration.homeDirectory)
+                    .resolvingSymlinksInPath().standardizedFileURL.path
+            })
+            guard resolvedScopes.isSubset(of: configuredRoots) else {
+                throw BenchmarkFailure.catalogConfigurationChanged
+            }
             let listed = try repository.listSessions(limit: ConversationCatalogLimits.searchScan)
+            // Match the independent source oracle's largest ordinary Codex/Claude source.
+            // This stat-only selection runs outside query timing; its private identity is
+            // retained solely for callback comparison and is never included in output.
+            let target = entries.compactMap { entry -> QueryTarget? in
+                guard entry.metadata.source == .codex || entry.metadata.source == .claude,
+                      entry.metadata.file.pathExtension == "jsonl",
+                      !QoderFileReader.isQoderDataPath(entry.metadata.file),
+                      let bytes = try? entry.metadata.file.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+                    return nil
+                }
+                return QueryTarget(path: ConversationFileCatalog.normalizedPath(entry.metadata.file), bytes: bytes)
+            }.max { $0.bytes < $1.bytes }
             let physical = Set(entries.filter { !$0.scope.hasPrefix("__") }.map(\.sourcePath))
             guard listed.allSatisfy({ !$0.dirID.hasPrefix("__") && physical.contains($0.file.path) }) else {
                 throw BenchmarkFailure.virtualRepositoryScope
             }
             emit(["phase": phase + "_repository_setup", "elapsed_ms": milliseconds(since: setup),
                 "metadata_cache_prewarmed_for_scope_resolution": true,
-                "visible_canonical_sessions": listed.count, "physical_scope_count": scopes.count])
+                "visible_canonical_sessions": listed.count, "physical_scope_count": scopes.count,
+                "catalog_scopes_still_authorized_by_current_configuration": true,
+                "stable_isolated_imports_namespace": true,
+                "persisted_body_proof_rows": entries.filter { $0.fingerprint.searchContentFingerprint != nil }.count,
+                "legacy_rows_without_body_proof": entries.filter { $0.fingerprint.searchContentFingerprint == nil }.count])
             for (index, query) in queries.enumerated() {
                 let label = phase + (index == 0 ? "_first_query" : "_subsequent_query")
                 if arguments.contains("--progressive-repository") {
-                    try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query, phase: label)
+                    try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query, phase: label,
+                        target: target)
                 } else {
                     try measureRepositoryQuery(repository, sessions: listed, query: query, phase: label,
                         requiringFallback: arguments.contains("--fallback-repository"))
@@ -312,7 +381,7 @@ enum RealHistoryBenchmark {
             if includeRepeats {
                 for query in requiredQueries {
                     try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query,
-                        phase: phase + "_repeat_query")
+                        phase: phase + "_repeat_query", target: target)
                 }
             }
         } else {
@@ -331,6 +400,93 @@ enum RealHistoryBenchmark {
         guard CommandLine.arguments.indices.contains(index + 1),
               !CommandLine.arguments[index + 1].hasPrefix("--") else { throw BenchmarkFailure.invalidCatalog }
         return URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true).standardizedFileURL
+    }
+
+    /// Stat-only contributor audit. Codex state/config dependencies are event-only, so this
+    /// deliberately does not read either file just to reconstruct their excluded event paths.
+    private static func profileCoverage(_ database: ConversationFileCatalog) throws {
+        let start = ContinuousClock.now
+        let entries = try database.listEntries(deleted: nil, limit: .max)
+        let metadataMS = milliseconds(since: start)
+        let scopes = Array(Set(entries.map(\.scope).filter { !$0.hasPrefix("__") })).sorted()
+        let configuration = HistoryConfiguration(historyDirs: scopes,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            importsRoot: database.file.deletingLastPathComponent().appendingPathComponent("benchmark-app/imports"))
+        let loader = HistorySessionLoader(configuration: configuration)
+        var validationMS = 0.0, manifestsMS = 0.0, statMS = 0.0, hashingMS = 0.0
+        var invalidPaths = 0, changed = 0, changedPrimary = 0, changedBody = 0, annotationOnly = 0
+        var changedBytes: UInt64 = 0, largestChangedBytes: UInt64 = 0
+        var changedBySource: [String: Int] = [:], contributingRoles: [String: Int] = [:]
+        var changedManifests: [(ConversationDependencyManifest, ConversationDependencySnapshot)] = []
+        for entry in entries {
+            let validating = ContinuousClock.now
+            guard let candidate = try? loader.pathResolver.validatedCandidate(for: entry.metadata.file),
+                  candidate.directory.id == entry.scope else {
+                validationMS += milliseconds(since: validating); invalidPaths += 1; continue
+            }
+            validationMS += milliseconds(since: validating)
+            let manifestStarted = ContinuousClock.now
+            let manifest: ConversationDependencyManifest
+            if entry.metadata.source == .codex {
+                var dependencies: [ConversationSourceDependency] = [
+                    .init(file: candidate.file, role: .primaryTranscript),
+                ]
+                if candidate.directory.id != "__imported__" {
+                    dependencies.append(.init(file: configuration.appDataRoot.appendingPathComponent("codex-meta.json"),
+                                              role: .customMetadata))
+                }
+                manifest = .init(candidate: candidate, source: .codex, dependencies: dependencies)
+            } else {
+                let format: HistoryTranscriptFormat
+                switch entry.metadata.source {
+                case .claude: format = .claude
+                case .codex: format = .codex
+                case .qoder: format = .qoder
+                case .grok: format = .grok
+                case .copilot: format = .copilot
+                case .antigravity: format = .antigravity
+                }
+                manifest = try loader.adapters.manifest(for: candidate, format: format, configuration: configuration)
+            }
+            manifestsMS += milliseconds(since: manifestStarted)
+            let statStarted = ContinuousClock.now
+            let snapshot = manifest.snapshot()
+            statMS += milliseconds(since: statStarted)
+            let hashingStarted = ContinuousClock.now
+            let full = snapshot.fingerprint
+            let body = ConversationIndexFingerprint.contentFingerprint(manifest: manifest, snapshot: snapshot)
+            hashingMS += milliseconds(since: hashingStarted)
+            guard full != entry.fingerprint.dependencyFingerprint else { continue }
+            changed += 1
+            changedBySource[entry.metadata.source.rawValue, default: 0] += 1
+            changedManifests.append((manifest, snapshot))
+            if let primary = manifest.primary, let stamp = snapshot.stamp(for: primary.file, role: primary.role) {
+                let bytes = stamp.sizeBytes ?? 0
+                changedBytes += bytes; largestChangedBytes = max(largestChangedBytes, bytes)
+                let oldNanoseconds = Int64((entry.fingerprint.modificationTime.timeIntervalSince1970 * 1_000_000_000).rounded())
+                if stamp.sizeBytes != entry.fingerprint.sizeBytes || stamp.modifiedAtNanoseconds != oldNanoseconds {
+                    changedPrimary += 1
+                }
+            }
+            if entry.fingerprint.searchContentFingerprint == body { annotationOnly += 1 }
+            else { changedBody += 1 }
+            for stamp in snapshot.stamps { contributingRoles[stamp.role.rawValue, default: 0] += 1 }
+        }
+        let mutatedDuringAudit = changedManifests.filter { $0.0.snapshot() != $0.1 }.count
+        emit(["phase": "coverage_stat_profile", "entries": entries.count,
+            "metadata_list_ms": metadataMS, "path_validation_ms": validationMS,
+            "contributing_manifest_ms": manifestsMS, "dependency_stat_ms": statMS,
+            "fingerprint_hash_ms": hashingMS, "elapsed_ms": milliseconds(since: start),
+            "invalid_or_unavailable_paths": invalidPaths, "source_revision_different": changed,
+            "primary_size_or_mtime_different": changedPrimary, "body_proof_different_or_missing": changedBody,
+            "proven_annotation_only_differences": annotationOnly,
+            "changed_source_bytes": changedBytes, "largest_changed_source_bytes": largestChangedBytes,
+            "changed_sources_by_producer": changedBySource,
+            "changed_manifest_contributing_roles": contributingRoles,
+            "changed_sources_mutated_again_during_audit": mutatedDuringAudit,
+            "source_content_read": false, "codex_event_only_config_or_database_read": false,
+            "metadata_discovery_performed": false, "tgrep_preparation_started": false,
+            "process_peak_rss_bytes": peakRSS()])
     }
 
     static func validatePrivateCatalog(_ file: URL, allowMissing: Bool = false) throws {
@@ -428,6 +584,49 @@ enum RealHistoryBenchmark {
             guard progress.metadataPublished > 0 else { return }
             lock.lock(); defer { lock.unlock() }
             if value == nil { value = elapsed }
+        }
+    }
+
+    /// Only aggregate categories escape the process. Local keys let a successful dependency-
+    /// retry remove its prior failure; raw error descriptions and source identities never print.
+    private final class ScanFailureProbe: HistorySessionLoading, @unchecked Sendable {
+        let loader: HistorySessionLoader
+        private let lock = NSLock()
+        private var unresolved: [String: String] = [:]
+        private var attempts: [String: Int] = [:]
+        init(loader: HistorySessionLoader) { self.loader = loader }
+        func prefetch(_ candidates: [HistoryFileCandidate]) { loader.prefetch(candidates) }
+        func loadQuickMetadata(_ candidates: [HistoryFileCandidate]) -> [QuickLoadedHistorySession] {
+            loader.loadQuickMetadata(candidates)
+        }
+        func load(_ candidate: HistoryFileCandidate, consistency: HistorySessionLoadConsistency) throws -> LoadedHistorySession {
+            do {
+                let result = try loader.load(candidate, consistency: consistency)
+                lock.withLock { _ = unresolved.removeValue(forKey: candidate.file.path) }
+                return result
+            } catch {
+                let kind: String
+                switch error {
+                case HistorySessionLoadError.dependenciesChanged: kind = "source_changed_during_parse"
+                case HistoryError.unsupportedTranscript: kind = "unsupported_transcript"
+                case HistoryError.invalidPath, HistoryError.pathOutsideConfiguredRoots,
+                     HistoryError.notARegularJSONLFile: kind = "invalid_or_unavailable_source"
+                case HistoryError.unreadableFile: kind = "source_read_failed"
+                case is QoderFileReadError: kind = "permission_aware_helper_failed"
+                case is CancellationError: kind = "cancelled"
+                default: kind = "other_parser_error"
+                }
+                lock.withLock {
+                    unresolved[candidate.file.path] = kind
+                    attempts[kind, default: 0] += 1
+                }
+                throw error
+            }
+        }
+        var attemptKinds: [String: Int] { lock.withLock { attempts } }
+        var unresolvedCount: Int { lock.withLock { unresolved.count } }
+        var unresolvedKinds: [String: Int] {
+            lock.withLock { unresolved.values.reduce(into: [:]) { $0[$1, default: 0] += 1 } }
         }
     }
 
@@ -619,42 +818,120 @@ enum RealHistoryBenchmark {
             "nonempty_snippets": hits.filter { !$0.snippet.isEmpty }.count,
             "nested_transcript_hits": hits.filter { $0.agent != "main" }.count,
             "foundation_count_snippet_anchor_parity_samples": verified,
+            "independent_oracle_unverified_hit_count": hits.count - verified,
+            "foundation_oracle_scope": "at_most_three_small_catalog_documents_not_all_hits",
+            "query_local_owner_metadata_hits": hits.filter { $0.sourceMetadata != nil }.count,
+            "catalog_oracle_requires_current_source_revision": true,
+            "independent_authoritative_source_oracle_samples": 0,
             "restored_from_cache": diagnostics.restoredFromCache,
             "used_fallback": diagnostics.usedFallback,
             "process_peak_rss_bytes": peakRSS()])
     }
 
+    struct QueryTarget {
+        let path: String
+        let bytes: Int
+
+        func matches(_ hit: HistorySearchHit) -> Bool {
+            if hit.agent == "main" { return ConversationFileCatalog.normalizedPath(hit.file) == path }
+            guard let child = hit.sourceMetadata?.subagentRefs.first(where: { $0.threadID == hit.agent }) else {
+                return false
+            }
+            return ConversationFileCatalog.normalizedPath(child.file) == path
+        }
+    }
+
     static func measureProgressiveRepositoryQuery(_ repository: IndexedHistoryRepository,
-        sessions: [HistorySessionMetadata], query: String, phase: String) throws {
+        sessions: [HistorySessionMetadata], query: String, phase: String, target: QueryTarget? = nil) throws {
         let started = ContinuousClock.now
-        let probe = ProgressiveRepositoryProbe(started: started)
-        let hits = try repository.search(query: query, limit: ConversationCatalogLimits.searchHits) {
-            probe.record($0)
+        let probe = ProgressiveRepositoryProbe(started: started, target: target)
+        let hits: [HistorySearchHit]
+        do {
+            hits = try repository.search(query: query, limit: ConversationCatalogLimits.searchHits) {
+                probe.record($0)
+            }
+        } catch {
+            let partial = probe.diagnosticSnapshot()
+            emit(["phase": phase + "_query_execution_failure", "query": query,
+                "reason": safeProductionFailureReason(error) ?? "unclassified_production_failure",
+                "repository_search_ms": milliseconds(since: started),
+                "repository_first_visible_hit_ms": partial.firstHitMilliseconds.map { $0 as Any } ?? NSNull(),
+                "firstTargetMs": partial.firstTargetMilliseconds.map { $0 as Any } ?? NSNull(),
+                "targetBytes": target.map { $0.bytes as Any } ?? NSNull(),
+                "targetCount": NSNull(), "completed_progressive_snapshot": false,
+                "snapshot_epochs": partial.attempts,
+                "last_published_source_coverage_ms": partial.diagnostics?.sourceCoverageMilliseconds as Any? ?? NSNull(),
+                "last_published_source_verification_ms": partial.diagnostics?.sourceVerificationMilliseconds as Any? ?? NSNull(),
+                "callback_hit_counts": partial.callbackHitCounts])
+            if recordTransientQueryFailure(error) { return }
+            throw error
         }
         let elapsed = milliseconds(since: started)
-        let diagnostics = repository.database.searchDiagnostics
+        let progress = try probe.validatedSnapshot(finalHits: hits)
+        let diagnostics = progress.diagnostics ?? repository.database.searchDiagnostics
         if requiresKnownHits(query), hits.isEmpty {
             emit(["phase": phase, "query": query, "failed": true,
                 "reason": "required_query_has_no_hits", "engine": diagnostics.engine,
                 "fallback_reason": diagnostics.fallbackReason.map { $0 as Any } ?? NSNull()])
             throw BenchmarkFailure.requiredQueryHasNoHits
         }
-        let progress = try probe.validatedSnapshot(finalHits: hits)
         // The final-only production API is the oracle for ordering, counts, snippets and anchors.
         // It runs AFTER the timed progressive call; no warm-up query precedes first-hit timing.
-        let finalOnly = try repository.search(query: query, limit: ConversationCatalogLimits.searchHits)
-        guard finalOnly == hits else { throw BenchmarkFailure.progressiveParity }
+        let finalOnly: [HistorySearchHit]
+        do {
+            finalOnly = try repository.search(query: query, limit: ConversationCatalogLimits.searchHits)
+        } catch {
+            emit(["phase": phase + "_post_timing_query_execution_failure", "query": query,
+                "reason": safeProductionFailureReason(error) ?? "unclassified_production_failure",
+                "repository_search_ms": elapsed, "completed_progressive_snapshot": true,
+                "firstTargetMs": progress.firstTargetMilliseconds.map { $0 as Any } ?? NSNull(),
+                "targetBytes": target.map { $0.bytes as Any } ?? NSNull(),
+                "targetCount": hits.first(where: { target?.matches($0) == true }).map { $0.count as Any } ?? NSNull()])
+            if recordTransientQueryFailure(error) { return }
+            throw error
+        }
+        guard finalOnly == hits else {
+            let withoutMetadata: (HistorySearchHit) -> HistorySearchHit = { hit in
+                var value = hit
+                value.sourceMetadata = nil
+                return value
+            }
+            emit(["phase": phase + "_post_timing_parity_failure", "query": query,
+                "repository_first_visible_hit_ms": progress.firstHitMilliseconds.map { $0 as Any } ?? NSNull(),
+                "repository_search_ms": elapsed, "search_attempts": progress.attempts,
+                "query_local_owner_metadata_hits": hits.filter { $0.sourceMetadata != nil }.count,
+                "owner_metadata_only_difference": finalOnly.map(withoutMetadata) == hits.map(withoutMetadata),
+                "same_ordered_hit_identities": finalOnly.map(\.id) == hits.map(\.id),
+                "progressive_hit_count": hits.count, "final_only_hit_count": finalOnly.count,
+                "progressive_exact_occurrences": hits.reduce(0) { $0 + $1.count },
+                "final_only_exact_occurrences": finalOnly.reduce(0) { $0 + $1.count },
+                "targetBytes": target.map { $0.bytes as Any } ?? NSNull(),
+                "firstTargetMs": progress.firstTargetMilliseconds.map { $0 as Any } ?? NSNull(),
+                "targetCount": hits.first(where: { target?.matches($0) == true }).map { $0.count as Any } ?? NSNull(),
+                "separate_live_source_snapshots_may_differ": true,
+                "final_only_api_parity": false])
+            postTimingParityFailures.record()
+            return
+        }
         let verified = try verifySmallRepositoryHits(hits, query: query, sessions: sessions,
                                                     database: repository.database)
         emit(["phase": phase, "query": query, "engine": diagnostics.engine,
             "timing_scope": "repository_progressive_delivery_not_ui_first_paint",
             "includes_ui_first_paint": false,
             "repository_first_visible_hit_ms": progress.firstHitMilliseconds.map { $0 as Any } ?? NSNull(),
+            "final_attempt_first_visible_hit_ms": progress.finalAttemptFirstHitMilliseconds.map { $0 as Any } ?? NSNull(),
             "repository_first_complete_hit_ms": progress.firstCompleteHitMilliseconds.map { $0 as Any } ?? NSNull(),
             "repository_search_ms": elapsed,
+            "targetBytes": target.map { $0.bytes as Any } ?? NSNull(),
+            "firstTargetMs": progress.firstTargetMilliseconds.map { $0 as Any } ?? NSNull(),
+            "targetCount": hits.first(where: { target?.matches($0) == true }).map { $0.count as Any } ?? NSNull(),
             "first_hit_phase": progress.firstHitPhase.map { $0 as Any } ?? NSNull(),
             "first_hit_count_complete": progress.firstHitCountComplete.map { $0 as Any } ?? NSNull(),
             "candidate_ms": diagnostics.queryMilliseconds,
+            "source_coverage_ms": diagnostics.sourceCoverageMilliseconds,
+            "source_verification_sources": diagnostics.sourceVerificationSourceCount,
+            "source_verification_bytes": diagnostics.sourceVerificationBytes,
+            "source_verification_ms": diagnostics.sourceVerificationMilliseconds,
             "indexed_posting_groups": diagnostics.indexedDocuments,
             "candidate_blocks": diagnostics.candidateCount,
             "normalization_ms": diagnostics.cumulativeNormalizationMilliseconds,
@@ -665,17 +942,26 @@ enum RealHistoryBenchmark {
             "callback_count": progress.callbackHitCounts.count,
             "callback_hit_counts": progress.callbackHitCounts,
             "callback_validation_included_in_timing": true,
-            "prefix_identity_anchor_snippet_stable": true,
-            "counts_nondecreasing": true,
+            "identity_anchor_snippet_stable_within_each_attempt": true,
+            "counts_nondecreasing_within_each_attempt": true,
+            "search_attempts": progress.attempts,
+            "snapshot_retirements_including_canonical_reconciliation": max(0, progress.attempts - 1),
             "final_counts_complete": hits.allSatisfy(\.isCountComplete),
             "completed_callback_matches_returned_hits": true,
             "final_only_api_parity": true,
             "final_only_api_oracle_runs_outside_timing": 1,
+            "final_only_api_may_reuse_exact_answer_cache": true,
+            "final_only_api_is_not_an_independent_text_oracle": true,
             "matched_sessions_capped_at_200": hits.count,
             "exact_occurrences": hits.reduce(0) { $0 + $1.count },
             "located_message_spans": hits.filter { $0.sequence != nil }.count,
             "nested_transcript_hits": hits.filter { $0.agent != "main" }.count,
             "foundation_count_snippet_anchor_parity_samples": verified,
+            "independent_oracle_unverified_hit_count": hits.count - verified,
+            "foundation_oracle_scope": "at_most_three_small_catalog_documents_not_all_hits",
+            "query_local_owner_metadata_hits": hits.filter { $0.sourceMetadata != nil }.count,
+            "catalog_oracle_requires_current_source_revision": true,
+            "independent_authoritative_source_oracle_samples": 0,
             "process_peak_rss_bytes": peakRSS()])
     }
 
@@ -684,38 +970,74 @@ enum RealHistoryBenchmark {
     private final class ProgressiveRepositoryProbe: @unchecked Sendable {
         struct Snapshot {
             let firstHitMilliseconds: Double?
+            let firstTargetMilliseconds: Double?
+            let finalAttemptFirstHitMilliseconds: Double?
             let firstCompleteHitMilliseconds: Double?
             let firstHitPhase: String?
             let firstHitCountComplete: Bool?
             let callbackHitCounts: [Int]
+            let attempts: Int
+            let diagnostics: ConversationSearchDiagnostics?
+        }
+
+        private struct Attempt: Equatable {
+            var revision: Int64?
+            var identity: String?
+            var token: UUID?
         }
 
         private let lock = NSLock()
         private let started: ContinuousClock.Instant
+        private let target: QueryTarget?
         private var latestHits: [HistorySearchHit] = []
         private var latestPhase: ConversationSearchProgress.Phase?
         private var callbackHitCounts: [Int] = []
         private var firstHitMilliseconds: Double?
+        private var firstTargetMilliseconds: Double?
+        private var finalAttemptFirstHitMilliseconds: Double?
         private var firstCompleteHitMilliseconds: Double?
         private var firstHitPhase: String?
         private var firstHitCountComplete: Bool?
         private var completedCallbacks = 0
         private var valid = true
+        private var latestAttempt: Attempt?
+        private var attempts = 0
+        private var diagnostics: ConversationSearchDiagnostics?
 
-        init(started: ContinuousClock.Instant) { self.started = started }
+        init(started: ContinuousClock.Instant, target: QueryTarget?) {
+            self.started = started
+            self.target = target
+        }
 
         func record(_ progress: ConversationSearchProgress) {
             let elapsed = RealHistoryBenchmark.milliseconds(since: started)
             lock.lock()
             defer { lock.unlock() }
+            let attempt = Attempt(revision: progress.snapshotRevision,
+                identity: progress.snapshotIdentity, token: progress.snapshotAttempt)
+            if latestAttempt != attempt {
+                if completedCallbacks != 0 || progress.phase != .preparingCandidates || !progress.hits.isEmpty {
+                    valid = false
+                }
+                latestAttempt = attempt
+                attempts += 1
+                latestHits = []
+                latestPhase = nil
+                finalAttemptFirstHitMilliseconds = nil
+            }
+            if let value = progress.diagnostics { diagnostics = value }
             if completedCallbacks != 0 || progress.hits.count < latestHits.count
                 || !progress.hits.allSatisfy({ $0.count > 0 && !$0.snippet.isEmpty }) {
                 valid = false
             }
-            for (previous, current) in zip(latestHits, progress.hits) {
+            let currentByID = Dictionary(progress.hits.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+            if currentByID.count != progress.hits.count { valid = false }
+            for previous in latestHits {
+                guard let current = currentByID[previous.id] else { valid = false; continue }
                 var stableFields = previous
                 stableFields.count = current.count
                 stableFields.isCountComplete = current.isCountComplete
+                stableFields.sourceMetadata = current.sourceMetadata
                 if stableFields != current || current.count < previous.count
                     || (previous.isCountComplete && (!current.isCountComplete || current.count != previous.count)) {
                     valid = false
@@ -727,6 +1049,12 @@ enum RealHistoryBenchmark {
                 firstHitMilliseconds = elapsed
                 firstHitPhase = progress.phase == .completed ? "completed" : "refiningResults"
                 firstHitCountComplete = progress.hits.first?.isCountComplete
+            }
+            if firstTargetMilliseconds == nil, progress.hits.contains(where: { target?.matches($0) == true }) {
+                firstTargetMilliseconds = elapsed
+            }
+            if finalAttemptFirstHitMilliseconds == nil, !progress.hits.isEmpty {
+                finalAttemptFirstHitMilliseconds = elapsed
             }
             if firstCompleteHitMilliseconds == nil, progress.hits.first?.isCountComplete == true {
                 firstCompleteHitMilliseconds = elapsed
@@ -748,9 +1076,22 @@ enum RealHistoryBenchmark {
                   finalHits.isEmpty || (firstHitMilliseconds != nil && firstCompleteHitMilliseconds != nil) else {
                 throw BenchmarkFailure.progressiveParity
             }
+            return snapshotWithoutLock()
+        }
+
+        func diagnosticSnapshot() -> Snapshot {
+            lock.lock()
+            defer { lock.unlock() }
+            return snapshotWithoutLock()
+        }
+
+        private func snapshotWithoutLock() -> Snapshot {
             return Snapshot(firstHitMilliseconds: firstHitMilliseconds,
+                firstTargetMilliseconds: firstTargetMilliseconds,
+                finalAttemptFirstHitMilliseconds: finalAttemptFirstHitMilliseconds,
                 firstCompleteHitMilliseconds: firstCompleteHitMilliseconds, firstHitPhase: firstHitPhase,
-                firstHitCountComplete: firstHitCountComplete, callbackHitCounts: callbackHitCounts)
+                firstHitCountComplete: firstHitCountComplete, callbackHitCounts: callbackHitCounts,
+                attempts: attempts, diagnostics: diagnostics)
         }
     }
 
@@ -760,17 +1101,22 @@ enum RealHistoryBenchmark {
         let refs = Dictionary(grouping: references, by: { $0.sessionPath })
         let rows = Dictionary(uniqueKeysWithValues: sessions.map { (ConversationFileCatalog.normalizedPath($0.file), $0) })
         var verified = 0
-        // Source-backed hits require an authoritative-source oracle, never a stale body pack.
-        for hit in hits where hit.sourceMetadata == nil {
+        let scopes = Array(Set(sessions.map(\.dirID)))
+        let loader = HistorySessionLoader(configuration: .init(historyDirs: scopes,
+            importsRoot: database.file.deletingLastPathComponent().appendingPathComponent("benchmark-app/imports")))
+        // Query-local owner metadata is now present for hot hits too. Only a separately current
+        // source-revision proof authorizes comparing a hit against a catalog pack.
+        for hit in hits {
             let parentPath = ConversationFileCatalog.normalizedPath(hit.file)
             var path = parentPath
             var transcript = hit.agent
-            if let child = rows[parentPath]?.subagentRefs.first(where: { $0.threadID == hit.agent }) {
+            if let child = (hit.sourceMetadata ?? rows[parentPath])?.subagentRefs.first(where: { $0.threadID == hit.agent }) {
                 path = ConversationFileCatalog.normalizedPath(child.file)
                 transcript = "main"
             }
             guard let reference = refs[path]?.first(where: { $0.transcriptID == transcript }),
                   let entry = try database.entry(forPath: path), entry.metadata.sizeBytes <= 131_072,
+                  let source = try ConversationSourceSearchCoverage.verifiedCatalogSource(loader: loader, entry: entry),
                   let document = try boundedOracleDocument(database, reference: reference,
                     query: query) else { continue }
             var cursor = document.text.startIndex
@@ -792,6 +1138,7 @@ enum RealHistoryBenchmark {
             let span = document.messageSpans.first { offset >= $0.utf16Location && offset < $0.utf16Location + max(1, $0.utf16Length) }
                 ?? document.messageSpans.first { $0.utf16Location >= offset } ?? document.messageSpans.last
             guard snippet == hit.snippet, span?.sequence == hit.sequence else { throw BenchmarkFailure.invalidRepositoryHit }
+            guard source.manifest.snapshot() == source.dependencySnapshot else { throw ConversationCatalogError.staleRevision }
             verified += 1
             if verified == 3 { break }
         }
@@ -823,13 +1170,49 @@ enum RealHistoryBenchmark {
         return Double(value.seconds) * 1_000 + Double(value.attoseconds) / 1e15
     }
 
+    private static func safeProductionFailureReason(_ error: Error) -> String? {
+        switch error {
+        case ConversationCatalogError.staleRevision: return "stale_revision"
+        case ConversationCatalogError.invalidRecord: return "invalid_catalog_record"
+        case ConversationCatalogError.unsafeEmptyReconciliation: return "unsafe_empty_reconciliation"
+        case ConversationCatalogError.corruptRow: return "corrupt_catalog_row"
+        case HistorySessionLoadError.dependenciesChanged: return "source_dependencies_changed"
+        case is CancellationError: return "cancelled"
+        default: return nil
+        }
+    }
+
+    private static func recordTransientQueryFailure(_ error: Error) -> Bool {
+        switch error {
+        case ConversationCatalogError.staleRevision, HistorySessionLoadError.dependenciesChanged:
+            transientQueryFailures.record()
+            return true
+        default: return false
+        }
+    }
+
     static func peakRSS() -> Int64 {
         var usage = rusage()
         getrusage(RUSAGE_SELF, &usage)
         return Int64(usage.ru_maxrss)
     }
 
+    static func residentBytes() -> UInt64? {
+        var information = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let status = withUnsafeMutablePointer(to: &information) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return status == KERN_SUCCESS ? UInt64(information.resident_size) : nil
+    }
+
     static func emit(_ row: [String: Any]) {
+        var row = row
+        // Sample current residency too: a lifetime high-water mark cannot establish that full
+        // parsing objects are still retained when the later tgrep preparation phase starts.
+        row["current_rss_bytes"] = residentBytes().map { $0 as Any } ?? NSNull()
         guard let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
               let line = String(data: data, encoding: .utf8) else { return }
         print(line)
@@ -840,5 +1223,6 @@ enum RealHistoryBenchmark {
         case engineUnavailable, invalidCatalog, literalParity, invalidRepositoryHit, expectedFallback
         case emptyRepositoryScope, virtualRepositoryScope, requiredQueryHasNoHits
         case conflictingModes, progressiveParity, retiredStorageMode, privatePathOutputRetired, storageProbe
+        case catalogConfigurationChanged, queryExecutionFailure
     }
 }

@@ -3,6 +3,24 @@ import XCTest
 @testable import CCBuddy
 
 final class ConversationTimelineReaderTests: XCTestCase {
+    func testSingleSearchEditorNeverRequiresASecondToolbarRow() {
+        XCTAssertFalse(ConversationToolbarLayout.wraps(availableWidth: 180, idealWidths: [340], spacing: 8))
+        XCTAssertFalse(ConversationToolbarLayout.wraps(availableWidth: 600, idealWidths: [340], spacing: 8))
+    }
+
+    func testTranscriptTabsWrapOnlyWhenTheirCombinedIdealWidthDoesNotFit() {
+        XCTAssertFalse(ConversationToolbarLayout.wraps(availableWidth: 528, idealWidths: [180, 340], spacing: 8))
+        XCTAssertTrue(ConversationToolbarLayout.wraps(availableWidth: 527, idealWidths: [180, 340], spacing: 8))
+        XCTAssertTrue(ConversationToolbarLayout.wraps(availableWidth: 320, idealWidths: [180, 340], spacing: 8))
+    }
+
+    func testToolbarWrapDecisionTracksAvailableWidthWithoutChangingItsControlCount() {
+        let widths: [CGFloat] = [180, 340]
+        XCTAssertEqual([800.0, 300.0, 800.0].map {
+            ConversationToolbarLayout.wraps(availableWidth: $0, idealWidths: widths, spacing: 8)
+        }, [false, true, false])
+    }
+
     func testEquivalentSnapshotsShareTheSameImmutableContentRevision() {
         let projection = ConversationStore.TranscriptProjection()
         let first = inputs(projection: projection)

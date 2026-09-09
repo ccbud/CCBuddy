@@ -2,6 +2,46 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Reflow the same controls instead of putting two copies of the text field in ViewThatFits.
+/// The native field editor, focus and accessibility identity must survive toolbar wrapping.
+struct ConversationToolbarLayout: Layout {
+    var spacing: CGFloat
+
+    static func wraps(availableWidth: CGFloat, idealWidths: [CGFloat], spacing: CGFloat) -> Bool {
+        idealWidths.count > 1
+            && idealWidths.reduce(0, +) + CGFloat(idealWidths.count - 1) * spacing > availableWidth
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified) }
+        let width = proposal.width ?? ideal.reduce(0) { $0 + $1.width }
+            + CGFloat(max(0, subviews.count - 1)) * spacing
+        let wraps = Self.wraps(availableWidth: width, idealWidths: ideal.map(\.width), spacing: spacing)
+        let sizes = subviews.map { $0.sizeThatFits(.init(width: width, height: nil)) }
+        let height = wraps ? sizes.reduce(0) { $0 + $1.height }
+            + CGFloat(max(0, subviews.count - 1)) * spacing : sizes.map(\.height).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified) }
+        let wraps = Self.wraps(availableWidth: bounds.width, idealWidths: ideal.map(\.width), spacing: spacing)
+        var y = bounds.minY
+        for index in subviews.indices {
+            let width = wraps || subviews.count == 1 ? bounds.width : ideal[index].width
+            let childProposal = ProposedViewSize(width: width, height: nil)
+            let size = subviews[index].sizeThatFits(childProposal)
+            let trailing = index == subviews.count - 1
+            subviews[index].place(at: CGPoint(x: trailing ? bounds.maxX : bounds.minX,
+                                             y: wraps ? y : bounds.midY),
+                                  anchor: wraps ? (trailing ? .topTrailing : .topLeading)
+                                    : (trailing ? .trailing : .leading),
+                                  proposal: childProposal)
+            if wraps { y += size.height + spacing }
+        }
+    }
+}
+
 struct ConversationTimelinePane: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var columns: ColumnLayout
@@ -156,17 +196,9 @@ struct ConversationTimelinePane: View {
     /// pane below shows. The tabs take the left because they name the thing; search takes the right
     /// because it is a tool, and it keeps the row when a session has no subagents to switch between.
     private var secondaryBar: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: Space.sm) {
-                if store.transcriptTabs.count > 1 { transcriptTabs }
-                Spacer(minLength: Space.xs)
-                searchControls
-            }
-            VStack(alignment: .leading, spacing: Space.sm) {
-                if store.transcriptTabs.count > 1 { transcriptTabs }
-                searchControls
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
+        ConversationToolbarLayout(spacing: Space.sm) {
+            if store.transcriptTabs.count > 1 { transcriptTabs }
+            searchControls
         }
         .padding(.horizontal, Space.md)
         .padding(.vertical, Space.xs)
@@ -587,9 +619,7 @@ struct ConversationTimelinePane: View {
             ? store.detailMatches[store.detailMatchIndex].messageIndex
             : nil
         let transcriptFile = store.activeTranscriptFile ?? session.metadata.file
-        return ConversationTimelineReader(
-            messages: session.messages,
-            inputs: .init(
+        let inputs = ConversationTimelineReaderInputs(
                 projection: store.transcriptProjection,
                 scope: .init(file: transcriptFile, transcriptID: store.activeTranscriptID),
                 sourceRawValue: session.metadata.source.rawValue,
@@ -599,11 +629,9 @@ struct ConversationTimelinePane: View {
                 layoutRequest: store.scrollLayoutRequest,
                 jumpLayoutRequest: store.jumpLayoutRequest,
                 isFollowingLatest: store.isFollowingLatest,
-                followLatestRevision: store.followLatestRevision
-            ),
-            store: store
-        )
-        .equatable()
+                followLatestRevision: store.followLatestRevision)
+        return ConversationTimelineReader(messages: session.messages, inputs: inputs, store: store)
+            .equatable()
     }
 
     private func toolbarButton(

@@ -23,13 +23,26 @@ counted as new storage or erased during startup.
    handle stays queryable while new postings are prepared. Changed/uncovered
    documents are always searched directly, so an old checkpoint cannot hide them.
 
+Prepared candidates have a narrow first-result path: read that candidate's header,
+validate its configured scope, visibility, owner and exact source/dependency
+revision, then publish its verified hit. This does not first enumerate metadata or
+validate every unrelated source in the library. Standalone Codex children wait for
+complete parent ownership resolution. Full authorized-source discovery follows;
+known pack hits are verified before dirty-source work. Progressive snapshots can
+insert/reorder stable hit identities while preserving their anchors and monotonic
+counts; the final result uses canonical activity order. If discovery disproves a
+fast proof, its old anchor is explicitly retired before raw verification. A newly
+resolved canonical alias or top-result limit can also retire a provisional snapshot.
+Search covers the complete authorized canonical set, not only the library's 5,000
+visible rows; the 200-hit result cap is not a source-scan range cap.
+
 Catalog coverage is not the same as source coverage. Query workers additionally
 discover authorized source files and compare source/dependency fingerprints. A
 quick metadata row, a source absent from the catalog, or a source changed during
 the scanner's reparse spacing is verified from the producer file; its old body
 packs do not contribute duplicate counts. This path does not wait for a full
-catalog parse or tgrep preparation. Unknown verified hits carry scoped metadata
-so the search palette can show and open them before the library scan catches up.
+catalog parse or tgrep preparation. Every verified hit carries scoped owner metadata
+so the search palette can show and open it even outside the visible library window.
 If an ordinary JSONL source cannot be identified from the scanner's 256 KiB
 preview, the query worker reads its first complete decoded record and stops the
 metadata sample there. This covers a first conversation record larger than the
@@ -56,6 +69,14 @@ parser on the query worker; they are not claimed to have streaming memory bounds
 Source rewrites/cancellation invalidate a search attempt independently of catalog
 generation, and a retry retires the old progressive prefix. Continuously changing
 sources may require a retry; uninspected source tails cannot produce instant results.
+Retries within one query can reuse immutable catalog entries and primitive block
+refinements only while catalog UUID, generation, scope and trash filter are unchanged.
+They still rediscover and authorize sources, validate every relevant dependency,
+and recompute canonical owners; no final hits or source proofs are cached this way.
+This reduces repeated catalog work, not the cost of verifying continuously appended
+content. Three invalidated attempts still fail explicitly. Before that terminal
+failure the repository retires its last prefix with a fresh empty snapshot, so
+already disproved anchors are not left as valid results.
 Progressive searches separate first-anchor discovery from complete counting for
 both catalog and source hits. Once a source yields its first exact snippet, that
 pass closes the source and proceeds to later session identities before counting
@@ -154,6 +175,24 @@ No private paths, session titles, IDs, queries extracted from conversations or
 snippets belong in published evidence. Filesystem caches are not flushed. Peak RSS
 is a process-lifetime high-water mark, not per-query allocation or current RSS.
 Repository publication timings do not measure UI first paint or frame rate.
+Progressive benchmark validation is per source/catalog snapshot attempt: a real
+rewrite or canonical reconciliation may retire an earlier snapshot. Initial verified
+delivery and the final attempt's first hit are reported separately, both elapsed
+from the original query start. Retirement counts are reported, not interpreted as
+a monotonic-prefix failure or all mislabeled source rewrites. The post-timing
+final-only API comparison may reuse the exact-answer cache and is not an independent
+text oracle. Independent Foundation sampling covers at most three small catalog
+documents with separately current source-revision proofs; the number of remaining
+unverified hits is explicit. Query-local owner metadata alone does not distinguish
+a raw answer from a hot pack. Separate live
+source snapshots can also invalidate the post-timing API comparison; such a run
+fails validation instead of silently claiming parity. The benchmark emits those
+differences per query and continues collecting later measurement phases, then
+exits nonzero if any comparison failed. A production query execution failure is
+reported separately. Typed source-revision invalidation failures are also retained
+while later phases continue, ending with nonzero exit status; other execution and
+progressive-invariant failures stop immediately. Completed measurements do not
+imply successful validation.
 
 ### Authoritative-source verification (2026-09-10)
 
@@ -164,14 +203,14 @@ quick metadata was read before timing; filesystem caches were not flushed.
 
 | Public literal | First verified callback | Complete count | Occurrences |
 | --- | ---: | ---: | ---: |
-| 系统代理 | 3,665.42 ms | 4,872.03 ms | 7 |
-| 当前版本 | 44.18 ms | 4,708.80 ms | 18 |
+| 系统代理 | 3,755.02 ms | 5,011.29 ms | 7 |
+| 当前版本 | 46.29 ms | 4,910.77 ms | 18 |
 
-The streaming phase reached a process peak RSS of 67,928,064 bytes (64.8 MiB).
+The streaming phase reached a process peak RSS of 70,041,600 bytes (66.8 MiB).
 Both source fingerprints stayed unchanged. A subsequent complete production
 parser projection plus independent whole-text Foundation matching verified exact
 counts, snippets and message anchors for both queries. That separate oracle took
-23,132.15 ms and raised process-lifetime peak RSS to 1,171,783,680 bytes; its parsing
+23,525.56 ms and raised process-lifetime peak RSS to 1,171,996,672 bytes; its parsing
 and verification are outside the query timings above.
 
 These measurements establish source coverage and bounded-record behavior, not an
@@ -182,8 +221,52 @@ not a measurement of the repository's subsequent separate first-hit/count passes
 Retained benchmark catalogs now use a stable private
 `benchmark-app/imports` sibling for scan/reopen dependency identities; old catalogs
 created with disposable scratch imports require a new isolated scan before being
-used as a valid-manifest hot-search baseline. Catalog-only sample oracles exclude
-source-backed hits rather than comparing them against stale body packs.
+used as a valid-manifest hot-search baseline. Catalog-only sample oracles require
+a separately current source-revision proof rather than comparing against stale
+body packs or inferring provenance from query-local owner metadata.
+
+### Live-source hot-first verification (2026-09-10)
+
+The clean-child-proof implementation was measured in a fresh process against
+the retained catalog while local agents continued writing. Checkpoint restore and
+validation took 1,432.49 ms before any query/list. There were 340 canonical visible
+sessions and 5,518 posting groups. The timings below include production source
+coverage discovery and raw verification of changed or uncovered sources:
+
+| Public literal | Initial verified hit | Final-attempt first hit | Complete search | Hits / occurrences |
+| --- | ---: | ---: | ---: | ---: |
+| 系统代理 | 20.04 ms | 2,209.91 ms | 5,224.45 ms | 13 / 544 |
+| 当前版本 | 141.31 ms | 141.31 ms | 3,813.87 ms | 49 / 781 |
+
+The first query retired one snapshot; the second did not. Both agreed with the
+subsequent final-only API, which may reuse exact-answer caches. Independent small
+catalog document samples covered zero and one hits respectively, not every result.
+The second query's final attempt spent 1,189.46 ms on source coverage and
+1,572.88 ms verifying six source candidates totaling 141,181,976 bytes. Process
+peak RSS through these two queries was 223,936,512 bytes; current RSS after the
+second query was 223,264,768 bytes. These query-process measurements do not prove
+that combined fresh-scan/index-preparation memory is fixed.
+
+The same run's broad `error` query delivered its initial verified hit in 123.26 ms
+and completed progressive delivery in 13,741.53 ms across four snapshot epochs.
+Its subsequent separate final-only comparison differed and the benchmark exited
+with `progressiveParity`; the final three-query run is **not a complete parity
+pass**. Active source writers can make separate snapshots differ, but this run did
+not classify that mismatch and must not be presented as proven source-only drift.
+The overall first hit can belong to a smaller session; it is not by itself
+evidence of the 458 MB target's own arrival time. These are repository callbacks,
+not UI paint measurements or an idle-machine/cold-disk guarantee.
+
+A subsequent target-aware restored run measured the same 458,822,422-byte source's
+own `系统代理` hit at 124.82 ms, with seven final occurrences. The overall first
+hit was 18.10 ms and the complete progressive call took 4,963.84 ms. Its separate
+final-only comparison had identical ordered identities, counts, snippets and
+anchors (13 hits / 553 occurrences), but different query-local owner metadata;
+full `HistorySearchHit` parity was explicitly false. This establishes a prepared
+target arrival measurement, not a metadata-parity pass. A following attempt failed
+inside repository execution before all three queries were measured; at that point
+the emitted production error type alone did not identify its enum case. Neither
+attempt establishes a stable successful three-term suite under active writers.
 
 ## Local file-catalog results (2026-09-09)
 
@@ -307,75 +390,56 @@ or a claim about newly available whole-volume space.
 
 ### Native tests and app-level checks
 
-The last executed local native/unit run passed **892 tests with zero skips**,
-including all 11 installed-CLI/Bifrost end-to-end cases. Hosted CI subsequently
-passed **902 native tests**, including the ten visible-tool-owner navigation
-regressions. Its UI run passed 24/26: the long-message test did not clear its global
-filter before switching sessions, and the tool-result test used a localized
-disclosure value that did not match its English runtime. Both test interactions
-have been corrected without removing their assertions.
+The `315462b` hosted run executed **992/992 distinct native tests**, including
+**11/11 installed-CLI/Bifrost E2Es**, with zero skips or expected failures. Its
+downloaded result artifacts separately report **25/27 UI tests passed**: the
+paired-output owner's accessibility visibility and the 12,000-message search-field
+query still failed. Packaging after that failed gate did not run. Earlier builds,
+manual checks and local compilation are not substitutes for exact-head CI.
 
-The reader changes add ten source-scoped layout-intent, resident-input and Store
-cancellation regressions. Local app and test bundles compile, but local
-XCTest/IDE control-session handshakes have failed before any business test starts;
-these are not 912-test passes. Local UI XCTest also did not initialize.
-CI now requires at least 919 native tests and all 27 UI cases for the exact
-PR head. Manual checks and an earlier commit's build are not substitutes for that
-requirement.
+The reader now owns an `NSScrollView`/`NSTableView` boundary. Only available rows
+host message content; logical offscreen accessibility rows retain source identities
+without loading text from accessibility getters. Real row/cell/hosting objects
+share consistent modern and legacy public accessibility routing. No substitute
+message or Result controls are used. A constant-time presentation-input boundary
+prevents unrelated Store updates from rebuilding the transcript. Cached heights
+and source-row/pixel anchors preserve reading position through append and reflow;
+manual input revokes pending navigation. Disclosure choices survive row reuse
+without keeping offscreen transcript strings alive.
 
-A full-app stress fixture exposed a separate SwiftUI lazy-stack layout hang when
-expanding a 179,258-character paired tool output near message 1,200, following
-twenty alternating multi-paragraph Markdown/tool rows. The reader now uses one
-native-backed virtualized `List`, retaining the complete transcript and stable
-message anchors. Source-scoped layout correction is revoked synchronously on
-manual navigation; one resident input observer remains available even when the
-old target row has been recycled or a search has no target yet. Text selection
-stays local to content rather than inherited across the whole reader.
+One responsive toolbar layout keeps a single native search editor through width
+changes instead of constructing two interactive fields in `ViewThatFits`. Local
+production-reader interaction verified all 12,000 messages, both Chinese query
+replacements, exact `1/1` counts, the actual message 11,999 and its complete prepared
+tail, Focus enter/exit, and return to a two-message session with an empty detail
+query. The paired-output fixture exposed the actual visible owner 1,200 and no
+independent hidden-result row 1,201. Expanding its real tool result exposed all
+179,258 characters exactly. Scrolling away, changing reader width, and returning
+retained the expansion without reclaiming the old search anchor.
 
-The minimal List implementation opened and expanded the full output in actual
-local app interaction: its only fragment remained at UTF-16 offset 179,208,
-and the complete 179,258-character accessible output matched the fixture. The
-action plus accessibility roundtrip took about 1.6 s; this is not a frame-paint
-measurement. A subsequent process sample showed 0.4% CPU instead of the sustained
-layout loop. Wheel scrolling and hiding the session list caused real Markdown
-reflow without pulling the reader back to the old hit. Actual double-click
-selection also selected the exact expected text in tool notes, all three todo
-states and both diff sides. A new UI regression separately requires six native
-double-click/Cmd-C operations, exact clipboard contents and restoration of the
-original clipboard. Accessibility checks and final Release/hosted-CI verification
-remain required.
+Those checks also caught a missing tool-button accessibility label and vertical
+wheel events consumed by horizontal-only tool output. The visible disclosure strip
+now uses one real `NSButton` for drawing, keyboard/mouse activation and accessibility;
+its localized title, byte summary and collapsed/expanded state were verified through
+external accessibility and actual clicks. Vertical events over horizontal-only
+output reach the outer reader with native phases/momentum, while horizontal gestures
+remain local. The full-output, scroll-away, width-change and retained-disclosure
+checks were repeated successfully with this control.
 
-The `2bba76b` hosted run passed all 912 native tests, including 11 installed-CLI
-E2Es, and 25 of 27 UI tests. Native selection/copy passed. The two failures were
-the initial paired-output owner's accessibility visibility and reading back the
-search field in the 12,000-message case; neither is treated as a pass. Packaging
-steps after the failed UI gate did not run.
+Local XCTest/IDE handshakes have failed before business cases started; these
+failures are not native test passes. A standalone diagnostic executed the 29 native
+reader/button test method bodies with their assertions; that is not an XCTest run.
+Exact-head CI requires at least 1,044 native cases and all 27 UI cases, including six
+actual text-selection/copy operations, live following, replacement/cancellation,
+large-message tails and light/dark/compact presentation. The CI artifacts and PR
+record the executed final revision; this document does not substitute for them.
 
-The follow-up isolates the reader behind a constant-time presentation-input
-equality boundary and reuses each row's existing `ForEach` identity. Unrelated
-Store and search-field focus changes no longer rebuild the entire reader. Seven
-new unit regressions cover content revision, source, query, font and navigation
-invalidation. An isolated Debug check of the 16,921-message source completed global
-`系统代理` in 871.3 ms, preserved both detail-query counts below, and accepted
-three real PageUp events that revoked the old search anchor. These timings are
-not a Release comparison. The paired-owner external accessibility issue remains
-unresolved in this check; a successful build or lower idle CPU does not fix it.
-
-In the current Release app, a live conversation advanced from 3,710 to 3,723
-messages while showing approximately 6.4 million tokens. In-session searches for
-both Chinese terms and focus restoration were verified. For global `系统代理`,
-the app's diagnostics recorded 192.5 ms to the first result and 1,303.2 ms to
-completion. These are diagnostic search times, not frame-paint measurements; the
-run overlapped compilation and background producer updates. This live-session
-check is separate from the largest-session check below.
-
-In a subsequent isolated Release preview, the **458,822,422-byte, 16,921-message**
-real session opened the global `系统代理` hit at source sequence 12,192 on its
-visible tool-use owner, 12,191. The owner remained visible after asynchronous
-neighbor layout settled. This query completed in 935.7 ms on the 340-session UI
-profile; it is not the 1,426-session benchmark corpus. In-session searches returned
-`1/2 · 7` for `系统代理` and `1/16 · 18` for `当前版本`. Only public aggregate
-measurements are recorded here; original histories and UI captures remain local.
+An earlier isolated Release preview opened the **458,822,422-byte, 16,921-message**
+real session at source sequence 12,192 on visible tool-use owner 12,191. Detail
+search returned `1/2 · 7` for `系统代理` and `1/16 · 18` for `当前版本`. This is
+predecessor-reader evidence, not validation of the final native-table Release.
+Only public aggregate measurements are recorded; original histories and real UI
+captures remain local.
 
 ## Running the benchmark
 

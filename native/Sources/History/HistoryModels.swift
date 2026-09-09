@@ -204,8 +204,8 @@ struct HistorySearchHit: Codable, Equatable, Identifiable, Sendable {
     /// Exact total when complete; otherwise a verified lower bound, never an estimate.
     var count: Int
     var isCountComplete: Bool = true
-    /// Query-local metadata for an authorized source not yet published in the catalog. This
-    /// makes an exact source hit immediately visible/openable; it never persists a library row.
+    /// Query-local owner metadata for an authorized, exactly verified hit, including hot packs
+    /// outside the library's visible row budget. It never persists or mutates a library row.
     var sourceMetadata: HistorySessionMetadata? = nil
 
     var id: String { "\(file.path)\u{0}\(agent)" }

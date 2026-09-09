@@ -2566,6 +2566,21 @@ final class ConversationStore: ObservableObject {
         } catch {
             guard !Task.isCancelled, searchGeneration == generation, activeSearchRunID == runID,
                   listQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            switch error {
+            case ConversationCatalogError.staleRevision, HistorySessionLoadError.dependenciesChanged:
+                // These failures disprove the published source snapshot, unlike an unrelated
+                // interrupted read. Clear synchronously: a repository withdrawal callback may
+                // still be queued when this worker finishes and its run ID is retired below.
+                contentHits = [:]
+                activeSearchProgress = .init()
+                activeSearchFirstResultMilliseconds = nil
+                contentSearchPhase = nil
+                searchFirstResultMilliseconds = nil
+                searchDurationMilliseconds = nil
+                cancelSemanticRanking()
+            default:
+                break
+            }
             contentSearchError = error.localizedDescription
         }
     }

@@ -40,11 +40,12 @@ struct ConversationSearchProgress: Equatable, Sendable {
     }
 
     var phase: Phase
-    /// A cumulative activity-ordered prefix of the final result identities. Each hit already has
+    /// A cumulative activity-ordered set of verified result identities. Each hit already has
     /// an exact transcript/message anchor and snippet and can be opened immediately. Its count is
     /// a verified lower bound until isCountComplete becomes true. Later snapshots can update
-    /// counts in place and append identities, but never reorder/remove hits or change their first
-    /// anchor/snippet. Complete counts cannot regress to incomplete counts. A completed snapshot
+    /// counts in place and insert/reorder stable identities, but never remove a hit or change its
+    /// first anchor/snippet within the same snapshot attempt. Such changes explicitly retire the
+    /// attempt before publishing a replacement. Complete counts cannot regress. A completed snapshot
     /// and the final return value must contain only complete counts.
     var hits: [HistorySearchHit]
     /// Candidate preparation measurements are available once refinement begins.

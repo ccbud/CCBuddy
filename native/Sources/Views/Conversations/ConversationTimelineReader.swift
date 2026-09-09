@@ -30,14 +30,13 @@ struct ConversationTimelineReaderInputs: Equatable {
 }
 
 /// The shell observes the Store; the reader deliberately does not. Search progress, metadata and
-/// header focus changes must not rebuild a ForEach spanning tens of thousands of messages.
-/// The ordinary Store reference is used only by actions to validate the current navigation intent.
+/// header focus changes cannot rebuild a transcript-sized view tree. Only the native viewport's
+/// available rows host message views, while every source row remains accessible and navigable.
 struct ConversationTimelineReader: View, Equatable {
     let messages: [HistoryMessage]
     let inputs: ConversationTimelineReaderInputs
     let store: ConversationStore
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appLanguage) private var appLanguage
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
@@ -45,82 +44,12 @@ struct ConversationTimelineReader: View, Equatable {
     }
 
     var body: some View {
-        let projection = inputs.projection
-        let layoutRequest = inputs.layoutRequest
-
-        return ScrollViewReader { proxy in
-            let layoutObserver = ConversationScrollLayoutObserver(request: layoutRequest) { request in
-                guard store.scrollLayoutRequest == request else { return }
-                // Correct the still-active row's asynchronous height without replaying navigation.
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo(request.scrollID, anchor: request.anchor)
-                }
-            }
-
-            // Keep the complete projected transcript and the existing single ForEach identity.
-            List {
-                ForEach(projection.visibleMessageIndices, id: \.self) { index in
-                    let anchor = ConversationPresentation.messageAnchor(index)
-                    ConversationMessageView(
-                        message: messages[index],
-                        messageIndex: index,
-                        sourceRawValue: inputs.sourceRawValue,
-                        projection: projection,
-                        searchQuery: inputs.query,
-                        isCurrentSearchMatch: inputs.currentMatch == index,
-                        fontSize: inputs.fontSize
-                    )
-                    .padding(.horizontal, Space.xl)
-                    .padding(.top, index == projection.visibleMessageIndices.first ? Space.xxl : 0)
-                    .padding(.bottom, Space.xxl)
-                    .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        // The active native row supplies its scroll-view scope without nesting
-                        // another scroll view inside the reader.
-                        if layoutRequest?.anchorID == anchor { layoutObserver.accessibilityHidden(true) }
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("conversation.message.\(index)")
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                }
-                Color.clear.frame(height: 68)
-                    .background {
-                        if layoutRequest == nil || layoutRequest?.anchorID == ConversationPresentation.bottomAnchor {
-                            layoutObserver.accessibilityHidden(true)
-                        }
-                    }
-                    .id(ConversationPresentation.bottomAnchor)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 1)
+        ConversationNativeTimelineView(messages: messages, inputs: inputs, store: store)
             .background(ConversationScrollInputObserver(scope: inputs.scope) { scope in
                 guard store.activeTranscriptFile == scope.file,
                       store.activeTranscriptID == scope.transcriptID else { return }
                 store.pauseFollowingLatestFromUserScroll()
             }.accessibilityHidden(true))
-            .onAppear {
-                if let request = store.scrollLayoutRequest {
-                    proxy.scrollTo(request.scrollID, anchor: request.anchor)
-                }
-            }
-            .onChange(of: inputs.jumpLayoutRequest) { request in
-                guard let request, store.scrollLayoutRequest == request else { return }
-                scroll(proxy, to: request.scrollID, anchor: request.anchor)
-            }
-            .onChange(of: inputs.followLatestRevision) { _ in
-                guard store.isFollowingLatest else { return }
-                scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
-            }
-            .accessibilityIdentifier("conversation.timeline.scroll")
             .overlay(alignment: .bottomTrailing) {
                 HStack(spacing: Space.xs) {
                     Button {
@@ -147,19 +76,10 @@ struct ConversationTimelineReader: View, Equatable {
                 .ccGlass(radius: Radius.panel, interactive: true)
                 .padding(Space.md)
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
-        .padding(.horizontal, Space.md)
-        .padding(.bottom, Space.md)
-    }
-
-    private func scroll(_ proxy: ScrollViewProxy, to id: AnyHashable, anchor: UnitPoint) {
-        if reduceMotion {
-            proxy.scrollTo(id, anchor: anchor)
-        } else {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: anchor) }
-        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+            .padding(.horizontal, Space.md)
+            .padding(.bottom, Space.md)
     }
 }

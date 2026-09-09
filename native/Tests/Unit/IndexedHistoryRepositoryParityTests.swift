@@ -553,7 +553,10 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
             file: updated.metadata.file, source: updated.metadata.source,
             agent: "main", sequence: 909, snippet: updated.documents[0].text,
             count: 3, isCountComplete: true)
-        XCTAssertEqual(final, [expected])
+        var expectedWithOwner = expected
+        expectedWithOwner.sourceMetadata = try repository.listSessions(limit: .max)
+            .first { $0.file == updated.metadata.file }
+        XCTAssertEqual(final, [expectedWithOwner])
         let events = recorder.snapshot
         XCTAssertEqual(Set(events.compactMap(\.snapshotRevision)), [oldGeneration, newGeneration])
         let oldEvents = events.filter { $0.snapshotRevision == oldGeneration }

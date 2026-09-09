@@ -18,6 +18,11 @@ struct ConversationSearchDiagnostics: Equatable, Sendable {
     /// Stable, privacy-safe reason codes; never an operating-system error description.
     var fallbackReason: String? = nil
     var tgrepRetryAfter: Date? = nil
+    /// Per-attempt source verification measurements; aggregate values never contain paths/text.
+    var sourceCoverageMilliseconds: Double = 0
+    var sourceVerificationSourceCount: Int = 0
+    var sourceVerificationBytes: UInt64 = 0
+    var sourceVerificationMilliseconds: Double = 0
 }
 
 /// An index owner serializes each handle independently of catalog reads.

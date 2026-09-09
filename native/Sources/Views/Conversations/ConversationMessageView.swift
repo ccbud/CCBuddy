@@ -14,6 +14,21 @@ struct ConversationMessageView: View {
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
+    @StateObject private var interactionState: ConversationMessageInteractionState
+
+    init(message: HistoryMessage, messageIndex: Int, sourceRawValue: String,
+         projection: ConversationStore.TranscriptProjection, searchQuery: String,
+         isCurrentSearchMatch: Bool, fontSize: CGFloat,
+         interactionState: ConversationMessageInteractionState = .init()) {
+        self.message = message
+        self.messageIndex = messageIndex
+        self.sourceRawValue = sourceRawValue
+        self.projection = projection
+        self.searchQuery = searchQuery
+        self.isCurrentSearchMatch = isCurrentSearchMatch
+        self.fontSize = fontSize
+        _interactionState = StateObject(wrappedValue: interactionState)
+    }
 
     static func isVisible(_ message: HistoryMessage, pairedToolResultIDs: Set<String>) -> Bool {
         ConversationVisibleText.isVisible(message, pairedToolResultIDs: pairedToolResultIDs)
@@ -81,14 +96,14 @@ struct ConversationMessageView: View {
     }
 
     @ViewBuilder private var messageBody: some View {
-        let blocks = message.content.filter { block in
+        let blocks = Array(message.content.enumerated()).filter { _, block in
             guard block.type == "tool_result", let id = block.toolUseID else { return true }
             return !pairedToolResultIDs.contains(id)
         }
 
         if message.role == "user" && !message.isMetadata {
             VStack(alignment: .leading, spacing: 7) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
+                ForEach(blocks, id: \.offset) { offset, block in
                     ConversationBlockView(
                         block: block,
                         result: block.id.flatMap { toolResults[$0] },
@@ -96,7 +111,9 @@ struct ConversationMessageView: View {
                         role: message.role,
                         searchQuery: searchQuery,
                         isCurrentSearchMatch: isCurrentSearchMatch,
-                        fontSize: fontSize
+                        fontSize: fontSize,
+                        expanded: interactionState.binding(blockIndex: offset, block: block,
+                            initiallyExpanded: block.id.flatMap { toolResults[$0] }?.isError == true)
                     )
                 }
             }
@@ -106,7 +123,7 @@ struct ConversationMessageView: View {
             .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         } else {
             VStack(alignment: .leading, spacing: 7) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
+                ForEach(blocks, id: \.offset) { offset, block in
                     ConversationBlockView(
                         block: block,
                         result: block.id.flatMap { toolResults[$0] },
@@ -114,7 +131,9 @@ struct ConversationMessageView: View {
                         role: message.role,
                         searchQuery: searchQuery,
                         isCurrentSearchMatch: isCurrentSearchMatch,
-                        fontSize: fontSize
+                        fontSize: fontSize,
+                        expanded: interactionState.binding(blockIndex: offset, block: block,
+                            initiallyExpanded: block.id.flatMap { toolResults[$0] }?.isError == true)
                     )
                 }
             }
@@ -213,6 +232,7 @@ private struct ConversationBlockView: View {
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
+    @Binding var expanded: Bool
 
     @ViewBuilder var body: some View {
         switch block.type {
@@ -235,7 +255,8 @@ private struct ConversationBlockView: View {
                     thinking: thinking,
                     searchQuery: searchQuery,
                     isCurrentSearchMatch: isCurrentSearchMatch,
-                    fontSize: fontSize
+                    fontSize: fontSize,
+                    expanded: $expanded
                 )
             }
         case "tool_use":
@@ -245,7 +266,8 @@ private struct ConversationBlockView: View {
                 version: version,
                 searchQuery: searchQuery,
                 isCurrentSearchMatch: isCurrentSearchMatch,
-                fontSize: fontSize
+                fontSize: fontSize,
+                expanded: $expanded
             )
         case "tool_result":
             ConversationStandaloneToolResult(
@@ -255,7 +277,7 @@ private struct ConversationBlockView: View {
                 fontSize: fontSize
             )
         case "skill_load":
-            ConversationSkillCard(block: block, fontSize: fontSize)
+            ConversationSkillCard(block: block, fontSize: fontSize, expanded: $expanded)
         case "image":
             ConversationRawBlock(
                 title: "图片",
@@ -263,7 +285,8 @@ private struct ConversationBlockView: View {
                 fallback: "",
                 version: version,
                 fontSize: fontSize,
-                localizesTitle: true
+                localizesTitle: true,
+                expanded: $expanded
             )
         default:
             ConversationRawBlock(
@@ -272,7 +295,8 @@ private struct ConversationBlockView: View {
                 fallback: block.text ?? block.thinking ?? "",
                 version: version,
                 fontSize: fontSize,
-                localizesTitle: block.type.isEmpty
+                localizesTitle: block.type.isEmpty,
+                expanded: $expanded
             )
         }
     }
@@ -283,7 +307,7 @@ private struct ConversationThinkingView: View {
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
-    @State private var expanded = false
+    @Binding var expanded: Bool
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -717,6 +741,7 @@ private struct ConversationToolCard: View {
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
+    @Binding var expanded: Bool
 
     @StateObject private var renderCache = ConversationBlockRenderCache()
 
@@ -756,7 +781,8 @@ private struct ConversationToolCard: View {
                     version: version,
                     searchQuery: searchQuery,
                     isCurrentSearchMatch: isCurrentSearchMatch,
-                    fontSize: fontSize
+                    fontSize: fontSize,
+                    expanded: $expanded
                 )
             } else {
                 Text("暂无工具结果")
@@ -775,6 +801,7 @@ private struct ConversationToolCard: View {
         .overlay(alignment: .leading) {
             Rectangle().fill(toolAccent(presentation.category)).frame(width: 3)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.tool.\(block.name ?? "unknown")")
         .onDisappear { renderCache.release() }
     }
@@ -839,7 +866,7 @@ private struct ConversationToolResultDisclosure: View {
     let searchQuery: String
     let isCurrentSearchMatch: Bool
     let fontSize: CGFloat
-    @State private var expanded: Bool
+    @Binding var expanded: Bool
     @StateObject private var renderCache = ConversationBlockRenderCache()
 
     init(
@@ -847,14 +874,15 @@ private struct ConversationToolResultDisclosure: View {
         version: ConversationBlockRenderVersion,
         searchQuery: String,
         isCurrentSearchMatch: Bool,
-        fontSize: CGFloat
+        fontSize: CGFloat,
+        expanded: Binding<Bool>
     ) {
         self.result = result
         self.version = version
         self.searchQuery = searchQuery
         self.isCurrentSearchMatch = isCurrentSearchMatch
         self.fontSize = fontSize
-        _expanded = State(initialValue: result.isError == true)
+        _expanded = expanded
     }
 
     var body: some View {
@@ -864,29 +892,14 @@ private struct ConversationToolResultDisclosure: View {
             )
         }
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
-                HStack(spacing: 6) {
-                    Text(result.isError == true ? "✗" : "✓")
-                    Text(appLanguage.localized(result.isError == true ? "工具失败" : "结果"))
-                    Spacer(minLength: 0)
-                    if !resultSummary.isEmpty {
-                        Text(resultSummary)
-                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Theme.mutedForeground)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(Theme.foreground.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                }
-                .font(.system(size: max(9.5, fontSize * 0.8), weight: .semibold))
-                .foregroundStyle(result.isError == true ? Theme.danger : Theme.success)
-                .padding(.horizontal, 10)
-                .frame(minHeight: 27)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(ConversationPressableButtonStyle())
-            .accessibilityValue(expanded ? "已展开" : "已折叠")
+            ConversationToolResultButton(
+                title: appLanguage.localized(result.isError == true ? "工具失败" : "结果"),
+                summary: resultSummary, isError: result.isError == true,
+                fontSize: max(9.5, fontSize * 0.8),
+                expandedValue: appLanguage.localized("已展开"),
+                collapsedValue: appLanguage.localized("已折叠"), expanded: $expanded
+            )
+            .frame(maxWidth: .infinity)
 
             if let value = renderCache.text(for: version, whenExpanded: expanded, prepare: {
                 ConversationVisibleText.toolResultText(result.content)
@@ -934,7 +947,7 @@ private struct ConversationStandaloneToolResult: View {
 private struct ConversationSkillCard: View {
     let block: HistoryContentBlock
     let fontSize: CGFloat
-    @State private var expanded = false
+    @Binding var expanded: Bool
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -971,7 +984,7 @@ private struct ConversationRawBlock: View {
     let version: ConversationBlockRenderVersion
     let fontSize: CGFloat
     var localizesTitle = false
-    @State private var expanded = false
+    @Binding var expanded: Bool
     @StateObject private var renderCache = ConversationBlockRenderCache()
 
     var body: some View {

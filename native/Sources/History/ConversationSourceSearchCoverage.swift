@@ -15,9 +15,31 @@ struct ConversationSourceSearchCoverage: Sendable {
 
     var metadata: [HistorySessionMetadata]
     var sourcesByPath: [String: Source]
+    /// Current proofs for reusable packs, including children skipped by the first-hit gate.
+    /// The repository validates only the catalog sources it actually examines for this query.
+    var catalogSourcesByPath: [String: Source] = [:]
     /// Includes refreshed annotation-only sources whose immutable body remains searchable.
     /// Revalidate these too: a second sidecar edit can change trash/ownership during the query.
     var validationSources: [Source] = []
+
+    /// A narrow first-result gate: validate only a prepared candidate's authoritative owner.
+    /// It never discovers or parses unrelated sources, nor treats a quick sentinel as a pack.
+    static func verifiedCatalogSource(
+        loader: HistorySessionLoader, entry: ConversationIndexEntry
+    ) throws -> Source? {
+        try Task.checkCancellation()
+        guard entry.scope == entry.metadata.dirID,
+              let candidate = try? loader.pathResolver.validatedCandidate(for: entry.metadata.file),
+              candidate.directory.id == entry.scope,
+              let manifest = try? loader.adapters.manifest(for: candidate,
+                format: format(for: entry.metadata.source), configuration: loader.configuration)
+        else { return nil }
+        let snapshot = manifest.snapshot()
+        guard let current = fingerprint(manifest: manifest, snapshot: snapshot),
+              current.matchesSourceRevision(entry.fingerprint) else { return nil }
+        return Source(candidate: candidate, metadata: entry.metadata, manifest: manifest,
+                      dependencySnapshot: snapshot)
+    }
 
     static func snapshot(
         loader: HistorySessionLoader,
@@ -49,6 +71,7 @@ struct ConversationSourceSearchCoverage: Sendable {
         }, uniquingKeysWith: { _, newer in newer })
         var metadataByPath: [String: HistorySessionMetadata] = [:]
         var sourcesByPath: [String: Source] = [:]
+        var catalogSourcesByPath: [String: Source] = [:]
         var validationByPath: [String: Source] = [:]
         for entry in entries {
             try Task.checkCancellation()
@@ -65,10 +88,14 @@ struct ConversationSourceSearchCoverage: Sendable {
                 for: candidate, format: format, configuration: loader.configuration
             ) else { continue }
             let dependencySnapshot = manifest.snapshot()
-            guard let current = fingerprint(manifest: manifest, snapshot: dependencySnapshot),
-                  !current.matchesSourceRevision(entry.fingerprint) else { continue }
-            sourcesByPath[path] = Source(candidate: candidate, metadata: entry.metadata,
+            guard let current = fingerprint(manifest: manifest, snapshot: dependencySnapshot) else { continue }
+            let source = Source(candidate: candidate, metadata: entry.metadata,
                 manifest: manifest, dependencySnapshot: dependencySnapshot)
+            if current.matchesSourceRevision(entry.fingerprint) {
+                catalogSourcesByPath[path] = source
+            } else {
+                sourcesByPath[path] = source
+            }
         }
 
         // Scoped repositories reuse their original loader. Derive discovery's active scope
@@ -139,6 +166,7 @@ struct ConversationSourceSearchCoverage: Sendable {
                     // The sidecar changed annotations, not normalized text. Keep its current
                     // metadata/visibility while reusing the already verified immutable pack.
                     sourcesByPath.removeValue(forKey: path)
+                    catalogSourcesByPath[path] = source
                 } else {
                     sourcesByPath[path] = source
                 }
@@ -151,6 +179,7 @@ struct ConversationSourceSearchCoverage: Sendable {
         return Self(metadata: metadataByPath.sorted { $0.key < $1.key }.map(\.value)
                         .filter { $0.deleted == deleted },
                     sourcesByPath: sourcesByPath.filter { $0.value.metadata.deleted == deleted },
+                    catalogSourcesByPath: catalogSourcesByPath.filter { $0.value.metadata.deleted == deleted },
                     validationSources: validationByPath.sorted { $0.key < $1.key }.map(\.value)
                         .filter { $0.metadata.deleted == deleted })
     }

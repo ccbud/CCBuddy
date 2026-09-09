@@ -442,10 +442,13 @@ final class NativeSearchExperienceUITests: XCTestCase {
         // the large-document parser, exact search, tail navigation, and session switch.
         let detailField = app.textFields["conversation.detail.search"]
         XCTAssertTrue(detailField.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields.matching(identifier: "conversation.detail.search").count, 1,
+                       "Responsive toolbar layout must keep one native field editor")
         detailField.click()
         pasteReplacingFocusedText("系统代理", in: detailField)
         pasteReplacingFocusedText("当前版本", in: detailField)
         XCTAssertEqual(detailField.value as? String, "当前版本")
+        XCTAssertEqual(app.textFields.matching(identifier: "conversation.detail.search").count, 1)
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
         })

@@ -577,47 +577,51 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 continue
             }
 
-            let loaded: LoadedHistorySession
-            do {
-                loaded = try loadRetryingDependencyChange(candidate)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                result.failed += 1
-                onProgress?(result)
-                continue
-            }
-            try Self.checkCancellation(isCancelled)
-            guard let fingerprint = Self.fingerprint(
-                manifest: loaded.manifest,
-                snapshot: loaded.dependencySnapshot
-            ) else {
-                result.failed += 1
-                onProgress?(result)
-                continue
-            }
+            // Drain parser/projection/pack-writing Foundation temporaries per source. The
+            // scanner retains only metadata and dependency identities after this publication.
+            try autoreleasepool {
+                let loaded: LoadedHistorySession
+                do {
+                    loaded = try loadRetryingDependencyChange(candidate)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    result.failed += 1
+                    onProgress?(result)
+                    return
+                }
+                try Self.checkCancellation(isCancelled)
+                guard let fingerprint = Self.fingerprint(
+                    manifest: loaded.manifest,
+                    snapshot: loaded.dependencySnapshot
+                ) else {
+                    result.failed += 1
+                    onProgress?(result)
+                    return
+                }
 
-            let indexed = ConversationIndexedSession(
-                projection: loaded.projection,
-                scope: candidate.directory.id,
-                fingerprint: fingerprint
-            )
-            try Self.checkCancellation(isCancelled)
-            let replacementGeneration = try catalog.replace(indexed)
-            lastGeneration = replacementGeneration
-            result.generation = replacementGeneration
-            entriesByPath[path] = ConversationIndexEntry(
-                sourcePath: path,
-                metadata: loaded.projection.metadata,
-                scope: candidate.directory.id,
-                fingerprint: fingerprint,
-                indexedAt: Date()
-            )
-            manifestsByPath[path] = loaded.manifest
-            fullyParsedAt[path] = Date()
-            deferredReparseDeadlines.removeValue(forKey: path)
-            result.parsed += 1
-            onProgress?(result)
+                let indexed = ConversationIndexedSession(
+                    projection: loaded.projection,
+                    scope: candidate.directory.id,
+                    fingerprint: fingerprint
+                )
+                try Self.checkCancellation(isCancelled)
+                let replacementGeneration = try catalog.replace(indexed)
+                lastGeneration = replacementGeneration
+                result.generation = replacementGeneration
+                entriesByPath[path] = ConversationIndexEntry(
+                    sourcePath: path,
+                    metadata: loaded.projection.metadata,
+                    scope: candidate.directory.id,
+                    fingerprint: fingerprint,
+                    indexedAt: Date()
+                )
+                manifestsByPath[path] = loaded.manifest
+                fullyParsedAt[path] = Date()
+                deferredReparseDeadlines.removeValue(forKey: path)
+                result.parsed += 1
+                onProgress?(result)
+            }
         }
     }
 
