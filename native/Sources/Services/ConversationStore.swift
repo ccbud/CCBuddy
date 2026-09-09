@@ -632,6 +632,23 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var detailMatches: [ConversationDetailSearchMatch] = []
     @Published private(set) var detailMatchIndex = -1
     @Published private(set) var jumpRequest: ConversationJumpRequest?
+    /// A historical jump remains useful to pending search work. Only this separately revocable
+    /// intent may correct lazy layout or replay when the timeline view is reconstructed.
+    @Published private(set) var jumpLayoutRequest: ConversationScrollLayoutRequest?
+
+    var scrollLayoutRequest: ConversationScrollLayoutRequest? {
+        guard let file = activeTranscriptFile else { return nil }
+        if isFollowingLatest {
+            return .init(file: file, transcriptID: activeTranscriptID,
+                         target: .latest(revision: followLatestRevision))
+        }
+        guard let request = jumpLayoutRequest, request.file == file,
+              request.transcriptID == activeTranscriptID,
+              case .message(let jump) = request.target, jump == jumpRequest,
+              transcriptProjection.visibleMessageIndex(for: jump.messageIndex) == jump.messageIndex
+        else { return nil }
+        return request
+    }
 
     /// A notice reports something that already happened; it is not a dialog, so it withdraws on its
     /// own. Failures stay longer than confirmations, because missing one costs more.
@@ -1204,6 +1221,8 @@ final class ConversationStore: ObservableObject {
     func deactivate() {
         guard isActive else { return }
         isActive = false
+        cancelSearchNavigation()
+        jumpLayoutRequest = nil
         cancelSemanticRanking()
         searchDiagnostics = nil
         searchDurationMilliseconds = nil
@@ -1290,6 +1309,10 @@ final class ConversationStore: ObservableObject {
     }
 
     func updateListQuery(_ query: String) {
+        if query != listQuery {
+            cancelSearchNavigation()
+            jumpLayoutRequest = nil
+        }
         listQuery = query
         searchTask?.cancel()
         searchWorker?.cancel()
@@ -1348,6 +1371,7 @@ final class ConversationStore: ObservableObject {
     ) async {
         let searchQuery = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         cancelSearchNavigation()
+        jumpLayoutRequest = nil
         let file = metadata.file.standardizedFileURL
         deferredTranscriptJump = nil
         detailWorker?.cancel()
@@ -1400,6 +1424,7 @@ final class ConversationStore: ObservableObject {
 
     func clearSelection() {
         cancelSearchNavigation()
+        jumpLayoutRequest = nil
         deferredTranscriptJump = nil
         detailGeneration = UUID()
         detailWorker?.cancel()
@@ -1492,6 +1517,7 @@ final class ConversationStore: ObservableObject {
     func updateDetailQuery(_ query: String) {
         guard query != detailQuery else { return }
         cancelSearchNavigation()
+        jumpLayoutRequest = nil
         detailQuery = query
         detailMatches = []
         detailMatchIndex = -1
@@ -1507,6 +1533,7 @@ final class ConversationStore: ObservableObject {
         cancelSearchNavigation()
         deferredTranscriptJump = nil
         cancelDetailSearch()
+        jumpLayoutRequest = nil
         activeTranscriptID = id
         refreshTranscriptProjection()
         loadDeferredTranscriptIfNeeded(id)
@@ -1659,7 +1686,11 @@ final class ConversationStore: ObservableObject {
         deferredTranscriptJump = nil
         isFollowingLatest = false
         readerNavigationRevision &+= 1
-        jumpRequest = ConversationJumpRequest(id: UUID(), messageIndex: visibleIndex)
+        let request = ConversationJumpRequest(id: UUID(), messageIndex: visibleIndex)
+        jumpRequest = request
+        jumpLayoutRequest = activeTranscriptFile.map {
+            .init(file: $0, transcriptID: activeTranscriptID, target: .message(request))
+        }
     }
 
     private func jumpToSearchSequence(_ sequence: Int, query: String?) async {
@@ -1707,6 +1738,7 @@ final class ConversationStore: ObservableObject {
     func jumpToLatest() {
         guard selectedSession != nil else { return }
         cancelSearchNavigation()
+        jumpLayoutRequest = nil
         readerNavigationRevision &+= 1
         deferredTranscriptJump = nil
         jumpRequest = nil
@@ -1716,6 +1748,7 @@ final class ConversationStore: ObservableObject {
 
     func pauseFollowingLatestFromUserScroll() {
         cancelSearchNavigation()
+        jumpLayoutRequest = nil
         readerNavigationRevision &+= 1
         deferredTranscriptJump = nil
         detailSearchNavigationIntent = nil
@@ -2670,6 +2703,7 @@ final class ConversationStore: ObservableObject {
 
     private func cancelTransientWork() {
         cancelSearchNavigation()
+        jumpLayoutRequest = nil
         deferredTranscriptJump = nil
         deferredTranscriptWorker?.cancel()
         cancelProjectionPreparation()

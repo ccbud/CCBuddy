@@ -592,66 +592,81 @@ struct ConversationTimelinePane: View {
             : nil
         let transcriptFile = store.activeTranscriptFile ?? session.metadata.file
         let transcriptID = store.activeTranscriptID
-        let latestRequest = store.isFollowingLatest
-            ? ConversationLatestScrollRequest(file: transcriptFile, transcriptID: transcriptID,
-                                              revision: store.followLatestRevision)
-            : nil
+        let layoutRequest = store.scrollLayoutRequest
 
         return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Space.xxl) {
-                    // Indices, not `enumerated()`: the latter copies the whole message array into
-                    // a fresh array of tuples every time the body runs.
-                    ForEach(projection.visibleMessageIndices, id: \.self) { index in
-                        let message = session.messages[index]
-                        ConversationMessageView(
-                                message: message,
-                                messageIndex: index,
-                                sourceRawValue: session.metadata.source.rawValue,
-                                projection: projection,
-                                searchQuery: store.detailQuery,
-                                isCurrentSearchMatch: currentMatch == index,
-                                fontSize: CGFloat(fontSize ?? 13)
-                            )
-                            .id(ConversationPresentation.messageAnchor(index))
-                    }
-                    // Latest must include the floating controls' clearance in its scroll target;
-                    // outer padding is excluded when ScrollViewReader aligns an inner anchor.
-                    Color.clear.frame(height: 68).id(ConversationPresentation.bottomAnchor)
+            let layoutObserver = ConversationScrollLayoutObserver(request: layoutRequest) { request in
+                guard store.scrollLayoutRequest == request else { return }
+                // Correct the still-active row's asynchronous height without replaying navigation.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo(request.anchorID, anchor: request.anchor)
                 }
-                .padding(.horizontal, Space.xl)
-                .padding(.top, Space.xxl)
-                .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ConversationLatestScrollObserver(request: latestRequest) { request in
-                    guard store.isFollowingLatest,
-                          store.activeTranscriptFile == request.file,
-                          store.activeTranscriptID == request.transcriptID,
-                          store.followLatestRevision == request.revision else { return }
-                    // Correct changing lazy/Markdown heights without replaying the navigation
-                    // animation. Search anchors never authorize this following-only correction.
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        proxy.scrollTo(ConversationPresentation.bottomAnchor, anchor: .bottom)
-                    }
-                } onUserScroll: {
-                    guard store.activeTranscriptFile == transcriptFile,
-                          store.activeTranscriptID == transcriptID else { return }
-                    store.pauseFollowingLatestFromUserScroll()
-                })
             }
-            .textSelection(.enabled)
+
+            // A native row container owns virtualization and row-height invalidation. Keep the
+            // complete projected transcript: a search can still address every visible owner ID.
+            List {
+                ForEach(projection.visibleMessageIndices, id: \.self) { index in
+                    let message = session.messages[index]
+                    let anchor = ConversationPresentation.messageAnchor(index)
+                    ConversationMessageView(
+                        message: message,
+                        messageIndex: index,
+                        sourceRawValue: session.metadata.source.rawValue,
+                        projection: projection,
+                        searchQuery: store.detailQuery,
+                        isCurrentSearchMatch: currentMatch == index,
+                        fontSize: CGFloat(fontSize ?? 13)
+                    )
+                    .padding(.horizontal, Space.xl)
+                    .padding(.top, index == projection.visibleMessageIndices.first ? Space.xxl : 0)
+                    .padding(.bottom, Space.xxl)
+                    .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        // List's outer background is not inside its native scroll view. The
+                        // active row supplies that scope without adding a second scroll view.
+                        if layoutRequest?.anchorID == anchor { layoutObserver.accessibilityHidden(true) }
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("conversation.message.\(index)")
+                    .id(anchor)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+                // Include the floating controls' clearance in Latest's actual target row.
+                Color.clear.frame(height: 68)
+                    .background {
+                        if layoutRequest == nil || layoutRequest?.anchorID == ConversationPresentation.bottomAnchor {
+                            layoutObserver.accessibilityHidden(true)
+                        }
+                    }
+                    .id(ConversationPresentation.bottomAnchor)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 1)
+            .background(ConversationScrollInputObserver(
+                scope: .init(file: transcriptFile, transcriptID: transcriptID)
+            ) { scope in
+                guard store.activeTranscriptFile == scope.file,
+                      store.activeTranscriptID == scope.transcriptID else { return }
+                store.pauseFollowingLatestFromUserScroll()
+            }.accessibilityHidden(true))
             .onAppear {
-                if let request = store.jumpRequest {
-                    proxy.scrollTo(ConversationPresentation.messageAnchor(request.messageIndex), anchor: .center)
-                } else if store.isFollowingLatest && store.isSelectedSessionLive {
-                    proxy.scrollTo(ConversationPresentation.bottomAnchor, anchor: .bottom)
+                if let request = store.scrollLayoutRequest {
+                    proxy.scrollTo(request.anchorID, anchor: request.anchor)
                 }
             }
-            .onChange(of: store.jumpRequest) { request in
-                guard let request else { return }
-                scroll(proxy, to: ConversationPresentation.messageAnchor(request.messageIndex), anchor: .center)
+            .onChange(of: store.jumpLayoutRequest) { request in
+                guard let request, store.scrollLayoutRequest == request else { return }
+                scroll(proxy, to: request.anchorID, anchor: request.anchor)
             }
             .onChange(of: store.followLatestRevision) { _ in
                 guard store.isFollowingLatest else { return }

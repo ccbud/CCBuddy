@@ -35,7 +35,6 @@ struct ConversationMessageView: View {
                     .stroke(Theme.accent.opacity(0.35))
             }
         }
-        .accessibilityIdentifier("conversation.message.\(messageIndex)")
     }
 
     /// Who is speaking, said plainly.
@@ -796,6 +795,7 @@ private struct ConversationToolCard: View {
             Text(value)
                 .font(.system(size: max(10, fontSize * 0.84)))
                 .foregroundStyle(Theme.mutedForeground)
+                .textSelection(.enabled)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
         case .todos(let items):
@@ -810,6 +810,7 @@ private struct ConversationToolCard: View {
                 }
             }
             .font(.system(size: max(10.5, fontSize * 0.88)))
+            .textSelection(.enabled)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
@@ -1059,6 +1060,7 @@ private struct ConversationDiffBlock: View {
                 diffLine("+ \(line)", foreground: Theme.success, background: Theme.successSoft)
             }
         }
+        .textSelection(.enabled)
         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.separator))
     }

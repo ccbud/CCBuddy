@@ -1123,6 +1123,8 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertTrue(store.isSelectedSessionLive)
         XCTAssertFalse(store.isFollowingLatest)
         XCTAssertEqual(store.jumpRequest, searchAnchor)
+        XCTAssertEqual(store.scrollLayoutRequest?.target, searchAnchor.map { .message($0) },
+                       "Live append preserves the active source-scoped anchor during delayed row preparation")
         XCTAssertEqual(store.followLatestRevision, 0)
 
         store.jumpToLatest()
@@ -1446,6 +1448,108 @@ final class ConversationStoreTests: XCTestCase {
         store.jumpToLatest()
         XCTAssertTrue(store.isFollowingLatest)
         XCTAssertEqual(store.followLatestRevision, revision + 1)
+    }
+
+    func testJumpLayoutCorrectionSurvivesDelayedContentButNotUserScrollOrViewReactivation() async throws {
+        let metadata = Self.metadata(id: "layout-cancel", title: "Layout", tags: [], file: "/tmp/layout-cancel.jsonl")
+        let provider = FakeConversationRepository(
+            projects: [Self.project(cwd: "/tmp", name: "tmp", sessions: [metadata])],
+            sessions: [ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["first", "target", "last"])])
+        let inspector = FakeConversationFileInspector(date: metadata.lastActivity)
+        let store = ConversationStore(repository: provider, fileInspector: inspector,
+                                      pollIntervalNanoseconds: 60_000_000_000)
+        store.activate()
+        await waitUntil { store.listState == .loaded }
+        defer { store.deactivate() }
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file,
+            source: metadata.source, agent: "main", sequence: 1, snippet: "target", count: 1)
+        await store.select(metadata, searchHit: hit)
+        let jump = try XCTUnwrap(store.jumpRequest)
+        let active = try XCTUnwrap(store.scrollLayoutRequest)
+        XCTAssertEqual(active.target, .message(jump))
+        XCTAssertEqual(active.file, metadata.file.standardizedFileURL)
+        XCTAssertEqual(active.transcriptID, .main)
+
+        store.pauseFollowingLatestFromUserScroll()
+        XCTAssertEqual(store.jumpRequest, jump, "Search bookkeeping retains its historical jump")
+        XCTAssertNil(store.jumpLayoutRequest, "User cancellation must be owned by Store, not a disposable NSView")
+        XCTAssertNil(store.scrollLayoutRequest, "Reconstructing an observer/onAppear cannot resurrect this jump")
+        provider.setSession(Self.session(metadata, texts: ["first", "target", "last", "appended"]), for: metadata.file)
+        inspector.setDate(metadata.lastActivity.addingTimeInterval(1))
+        await store.refreshSelectedFileIfChanged()
+        XCTAssertNil(store.scrollLayoutRequest, "Later content cannot reinstate a canceled anchor")
+
+        store.jump(to: 1)
+        let resumed = try XCTUnwrap(store.scrollLayoutRequest)
+        XCTAssertNotEqual(resumed, active, "The same row with a new navigation UUID may stabilize again")
+        store.deactivate()
+        XCTAssertNil(store.scrollLayoutRequest)
+        store.activate()
+        XCTAssertNil(store.scrollLayoutRequest, "Returning to the view preserves the reader's manual position")
+    }
+
+    func testNewQueryNextAndLatestReplaceOnlyTheirOwnLayoutIntent() async throws {
+        let metadata = Self.metadata(id: "layout-next", title: "Layout", tags: [], file: "/tmp/layout-next.jsonl")
+        let store = ConversationStore(repository: FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): Self.session(metadata, texts: ["needle first", "needle last"]),
+        ]), fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        await store.select(metadata)
+        store.updateDetailQuery("needle")
+        await waitUntil { !store.isSearchingDetail }
+        let first = try XCTUnwrap(store.scrollLayoutRequest)
+        store.nextDetailMatch()
+        let next = try XCTUnwrap(store.scrollLayoutRequest)
+        XCTAssertNotEqual(next, first)
+        XCTAssertEqual(next.target, store.jumpRequest.map { .message($0) })
+
+        store.jumpToLatest()
+        XCTAssertNil(store.jumpLayoutRequest)
+        XCTAssertEqual(store.scrollLayoutRequest?.target, .latest(revision: store.followLatestRevision))
+        store.previousDetailMatch()
+        XCTAssertFalse(store.isFollowingLatest)
+        XCTAssertEqual(store.scrollLayoutRequest?.target, store.jumpRequest.map { .message($0) })
+        let historical = store.jumpRequest
+        store.updateDetailQuery("no match")
+        XCTAssertEqual(store.jumpRequest, historical)
+        XCTAssertNil(store.scrollLayoutRequest, "Typing immediately retires the previous anchor during debounce")
+        await waitUntil { !store.isSearchingDetail }
+        XCTAssertNil(store.scrollLayoutRequest)
+        store.jump(to: 1)
+        XCTAssertNotNil(store.scrollLayoutRequest)
+        store.updateListQuery("different global search")
+        XCTAssertNil(store.scrollLayoutRequest, "A new global query also retires the old result's anchor")
+        store.clearSelection()
+        XCTAssertNil(store.jumpLayoutRequest)
+        XCTAssertNil(store.scrollLayoutRequest)
+    }
+
+    func testTranscriptAndSelectionChangesReplaceScopedLayoutIntent() async throws {
+        let parent = Self.metadata(id: "layout-parent", title: "Parent", tags: [], file: "/tmp/layout-parent.jsonl")
+        let other = Self.metadata(id: "layout-other", title: "Other", tags: [], file: "/tmp/layout-other.jsonl")
+        let childFile = URL(fileURLWithPath: "/tmp/layout-child.jsonl")
+        var parentSession = Self.session(parent, texts: ["parent first", "parent target"])
+        parentSession.subagents["child"] = HistorySubagent(agentID: "child", file: childFile,
+            type: "explore", count: 2,
+            messages: [HistoryMessage(role: "assistant", content: [.init(type: "text", text: "child first")]),
+                       HistoryMessage(role: "assistant", content: [.init(type: "text", text: "child target")])])
+        let store = ConversationStore(repository: FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(parent.file): parentSession,
+            ConversationFilter.fileKey(other.file): Self.session(other, text: "other content"),
+        ]), fileInspector: FakeConversationFileInspector(date: parent.lastActivity))
+        await store.select(parent)
+        store.jump(to: 1)
+        let parentIntent = try XCTUnwrap(store.scrollLayoutRequest)
+        store.selectTranscript(.subagent("child"))
+        let childIntent = try XCTUnwrap(store.scrollLayoutRequest)
+        XCTAssertEqual(childIntent.file, childFile)
+        XCTAssertEqual(childIntent.transcriptID, .subagent("child"))
+        XCTAssertNotEqual(childIntent, parentIntent)
+        await store.select(other)
+        XCTAssertNotEqual(store.scrollLayoutRequest, childIntent)
+        XCTAssertNotEqual(store.scrollLayoutRequest, parentIntent)
+        XCTAssertEqual(store.scrollLayoutRequest?.file, other.file)
+        store.clearSelection()
+        XCTAssertNil(store.scrollLayoutRequest)
     }
 
     func testPendingDetailSearchKeepsFirstHitNavigationAcrossLiveSnapshotRefresh() async {

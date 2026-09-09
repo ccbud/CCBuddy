@@ -198,7 +198,16 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
         })
-        app.buttons["conversation.session.disk:beta"].click()
+        let clearFilter = app.buttons["conversation.list.filter.clear"]
+        XCTAssertTrue(waitUntil {
+            clearFilter.exists && clearFilter.isEnabled && clearFilter.isHittable
+        })
+        clearFilter.click()
+        let beta = app.buttons["conversation.session.disk:beta"]
+        XCTAssertTrue(waitUntil {
+            beta.exists && beta.isEnabled && beta.isHittable
+        })
+        beta.click()
         XCTAssertTrue(waitUntil {
             self.text(self.element("conversation.title")) == "Beta implementation"
         })
@@ -209,8 +218,31 @@ final class NativeSearchExperienceUITests: XCTestCase {
         let fragment = "pairedtooltailneedle"
         let ownerIndex = 1_200
         var contents = Data()
-        for turn in 0..<(ownerIndex / 2) {
+        for turn in 0..<((ownerIndex - 20) / 2) {
             contents.append(try liveTurn(turn, answerOverride: "Ordinary prelude answer \(turn)."))
+        }
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        // The last twenty messages have very different placeholder/final heights. These
+        // are real asynchronous Markdown and lazy tool-input views, not delayed test doubles.
+        for index in (ownerIndex - 20)..<ownerIndex {
+            let block: [String: Any]
+            if index.isMultiple(of: 2) {
+                let paragraphs = (0..<14).map { paragraph in
+                    "Reading neighbor \(index) paragraph \(paragraph). **Prepared Markdown** changes the lazy row height. "
+                        + "Keep the explicit search destination steady while this readable context is laid out."
+                }.joined(separator: "\n\n")
+                block = ["type": "text", "text": "## Neighbor \(index)\n\n" + paragraphs]
+            } else {
+                let command = (0..<8).map { "printf 'neighbor \(index) input line \($0)'" }.joined(separator: "\n")
+                block = ["type": "tool_use", "id": "neighbor-tool-\(index)", "name": "Bash",
+                         "input": ["command": command]]
+            }
+            let record: [String: Any] = ["type": "assistant", "uuid": "neighbor-\(index)",
+                "timestamp": timestamp, "sessionId": "live-anchor",
+                "message": ["id": "neighbor-response-\(index)", "role": "assistant", "model": "local-fixture",
+                            "content": [block]]]
+            contents.append(try JSONSerialization.data(withJSONObject: record, options: .sortedKeys))
+            contents.append(0x0a)
         }
         // Eight long lines keep the rendered tail within the tool card's viewport while
         // placing its only match beyond 160 KiB. Neither the input nor an earlier message
@@ -220,12 +252,12 @@ final class NativeSearchExperienceUITests: XCTestCase {
             + "\n" + fragment + ": complete paired output tail."
         let tailRange = try XCTUnwrap(output.range(of: fragment))
         XCTAssertGreaterThan(tailRange.lowerBound.utf16Offset(in: output), 160 * 1_024)
-        let timestamp = ISO8601DateFormatter().string(from: Date())
         let records: [[String: Any]] = [
             ["type": "assistant", "uuid": "paired-owner", "timestamp": timestamp,
              "sessionId": "live-anchor",
              "message": ["id": "paired-owner-response", "role": "assistant", "model": "local-fixture",
-                         "content": [["type": "tool_use", "id": "paired-tail-tool", "name": "Bash",
+                         "content": [["type": "text", "text": "**Anchor owner prepared.**\n\nThe global result belongs to this tool card."],
+                                     ["type": "tool_use", "id": "paired-tail-tool", "name": "Bash",
                                       "input": ["command": "printf 'fixture output'"]]]]],
             ["type": "user", "uuid": "paired-result", "timestamp": timestamp,
              "sessionId": "live-anchor",
@@ -255,24 +287,138 @@ final class NativeSearchExperienceUITests: XCTestCase {
         app.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(element("conversation.search.palette").waitForNonExistence(timeout: 5))
         let owner = element("conversation.message.\(ownerIndex)")
-        XCTAssertTrue(waitUntil(timeout: 20) { owner.exists && owner.isHittable },
+        let viewport = element("conversation.timeline.scroll")
+        func ownerIsVisible() -> Bool {
+            owner.exists && owner.isHittable && viewport.frame.intersects(owner.frame)
+        }
+        XCTAssertTrue(waitUntil(timeout: 20) { ownerIsVisible() },
                       "Opening the global result must jump directly to its visible tool owner, not message 0")
+        let preparedOwner = app.descendants(matching: .staticText).matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "Anchor owner prepared.", "Anchor owner prepared.")).firstMatch
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            preparedOwner.exists && self.app.descendants(matching: .any)
+                .matching(identifier: "conversation.message.preparing").allElementsBoundByIndex
+                .allSatisfy { !$0.isHittable }
+        }, "Wait for real visible prose preparation, not merely the first placeholder geometry")
+        XCTAssertTrue(ownerIsVisible(), "Prepared neighbor/owner heights must not push the global destination offscreen")
+        let drifted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !ownerIsVisible() }, object: nil)
+        drifted.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [drifted], timeout: 2), .completed,
+                       "The initial global anchor must remain visible through subsequent lazy layout transactions")
         XCTAssertFalse(element("conversation.message.\(ownerIndex + 1)").exists,
                        "A paired tool result has no independent timeline row to scroll to")
         XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "",
                        "This regression must be satisfied by the global anchor without a manual detail search")
 
         let disclosure = app.buttons.matching(NSPredicate(
-            format: "label CONTAINS %@ AND value == %@", "Result", "已折叠")).firstMatch
+            format: "label CONTAINS %@ AND value == %@", "Result", "collapsed")).firstMatch
         XCTAssertTrue(waitUntil { disclosure.exists && disclosure.isHittable },
                       "The collapsed result disclosure must be reachable at the anchored owner")
         disclosure.click()
-        let preparedOutput = app.descendants(matching: .staticText).matching(NSPredicate(
-            format: "label CONTAINS %@ OR value CONTAINS %@", fragment, fragment)).firstMatch
+        let preparedOutput = viewport.descendants(matching: .staticText)
+            .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", fragment, fragment)).firstMatch
         XCTAssertTrue(waitUntil(timeout: 15) { preparedOutput.exists && preparedOutput.isHittable },
                       "Expanding the visible tool must render the exact output tail without another search")
+        XCTAssertEqual(text(preparedOutput), output,
+                       "The code view must retain the complete output, including its exact tail offset")
+        XCTAssertTrue(viewport.frame.intersects(preparedOutput.frame))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(
+            format: "label CONTAINS %@ AND value == %@", "Result", "expanded")).firstMatch.exists)
         XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "")
         keepScreenshot("native-global-search-paired-result-owner")
+
+        // A deliberate wheel scroll cancels the persistent layout correction. Changing the
+        // reader width then forces actual Markdown reflow, which must not resurrect the jump.
+        for _ in 0..<3 {
+            if !ownerIsVisible() { break }
+            viewport.scroll(byDeltaX: 0, deltaY: 600)
+        }
+        XCTAssertTrue(waitUntil { !ownerIsVisible() }, "Manual scrolling must be able to leave the search anchor")
+        let previousWidth = viewport.frame.width
+        app.buttons["layout.toggle.stream"].click()
+        XCTAssertTrue(waitUntil { abs(viewport.frame.width - previousWidth) > 20 },
+                      "The cancellation assertion must follow a real reader-width/layout change")
+        let reclaimed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in ownerIsVisible() }, object: nil)
+        reclaimed.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [reclaimed], timeout: 2), .completed,
+                       "Layout changes after a user scroll must not pull the reader back to the old global hit")
+        XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "")
+        keepScreenshot("native-global-search-user-scroll-cancels-anchor")
+    }
+
+    func testToolNotesTodosAndDiffSupportNativeTextSelectionCopy() throws {
+        app.terminate()
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        // Keep this transcript and catalog separate from the three-session search fixture.
+        let history = fixtureRoot.appendingPathComponent("tool-selection-history", isDirectory: true)
+        let project = history.appendingPathComponent("projects/selection", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try writeToolSelectionSession(to: project)
+        app.launchEnvironment["CCBUD_UI_HISTORY_DIR"] = history.path
+        app.launchEnvironment["CCBUD_HOME"] = fixtureRoot.appendingPathComponent("selection-app-home").path
+        app.launch()
+        app.activate()
+        XCTAssertTrue(element("app.shell").waitForExistence(timeout: 10))
+        app.typeKey("1", modifierFlags: .command)
+        let session = app.buttons["conversation.session.disk:select-copy"]
+        XCTAssertTrue(waitUntil(timeout: 15) { session.exists && session.isEnabled && session.isHittable })
+        session.click()
+        XCTAssertTrue(waitUntil { self.text(self.element("conversation.title")) == "Tool text selection fixture" })
+        let viewport = element("conversation.timeline.scroll")
+        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil { viewport.isHittable })
+        viewport.scroll(byDeltaX: 0, deltaY: 1_000)
+
+        let pasteboard = NSPasteboard.general
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        defer {
+            pasteboard.clearContents()
+            let items = saved.map { entries in
+                let item = NSPasteboardItem()
+                for (type, data) in entries { item.setData(data, forType: type) }
+                return item
+            }
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+        }
+        let targets = [
+            ("in notecopyneedle", "notecopyneedle"),
+            ("todopendingcopyneedle", "todopendingcopyneedle"),
+            ("todoworkingcopyneedle", "todoworkingcopyneedle"),
+            ("tododonecopyneedle", "tododonecopyneedle"),
+            ("- diffoldcopyneedle", "diffoldcopyneedle"),
+            ("+ diffnewcopyneedle", "diffnewcopyneedle"),
+        ]
+        for (body, needle) in targets {
+            // Match the rendered text itself inside the reader, not a flattened row/tool AX ID.
+            let target = viewport.descendants(matching: .staticText)
+                .matching(NSPredicate(format: "label == %@ OR value == %@", body, body)).firstMatch
+            func targetIsVisible() -> Bool {
+                target.exists && target.isHittable && viewport.frame.contains(
+                    CGPoint(x: target.frame.minX + 32, y: target.frame.midY))
+            }
+            for _ in 0..<6 {
+                if targetIsVisible() { break }
+                viewport.scroll(byDeltaX: 0, deltaY: -120)
+                if waitUntil(timeout: 1, { targetIsVisible() }) { break }
+            }
+            XCTAssertTrue(waitUntil { targetIsVisible() }, "The actual \(needle) body must be visible")
+            XCTAssertEqual(text(target), body)
+            XCTAssertGreaterThan(target.frame.width, 32)
+            let sentinel = "not-copied-\(UUID().uuidString)"
+            pasteboard.clearContents()
+            XCTAssertTrue(pasteboard.setString(sentinel, forType: .string))
+            XCTAssertEqual(pasteboard.string(forType: .string), sentinel)
+            // Diff rows can expose their full-width frame. Double-click inside the alphabetic
+            // word near its leading edge, not that frame's potentially empty horizontal center.
+            target.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+                .withOffset(CGVector(dx: 32, dy: 0)).doubleClick()
+            app.typeKey("c", modifierFlags: .command)
+            XCTAssertTrue(waitUntil { pasteboard.string(forType: .string) == needle },
+                          "Native selection and Command-C must copy exactly \(needle), not a stale clipboard or whole row")
+        }
+        keepScreenshot("native-tool-body-text-selection-copy")
     }
 
     func testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession() throws {
@@ -577,6 +723,37 @@ final class NativeSearchExperienceUITests: XCTestCase {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = try XCTUnwrap(formatter.date(from: timestamp))
         try FileManager.default.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: file.path)
+    }
+
+    private func writeToolSelectionSession(to project: URL) throws {
+        let records: [[String: Any]] = [
+            ["type": "user", "uuid": "selection-user", "timestamp": "2026-09-10T02:00:00.000Z",
+             "sessionId": "select-copy", "cwd": "/workspace/tool-selection",
+             "message": ["role": "user", "content": "Verify local tool text selection."],
+             "__ccbud__": ["title": "Tool text selection fixture"]],
+            ["type": "assistant", "uuid": "selection-assistant", "timestamp": "2026-09-10T02:00:01.000Z",
+             "sessionId": "select-copy",
+             "message": ["id": "selection-response", "role": "assistant", "model": "local-fixture",
+                         "content": [
+                            ["type": "tool_use", "id": "selection-note", "name": "Grep",
+                             "input": ["pattern": "publicfixture", "path": "notecopyneedle"]],
+                            ["type": "tool_use", "id": "selection-todos", "name": "TodoWrite",
+                             "input": ["todos": [
+                                ["content": "todopendingcopyneedle", "status": "pending"],
+                                ["content": "todoworkingcopyneedle", "status": "in_progress"],
+                                ["content": "tododonecopyneedle", "status": "completed"],
+                             ]]],
+                            ["type": "tool_use", "id": "selection-diff", "name": "Edit",
+                             "input": ["file_path": "/workspace/public-selection.txt",
+                                       "old_string": "diffoldcopyneedle", "new_string": "diffnewcopyneedle"]],
+                         ], "usage": ["input_tokens": 8, "output_tokens": 8]]],
+        ]
+        var data = Data()
+        for record in records {
+            data.append(try JSONSerialization.data(withJSONObject: record, options: .sortedKeys))
+            data.append(0x0a)
+        }
+        try data.write(to: project.appendingPathComponent("select-copy.jsonl"))
     }
 
     private func liveTurn(_ index: Int, answerOverride: String? = nil) throws -> Data {

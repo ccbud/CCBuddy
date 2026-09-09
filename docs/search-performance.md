@@ -231,13 +231,42 @@ or a claim about newly available whole-volume space.
 ### Native tests and app-level checks
 
 The last executed local native/unit run passed **892 tests with zero skips**,
-including all 11 installed-CLI/Bifrost end-to-end cases. The subsequent visible
-tool-owner navigation fix adds ten unit regressions. Its app and test bundles
-compiled, but two local runs failed the XCTest/IDE control-session handshake
-before any business test started; these are not 902-test passes. Local UI XCTest
-also did not initialize. CI requires at least 902 unit tests and all 26 UI cases for
-the exact PR head. Manual checks and an earlier commit's green build are not
-substitutes for that requirement.
+including all 11 installed-CLI/Bifrost end-to-end cases. Hosted CI subsequently
+passed **902 native tests**, including the ten visible-tool-owner navigation
+regressions. Its UI run passed 24/26: the long-message test did not clear its global
+filter before switching sessions, and the tool-result test used a localized
+disclosure value that did not match its English runtime. Both test interactions
+have been corrected without removing their assertions.
+
+The reader changes add ten source-scoped layout-intent, resident-input and Store
+cancellation regressions. Local app and test bundles compile, but local
+XCTest/IDE control-session handshakes have failed before any business test starts;
+these are not 912-test passes. Local UI XCTest also did not initialize.
+CI requires at least 912 native tests and all 27 UI cases for the exact
+PR head. Manual checks and an earlier commit's build are not substitutes for that
+requirement.
+
+A full-app stress fixture exposed a separate SwiftUI lazy-stack layout hang when
+expanding a 179,258-character paired tool output near message 1,200, following
+twenty alternating multi-paragraph Markdown/tool rows. The reader now uses one
+native-backed virtualized `List`, retaining the complete transcript and stable
+message anchors. Source-scoped layout correction is revoked synchronously on
+manual navigation; one resident input observer remains available even when the
+old target row has been recycled or a search has no target yet. Text selection
+stays local to content rather than inherited across the whole reader.
+
+The minimal List implementation opened and expanded the full output in actual
+local app interaction: its only fragment remained at UTF-16 offset 179,208,
+and the complete 179,258-character accessible output matched the fixture. The
+action plus accessibility roundtrip took about 1.6 s; this is not a frame-paint
+measurement. A subsequent process sample showed 0.4% CPU instead of the sustained
+layout loop. Wheel scrolling and hiding the session list caused real Markdown
+reflow without pulling the reader back to the old hit. Actual double-click
+selection also selected the exact expected text in tool notes, all three todo
+states and both diff sides. A new UI regression separately requires six native
+double-click/Cmd-C operations, exact clipboard contents and restoration of the
+original clipboard. Accessibility checks and final Release/hosted-CI verification
+remain required.
 
 In the current Release app, a live conversation advanced from 3,710 to 3,723
 messages while showing approximately 6.4 million tokens. In-session searches for
@@ -245,8 +274,15 @@ both Chinese terms and focus restoration were verified. For global `系统代理
 the app's diagnostics recorded 192.5 ms to the first result and 1,303.2 ms to
 completion. These are diagnostic search times, not frame-paint measurements; the
 run overlapped compilation and background producer updates. This live-session
-check does not claim verification of the separate 16,921-message largest-session
-case; that requires its own UI/CI evidence.
+check is separate from the largest-session check below.
+
+In a subsequent isolated Release preview, the **458,822,422-byte, 16,921-message**
+real session opened the global `系统代理` hit at source sequence 12,192 on its
+visible tool-use owner, 12,191. The owner remained visible after asynchronous
+neighbor layout settled. This query completed in 935.7 ms on the 340-session UI
+profile; it is not the 1,426-session benchmark corpus. In-session searches returned
+`1/2 · 7` for `系统代理` and `1/16 · 18` for `当前版本`. Only public aggregate
+measurements are recorded here; original histories and UI captures remain local.
 
 ## Running the benchmark
 
