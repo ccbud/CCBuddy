@@ -35,6 +35,13 @@ injected transport markup, and is not a raw-byte search of binary attachments.
 In-session find follows the reader's normalized visible text. Exact lexical
 matching does not depend on semantic inference or ANE availability.
 
+Global hits retain their parser-stable source message sequence. When a paired
+tool result is rendered inside a different tool-use card, reader navigation maps
+that source position to the actual visible owner by tool ID. Mixed messages and
+multiple owners are resolved from the matching normalized block on a cancellable
+worker, not by guessing a neighboring row. Orphan results stay independent;
+overwritten duplicate results are not redirected to unrelated rendered content.
+
 ## Storage and correctness
 
 An atomic, checksummed `manifest.json` references immutable `.header` metadata and
@@ -223,9 +230,12 @@ or a claim about newly available whole-volume space.
 
 ### Native tests and app-level checks
 
-The final local native/unit run passed **892 tests with zero skips**, including
-all 11 installed-CLI/Bifrost end-to-end cases. Local UI XCTest did not initialize;
-that runner failure is not a passing UI run. All 25 UI cases must pass in CI for
+The last executed local native/unit run passed **892 tests with zero skips**,
+including all 11 installed-CLI/Bifrost end-to-end cases. The subsequent visible
+tool-owner navigation fix adds ten unit regressions. Its app and test bundles
+compiled, but two local runs failed the XCTest/IDE control-session handshake
+before any business test started; these are not 902-test passes. Local UI XCTest
+also did not initialize. CI requires at least 902 unit tests and all 26 UI cases for
 the exact PR head. Manual checks and an earlier commit's green build are not
 substitutes for that requirement.
 
@@ -279,7 +289,8 @@ format refusal, interrupted-object recovery, Unicode/block/group boundaries,
 same-generation catalog replacement, cancellation, live updates, low-space
 recovery, and exact snippet/count/anchor parity. UI tests cover large result sets,
 12,000-message navigation, long single-message tails, search replacement, keyboard
-focus, unavailable acceleration, live following and light/dark/compact layouts.
+focus, hidden paired-result owner navigation, unavailable acceleration, live
+following and light/dark/compact layouts.
 
 ```sh
 cargo test --locked --manifest-path native/TgrepBridge/Cargo.toml

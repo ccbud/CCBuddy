@@ -192,6 +192,8 @@ final class NativeSearchExperienceUITests: XCTestCase {
         })
         let detailField = app.textFields["conversation.detail.search"]
         XCTAssertTrue(detailField.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitUntil { detailField.isEnabled && detailField.isHittable })
+        detailField.click()
         pasteReplacingFocusedText(fragment, in: detailField)
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
@@ -200,6 +202,77 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(waitUntil {
             self.text(self.element("conversation.title")) == "Beta implementation"
         })
+    }
+
+    func testGlobalSearchOpensPairedToolResultTailAtVisibleOwner() throws {
+        let file = fixtureRoot.appendingPathComponent("history/projects/experience/live-anchor.jsonl")
+        let fragment = "pairedtooltailneedle"
+        let ownerIndex = 1_200
+        var contents = Data()
+        for turn in 0..<(ownerIndex / 2) {
+            contents.append(try liveTurn(turn, answerOverride: "Ordinary prelude answer \(turn)."))
+        }
+        // Eight long lines keep the rendered tail within the tool card's viewport while
+        // placing its only match beyond 160 KiB. Neither the input nor an earlier message
+        // contains the query. Global search must therefore anchor to the hidden result.
+        let prefixLine = String(repeating: "ordinary-output-", count: 1_400)
+        let output = Array(repeating: prefixLine, count: 8).joined(separator: "\n")
+            + "\n" + fragment + ": complete paired output tail."
+        let tailRange = try XCTUnwrap(output.range(of: fragment))
+        XCTAssertGreaterThan(tailRange.lowerBound.utf16Offset(in: output), 160 * 1_024)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let records: [[String: Any]] = [
+            ["type": "assistant", "uuid": "paired-owner", "timestamp": timestamp,
+             "sessionId": "live-anchor",
+             "message": ["id": "paired-owner-response", "role": "assistant", "model": "local-fixture",
+                         "content": [["type": "tool_use", "id": "paired-tail-tool", "name": "Bash",
+                                      "input": ["command": "printf 'fixture output'"]]]]],
+            ["type": "user", "uuid": "paired-result", "timestamp": timestamp,
+             "sessionId": "live-anchor",
+             "message": ["role": "user", "content": [["type": "tool_result",
+                         "tool_use_id": "paired-tail-tool", "content": output]]]],
+            ["type": "assistant", "uuid": "paired-finished", "timestamp": timestamp,
+             "sessionId": "live-anchor",
+             "message": ["id": "paired-finished-response", "role": "assistant", "model": "local-fixture",
+                         "content": [["type": "text", "text": "Finished reading the tool output."]]]],
+        ]
+        for record in records {
+            contents.append(try JSONSerialization.data(withJSONObject: record, options: .sortedKeys))
+            contents.append(0x0a)
+        }
+        try contents.write(to: file)
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(waitUntil { refresh.isEnabled })
+        refresh.click()
+        XCTAssertTrue(app.buttons["conversation.session.disk:live-anchor"].waitForExistence(timeout: 20))
+
+        openSearch(query: fragment)
+        let hit = element("conversation.search.result.0")
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            hit.exists && hit.label.contains(fragment) && hit.value as? String == "1 match"
+        }, "Only the hidden paired result's long tail contains the exact query")
+        XCTAssertFalse(element("conversation.search.result.1").exists)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(element("conversation.search.palette").waitForNonExistence(timeout: 5))
+        let owner = element("conversation.message.\(ownerIndex)")
+        XCTAssertTrue(waitUntil(timeout: 20) { owner.exists && owner.isHittable },
+                      "Opening the global result must jump directly to its visible tool owner, not message 0")
+        XCTAssertFalse(element("conversation.message.\(ownerIndex + 1)").exists,
+                       "A paired tool result has no independent timeline row to scroll to")
+        XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "",
+                       "This regression must be satisfied by the global anchor without a manual detail search")
+
+        let disclosure = app.buttons.matching(NSPredicate(
+            format: "label CONTAINS %@ AND value == %@", "Result", "已折叠")).firstMatch
+        XCTAssertTrue(waitUntil { disclosure.exists && disclosure.isHittable },
+                      "The collapsed result disclosure must be reachable at the anchored owner")
+        disclosure.click()
+        let preparedOutput = app.descendants(matching: .staticText).matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", fragment, fragment)).firstMatch
+        XCTAssertTrue(waitUntil(timeout: 15) { preparedOutput.exists && preparedOutput.isHittable },
+                      "Expanding the visible tool must render the exact output tail without another search")
+        XCTAssertEqual(app.textFields["conversation.detail.search"].value as? String, "")
+        keepScreenshot("native-global-search-paired-result-owner")
     }
 
     func testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession() throws {

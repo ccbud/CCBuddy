@@ -647,23 +647,33 @@ final class ConversationStore: ObservableObject {
     /// which is where the interface spent most of its main thread on a long transcript. One object
     /// per transcript means those comparisons are a pointer check.
     final class TranscriptProjection: Equatable, Sendable {
+        struct NavigationTarget: Sendable {
+            let message: HistoryMessage
+            /// Only the result block retained by resultMap has a rendered owner.
+            let ownerByBlock: [Int: Int]
+            let unambiguousOwner: Int?
+        }
+
         let toolResults: [String: HistoryContentBlock]
         let pairedToolResultIDs: Set<String>
         let visibleMessageIndices: [Int]
         let tableOfContents: [ConversationTOCEntry]
         let searchIndex: ConversationDetailSearchIndex
+        private let navigationTargets: [Int: NavigationTarget]
 
         nonisolated init(
             toolResults: [String: HistoryContentBlock] = [:],
             pairedToolResultIDs: Set<String> = [],
             messages: [HistoryMessage] = [],
             visibleMessageIndices: [Int] = [],
-            tableOfContents: [ConversationTOCEntry] = []
+            tableOfContents: [ConversationTOCEntry] = [],
+            navigationTargets: [Int: NavigationTarget] = [:]
         ) {
             self.toolResults = toolResults
             self.pairedToolResultIDs = pairedToolResultIDs
             self.visibleMessageIndices = visibleMessageIndices
             self.tableOfContents = tableOfContents
+            self.navigationTargets = navigationTargets
             searchIndex = ConversationDetailSearchIndex(messages: messages, results: toolResults,
                                                         pairedIDs: pairedToolResultIDs)
         }
@@ -675,11 +685,20 @@ final class ConversationStore: ObservableObject {
         nonisolated static func make(messages: [HistoryMessage]) throws -> TranscriptProjection {
             let results = ConversationVisibleText.resultMap(in: messages)
             let pairedIDs = ConversationVisibleText.pairedToolResultIDs(in: messages)
+            var owners: [String: Int] = [:]
+            var retainedResults: [String: (message: Int, block: Int)] = [:]
             var visible: [Int] = []
             var contents: [ConversationTOCEntry] = []
             for index in messages.indices {
                 try Task.checkCancellation()
                 let message = messages[index]
+                for (blockIndex, block) in message.content.enumerated() {
+                    if block.type == "tool_use", let id = block.id, !id.isEmpty,
+                       owners[id] == nil { owners[id] = index }
+                    if block.type == "tool_result", let id = block.toolUseID, !id.isEmpty {
+                        retainedResults[id] = (index, blockIndex)
+                    }
+                }
                 if ConversationVisibleText.isVisible(message, pairedToolResultIDs: pairedIDs) {
                     visible.append(index)
                 }
@@ -692,9 +711,87 @@ final class ConversationStore: ObservableObject {
                     }
                 }
             }
+            var navigationTargets: [Int: NavigationTarget] = [:]
+            for index in messages.indices {
+                try Task.checkCancellation()
+                let message = messages[index]
+                var blockOwners: [Int: Int] = [:]
+                var hasHiddenResult = false
+                var hasUnrenderedResult = false
+                for (blockIndex, block) in message.content.enumerated() where block.type == "tool_result" {
+                    guard let id = block.toolUseID, pairedIDs.contains(id) else { continue }
+                    hasHiddenResult = true
+                    guard let retained = retainedResults[id], retained.message == index,
+                          retained.block == blockIndex, let owner = owners[id] else {
+                        hasUnrenderedResult = true
+                        continue
+                    }
+                    blockOwners[blockIndex] = owner
+                }
+                guard hasHiddenResult else { continue }
+                let uniqueOwners = Set(blockOwners.values)
+                navigationTargets[index] = NavigationTarget(message: message, ownerByBlock: blockOwners,
+                    unambiguousOwner: !hasUnrenderedResult && uniqueOwners.count == 1 ? uniqueOwners.first : nil)
+            }
             return TranscriptProjection(toolResults: results, pairedToolResultIDs: pairedIDs,
                                         messages: messages, visibleMessageIndices: visible,
-                                        tableOfContents: contents)
+                                        tableOfContents: contents, navigationTargets: navigationTargets)
+        }
+
+        /// Normal TOC/detail navigation keeps visible rows unchanged. A hidden result only
+        /// redirects through a proven tool ID, never to an arbitrary neighboring message.
+        nonisolated func visibleMessageIndex(for sequence: Int) -> Int? {
+            if isVisible(sequence) { return sequence }
+            return navigationTargets[sequence]?.unambiguousOwner
+        }
+
+        nonisolated func needsSearchResolution(for sequence: Int, query: String?) -> Bool {
+            guard let query, !query.isEmpty, let target = navigationTargets[sequence] else { return false }
+            return isVisible(sequence) || target.unambiguousOwner == nil
+        }
+
+        /// Runs only for an ambiguous or mixed source message, on the selection worker. Match
+        /// the catalog's normalized block order, including cross-block phrases, before mapping
+        /// the first hit's block to the card which actually renders it. Old duplicate results
+        /// overwritten by resultMap have no such card and must not point at different content.
+        nonisolated func searchMessageIndex(for sequence: Int, query: String?) throws -> Int? {
+            try Task.checkCancellation()
+            guard let query, !query.isEmpty, let target = navigationTargets[sequence] else {
+                return visibleMessageIndex(for: sequence)
+            }
+            if !isVisible(sequence), let owner = target.unambiguousOwner { return owner }
+            var text = ""
+            var starts: [(location: Int, owner: Int?)] = []
+            var utf16Count = 0
+            for (index, block) in target.message.content.enumerated() {
+                try Task.checkCancellation()
+                guard var part = HistoryParsingSupport.plainText(block) ?? block.raw?.jsonString,
+                      !part.isEmpty else { continue }
+                if target.message.role == "user" { part = ConversationVisibleText.stripInjected(part) }
+                guard !part.isEmpty else { continue }
+                if !text.isEmpty { text.append("\n"); utf16Count += 1 }
+                let isPaired = block.type == "tool_result"
+                    && block.toolUseID.map { pairedToolResultIDs.contains($0) } == true
+                let owner = isPaired ? target.ownerByBlock[index] : (isVisible(sequence) ? sequence : nil)
+                starts.append((utf16Count, owner))
+                text.append(part)
+                utf16Count += part.utf16.count
+            }
+            try Task.checkCancellation()
+            guard let match = ConversationLiteralSearch(query: query).match(in: text, countingOccurrences: false)
+            else { return nil }
+            let offset = match.range.lowerBound.utf16Offset(in: text)
+            return starts.last { $0.location <= offset }?.owner
+        }
+
+        nonisolated private func isVisible(_ sequence: Int) -> Bool {
+            var lower = 0
+            var upper = visibleMessageIndices.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if visibleMessageIndices[middle] < sequence { lower = middle + 1 } else { upper = middle }
+            }
+            return lower < visibleMessageIndices.count && visibleMessageIndices[lower] == sequence
         }
     }
 
@@ -731,6 +828,12 @@ final class ConversationStore: ObservableObject {
         let originalJump: ConversationJumpRequest?
     }
     private var detailSearchNavigationIntent: DetailSearchNavigationIntent?
+    private var readerNavigationRevision: UInt64 = 0
+    private var searchNavigationWorker: Task<Int?, Error>?
+    private var searchNavigationWorkerID = UUID()
+#if DEBUG
+    var searchNavigationDidStartForTesting: (@Sendable () throws -> Void)?
+#endif
 
     @Published private(set) var actionMessage: String? {
         didSet {
@@ -767,6 +870,7 @@ final class ConversationStore: ObservableObject {
         let transcriptID: ConversationTranscriptID
         let childFileKey: String
         let messageIndex: Int
+        let searchQuery: String?
     }
     private var deferredTranscriptJump: DeferredTranscriptJump?
     private var actionMessageGeneration: UInt64 = 0
@@ -1007,6 +1111,7 @@ final class ConversationStore: ObservableObject {
         projectionWorker?.cancel()
         detailSearchTask?.cancel()
         detailSearchWorker?.cancel()
+        searchNavigationWorker?.cancel()
         pollingTask?.cancel()
         indexRetryTask?.cancel()
         revisionReloadTask?.cancel()
@@ -1241,6 +1346,8 @@ final class ConversationStore: ObservableObject {
         _ metadata: HistorySessionMetadata,
         searchHit: HistorySearchHit? = nil
     ) async {
+        let searchQuery = listQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        cancelSearchNavigation()
         let file = metadata.file.standardizedFileURL
         deferredTranscriptJump = nil
         detailWorker?.cancel()
@@ -1276,12 +1383,13 @@ final class ConversationStore: ObservableObject {
         if transcriptTabs.contains(where: { $0.id == transcriptID }) {
             activeTranscriptID = transcriptID
             refreshTranscriptProjection()
-            loadDeferredTranscriptIfNeeded(transcriptID, jumpToSequence: searchHit.sequence)
+            loadDeferredTranscriptIfNeeded(transcriptID, jumpToSequence: searchHit.sequence,
+                                           searchQuery: searchQuery)
             detailRevision += 1
         }
         if let sequence = searchHit.sequence,
            activeTranscript?.messages.indices.contains(sequence) == true {
-            jump(to: sequence)
+            await jumpToSearchSequence(sequence, query: searchQuery)
         }
     }
 
@@ -1291,6 +1399,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func clearSelection() {
+        cancelSearchNavigation()
         deferredTranscriptJump = nil
         detailGeneration = UUID()
         detailWorker?.cancel()
@@ -1382,6 +1491,7 @@ final class ConversationStore: ObservableObject {
 
     func updateDetailQuery(_ query: String) {
         guard query != detailQuery else { return }
+        cancelSearchNavigation()
         detailQuery = query
         detailMatches = []
         detailMatchIndex = -1
@@ -1394,6 +1504,7 @@ final class ConversationStore: ObservableObject {
     func selectTranscript(_ id: ConversationTranscriptID) {
         guard id != activeTranscriptID,
               transcriptTabs.contains(where: { $0.id == id }) else { return }
+        cancelSearchNavigation()
         deferredTranscriptJump = nil
         cancelDetailSearch()
         activeTranscriptID = id
@@ -1412,7 +1523,8 @@ final class ConversationStore: ObservableObject {
     /// nobody asked for.
     private func loadDeferredTranscriptIfNeeded(
         _ id: ConversationTranscriptID,
-        jumpToSequence: Int? = nil
+        jumpToSequence: Int? = nil,
+        searchQuery: String? = nil
     ) {
         guard case .subagent(let agentID) = id,
               let subagent = selectedSession?.subagents[agentID],
@@ -1426,7 +1538,7 @@ final class ConversationStore: ObservableObject {
         if let jumpToSequence, let parentFileKey {
             deferredTranscriptJump = DeferredTranscriptJump(
                 parentFileKey: parentFileKey, transcriptID: id,
-                childFileKey: childFileKey, messageIndex: jumpToSequence
+                childFileKey: childFileKey, messageIndex: jumpToSequence, searchQuery: searchQuery
             )
         } else if let pending = deferredTranscriptJump,
                   pending.parentFileKey != parentFileKey
@@ -1477,7 +1589,7 @@ final class ConversationStore: ObservableObject {
                pending.transcriptID == id, pending.childFileKey == childFileKey {
                 self.deferredTranscriptJump = nil
                 if loaded.messages.indices.contains(pending.messageIndex) {
-                    self.jump(to: pending.messageIndex)
+                    await self.jumpToSearchSequence(pending.messageIndex, query: pending.searchQuery)
                 }
             } else if self.isFollowingLatest {
                 // Latest may have been chosen while the child was still empty. Apply that
@@ -1542,13 +1654,60 @@ final class ConversationStore: ObservableObject {
     }
 
     func jump(to messageIndex: Int) {
+        cancelSearchNavigation()
+        guard let visibleIndex = transcriptProjection.visibleMessageIndex(for: messageIndex) else { return }
         deferredTranscriptJump = nil
         isFollowingLatest = false
-        jumpRequest = ConversationJumpRequest(id: UUID(), messageIndex: messageIndex)
+        readerNavigationRevision &+= 1
+        jumpRequest = ConversationJumpRequest(id: UUID(), messageIndex: visibleIndex)
+    }
+
+    private func jumpToSearchSequence(_ sequence: Int, query: String?) async {
+        let projection = transcriptProjection
+        guard projection.needsSearchResolution(for: sequence, query: query) else {
+            jump(to: sequence)
+            return
+        }
+        let generation = detailGeneration
+        let transcriptID = activeTranscriptID
+        let navigationRevision = readerNavigationRevision
+        let searchGeneration = detailSearchGeneration
+        cancelSearchNavigation()
+        let workerID = searchNavigationWorkerID
+#if DEBUG
+        let didStart = searchNavigationDidStartForTesting
+#endif
+        let worker = Task.detached(priority: .userInitiated) { () throws -> Int? in
+#if DEBUG
+            try didStart?()
+#endif
+            try Task.checkCancellation()
+            return try projection.searchMessageIndex(for: sequence, query: query)
+        }
+        searchNavigationWorker = worker
+        defer {
+            if searchNavigationWorkerID == workerID { searchNavigationWorker = nil }
+        }
+        let resolved = try? await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: { worker.cancel() }
+        guard !Task.isCancelled, searchNavigationWorkerID == workerID, detailGeneration == generation,
+              activeTranscriptID == transcriptID, transcriptProjection === projection,
+              readerNavigationRevision == navigationRevision, detailSearchGeneration == searchGeneration,
+              !isFollowingLatest, let resolved else { return }
+        jump(to: resolved)
+    }
+
+    private func cancelSearchNavigation() {
+        searchNavigationWorkerID = UUID()
+        searchNavigationWorker?.cancel()
+        searchNavigationWorker = nil
     }
 
     func jumpToLatest() {
         guard selectedSession != nil else { return }
+        cancelSearchNavigation()
+        readerNavigationRevision &+= 1
         deferredTranscriptJump = nil
         jumpRequest = nil
         isFollowingLatest = true
@@ -1556,6 +1715,8 @@ final class ConversationStore: ObservableObject {
     }
 
     func pauseFollowingLatestFromUserScroll() {
+        cancelSearchNavigation()
+        readerNavigationRevision &+= 1
         deferredTranscriptJump = nil
         detailSearchNavigationIntent = nil
         if isFollowingLatest { isFollowingLatest = false }
@@ -1858,6 +2019,7 @@ final class ConversationStore: ObservableObject {
     }
 
     private func refreshTranscriptProjection() {
+        cancelSearchNavigation()
         transcriptProjection = preparedTranscripts?.projections[activeTranscriptID] ?? TranscriptProjection()
     }
 
@@ -2507,6 +2669,7 @@ final class ConversationStore: ObservableObject {
     }
 
     private func cancelTransientWork() {
+        cancelSearchNavigation()
         deferredTranscriptJump = nil
         deferredTranscriptWorker?.cancel()
         cancelProjectionPreparation()

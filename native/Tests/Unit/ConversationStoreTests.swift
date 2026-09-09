@@ -432,10 +432,107 @@ final class TranscriptProjectionIdentityTests: XCTestCase {
         XCTAssertEqual(projection.toolResults["tool"]?.content, .string("result"))
     }
 
+    func testHiddenResultNavigationUsesItsExactOwnerAcrossTwelveThousandMessages() throws {
+        var messages = (0..<12_002).map { index in
+            HistoryMessage(role: "assistant", content: [.init(type: "text", text: "filler \(index)")])
+        }
+        messages[7] = HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "far", name: "Read")])
+        messages[12_001] = HistoryMessage(role: "user", content: [block("far", text: "系统代理")])
+        let projection = try ConversationStore.TranscriptProjection.make(messages: messages)
+        XCTAssertFalse(projection.visibleMessageIndices.contains(12_001))
+        XCTAssertEqual(projection.visibleMessageIndex(for: 12_001), 7)
+        XCTAssertEqual(try projection.searchMessageIndex(for: 12_001, query: "系统代理"), 7)
+        XCTAssertEqual(projection.visibleMessageIndex(for: 12_000), 12_000)
+        XCTAssertNil(projection.visibleMessageIndex(for: -1))
+        XCTAssertNil(projection.visibleMessageIndex(for: 12_002))
+    }
+
+    func testMultipleHiddenResultOwnersRequireTheFirstExactNormalizedBlockMatch() async throws {
+        let messages = [
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "a", name: "Read")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "text", text: "unrelated neighbor")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "b", name: "Read")]),
+            HistoryMessage(role: "user", content: [block("a", text: "alpha end"), block("b", text: "beta 系统代理")]),
+        ]
+        let projection = try ConversationStore.TranscriptProjection.make(messages: messages)
+        XCTAssertNil(projection.visibleMessageIndex(for: 3))
+        XCTAssertNil(try projection.searchMessageIndex(for: 3, query: nil))
+        let (index, onMainThread) = try await Task.detached {
+            try Self.resolveProjectionAndObserveThread(projection, sequence: 3, query: "系统代理")
+        }.value
+        XCTAssertFalse(onMainThread)
+        XCTAssertEqual(index, 2)
+        XCTAssertEqual(try projection.searchMessageIndex(for: 3, query: "ALPHA"), 0)
+        XCTAssertEqual(try projection.searchMessageIndex(for: 3, query: "end\nbeta"), 0)
+        XCTAssertNil(try projection.searchMessageIndex(for: 3, query: "absent"))
+    }
+
+    func testMixedVisibleMessageKeepsOrdinaryAnchorButGlobalResultUsesMatchingBlockOwner() throws {
+        let messages = [
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "a", name: "Read")]),
+            HistoryMessage(role: "user", content: [.init(type: "text", text: "own visible text"),
+                block("a", text: "<system-reminder>ignored match</system-reminder>系统代理")]),
+        ]
+        let projection = try ConversationStore.TranscriptProjection.make(messages: messages)
+        XCTAssertEqual(projection.visibleMessageIndex(for: 1), 1)
+        XCTAssertEqual(try projection.searchMessageIndex(for: 1, query: "系统代理"), 0)
+        XCTAssertEqual(try projection.searchMessageIndex(for: 1, query: "own visible"), 1)
+        XCTAssertEqual(try projection.searchMessageIndex(for: 1, query: "text\n系统代理"), 1)
+        XCTAssertNil(try projection.searchMessageIndex(for: 1, query: "ignored match"))
+    }
+
+    func testDuplicateIDsNeverRedirectAnOverwrittenResultToDifferentRenderedContent() throws {
+        let messages = [
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "dup", name: "Read")]),
+            HistoryMessage(role: "user", content: [block("dup", text: "obsolete needle")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "dup", name: "Read")]),
+            HistoryMessage(role: "user", content: [block("dup", text: "retained 系统代理")]),
+        ]
+        let projection = try ConversationStore.TranscriptProjection.make(messages: messages)
+        XCTAssertNil(projection.visibleMessageIndex(for: 1))
+        XCTAssertNil(try projection.searchMessageIndex(for: 1, query: "obsolete needle"))
+        XCTAssertEqual(projection.visibleMessageIndex(for: 3), 0,
+            "Both duplicate tool cards render the same retained result; choose the first deterministically")
+        XCTAssertEqual(projection.toolResults["dup"]?.content, .string("retained 系统代理"))
+    }
+
+    func testDuplicateResultBlocksWithinOneMessageNeedQueryDisambiguation() throws {
+        let messages = [
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "dup", name: "Read")]),
+            HistoryMessage(role: "user", content: [block("dup", text: "old body"), block("dup", text: "new body")]),
+        ]
+        let projection = try ConversationStore.TranscriptProjection.make(messages: messages)
+        XCTAssertNil(projection.visibleMessageIndex(for: 1))
+        XCTAssertNil(try projection.searchMessageIndex(for: 1, query: "old body"))
+        XCTAssertEqual(try projection.searchMessageIndex(for: 1, query: "new body"), 0)
+    }
+
+    func testOrphanAndEmptyIDsStayVisibleAndUnrelatedHiddenRowsNeverGuessANeighbor() throws {
+        let messages = [
+            HistoryMessage(role: "user", content: [block("orphan", text: "standalone")]),
+            HistoryMessage(role: "user", content: [block("", text: "empty ID")]),
+            HistoryMessage(role: "user", content: [.init(type: "text", text: "<system-reminder>hidden</system-reminder>")]),
+            HistoryMessage(role: "user", content: [block("future", text: "out of order result")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "future", name: "Read")]),
+        ]
+        let projection = try ConversationStore.TranscriptProjection.make(messages: messages)
+        XCTAssertEqual(projection.visibleMessageIndex(for: 0), 0)
+        XCTAssertEqual(projection.visibleMessageIndex(for: 1), 1)
+        XCTAssertNil(projection.visibleMessageIndex(for: 2))
+        XCTAssertEqual(projection.visibleMessageIndex(for: 3), 4,
+            "An actual matching tool ID, not positional proximity, defines the rendered owner")
+    }
+
     nonisolated private static func prepareProjectionAndObserveThread(_ messages: [HistoryMessage]) throws
         -> (ConversationStore.TranscriptProjection, Bool) {
         // Observe the synchronous work itself, not the async task's scheduling context.
         (try ConversationStore.TranscriptProjection.make(messages: messages), Thread.isMainThread)
+    }
+
+    nonisolated private static func resolveProjectionAndObserveThread(
+        _ projection: ConversationStore.TranscriptProjection, sequence: Int, query: String
+    ) throws -> (Int?, Bool) {
+        (try projection.searchMessageIndex(for: sequence, query: query), Thread.isMainThread)
     }
 }
 
@@ -1618,6 +1715,124 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(store.activeTranscriptID, .subagent("spawn-child"))
         XCTAssertEqual(store.activeTranscript?.messages, child.messages)
         XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+    }
+
+    func testGlobalSearchKeepsNormalizedSequenceButNavigatesHiddenMainResultToOwner() async {
+        let metadata = Self.metadata(id: "paired-main", title: "Paired", tags: [], file: "/tmp/paired-main.jsonl")
+        let session = HistorySession(metadata: metadata, messages: [
+            HistoryMessage(role: "assistant", content: [.init(type: "text", text: "before")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "tool", name: "Read")]),
+            HistoryMessage(role: "assistant", content: [.init(type: "text", text: "not the owner")]),
+            HistoryMessage(role: "user", content: [.init(type: "tool_result", toolUseID: "tool", content: .string("系统代理"))]),
+        ])
+        let store = ConversationStore(repository: FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): session,
+        ]), fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file, source: .claude,
+                                   agent: "main", sequence: 3, snippet: "系统代理", count: 1)
+        await store.select(metadata, searchHit: hit)
+        XCTAssertEqual(hit.sequence, 3)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+        XCTAssertFalse(store.isFollowingLatest)
+    }
+
+    func testGlobalMixedResultUsesCapturedQueryAndOrdinaryNavigationStillSelectsVisibleRow() async {
+        let metadata = Self.metadata(id: "mixed-main", title: "Mixed", tags: [], file: "/tmp/mixed-main.jsonl")
+        let session = HistorySession(metadata: metadata, messages: [
+            HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "tool", name: "Read")]),
+            HistoryMessage(role: "user", content: [.init(type: "text", text: "visible explanation"),
+                .init(type: "tool_result", toolUseID: "tool", content: .string("系统代理"))]),
+        ])
+        let store = ConversationStore(repository: FakeConversationRepository(projects: [], sessions: [
+            ConversationFilter.fileKey(metadata.file): session,
+        ]), fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+        store.updateListQuery("系统代理")
+        let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file, source: .claude,
+                                   agent: "main", sequence: 1, snippet: "系统代理", count: 1)
+        await store.select(metadata, searchHit: hit)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 0)
+        store.jump(to: 1)
+        XCTAssertEqual(store.jumpRequest?.messageIndex, 1)
+    }
+
+#if DEBUG
+    func testNewReaderIntentCancelsPendingAmbiguousGlobalAnchorWork() async {
+        for action in ["latest", "clear", "scroll", "query", "selection"] {
+            let metadata = Self.metadata(id: "cancel-anchor", title: "Cancel", tags: [], file: "/tmp/cancel-anchor.jsonl")
+            let session = HistorySession(metadata: metadata, messages: [
+                HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "tool", name: "Read")]),
+                HistoryMessage(role: "user", content: [.init(type: "text", text: "visible explanation"),
+                    .init(type: "tool_result", toolUseID: "tool", content: .string("系统代理"))]),
+            ])
+            let store = ConversationStore(repository: FakeConversationRepository(projects: [], sessions: [
+                ConversationFilter.fileKey(metadata.file): session,
+            ]), fileInspector: FakeConversationFileInspector(date: metadata.lastActivity))
+            store.updateListQuery("系统代理")
+            let started = expectation(description: "\(action) resolver started")
+            let cancelled = expectation(description: "\(action) worker received cancellation")
+            let resume = DispatchSemaphore(value: 0)
+            store.searchNavigationDidStartForTesting = {
+                started.fulfill()
+                guard resume.wait(timeout: .now() + 5) == .success else {
+                    throw NSError(domain: "anchor-test-resume-timeout", code: 1)
+                }
+                if Task.isCancelled { cancelled.fulfill() }
+                try Task.checkCancellation()
+            }
+            let hit = HistorySearchHit(sessionID: metadata.sessionID, file: metadata.file, source: .claude,
+                agent: "main", sequence: 1, snippet: "系统代理", count: 1)
+            let selection = Task { await store.select(metadata, searchHit: hit) }
+            await fulfillment(of: [started], timeout: 3)
+            switch action {
+            case "latest": store.jumpToLatest()
+            case "clear": store.clearSelection()
+            case "scroll": store.pauseFollowingLatestFromUserScroll()
+            case "query": store.updateDetailQuery("another query")
+            default: await store.select(metadata)
+            }
+            let intent = store.jumpRequest
+            resume.signal()
+            await selection.value
+            await fulfillment(of: [cancelled], timeout: 3)
+            XCTAssertEqual(store.jumpRequest, intent, "\(action) must not be overwritten by the retired resolver")
+            if action == "latest" { XCTAssertTrue(store.isFollowingLatest) }
+            if action == "clear" { XCTAssertNil(store.selectedSession) }
+        }
+    }
+#endif
+
+    func testGlobalHiddenResultMappingAlsoAppliesToEmbeddedAndDeferredChildren() async {
+        for deferred in [false, true] {
+            var parent = Self.metadata(id: "paired-parent", title: "Parent", tags: [], file: "/tmp/paired-parent.jsonl")
+            let child = Self.metadata(id: "paired-child", title: "Child", tags: [], file: "/tmp/paired-child.jsonl")
+            let messages = [
+                HistoryMessage(role: "assistant", content: [.init(type: "text", text: "before")]),
+                HistoryMessage(role: "assistant", content: [.init(type: "tool_use", id: "tool", name: "Read")]),
+                HistoryMessage(role: "user", content: [.init(type: "tool_result", toolUseID: "tool", content: .string("系统代理"))]),
+            ]
+            let childSession = HistorySession(metadata: child, messages: messages)
+            var parentSession = Self.session(parent, text: "parent")
+            if deferred {
+                parent.source = .codex
+                parent.subagentRefs = [.init(file: child.file, threadID: "paired-child", title: "Child",
+                    messageCount: messages.count, lastActivity: parent.lastActivity)]
+                parentSession.metadata = parent
+            } else {
+                parentSession.subagents["paired-child"] = HistorySubagent(agentID: "paired-child", file: child.file,
+                    type: "explore", count: messages.count, messages: messages)
+            }
+            let store = ConversationStore(repository: FakeConversationRepository(projects: [], sessions: [
+                ConversationFilter.fileKey(parent.file): parentSession,
+                ConversationFilter.fileKey(child.file): childSession,
+            ]), fileInspector: FakeConversationFileInspector(date: parent.lastActivity))
+            let hit = HistorySearchHit(sessionID: parent.sessionID, file: parent.file, source: parent.source,
+                agent: "paired-child", sequence: 2, snippet: "系统代理", count: 1)
+            await store.select(parent, searchHit: hit)
+            await waitUntil { store.activeTranscript?.messages.count == messages.count }
+            XCTAssertEqual(store.activeTranscriptID, .subagent("paired-child"))
+            XCTAssertEqual(store.jumpRequest?.messageIndex, 1, "deferred=\(deferred)")
+            XCTAssertEqual(hit.sequence, 2)
+        }
     }
 
     func testIndexedCodexChildHitLoadsSeparateTranscriptAndJumpsAfterLazyRead() async {
