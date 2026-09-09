@@ -8,6 +8,8 @@ struct ConversationSearchDiagnostics: Equatable, Sendable {
     var indexedDocuments: Int = 0
     var candidateCount: Int = 0
     var queryMilliseconds: Double = 0
+    /// Groups changed by the most recently completed background preparation;
+    /// foreground candidate queries never construct or modify postings.
     var incrementallyIndexedDocuments: Int = 0
     var usedFallback: Bool = false
     var cumulativeNormalizationMilliseconds: Double = 0
@@ -18,16 +20,18 @@ struct ConversationSearchDiagnostics: Equatable, Sendable {
     var tgrepRetryAfter: Date? = nil
 }
 
-/// The catalog owns this object and serializes all access with its read lock.
+/// An index owner serializes each handle independently of catalog reads.
 /// tgrep keeps a bounded live overlay and memory-mapped postings, never transcript copies.
 final class TgrepSearchIndex {
     struct Stamp: Equatable {
         let path: String
         let transcript: String
         let indexedAt: Double
+        var contentIdentity: String? = nil
 
         var fingerprint: String {
-            let identity = path + "\u{0}" + transcript + "\u{0}" + String(indexedAt.bitPattern)
+            let identity = path + "\u{0}" + transcript + "\u{0}"
+                + (contentIdentity ?? String(indexedAt.bitPattern))
             return Data(SHA256.hash(data: Data(identity.utf8))).base64EncodedString()
         }
     }
@@ -85,32 +89,40 @@ final class TgrepSearchIndex {
             }
         }
         // Always reconcile lightweight identities on the first query after an
-        // open. A copied/replaced SQLite database can reuse a generation number.
+        // open. A copied/replaced catalog can reuse a generation number.
     }
 
     deinit { symbols.destroy(handle) }
 
     func contains(id: Int64, stamp: Stamp) -> Bool { fingerprints[id] == stamp.fingerprint }
 
+    /// Only sealed handles may be handed off. The current immutable mmap remains
+    /// queryable while a separate background builder opens and verifies the cache.
+    func relinquishPublication() throws {
+        guard symbols.relinquishPublisher(handle) == 0 else { throw symbols.failure() }
+    }
+
     func upsert(id: Int64, text: String) throws {
-        let normalizationStart = ContinuousClock.now
-        let bytes = Array(Self.normalized(text).utf8)
-        normalizationMilliseconds += Self.milliseconds(since: normalizationStart)
-        // An empty Array can expose a nil pointer. A real sentinel keeps the ABI
-        // valid while length zero correctly indexes an empty document.
-        let buffer = bytes.isEmpty ? [UInt8(0)] : bytes
-        let indexStart = ContinuousClock.now
-        let status = buffer.withUnsafeBufferPointer {
-            symbols.upsert(handle, id, $0.baseAddress!, bytes.count)
+        try autoreleasepool {
+            let normalizationStart = ContinuousClock.now
+            let bytes = Array(Self.normalized(text).utf8)
+            normalizationMilliseconds += Self.milliseconds(since: normalizationStart)
+            // An empty Array can expose a nil pointer. A real sentinel keeps the ABI
+            // valid while length zero correctly indexes an empty document.
+            let buffer = bytes.isEmpty ? [UInt8(0)] : bytes
+            let indexStart = ContinuousClock.now
+            let status = buffer.withUnsafeBufferPointer {
+                symbols.upsert(handle, id, $0.baseAddress!, bytes.count)
+            }
+            trigramBuildMilliseconds += Self.milliseconds(since: indexStart)
+            guard status == 0 else { throw symbols.failure() }
         }
-        trigramBuildMilliseconds += Self.milliseconds(since: indexStart)
-        guard status == 0 else { throw symbols.failure() }
     }
 
     func commit(revision: Int64, stamps: [Int64: Stamp]) throws {
         let nextFingerprints = stamps.mapValues(\.fingerprint)
         if nextFingerprints == fingerprints, self.revision != nil || restoredFromCache {
-            // Reopen still checks every lightweight SQLite identity, but an
+            // Reopen still checks every lightweight catalog identity, but an
             // unchanged sealed index needs neither a merge nor a second full
             // integrity scan and identical checkpoint publication.
             self.revision = revision
@@ -181,6 +193,7 @@ final class TgrepSearchIndex {
         typealias CreatePersistent = @convention(c) (UnsafePointer<UInt8>, Int) -> UnsafeMutableRawPointer?
         typealias CopyManifest = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt8>?, Int) -> Int
         typealias Persist = @convention(c) (UnsafeMutableRawPointer, UnsafePointer<UInt8>, Int) -> Int32
+        typealias RelinquishPublisher = @convention(c) (UnsafeMutableRawPointer) -> Int32
         typealias Destroy = @convention(c) (UnsafeMutableRawPointer) -> Void
         typealias Upsert = @convention(c) (UnsafeMutableRawPointer, Int64, UnsafePointer<UInt8>, Int) -> Int32
         typealias Retain = @convention(c) (UnsafeMutableRawPointer, UnsafePointer<Int64>?, Int) -> Int32
@@ -198,6 +211,7 @@ final class TgrepSearchIndex {
         let createPersistent: CreatePersistent
         let copyManifest: CopyManifest
         let persist: Persist
+        let relinquishPublisher: RelinquishPublisher
         let destroy: Destroy
         let upsert: Upsert
         let retain: Retain
@@ -224,6 +238,7 @@ final class TgrepSearchIndex {
                   let createPersistent = load("ccbuddy_tgrep_create_persistent", as: CreatePersistent.self),
                   let copyManifest = load("ccbuddy_tgrep_copy_manifest", as: CopyManifest.self),
                   let persist = load("ccbuddy_tgrep_persist", as: Persist.self),
+                  let relinquishPublisher = load("ccbuddy_tgrep_relinquish_publisher", as: RelinquishPublisher.self),
                   let destroy = load("ccbuddy_tgrep_destroy", as: Destroy.self),
                   let upsert = load("ccbuddy_tgrep_upsert", as: Upsert.self),
                   let retain = load("ccbuddy_tgrep_retain", as: Retain.self),
@@ -236,6 +251,7 @@ final class TgrepSearchIndex {
             self.createPersistent = createPersistent
             self.copyManifest = copyManifest
             self.persist = persist
+            self.relinquishPublisher = relinquishPublisher
             self.destroy = destroy
             self.upsert = upsert
             self.retain = retain

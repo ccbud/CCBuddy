@@ -130,9 +130,9 @@ private struct TranscriptProofSheet: View {
                         type: "tool_use",
                         id: "call-2",
                         name: "Read",
-                        input: .object(["file_path": .string("Sources/History/ConversationIndexDatabase.swift")])
+                        input: .object(["file_path": .string("Sources/History/ConversationFileCatalog.swift")])
                     ),
-                    .init(type: "text", text: "已在 ConversationIndexDatabase 里加上一次性 VACUUM。"),
+                    .init(type: "text", text: "已在 ConversationFileCatalog 中加入闲时孤立文件回收。"),
                 ], sidechain: true),
                 messageIndex: 2,
                 sourceRawValue: HistorySource.codex.rawValue,

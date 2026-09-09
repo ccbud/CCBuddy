@@ -107,7 +107,7 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         let first = home.appendingPathComponent("first")
         let second = home.appendingPathComponent("second")
         let hidden = home.appendingPathComponent("not-configured")
-        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        let database = try ConversationFileCatalog(file: home.appendingPathComponent("file-catalog"))
         for value in [
             indexedCodex(scope: first, id: "parent"),
             indexedCodex(scope: first, id: "child", parent: "parent"),
@@ -142,7 +142,7 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let first = home.appendingPathComponent("first")
         let second = home.appendingPathComponent("second")
-        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        let database = try ConversationFileCatalog(file: home.appendingPathComponent("file-catalog"))
         let parent = indexedCodex(scope: first, id: "parent", text: "common parent contents")
         let crossScope = indexedCodex(scope: second, id: "cross-scope", parent: "parent", text: "foreign-only needle")
         let deleted = indexedCodex(scope: first, id: "deleted", parent: "parent", text: "trash-only needle", deleted: true)
@@ -582,7 +582,7 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
         XCTAssertEqual(entry.result.hit(for: updated.metadata, agentOverride: nil), expected)
         if let reusedRow = cache.lookup(oldKey) {
             XCTAssertEqual(reusedRow.generation, newGeneration,
-                "SQLite row-ID reuse must not preserve the old partial answer")
+                "A catalog revision change must not preserve the old partial answer")
         }
 
         let warmRecorder = SearchProgressRecorder()
@@ -727,7 +727,7 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
     private func makeEqualActivityRepository(home: URL, count: Int, duplicateStableIDs: Bool = false) throws
         -> (IndexedHistoryRepository, [ConversationIndexedSession]) {
         let scope = home.appendingPathComponent("history")
-        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        let database = try ConversationFileCatalog(file: home.appendingPathComponent("file-catalog"))
         let activity = Date(timeIntervalSince1970: 1_800_000_000)
         var sessions: [ConversationIndexedSession] = []
         for index in 0..<count {
@@ -772,9 +772,9 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
     }
 
     private func makeProgressiveRepository(home: URL, count: Int) throws
-        -> (IndexedHistoryRepository, ConversationIndexDatabase, [ConversationIndexedSession]) {
+        -> (IndexedHistoryRepository, ConversationFileCatalog, [ConversationIndexedSession]) {
         let scope = home.appendingPathComponent("history")
-        let database = try ConversationIndexDatabase(file: home.appendingPathComponent("index.sqlite3"))
+        let database = try ConversationFileCatalog(file: home.appendingPathComponent("file-catalog"))
         var sessions: [ConversationIndexedSession] = []
         for index in 0..<count {
             var value = indexedCodex(scope: scope, id: "progressive-\(index)",
@@ -814,10 +814,10 @@ final class IndexedHistoryRepositoryParityTests: XCTestCase {
 
     private func makeWarmRepository(
         configuration: HistoryConfiguration
-    ) throws -> (IndexedHistoryRepository, ConversationIndexDatabase) {
-        let database = try ConversationIndexDatabase(
+    ) throws -> (IndexedHistoryRepository, ConversationFileCatalog) {
+        let database = try ConversationFileCatalog(
             file: configuration.appDataRoot.appendingPathComponent(
-                "parity-index-\(UUID().uuidString).sqlite3"
+                "parity-catalog-\(UUID().uuidString)"
             )
         )
         let loader = HistorySessionLoader(configuration: configuration)

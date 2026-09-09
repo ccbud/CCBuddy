@@ -1,9 +1,8 @@
 import Darwin
 import Foundation
-import SQLite3
 
-/// Compiled with the production History sources by benchmark-real-history.sh.
-/// This executable has no UI, gateway, config-store, or history-mutation code.
+/// Compiled with production History sources. No UI, gateway or history-mutation code is linked.
+/// Every catalog write is confined to an explicitly supplied private benchmark directory.
 @main
 enum RealHistoryBenchmark {
     static let producerRoots: [(String, String)] = [
@@ -13,583 +12,477 @@ enum RealHistoryBenchmark {
         ("Antigravity", ".gemini/antigravity-cli"),
     ]
     static let requiredQueries = ["系统代理", "当前版本"]
-    // Fixed public terms exercise phrases, code paths, identifiers and mixed scripts.
-    // These are never extracted from the owner's private history.
+    // Public terms only: never extract or emit queries from private conversation content.
     static let catalogQueries = requiredQueries + [
-        "native/Sources", "ConversationIndexDatabase", "Swift 代码", "error", "搜索",
+        "native/Sources", "ConversationFileCatalog", "Swift 代码", "error", "搜索",
         "工具", "代码", "performance", "Swift",
     ]
 
-    static func main() {
-        do {
-            try run()
-        } catch {
-            var failure: [String: Any] = ["phase": "failed",
+    static func main() async {
+        do { try await run() }
+        catch {
+            var row: [String: Any] = ["phase": "failed",
                 "error_type": String(describing: type(of: error))]
-            // These enum cases contain no associated values or private paths. Do not
-            // describe arbitrary Cocoa/SQLite errors, which can include local content.
-            if let known = error as? BenchmarkFailure {
-                failure["reason"] = String(describing: known)
-            }
-            emit(failure)
+            // Only value-free local reason codes are safe to describe. Cocoa/producer errors
+            // can contain full paths or content and must never be serialized here.
+            if let known = error as? BenchmarkFailure { row["reason"] = String(describing: known) }
+            emit(row)
             exit(1)
         }
     }
 
-    private static func run() throws {
+    private static func run() async throws {
         let arguments = Set(CommandLine.arguments.dropFirst())
-        let fallbackRepository = arguments.contains("--fallback-repository")
-        let progressiveRepository = arguments.contains("--progressive-repository")
-        let migrate = arguments.contains("--migrate")
-        guard !arguments.contains("--baseline-fts") else { throw BenchmarkFailure.retiredFTSMode }
-        guard !(fallbackRepository && progressiveRepository) else { throw BenchmarkFailure.conflictingModes }
-        guard arguments.contains("--inventory") || arguments.contains("--largest") || arguments.contains("--detail") || arguments.contains("--run") || arguments.contains("--queries") || fallbackRepository || progressiveRepository || migrate else {
-            print("Usage: benchmark-real-history.sh --inventory|--largest|--run [--show-roots]; --detail; --queries --catalog <private benchmark.sqlite3> [--repository]; --fallback-repository|--progressive-repository --catalog <private benchmark.sqlite3>; --migrate --catalog <private benchmark.sqlite3> [--queries|--progressive-repository] [--migration-timeout-seconds 3600]")
+        if arguments.isEmpty || arguments.contains("--help") {
+            print("""
+            Usage:
+              benchmark-real-history.sh --inventory|--largest|--detail
+              benchmark-real-history.sh --inventory --catalog <private directory>
+              benchmark-real-history.sh --run --catalog <private directory> [--prepare-index]
+              benchmark-real-history.sh --queries --catalog <private directory> [--prepare-index]
+              benchmark-real-history.sh --restore --prepare-index --catalog <private directory>
+            Query options: --repository | --progressive-repository | --fallback-repository
+            Optional: --require-known-hits (require the two fixed public Chinese phrases).
+            Compile only: benchmark-real-history.sh --compile-only
+            A catalog must be named catalog inside a mode-0700, same-owner directory named
+            native/build/ccbuddy-query-benchmark.<random>. Create its parent with mktemp -d.
+            --run creates/updates only that explicit derived catalog and retains it for later runs.
+            --queries first measures direct search without scheduling preparation; --prepare-index
+            then prepares explicitly. Repository modes keep production's automatic background
+            scheduling, so only the first query enters without an earlier benchmark query.
+            --restore is a separate fresh-process measurement: no query/list/body prewarm occurs
+            before explicit checkpoint preparation. OS filesystem caches are not flushed.
+            --inventory/--largest/--detail never create or open a conversation catalog.
+            Private source paths, titles, IDs, snippets and original text are never printed.
+            Retired options: --migrate, --baseline-fts, --show-roots.
+            """)
             return
         }
+        guard !arguments.contains("--migrate"), !arguments.contains("--baseline-fts"),
+              !arguments.contains("--migration-timeout-seconds") else {
+            throw BenchmarkFailure.retiredStorageMode
+        }
+        guard !arguments.contains("--show-roots") else { throw BenchmarkFailure.privatePathOutputRetired }
+        let fallback = arguments.contains("--fallback-repository")
+        let progressive = arguments.contains("--progressive-repository")
+        let finalRepository = arguments.contains("--repository")
+        guard [fallback, progressive, finalRepository].filter({ $0 }).count <= 1 else {
+            throw BenchmarkFailure.conflictingModes
+        }
+        let restore = arguments.contains("--restore")
+        let prepareIndex = arguments.contains("--prepare-index")
+        guard !restore || prepareIndex, !(fallback && (prepareIndex || restore)) else {
+            throw BenchmarkFailure.conflictingModes
+        }
+        let inventory = arguments.contains("--inventory")
+        let largest = arguments.contains("--largest")
+        let detail = arguments.contains("--detail")
+        let scan = arguments.contains("--run")
+        let queries = arguments.contains("--queries") || restore
+            || (!scan && (fallback || progressive || finalRepository))
+        guard [inventory, largest, detail, scan, queries].filter({ $0 }).count == 1 else {
+            throw BenchmarkFailure.conflictingModes
+        }
+        let catalog = try catalogArgument()
+        if let catalog {
+            try validatePrivateCatalog(catalog, allowMissing: scan)
+        } else if scan || queries {
+            throw BenchmarkFailure.invalidCatalog
+        }
+        if inventory, let catalog {
+            emit(["phase": "catalog_inventory", "storage": try catalogInventory(catalog),
+                "disk": diskFootprint(catalog), "opens_catalog": false, "producer_reads": false])
+            return
+        }
+        if let catalog, queries {
+            let opened = ContinuousClock.now
+            let database = try ConversationFileCatalog(file: catalog, enableTgrep: !fallback)
+            emit(["phase": "catalog_open", "elapsed_ms": milliseconds(since: opened),
+                "index_mode": "immutable_file_packs_grouped_tgrep",
+                "metadata_or_body_prewarm": false, "checkpoint_preparation_started": false,
+                "fresh_process_restore_requested": restore, "os_filesystem_cache_flushed": false])
+            try await measureQueryPhases(database, arguments: arguments, freshProcessRestore: restore,
+                producerScanPrewarmed: false)
+            return
+        }
+        guard catalog == nil || scan else { throw BenchmarkFailure.conflictingModes }
         let manager = FileManager.default
         let home = manager.homeDirectoryForCurrentUser
+        let locations = sourceLocations(home: home)
         let scratch = ProcessInfo.processInfo.environment["CCBUD_BENCHMARK_SCRATCH"]
             .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? manager.temporaryDirectory
         let temporary = scratch.appendingPathComponent("ccbuddy-real-history-\(UUID().uuidString)")
-        try manager.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try manager.createDirectory(at: temporary, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
         defer { try? manager.removeItem(at: temporary) }
-        let roots = producerRoots.map { home.appendingPathComponent($0.1).path }
-        if arguments.contains("--queries") || fallbackRepository || progressiveRepository || migrate {
-            guard let argument = CommandLine.arguments.firstIndex(of: "--catalog"),
-                  CommandLine.arguments.indices.contains(argument + 1) else { throw BenchmarkFailure.invalidCatalog }
-            let file = URL(fileURLWithPath: CommandLine.arguments[argument + 1]).standardizedFileURL
-            try validatePrivateCatalog(file)
-            let beforeStorage = try CatalogStorageProbe(file: file)
-            let beforeSnapshot = try beforeStorage.snapshot()
-            emit(["phase": "catalog_storage_before_open", "storage": beforeSnapshot,
-                "disk": diskFootprint(file), "migration_requested": migrate])
-            var fallbackFixture: (file: URL, stamp: ConversationDependencyStamp)?
-            defer {
-                if let fixture = fallbackFixture {
-                    let current = ConversationDependencyStamp.read(.init(
-                        file: fixture.file, role: .providerMetadata
-                    ))
-                    // Never remove a cache directory or a replacement created by somebody else.
-                    if current.kind == .regularFile, current == fixture.stamp {
-                        do {
-                            try manager.removeItem(at: fixture.file)
-                            emit(["phase": "fallback_fixture_cleanup", "removed": true])
-                        } catch {
-                            emit(["phase": "fallback_fixture_cleanup", "removed": false,
-                                "reason": "remove_failed"])
-                        }
-                    } else {
-                        emit(["phase": "fallback_fixture_cleanup", "removed": false,
-                            "reason": "fixture_changed"])
-                    }
-                }
-            }
-            if fallbackRepository {
-                // Only a physically local, explicitly named benchmark snapshot is eligible.
-                // A regular file makes the real tgrep cache-directory creation fail without
-                // disabling the engine, changing user settings, or moving existing checkpoints.
-                let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                guard file.resolvingSymlinksInPath().standardizedFileURL == file,
-                      values?.isRegularFile == true, values?.isSymbolicLink != true else {
-                    throw BenchmarkFailure.invalidCatalog
-                }
-                let cache = file.deletingLastPathComponent()
-                    .appendingPathComponent(file.lastPathComponent + ".tgrep-chunks-v1")
-                do {
-                    try Data("ccbuddy-benchmark-cache-blocker\n".utf8).write(
-                        to: cache, options: .withoutOverwriting
-                    )
-                } catch {
-                    // O_EXCL-style creation refuses every existing file/directory/symlink.
-                    // Do not print an NSError that might expose a private filesystem path.
-                    throw BenchmarkFailure.fallbackFixtureUnavailable
-                }
-                fallbackFixture = (cache, ConversationDependencyStamp.read(.init(
-                    file: cache, role: .providerMetadata
-                )))
-            }
-            let database = try ConversationIndexDatabase(file: file)
-            if migrate {
-                try measureMigration(database, probe: beforeStorage, initial: beforeSnapshot)
-                if !arguments.contains("--queries") && !fallbackRepository && !progressiveRepository {
-                    return
-                }
-            }
-            emit(["phase": "catalog_query_setup", "index_mode": "compressed_chunks_tgrep",
-                "maintenance_pending": try database.maintenanceIsPending(),
-                "disk": diskFootprint(file)])
-            guard TgrepSearchIndex.isAvailable else { throw BenchmarkFailure.engineUnavailable }
-            let queryStart = ContinuousClock.now
-            if arguments.contains("--repository") || fallbackRepository || progressiveRepository {
-                // Production scope IDs retain the user's spelling (for example ~/.codex),
-                // whereas a separately indexed benchmark used absolute producer roots. Use
-                // only existing physical scope IDs from this explicitly supplied snapshot;
-                // do not disable the repository's allowlist or include legacy __wake rows.
-                // This reads metadata only: no discovery, raw import, or reconciliation.
-                let scopeStarted = ContinuousClock.now
-                let snapshotEntries = try database.listEntries(limit: .max)
-                let snapshotScopeIDs = Set(snapshotEntries.compactMap { entry -> String? in
-                    let id = entry.metadata.dirID
-                    guard !entry.scope.hasPrefix("__"), !id.hasPrefix("__"),
-                          id.hasPrefix("~/") || (id as NSString).isAbsolutePath else { return nil }
-                    return id
-                }).sorted()
-                guard !snapshotScopeIDs.isEmpty else {
-                    emit(["phase": "snapshot_scope_resolution", "failed": true,
-                        "reason": "no_physical_scopes", "snapshot_rows": snapshotEntries.count])
-                    throw BenchmarkFailure.emptyRepositoryScope
-                }
-                let physicalPaths = Set(snapshotEntries.filter {
-                    !$0.scope.hasPrefix("__") && snapshotScopeIDs.contains($0.metadata.dirID)
-                }.map { ConversationIndexDatabase.normalizedPath($0.metadata.file) })
-                emit(["phase": "snapshot_scope_resolution",
-                    "elapsed_ms": milliseconds(since: scopeStarted),
-                    "physical_scope_count": snapshotScopeIDs.count,
-                    "snapshot_rows": snapshotEntries.count,
-                    "virtual_scope_rows_excluded": snapshotEntries.filter {
-                        $0.scope.hasPrefix("__") || $0.metadata.dirID.hasPrefix("__")
-                    }.count])
-                let configuration = HistoryConfiguration(historyDirs: snapshotScopeIDs, homeDirectory: home,
-                    importsRoot: temporary.appendingPathComponent("imports"))
-                let repository = IndexedHistoryRepository(configuration: configuration, database: database)
-                let listStarted = ContinuousClock.now
-                let listed = try repository.listSessions(limit: ConversationCatalogLimits.searchScan)
-                guard !listed.isEmpty else {
-                    emit(["phase": "repository_session_list", "failed": true,
-                        "reason": "no_visible_canonical_sessions"])
-                    throw BenchmarkFailure.emptyRepositoryScope
-                }
-                // Fail closed if a reserved/legacy row could enter through a mismatched scope
-                // or the repository's built-in imported-session allowance.
-                guard listed.allSatisfy({ !$0.dirID.hasPrefix("__")
-                    && physicalPaths.contains(ConversationIndexDatabase.normalizedPath($0.file)) }) else {
-                    throw BenchmarkFailure.virtualRepositoryScope
-                }
-                emit(["phase": "repository_session_list", "elapsed_ms": milliseconds(since: listStarted),
-                    "visible_canonical_sessions": listed.count,
-                    "metadata_cache_prewarmed_for_scope_resolution": true,
-                    "forced_tgrep_cache_unavailable": fallbackRepository,
-                    "process_peak_rss_bytes": peakRSS()])
-                // Deliberately do not start indexing, watching, or reconciliation. Only the
-                // explicitly supplied private derived snapshot is queried. The production
-                // facade still performs real scope filtering, canonical session ordering,
-                // exact full counts, message-span lookup, and snippet extraction.
-                if progressiveRepository {
-                    for (index, query) in catalogQueries.enumerated() {
-                        try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query,
-                            phase: index == 0 ? "progressive_repository_first_query" : "progressive_repository_first_query_warm_index")
-                    }
-                    for query in requiredQueries {
-                        try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query,
-                            phase: "progressive_repository_repeat_query")
-                    }
-                    emit(["phase": "complete", "elapsed_ms": milliseconds(since: queryStart),
-                        "disk": diskFootprint(file),
-                        "process_peak_rss_bytes": peakRSS()])
-                    return
-                }
-                let queryPhases = fallbackRepository ? "fallback_repository" : "repository"
-                let queries = fallbackRepository ? requiredQueries : catalogQueries
-                let repeats = fallbackRepository ? requiredQueries
-                    : ["搜索", "performance", "Swift", "系统代理", "当前版本"]
-                for (index, query) in queries.enumerated() {
-                    try measureRepositoryQuery(repository, sessions: listed, query: query,
-                        phase: queryPhases + (index == 0 ? "_first_query" : "_first_query_warm_index"),
-                        requiringFallback: fallbackRepository)
-                }
-                for query in repeats {
-                    try measureRepositoryQuery(repository, sessions: listed, query: query,
-                        phase: queryPhases + "_repeat_query", requiringFallback: fallbackRepository)
-                }
-                emit(["phase": "complete", "elapsed_ms": milliseconds(since: queryStart), "process_peak_rss_bytes": peakRSS()])
-                return
-            }
-            for (index, query) in catalogQueries.enumerated() {
-                try measureQuery(database, query: query, phase: index == 0 ? "first_query" : "first_query_warm_index")
-            }
-            for query in ["搜索", "工具", "代码", "系统代理", "当前版本"] { try measureQuery(database, query: query, phase: "repeat_query") }
-            emit(["phase": "complete", "elapsed_ms": milliseconds(since: queryStart), "process_peak_rss_bytes": peakRSS()])
-            return
-        }
-        let configuration = HistoryConfiguration(historyDirs: roots, homeDirectory: home,
+        // Preserve the historic benchmark cohort: source trees, without importing the app's
+        // own library. An empty isolated imports root also avoids reading app annotation sidecars.
+        let configuration = HistoryConfiguration(historyDirs: locations.map(\.path), homeDirectory: home,
             importsRoot: temporary.appendingPathComponent("imports"))
         let loader = HistorySessionLoader(configuration: configuration)
         let discoveryStart = ContinuousClock.now
         let candidates = loader.discoverCandidates(activeOnly: false)
         let discoveryMS = milliseconds(since: discoveryStart)
-        let sized = candidates.map { candidate in
-            (candidate, (try? candidate.file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        let sized = candidates.map {
+            ($0, (try? $0.file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
-        var inventory: [[String: Any]] = []
-        for (label, suffix) in producerRoots {
-            let root = home.appendingPathComponent(suffix).resolvingSymlinksInPath().standardizedFileURL
-            let files = sized.filter { $0.0.directory.baseURL == root }
-            var row: [String: Any] = [
-                "producer": label,
-                "exists": manager.fileExists(atPath: root.path),
-                "session_files": files.count,
+        let inventoryRows: [[String: Any]] = locations.map { location in
+            let files = sized.filter { $0.0.directory.baseURL == URL(fileURLWithPath: location.path) }
+            return ["producer": location.label, "session_files": files.count,
+                "exists": manager.fileExists(atPath: location.path),
                 "total_bytes": files.reduce(0) { $0 + $1.1 },
-                "largest_file_bytes": files.map(\.1).max() ?? 0,
-            ]
-            if arguments.contains("--show-roots"), !arguments.contains("--detail") {
-                row["root"] = root.path
-            }
-            inventory.append(row)
+                "largest_file_bytes": files.map(\.1).max() ?? 0]
         }
-        emit(["phase": "inventory", "roots": inventory, "discovery_ms": discoveryMS,
+        emit(["phase": "inventory", "roots": inventoryRows, "discovery_ms": discoveryMS,
             "session_files": candidates.count, "total_bytes": sized.reduce(0) { $0 + $1.1 },
-            "tgrep_available": TgrepSearchIndex.isAvailable,
+            "tgrep_available": TgrepSearchIndex.isAvailable, "settings_read_only": true,
+            "imports_excluded": true, "app_annotation_sidecars_loaded": false,
             "process_peak_rss_bytes": peakRSS()])
-        guard !arguments.contains("--inventory") else { return }
-        guard let largest = sized.max(by: { $0.1 < $1.1 }) else { return }
-
-        if arguments.contains("--detail") {
-            // Measure the production, authorized detail path in a separate process from
-            // --largest (which also constructs the catalog projection). This is raw file to
-            // normalized session, not Store selection-to-first-paint latency or a cache hit.
-            // Emit only aggregate measurements, never transcript paths, titles, or content.
-            let before = peakRSS()
-            let started = ContinuousClock.now
-            do {
-                let session = try loader.getSession(file: largest.0.file)
-                let elapsed = milliseconds(since: started)
-                emit(["phase": "largest_detail_session", "file_bytes": largest.1,
-                    "source": session.metadata.source.rawValue,
-                    "messages": session.messages.count,
-                    "subagents": session.subagents.count,
-                    "detail_load_ms": elapsed,
+        if inventory { return }
+        if largest || detail {
+            guard let largestFile = sized.max(by: { $0.1 < $1.1 }) else { return }
+            let before = peakRSS(), started = ContinuousClock.now
+            if detail {
+                let session = try loader.getSession(file: largestFile.0.file)
+                emit(["phase": "largest_detail_session", "file_bytes": largestFile.1,
+                    "source": session.metadata.source.rawValue, "messages": session.messages.count,
+                    "subagents": session.subagents.count, "detail_load_ms": milliseconds(since: started),
                     "includes_catalog_projection": false, "includes_ui_projection": false,
                     "baseline_peak_rss_bytes": before, "process_peak_rss_bytes": peakRSS()])
-            } catch {
-                emit(["phase": "largest_detail_session", "file_bytes": largest.1,
-                    "failed": true, "error_type": String(describing: type(of: error)),
-                    "detail_load_ms": milliseconds(since: started),
-                    "process_peak_rss_bytes": peakRSS()])
-                throw BenchmarkFailure.parse
-            }
-            return
-        }
-
-        if arguments.contains("--largest") {
-            let before = peakRSS()
-            let started = ContinuousClock.now
-            do {
-                let loaded = try loader.load(largest.0, consistency: .bestEffort)
-                emit(["phase": "largest_session", "file_bytes": largest.1,
+            } else {
+                let loaded = try loader.load(largestFile.0, consistency: .bestEffort)
+                emit(["phase": "largest_session", "file_bytes": largestFile.1,
                     "source": loaded.session.metadata.source.rawValue,
-                    "messages": loaded.session.messages.count,
-                    "subagents": loaded.session.subagents.count,
+                    "messages": loaded.session.messages.count, "subagents": loaded.session.subagents.count,
                     "visible_search_bytes": loaded.projection.threads.reduce(0) { $0 + $1.searchText.utf8.count },
-                    "parse_ms": milliseconds(since: started),
-                    "baseline_peak_rss_bytes": before, "process_peak_rss_bytes": peakRSS()])
-            } catch {
-                emit(["phase": "largest_session", "file_bytes": largest.1,
-                    "failed": true, "error_type": String(describing: type(of: error)),
-                    "parse_ms": milliseconds(since: started), "process_peak_rss_bytes": peakRSS()])
-                throw BenchmarkFailure.parse
+                    "parse_ms": milliseconds(since: started), "baseline_peak_rss_bytes": before,
+                    "process_peak_rss_bytes": peakRSS()])
             }
             return
         }
-
-        let database = try ConversationIndexDatabase(file: temporary.appendingPathComponent("index.sqlite3"))
-        guard TgrepSearchIndex.isAvailable else { throw BenchmarkFailure.engineUnavailable }
+        guard let catalog else { throw BenchmarkFailure.invalidCatalog }
+        let database = try ConversationFileCatalog(file: catalog, enableTgrep: !fallback)
         let scanner = ConversationIndexScanner(configuration: configuration, database: database,
             loader: loader, reparseSpacing: .immediate)
-        let coldStart = ContinuousClock.now
-        let scan = try scanner.scanAll(onProgress: { result in
-            if result.completed > 0, result.completed.isMultiple(of: 100) {
-                emit(["phase": "index_progress", "completed": result.completed,
-                    "discovered": result.discovered, "failed": result.failed,
-                    "elapsed_ms": milliseconds(since: coldStart), "process_peak_rss_bytes": peakRSS()])
+        let started = ContinuousClock.now
+        let firstMetadata = FirstMetadataProbe()
+        let result = try scanner.scanAll(onProgress: { progress in
+            firstMetadata.record(progress, elapsed: milliseconds(since: started))
+            if progress.completed > 0, progress.completed.isMultiple(of: 100) {
+                emit(["phase": "catalog_scan_progress", "completed": progress.completed,
+                    "discovered": progress.discovered, "failed": progress.failed,
+                    "elapsed_ms": milliseconds(since: started), "process_peak_rss_bytes": peakRSS()])
             }
         })
-        let entries = try database.listEntries(deleted: nil, limit: .max)
-        let sourceCounts = Dictionary(grouping: entries, by: { $0.metadata.source.rawValue }).mapValues(\.count)
-        emit(["phase": "cold_catalog", "elapsed_ms": milliseconds(since: coldStart),
-            "discovered": scan.discovered, "parsed": scan.parsed, "failed": scan.failed,
-            "metadata_published": scan.metadataPublished, "by_source": sourceCounts,
-            "catalog_bytes": fileBytes(database.file), "process_peak_rss_bytes": peakRSS()])
+        emit(["phase": "catalog_scan_complete", "elapsed_ms": milliseconds(since: started),
+            "first_metadata_published_ms": firstMetadata.elapsed.map { $0 as Any } ?? NSNull(),
+            "discovered": result.discovered, "parsed": result.parsed, "failed": result.failed,
+            "unchanged": result.unchanged, "metadata_published": result.metadataPublished,
+            "complete": result.failed == 0 && result.deferred == 0,
+            "postings_preparation_started": false, "producer_transcripts_read_only": true,
+            "disk": diskFootprint(catalog), "process_peak_rss_bytes": peakRSS()])
+        try await measureQueryPhases(database, arguments: arguments, freshProcessRestore: false,
+            producerScanPrewarmed: true)
+    }
 
-        // Fixed public queries avoid deriving or emitting terms from private content.
-        let queries = catalogQueries + ["model", "ANE", "authentication", "TypeScript", "read file", "provider"]
-        for (index, query) in queries.enumerated() {
-            try measureQuery(database, query: query, phase: index == 0 ? "first_query" : "first_query_warm_index")
+    private static func measureQueryPhases(_ database: ConversationFileCatalog, arguments: Set<String>,
+        freshProcessRestore: Bool, producerScanPrewarmed: Bool) async throws {
+        let started = ContinuousClock.now
+        let prepareIndex = arguments.contains("--prepare-index")
+        let fallback = arguments.contains("--fallback-repository")
+        let repositoryMode = arguments.contains("--repository")
+            || arguments.contains("--progressive-repository") || fallback
+        // Opening and stat inventory do not prewarm metadata or body blocks. Repository mode
+        // necessarily resolves canonical scopes before search; that cost is reported separately.
+        if !freshProcessRestore {
+            try queryPass(database, arguments: arguments, phase: "cold_entry",
+                producerScanPrewarmed: producerScanPrewarmed, preparationPrewarmed: false,
+                precedingQueryPass: false, repositoryMode: repositoryMode,
+                queries: Array(catalogQueries.prefix(1)), includeRepeats: false)
         }
-        for query in queries { try measureQuery(database, query: query, phase: "repeat_query") }
-
-        // Compare the same real corpus and public two-character CJK queries
-        // with the prior literal fallback, without another raw-history parse.
-        let literalDatabase = try ConversationIndexDatabase(file: database.file, enableTgrep: false)
-        for query in ["搜索", "工具", "代码"] {
-            try measureQuery(literalDatabase, query: query, phase: "cjk_literal_baseline")
-            try measureQuery(database, query: query, phase: "cjk_tgrep_comparison")
+        if prepareIndex {
+            // Keep one publisher lease for this process. Production repository search may have
+            // already scheduled its background worker; this measures only the remaining wait.
+            // Subsequent new terms have no exact-answer entry, while the first term is labeled
+            // as an intentional repeat. Fresh-process restore has neither preceding queries nor
+            // any other catalog instance/published mmap competing for its publisher lease.
+            let preparationStarted = ContinuousClock.now
+            database.scheduleSearchIndexPreparation()
+            await database.waitForSearchIndexPreparation()
+            emit(["phase": freshProcessRestore ? "restart_checkpoint_preparation" : "index_preparation",
+                "elapsed_ms": milliseconds(since: preparationStarted),
+                "timing_scope": repositoryMode && !freshProcessRestore
+                    ? "remaining_wait_for_production_background_worker" : "explicit_preparation_to_worker_completion",
+                "elapsed_since_query_sequence_started_ms": milliseconds(since: started),
+                "before_any_query_or_list": freshProcessRestore,
+                "preceding_first_query": !freshProcessRestore,
+                "production_may_have_scheduled_background_before_wait": repositoryMode && !freshProcessRestore,
+                "producer_scan_prewarmed": producerScanPrewarmed,
+                "os_filesystem_cache_flushed": false, "foreground_query_includes_preparation": false,
+                "single_catalog_publisher_instance": true,
+                "disk": diskFootprint(database.file), "process_peak_rss_bytes": peakRSS()])
+            try queryPass(database, arguments: arguments,
+                phase: freshProcessRestore ? "restart_restored" : "after_preparation",
+                producerScanPrewarmed: producerScanPrewarmed, preparationPrewarmed: true,
+                precedingQueryPass: !freshProcessRestore, repositoryMode: repositoryMode,
+                queries: freshProcessRestore ? catalogQueries : Array(catalogQueries.dropFirst()),
+                includeRepeats: true)
+        } else {
+            try queryPass(database, arguments: arguments,
+                phase: repositoryMode && !fallback ? "runtime_background_warming" : "unprepared_direct",
+                producerScanPrewarmed: producerScanPrewarmed, preparationPrewarmed: false,
+                precedingQueryPass: true, repositoryMode: repositoryMode,
+                queries: Array(catalogQueries.dropFirst()), includeRepeats: true)
         }
-
-        let unchangedStart = ContinuousClock.now
-        let unchanged = try scanner.scanAll()
-        emit(["phase": "reconciliation", "elapsed_ms": milliseconds(since: unchangedStart),
-            "unchanged": unchanged.unchanged, "parsed": unchanged.parsed, "failed": unchanged.failed,
-            "deferred": unchanged.deferred, "removed": unchanged.removed,
-            "process_peak_rss_bytes": peakRSS()])
-        try measureQuery(database, query: "performance", phase: "after_reconciliation")
-        emit(["phase": "complete", "elapsed_ms": milliseconds(since: coldStart),
+        // A repository-mode query can start the real worker without --prepare-index. Drain it
+        // before the launcher removes its ephemeral dylib/bundle; report this time separately.
+        let drainStarted = ContinuousClock.now
+        database.cancelSearchIndexPreparation()
+        await database.waitForSearchIndexPreparation()
+        emit(["phase": "background_shutdown", "elapsed_ms": milliseconds(since: drainStarted),
+            "included_in_query_timings": false])
+        emit(["phase": "complete", "elapsed_ms": milliseconds(since: started),
+            "catalog_retained_for_next_process": true, "disk": diskFootprint(database.file),
             "process_peak_rss_bytes": peakRSS()])
     }
 
-    static func validatePrivateCatalog(_ file: URL) throws {
-        let parent = file.deletingLastPathComponent()
-        let prefix = "ccbuddy-query-benchmark."
-        guard let buildRoot = ProcessInfo.processInfo.environment["CCBUD_BENCHMARK_BUILD_ROOT"],
-              file.lastPathComponent == "benchmark.sqlite3",
-              parent.lastPathComponent.hasPrefix(prefix),
+    private static func queryPass(_ database: ConversationFileCatalog, arguments: Set<String>,
+        phase: String, producerScanPrewarmed: Bool, preparationPrewarmed: Bool,
+        precedingQueryPass: Bool, repositoryMode: Bool, queries: [String], includeRepeats: Bool) throws {
+        emit(["phase": phase + "_query_contract", "search_backend": repositoryMode ? "repository" : "direct_blocks",
+            "metadata_cache_prewarmed_by_preparation": preparationPrewarmed,
+            "body_os_cache_may_be_warm_from_prior_query_pass": precedingQueryPass,
+            "producer_scan_prewarmed": producerScanPrewarmed,
+            "exact_answer_cache_initially_empty": !precedingQueryPass,
+            "nonrepeat_terms_have_no_prior_exact_answer": true,
+            "repository_automatically_schedules_background": repositoryMode && !arguments.contains("--fallback-repository"),
+            "os_filesystem_cache_flushed": false, "only_first_query_is_first_in_pass": true,
+            "repeat_queries_and_post_timing_oracles_prewarm_later_queries": true,
+            "producer_transcript_reads": false, "producer_metadata_reads_possible": repositoryMode,
+            "includes_ui_first_paint": false])
+        if repositoryMode {
+            let setup = ContinuousClock.now
+            let entries = try database.listEntries(deleted: nil, limit: .max)
+            let scopes = Set(entries.compactMap { entry -> String? in
+                let id = entry.metadata.dirID
+                return !entry.scope.hasPrefix("__") && !id.hasPrefix("__")
+                    && (id.hasPrefix("~/") || (id as NSString).isAbsolutePath) ? id : nil
+            }).sorted()
+            guard !scopes.isEmpty else { throw BenchmarkFailure.emptyRepositoryScope }
+            let repository = IndexedHistoryRepository(configuration: .init(historyDirs: scopes,
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                importsRoot: database.file.appendingPathComponent("unscanned-imports")), database: database)
+            let listed = try repository.listSessions(limit: ConversationCatalogLimits.searchScan)
+            let physical = Set(entries.filter { !$0.scope.hasPrefix("__") }.map(\.sourcePath))
+            guard listed.allSatisfy({ !$0.dirID.hasPrefix("__") && physical.contains($0.file.path) }) else {
+                throw BenchmarkFailure.virtualRepositoryScope
+            }
+            emit(["phase": phase + "_repository_setup", "elapsed_ms": milliseconds(since: setup),
+                "metadata_cache_prewarmed_for_scope_resolution": true,
+                "visible_canonical_sessions": listed.count, "physical_scope_count": scopes.count])
+            for (index, query) in queries.enumerated() {
+                let label = phase + (index == 0 ? "_first_query" : "_subsequent_query")
+                if arguments.contains("--progressive-repository") {
+                    try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query, phase: label)
+                } else {
+                    try measureRepositoryQuery(repository, sessions: listed, query: query, phase: label,
+                        requiringFallback: arguments.contains("--fallback-repository"))
+                }
+            }
+            if includeRepeats {
+                for query in requiredQueries {
+                    try measureProgressiveRepositoryQuery(repository, sessions: listed, query: query,
+                        phase: phase + "_repeat_query")
+                }
+            }
+        } else {
+            for (index, query) in queries.enumerated() {
+                try measureQuery(database, query: query,
+                    phase: phase + (index == 0 ? "_first_query" : "_subsequent_query"))
+            }
+            if includeRepeats {
+                for query in requiredQueries { try measureQuery(database, query: query, phase: phase + "_repeat_query") }
+            }
+        }
+    }
+
+    private static func catalogArgument() throws -> URL? {
+        guard let index = CommandLine.arguments.firstIndex(of: "--catalog") else { return nil }
+        guard CommandLine.arguments.indices.contains(index + 1),
+              !CommandLine.arguments[index + 1].hasPrefix("--") else { throw BenchmarkFailure.invalidCatalog }
+        return URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true).standardizedFileURL
+    }
+
+    static func validatePrivateCatalog(_ file: URL, allowMissing: Bool = false) throws {
+        let parent = file.deletingLastPathComponent(), prefix = "ccbuddy-query-benchmark."
+        guard let rawRoot = ProcessInfo.processInfo.environment["CCBUD_BENCHMARK_BUILD_ROOT"],
+              file.lastPathComponent == "catalog", parent.lastPathComponent.hasPrefix(prefix),
               !parent.lastPathComponent.dropFirst(prefix.count).isEmpty,
-              parent.deletingLastPathComponent() == URL(fileURLWithPath: buildRoot, isDirectory: true)
+              parent.deletingLastPathComponent() == URL(fileURLWithPath: rawRoot, isDirectory: true)
                 .resolvingSymlinksInPath().standardizedFileURL,
               file.resolvingSymlinksInPath().standardizedFileURL == file else {
             throw BenchmarkFailure.invalidCatalog
         }
-        var parentStat = stat(), fileStat = stat()
-        guard lstat(parent.path, &parentStat) == 0, lstat(file.path, &fileStat) == 0,
-              parentStat.st_mode & S_IFMT == S_IFDIR, parentStat.st_mode & 0o077 == 0,
-              fileStat.st_mode & S_IFMT == S_IFREG, fileStat.st_nlink == 1,
-              parentStat.st_uid == geteuid(), fileStat.st_uid == geteuid() else {
+        var parentStat = stat()
+        guard lstat(parent.path, &parentStat) == 0, parentStat.st_mode & S_IFMT == S_IFDIR,
+              parentStat.st_mode & 0o077 == 0, parentStat.st_uid == geteuid() else {
             throw BenchmarkFailure.invalidCatalog
         }
+        var metadata = stat()
+        if lstat(file.path, &metadata) != 0 {
+            guard allowMissing, errno == ENOENT else { throw BenchmarkFailure.invalidCatalog }
+            return
+        }
+        guard metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_mode & 0o077 == 0,
+              metadata.st_uid == geteuid() else { throw BenchmarkFailure.invalidCatalog }
     }
 
-    /// Anonymous stat-only measurements. Hard-linked working/checkpoint files count once;
-    /// allocated bytes are inode block counts, not a claim about APFS clone-exclusive blocks.
-    static func diskFootprint(_ file: URL) -> [String: Int64] {
-        let manager = FileManager.default
+    /// Source settings are read for location discovery only. No values except aggregate counts
+    /// and fixed producer labels escape this process; unknown configured roots get ordinal labels.
+    private static func sourceLocations(home: URL) -> [(label: String, path: String)] {
+        var locations = producerRoots.map { (label: $0.0, path: home.appendingPathComponent($0.1).path) }
+        let configRoot = ProcessInfo.processInfo.environment["CCBUD_HOME"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? home.appendingPathComponent(".ccbud")
+        var disabled = Set<String>()
+        if let values = ForeignHistorySupport.jsonObject(at: configRoot.appendingPathComponent("config.json")) {
+            disabled = Set((values["disabledHistoryDirs"]?.arrayValue ?? []).compactMap(\.stringValue).map {
+                HistoryPathResolver.expandTilde($0, homeDirectory: home).resolvingSymlinksInPath().standardizedFileURL.path
+            })
+            for (index, raw) in (values["historyDirs"]?.arrayValue ?? []).compactMap(\.stringValue).enumerated() {
+                locations.append(("Configured \(index + 1)",
+                    HistoryPathResolver.expandTilde(raw, homeDirectory: home).path))
+            }
+        }
         var seen = Set<String>()
-        var uniqueBytes: Int64 = 0, allocatedBytes: Int64 = 0, entries = 0, skippedLinks = 0
-        var workspaces = 0
-        var stack = [file, URL(fileURLWithPath: file.path + "-wal"),
-            URL(fileURLWithPath: file.path + "-shm"),
-            URL(fileURLWithPath: file.path + ".tgrep-chunks-v1", isDirectory: true),
-            URL(fileURLWithPath: file.path + ".tgrep-v2", isDirectory: true)]
-        while let path = stack.popLast() {
+        return locations.compactMap { item in
+            let path = URL(fileURLWithPath: item.path).resolvingSymlinksInPath().standardizedFileURL.path
+            guard !disabled.contains(path), seen.insert(path).inserted else { return nil }
+            return (item.label, path)
+        }
+    }
+
+    static func catalogInventory(_ file: URL) throws -> [String: Int64] {
+        let manifest = file.appendingPathComponent("manifest.json")
+        guard ForeignHistorySupport.isOrdinaryFile(manifest),
+              let bytes = try? manifest.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              bytes <= 64 * 1_024 * 1_024,
+              let object = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any],
+              let version = object["version"] as? NSNumber,
+              let generation = object["generation"] as? NSNumber,
+              let objects = object["objects"] as? [String: Any] else { throw BenchmarkFailure.storageProbe }
+        return ["format_version": version.int64Value, "generation": generation.int64Value,
+            "session_records": Int64(objects.count)]
+    }
+
+    /// Stat-only inventory; hard links count once. No filename or content is emitted.
+    /// Allocated bytes are inode block counts, not APFS clone-exclusive disk usage.
+    static func diskFootprint(_ file: URL) -> [String: Int64] {
+        var stack = [file], seen = Set<String>()
+        var bytes: Int64 = 0, allocated: Int64 = 0, files: Int64 = 0, links: Int64 = 0
+        var headers: Int64 = 0, packs: Int64 = 0
+        while let item = stack.popLast() {
             var metadata = stat()
-            guard lstat(path.path, &metadata) == 0 else { continue }
+            guard lstat(item.path, &metadata) == 0 else { continue }
             let kind = metadata.st_mode & S_IFMT
-            if kind == S_IFLNK { skippedLinks += 1; continue }
-            let identity = "\(metadata.st_dev):\(metadata.st_ino)"
-            guard seen.insert(identity).inserted else { continue }
+            if kind == S_IFLNK { links += 1; continue }
+            guard seen.insert("\(metadata.st_dev):\(metadata.st_ino)").inserted else { continue }
             if kind == S_IFDIR {
-                if path.lastPathComponent.hasPrefix("ccbuddy-tgrep-") { workspaces += 1 }
-                stack += (try? manager.contentsOfDirectory(at: path,
-                    includingPropertiesForKeys: nil, options: [])) ?? []
+                stack += (try? FileManager.default.contentsOfDirectory(at: item,
+                    includingPropertiesForKeys: nil)) ?? []
             } else if kind == S_IFREG {
-                entries += 1
-                uniqueBytes += metadata.st_size
-                allocatedBytes += metadata.st_blocks * 512
+                files += 1; bytes += metadata.st_size; allocated += metadata.st_blocks * 512
+                if item.pathExtension == "header" { headers += metadata.st_size }
+                if item.pathExtension == "pack" { packs += metadata.st_size }
             }
         }
-        return ["catalog_wal_shm_bytes": Int64(fileBytes(file)),
-            "unique_inode_file_bytes": uniqueBytes, "unique_inode_allocated_bytes": allocatedBytes,
-            "unique_regular_files": Int64(entries), "working_directories": Int64(workspaces),
-            "symlinks_skipped": Int64(skippedLinks)]
+        return ["unique_inode_file_bytes": bytes, "unique_inode_allocated_bytes": allocated,
+            "unique_regular_files": files, "metadata_header_bytes": headers, "packed_body_bytes": packs,
+            "symlinks_skipped": links]
     }
 
-    private final class CatalogStorageProbe {
-        private let connection: OpaquePointer
-
-        init(file: URL) throws {
-            try validatePrivateCatalog(file)
-            var opened: OpaquePointer?
-            // sqlite3_backup preserves WAL mode but not its sidecars. A writable
-            // handle may initialize those files on this validated private copy;
-            // READONLY can fail with SQLITE_CANTOPEN before the first PRAGMA.
-            // Never create a missing catalog or permit logical writes via this probe.
-            let status = sqlite3_open_v2(file.path, &opened,
-                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
-            guard status == SQLITE_OK, let opened else {
-                if let opened { sqlite3_close(opened) }
-                throw BenchmarkFailure.storageProbe
-            }
-            connection = opened
-            sqlite3_busy_timeout(opened, 500)
-            guard sqlite3_exec(opened, "PRAGMA query_only = ON", nil, nil, nil) == SQLITE_OK else {
-                throw BenchmarkFailure.storageProbe
-            }
-        }
-
-        deinit { sqlite3_close(connection) }
-
-        private func scalar(_ sql: String) throws -> Int64 {
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK,
-                  let statement else { throw BenchmarkFailure.storageProbe }
-            defer { sqlite3_finalize(statement) }
-            guard sqlite3_step(statement) == SQLITE_ROW else { throw BenchmarkFailure.storageProbe }
-            return sqlite3_column_int64(statement, 0)
-        }
-
-        func snapshot(includeChunkTotals: Bool = false) throws -> [String: Int64] {
-            // No BLOB reads, dbstat traversal, producer paths, titles or snippets.
-            // Per-pass progress uses only the small identity table and indexed MAX(id).
-            var result: [String: Int64] = [
-                "schema_version": try scalar("PRAGMA user_version"),
-                "page_count": try scalar("PRAGMA page_count"),
-                "page_size": try scalar("PRAGMA page_size"),
-                "freelist_pages": try scalar("PRAGMA freelist_count"),
-                "auto_vacuum": try scalar("PRAGMA auto_vacuum"),
-                "fts_present": try scalar("SELECT count(*) FROM sqlite_master WHERE name = 'conversation_documents_fts'"),
-                "legacy_table_present": try scalar("SELECT count(*) FROM sqlite_master WHERE name = 'conversation_documents_legacy'"),
-            ]
-            if try scalar("SELECT count(*) FROM pragma_table_info('conversation_catalog_state') WHERE name = 'storage_revision'") != 0 {
-                result["storage_revision"] = try scalar("SELECT storage_revision FROM conversation_catalog_state WHERE singleton = 1")
-            }
-            if try scalar("SELECT count(*) FROM pragma_table_info('conversation_documents') WHERE name = 'storage_version'") != 0 {
-                result["remaining_legacy_documents"] = try scalar("SELECT count(*) FROM conversation_documents WHERE storage_version = 0")
-                result["migration_byte_offset_sum"] = try scalar("SELECT coalesce(sum(migration_byte_offset),0) FROM conversation_documents WHERE storage_version = 0")
-                result["last_chunk_id"] = try scalar("SELECT coalesce(max(id),0) FROM conversation_search_chunks")
-                if includeChunkTotals {
-                    result["logical_documents"] = try scalar("SELECT count(*) FROM conversation_documents")
-                    result["physical_chunks"] = try scalar("SELECT count(*) FROM conversation_search_chunks")
-                    result["chunk_decoded_bytes"] = try scalar("SELECT coalesce(sum(decoded_bytes),0) FROM conversation_search_chunks")
-                    result["chunk_stored_bytes"] = try scalar("SELECT coalesce(sum(length(body)),0) FROM conversation_search_chunks")
-                }
-            }
-            return result
+    private final class FirstMetadataProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Double?
+        var elapsed: Double? { lock.lock(); defer { lock.unlock() }; return value }
+        func record(_ progress: ConversationIndexScanResult, elapsed: Double) {
+            guard progress.metadataPublished > 0 else { return }
+            lock.lock(); defer { lock.unlock() }
+            if value == nil { value = elapsed }
         }
     }
 
-    private static func measureMigration(_ database: ConversationIndexDatabase,
-        probe: CatalogStorageProbe, initial: [String: Int64]) throws {
-        var timeout: Double = 3_600
-        if let index = CommandLine.arguments.firstIndex(of: "--migration-timeout-seconds") {
-            guard CommandLine.arguments.indices.contains(index + 1),
-                  let value = Double(CommandLine.arguments[index + 1]),
-                  value.isFinite, value > 0, value <= 7_200 else { throw BenchmarkFailure.invalidMigrationBudget }
-            timeout = value
-        }
+    /// Direct bounded-block search separates first usable (verified snippet) from full counts.
+    /// It does not eagerly materialize whole transcripts, or treat tgrep candidates as hits.
+    static func measureQuery(_ database: ConversationFileCatalog, query: String, phase: String) throws {
         let started = ContinuousClock.now
-        let allowedSeconds = timeout
-        var previous = try probe.snapshot(), passes = 0, stalledPasses = 0
-        var workMS = 0.0
-        emit(["phase": "migration_started", "storage_before_open": initial,
-            "storage_after_open": previous, "timeout_seconds": timeout,
-            "producer_reads": false, "disk": diskFootprint(database.file)])
-        while try database.maintenanceIsPending() {
-            guard milliseconds(since: started) < allowedSeconds * 1_000 else {
-                emit(["phase": "migration_blocked", "reason": "deadline", "passes": passes,
-                    "elapsed_ms": milliseconds(since: started), "maintenance_pending": true])
-                throw BenchmarkFailure.migrationBlocked
+        let candidates = try database.candidateDocumentReferences(for: query)
+        let diagnostics = database.searchDiagnostics
+        let matcher = ConversationLiteralSearch(query: query)
+        var matchedPaths = Set<String>(), matches: [ConversationIndexDocumentReference] = []
+        var firstUsable: Double?, firstComplete: Double?
+        var windows = 0, decodedBytes = 0, count = 0
+        for reference in candidates.references.sorted(by: ConversationFileCatalog.referenceComesFirst) {
+            if matchedPaths.contains(reference.sessionPath) { continue }
+            let result = try refine(database, reference: reference, query: query, matcher: matcher, counting: false)
+            windows += result.windows; decodedBytes += result.bytes
+            if result.count > 0 {
+                if firstUsable == nil { firstUsable = milliseconds(since: started) }
+                matchedPaths.insert(reference.sessionPath); matches.append(reference)
+                if matches.count == ConversationCatalogLimits.searchHits { break }
             }
-            let passStarted = ContinuousClock.now
-            do {
-                try database.finishFullScanMaintenance(isCancelled: {
-                    milliseconds(since: started) >= allowedSeconds * 1_000
-                })
-            } catch {
-                emit(["phase": "migration_failed", "passes": passes,
-                    "elapsed_ms": milliseconds(since: started),
-                    "error_type": String(describing: type(of: error))])
-                throw BenchmarkFailure.migrationBlocked
-            }
-            passes += 1
-            workMS += milliseconds(since: passStarted)
-            let snapshot = try probe.snapshot()
-            stalledPasses = snapshot == previous ? stalledPasses + 1 : 0
-            previous = snapshot
-            let pending = try database.maintenanceIsPending()
-            if passes == 1 || passes.isMultiple(of: 10) || !pending || stalledPasses >= 3 {
-                emit(["phase": "migration_progress", "passes": passes,
-                    "elapsed_ms": milliseconds(since: started), "maintenance_work_ms": workMS,
-                    "maintenance_pending": pending, "unchanged_passes": stalledPasses,
-                    "storage": snapshot, "disk": diskFootprint(database.file)])
-            }
-            guard !pending || stalledPasses < 3 else {
-                emit(["phase": "migration_blocked", "reason": "no_progress_low_space_or_busy",
-                    "passes": passes, "elapsed_ms": milliseconds(since: started),
-                    "maintenance_pending": true, "storage": snapshot])
-                throw BenchmarkFailure.migrationBlocked
-            }
-            if pending { Thread.sleep(forTimeInterval: stalledPasses == 0 ? 0.025 : 0.25) }
         }
-        let final = try probe.snapshot(includeChunkTotals: true)
-        guard final["fts_present"] == 0, final["legacy_table_present"] == 0,
-              final["remaining_legacy_documents"] == 0 else { throw BenchmarkFailure.migrationIncomplete }
-        emit(["phase": "migration_complete", "passes": passes,
-            "elapsed_ms": milliseconds(since: started), "maintenance_work_ms": workMS,
-            "elapsed_includes_metadata_probes_and_cooperative_delays": true,
-            "maintenance_pending": false, "storage": final, "disk": diskFootprint(database.file),
-            "process_peak_rss_bytes": peakRSS()])
+        for reference in matches {
+            let result = try refine(database, reference: reference, query: query, matcher: matcher, counting: true)
+            guard result.count > 0 else { throw BenchmarkFailure.literalParity }
+            windows += result.windows; decodedBytes += result.bytes; count += result.count
+            if firstComplete == nil { firstComplete = milliseconds(since: started) }
+        }
+        if requiresKnownHits(query), matches.isEmpty { throw BenchmarkFailure.requiredQueryHasNoHits }
+        emit(["phase": phase, "query": query, "engine": diagnostics.engine,
+            "timing_scope": "direct_bounded_blocks_not_repository_or_ui",
+            "first_usable_verified_snippet_ms": firstUsable.map { $0 as Any } ?? NSNull(),
+            "first_complete_hit_ms": firstComplete.map { $0 as Any } ?? NSNull(),
+            "full_count_complete_ms": milliseconds(since: started),
+            "candidate_ms": diagnostics.queryMilliseconds,
+            "indexed_posting_groups": diagnostics.indexedDocuments, "candidate_blocks": diagnostics.candidateCount,
+            "last_preparation_updated_groups": diagnostics.incrementallyIndexedDocuments,
+            "restored_from_cache": diagnostics.restoredFromCache, "used_fallback": diagnostics.usedFallback,
+            "fallback_reason": diagnostics.fallbackReason.map { $0 as Any } ?? NSNull(),
+            "decoded_windows_including_first_and_count_pass": windows,
+            "decoded_window_bytes_including_lookahead": decodedBytes,
+            "matched_sessions_capped_at_200": matches.count, "exact_occurrences": count,
+            "query_does_not_prepare_index": true, "process_peak_rss_bytes": peakRSS()])
     }
 
-    static func measureQuery(_ database: ConversationIndexDatabase, query: String, phase: String) throws {
-        let started = ContinuousClock.now
-        do {
-            let result = try database.candidateDocumentReferences(for: query)
-            let diagnostics = database.searchDiagnostics
-            let matcher = ConversationLiteralSearch(query: query)
-            var matchedSessions = Set<String>()
-            var verifiedDocuments = 0
-            var documentReadMS: Double = 0
-            var literalMatchMS: Double = 0
-            var fastFirstMatchMS: Double = 0
-            var completeMatchMS: Double = 0
-            var exactOccurrences = 0
-            var verifiedTextBytes = 0
-            var decodedMessageSpans = 0
-            for reference in result.references.sorted(by: ConversationIndexDatabase.referenceComesFirst) {
-                if matchedSessions.contains(reference.sessionPath) { continue }
-                let documentStart = ContinuousClock.now
-                guard let document = try database.document(id: reference.documentID,
-                    expectedSessionPath: reference.sessionPath, expectedTranscriptID: reference.transcriptID) else { continue }
-                documentReadMS += milliseconds(since: documentStart)
-                verifiedDocuments += 1
-                verifiedTextBytes += document.text.utf8.count
-                decodedMessageSpans += document.messageSpans.count
-                let matchStart = ContinuousClock.now
-                let originalRange = document.text.range(of: query, options: [.caseInsensitive])
-                if originalRange != nil {
-                    matchedSessions.insert(reference.sessionPath)
+    private static func refine(_ database: ConversationFileCatalog, reference: ConversationIndexDocumentReference,
+        query: String, matcher: ConversationLiteralSearch, counting: Bool) throws -> (count: Int, windows: Int, bytes: Int) {
+        var cursor: ConversationIndexSearchCursor?, resume = 0, count = 0, windows = 0, bytes = 0
+        repeat {
+            let batch = try database.searchChunkWindows(reference: reference, query: query, cursor: cursor,
+                limit: counting || cursor != nil ? 8 : 1)
+            for window in batch.windows {
+                windows += 1; bytes += window.text.utf8.count
+                guard let match = matcher.match(in: window.text, countingOccurrences: counting,
+                    startingAtUTF16: max(0, resume - window.globalUTF16Start),
+                    ownedUTF16Length: window.ownedUTF16Length) else { continue }
+                if count == 0 {
+                    let lower = match.range.lowerBound.utf16Offset(in: window.text)
+                    let upper = match.range.upperBound.utf16Offset(in: window.text)
+                    guard let snippet = try database.searchChunkSnippet(reference: reference,
+                        offsetUTF16: window.globalUTF16Start + lower, matchLengthUTF16: upper - lower),
+                        !snippet.isEmpty else { throw BenchmarkFailure.invalidRepositoryHit }
                 }
-                literalMatchMS += milliseconds(since: matchStart)
-                let fastStart = ContinuousClock.now
-                let fastRange = matcher.firstMatch(in: document.text)
-                fastFirstMatchMS += milliseconds(since: fastStart)
-                let completeStart = ContinuousClock.now
-                let complete = matcher.match(in: document.text)
-                completeMatchMS += milliseconds(since: completeStart)
-                guard originalRange == fastRange, originalRange == complete?.range else {
-                    throw BenchmarkFailure.literalParity
-                }
-                exactOccurrences += complete?.count ?? 0
-                if matchedSessions.count == 200 { break }
+                count += match.count
+                resume = window.globalUTF16Start + match.lastUTF16End
+                if !counting { return (count, windows, bytes) }
             }
-            if requiredQueries.contains(query), matchedSessions.isEmpty {
-                emit(["phase": phase, "query": query, "failed": true,
-                    "reason": "required_query_has_no_hits", "engine": diagnostics.engine,
-                    "fallback_reason": diagnostics.fallbackReason.map { $0 as Any } ?? NSNull()])
-                throw BenchmarkFailure.requiredQueryHasNoHits
-            }
-            emit(["phase": phase, "query": query, "engine": diagnostics.engine,
-                "timing_scope": "candidate_and_document_verification",
-                "fallback_reason": diagnostics.fallbackReason.map { $0 as Any } ?? NSNull(),
-                "candidate_ms": diagnostics.queryMilliseconds,
-                "with_literal_verification_ms": diagnostics.queryMilliseconds + documentReadMS + literalMatchMS,
-                "with_fast_verification_ms": diagnostics.queryMilliseconds + documentReadMS + fastFirstMatchMS,
-                "with_complete_match_count_ms": diagnostics.queryMilliseconds + documentReadMS + completeMatchMS,
-                "indexed_documents": diagnostics.indexedDocuments, "incremental_documents": diagnostics.incrementallyIndexedDocuments,
-                "normalization_ms": diagnostics.cumulativeNormalizationMilliseconds,
-                "trigram_build_ms": diagnostics.cumulativeTrigramBuildMilliseconds,
-                "candidates": diagnostics.candidateCount, "verified_documents": verifiedDocuments,
-                "document_read_ms": documentReadMS, "literal_match_ms": literalMatchMS,
-                "fast_first_match_ms": fastFirstMatchMS, "complete_match_count_ms": completeMatchMS,
-                "exact_occurrences": exactOccurrences, "first_match_parity": true,
-                "restored_from_cache": diagnostics.restoredFromCache,
-                "verified_text_bytes": verifiedTextBytes, "decoded_message_spans": decodedMessageSpans,
-                "matched_sessions_capped_at_200": matchedSessions.count, "used_fallback": diagnostics.usedFallback,
-                "process_peak_rss_bytes": peakRSS()])
-        } catch {
-            emit(["phase": phase, "query": query, "failed": true,
-                "error_type": String(describing: type(of: error)), "elapsed_ms": milliseconds(since: started)])
-            throw error
-        }
+            cursor = batch.nextCursor
+        } while cursor != nil
+        return (count, windows, bytes)
+    }
+
+    private static func requiresKnownHits(_ query: String) -> Bool {
+        CommandLine.arguments.contains("--require-known-hits") && requiredQueries.contains(query)
     }
 
     static func measureRepositoryQuery(_ repository: IndexedHistoryRepository,
@@ -600,13 +493,13 @@ enum RealHistoryBenchmark {
         let elapsed = milliseconds(since: started)
         let diagnostics = repository.database.searchDiagnostics
         guard !requiringFallback || (diagnostics.usedFallback
-            && diagnostics.engine != "tgrep" && diagnostics.fallbackReason != nil) else {
+            && diagnostics.engine != "tgrep") else {
             throw BenchmarkFailure.expectedFallback
         }
         guard hits.allSatisfy({ $0.count > 0 && !$0.snippet.isEmpty }) else {
             throw BenchmarkFailure.invalidRepositoryHit
         }
-        if requiredQueries.contains(query), hits.isEmpty {
+        if requiresKnownHits(query), hits.isEmpty {
             emit(["phase": phase, "query": query, "failed": true,
                 "reason": "required_query_has_no_hits", "engine": diagnostics.engine,
                 "fallback_reason": diagnostics.fallbackReason.map { $0 as Any } ?? NSNull()])
@@ -640,7 +533,7 @@ enum RealHistoryBenchmark {
         }
         let elapsed = milliseconds(since: started)
         let diagnostics = repository.database.searchDiagnostics
-        if requiredQueries.contains(query), hits.isEmpty {
+        if requiresKnownHits(query), hits.isEmpty {
             emit(["phase": phase, "query": query, "failed": true,
                 "reason": "required_query_has_no_hits", "engine": diagnostics.engine,
                 "fallback_reason": diagnostics.fallbackReason.map { $0 as Any } ?? NSNull()])
@@ -662,7 +555,7 @@ enum RealHistoryBenchmark {
             "first_hit_phase": progress.firstHitPhase.map { $0 as Any } ?? NSNull(),
             "first_hit_count_complete": progress.firstHitCountComplete.map { $0 as Any } ?? NSNull(),
             "candidate_ms": diagnostics.queryMilliseconds,
-            "indexed_blocks": diagnostics.indexedDocuments,
+            "indexed_posting_groups": diagnostics.indexedDocuments,
             "candidate_blocks": diagnostics.candidateCount,
             "normalization_ms": diagnostics.cumulativeNormalizationMilliseconds,
             "trigram_build_ms": diagnostics.cumulativeTrigramBuildMilliseconds,
@@ -762,24 +655,23 @@ enum RealHistoryBenchmark {
     }
 
     static func verifySmallRepositoryHits(_ hits: [HistorySearchHit], query: String,
-        sessions: [HistorySessionMetadata], database: ConversationIndexDatabase) throws -> Int {
+        sessions: [HistorySessionMetadata], database: ConversationFileCatalog) throws -> Int {
         let references = try database.candidateDocumentReferences(for: query).references
         let refs = Dictionary(grouping: references, by: { $0.sessionPath })
-        let rows = Dictionary(uniqueKeysWithValues: sessions.map { (ConversationIndexDatabase.normalizedPath($0.file), $0) })
+        let rows = Dictionary(uniqueKeysWithValues: sessions.map { (ConversationFileCatalog.normalizedPath($0.file), $0) })
         var verified = 0
         for hit in hits {
-            let parentPath = ConversationIndexDatabase.normalizedPath(hit.file)
+            let parentPath = ConversationFileCatalog.normalizedPath(hit.file)
             var path = parentPath
             var transcript = hit.agent
             if let child = rows[parentPath]?.subagentRefs.first(where: { $0.threadID == hit.agent }) {
-                path = ConversationIndexDatabase.normalizedPath(child.file)
+                path = ConversationFileCatalog.normalizedPath(child.file)
                 transcript = "main"
             }
             guard let reference = refs[path]?.first(where: { $0.transcriptID == transcript }),
                   let entry = try database.entry(forPath: path), entry.metadata.sizeBytes <= 131_072,
-                  let document = try database.document(id: reference.documentID,
-                    expectedSessionPath: path, expectedTranscriptID: transcript),
-                  document.text.utf8.count <= 131_072 else { continue }
+                  let document = try boundedOracleDocument(database, reference: reference,
+                    query: query) else { continue }
             var cursor = document.text.startIndex
             var count = 0
             var first: Range<String.Index>?
@@ -805,6 +697,26 @@ enum RealHistoryBenchmark {
         return verified
     }
 
+    /// A small parent can own a very large child transcript. Bound the oracle by actual block
+    /// bytes as well as source metadata, never by a whole-document read followed by a size check.
+    private static func boundedOracleDocument(_ database: ConversationFileCatalog,
+        reference: ConversationIndexDocumentReference, query: String) throws -> ConversationIndexDocument? {
+        var fullReference = reference
+        fullReference.candidateChunkIDs = nil
+        let batch = try database.searchChunkWindows(reference: fullReference, query: query, limit: 5)
+        guard batch.nextCursor == nil else { return nil }
+        var text = ""
+        var spans: [ConversationIndexMessageSpan] = []
+        for window in batch.windows {
+            let end = String.Index(utf16Offset: window.ownedUTF16Length, in: window.text)
+            text.append(contentsOf: window.text[..<end])
+            guard text.utf8.count <= 131_072 else { return nil }
+            for span in window.messageSpans where !spans.contains(span) { spans.append(span) }
+        }
+        return .init(transcriptID: reference.transcriptID, agentType: reference.agentType,
+            sortOrder: reference.sortOrder, text: text, messageSpans: spans)
+    }
+
     static func milliseconds(since start: ContinuousClock.Instant) -> Double {
         let value = start.duration(to: .now).components
         return Double(value.seconds) * 1_000 + Double(value.attoseconds) / 1e15
@@ -813,13 +725,7 @@ enum RealHistoryBenchmark {
     static func peakRSS() -> Int64 {
         var usage = rusage()
         getrusage(RUSAGE_SELF, &usage)
-        return Int64(usage.ru_maxrss) // Darwin reports bytes, unlike Linux's KiB.
-    }
-
-    static func fileBytes(_ file: URL) -> Int {
-        [file.path, file.path + "-wal", file.path + "-shm"].reduce(0) { total, path in
-            total + ((try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.intValue ?? 0)
-        }
+        return Int64(usage.ru_maxrss)
     }
 
     static func emit(_ row: [String: Any]) {
@@ -830,10 +736,8 @@ enum RealHistoryBenchmark {
     }
 
     enum BenchmarkFailure: Error {
-        case parse, engineUnavailable, invalidCatalog, literalParity, invalidRepositoryHit
-        case fallbackFixtureUnavailable, expectedFallback
+        case engineUnavailable, invalidCatalog, literalParity, invalidRepositoryHit, expectedFallback
         case emptyRepositoryScope, virtualRepositoryScope, requiredQueryHasNoHits
-        case conflictingModes, progressiveParity, retiredFTSMode, storageProbe
-        case invalidMigrationBudget, migrationBlocked, migrationIncomplete
+        case conflictingModes, progressiveParity, retiredStorageMode, privatePathOutputRetired, storageProbe
     }
 }

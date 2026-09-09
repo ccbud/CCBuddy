@@ -3,6 +3,32 @@ import XCTest
 
 @MainActor
 final class ConversationSearchExperienceTests: XCTestCase {
+    func testRecreatedCatalogAtSameRevisionResetsProgressAndSeparatesExactCacheKeys() {
+        let first = HistorySearchHit(sessionID: "old", file: URL(fileURLWithPath: "/fixture/old.jsonl"),
+            source: .claude, agent: "main", sequence: 0, snippet: "old match", count: 4)
+        let second = HistorySearchHit(sessionID: "new", file: URL(fileURLWithPath: "/fixture/new.jsonl"),
+            source: .claude, agent: "main", sequence: 1, snippet: "new match", count: 1)
+        var state = ConversationSearchProgressState()
+        XCTAssertTrue(state.receive(.init(phase: .countingOccurrences, hits: [first],
+            snapshotRevision: 2, snapshotIdentity: "first-catalog"), ordinal: 1))
+        XCTAssertTrue(state.receive(.init(phase: .refiningResults, hits: [second],
+            snapshotRevision: 2, snapshotIdentity: "replacement-catalog"), ordinal: 2))
+        XCTAssertEqual(state.hits, [second])
+        XCTAssertEqual(state.phase, .refiningResults)
+        XCTAssertFalse(state.receive(.init(phase: .countingOccurrences, hits: [first],
+            snapshotRevision: 2, snapshotIdentity: "first-catalog"), ordinal: 1))
+        XCTAssertEqual(state.hits, [second])
+
+        var reference = ConversationIndexDocumentReference(documentID: 1,
+            sessionPath: "/fixture/reused.jsonl", transcriptID: "main", sortOrder: 0,
+            lastActivity: .distantPast, catalogGeneration: 2, catalogIdentity: "first-catalog")
+        let oldKey = ConversationSearchRefinementCache.Key(reference: reference, query: "needle")
+        reference.catalogIdentity = "replacement-catalog"
+        let newKey = ConversationSearchRefinementCache.Key(reference: reference, query: "needle")
+        XCTAssertNotEqual(oldKey, newKey)
+        XCTAssertEqual(Set([oldKey, newKey]).count, 2)
+    }
+
     func testFirstMatchCountCanCompleteInPlaceWhileSearchAndSelectionStayActive() async throws {
         let provider = ScriptedCountSearchRepository()
         defer { provider.releaseAll() }

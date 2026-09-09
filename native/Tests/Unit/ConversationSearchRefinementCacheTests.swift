@@ -20,7 +20,7 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
             .search(query: "needle", limit: 20).isEmpty)
     }
 
-    func testContentReplacementAndDeleteReinsertCannotReuseOldRowAnswer() throws {
+    func testContentReplacementAndDeleteReinsertUseMonotonicIDsAndRejectOldAnswer() throws {
         let fixture = try makeFixture()
         let original = fixture.session(text: "needle original", sequence: 1)
         try fixture.database.replace(original)
@@ -33,8 +33,15 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         XCTAssertTrue(changed.snippet.contains("changed"))
         try fixture.database.remove(files: [original.metadata.file])
         try fixture.database.replace(fixture.session(text: "needle recreated needle needle", sequence: 12))
-        XCTAssertEqual(try fixture.reference(query: "needle").documentID, reference.documentID,
-                       "Exercise SQLite row-ID reuse, not only changing IDs")
+        let recreatedReference = try fixture.reference(query: "needle")
+        XCTAssertGreaterThan(recreatedReference.documentID, reference.documentID)
+        XCTAssertNil(try fixture.database.document(id: reference.documentID))
+        XCTAssertThrowsError(try fixture.database.refinementDocument(reference: reference,
+            cachedGeneration: reference.catalogGeneration)) { error in
+            guard case ConversationCatalogError.staleRevision = error else {
+                return XCTFail("Removed content reference must be rejected: \(error)")
+            }
+        }
         let recreated = try XCTUnwrap(fixture.repository.search(query: "needle").first)
         XCTAssertEqual(recreated.count, 3)
         XCTAssertEqual(recreated.sequence, 12)
@@ -45,7 +52,8 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         var other = fixture.session(text: "needle different path", sequence: 4)
         other.metadata.file = fixture.scope.appendingPathComponent("different.jsonl")
         try fixture.database.replace(other)
-        XCTAssertEqual(try fixture.reference(query: "needle").documentID, reference.documentID)
+        XCTAssertGreaterThan(try fixture.reference(query: "needle").documentID,
+            recreatedReference.documentID)
         XCTAssertEqual(try fixture.repository.search(query: "needle").first?.file, other.metadata.file)
         XCTAssertEqual(try fixture.repository.search(query: "needle").first?.sequence, 4)
     }
@@ -78,12 +86,14 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
             .search(query: "needle", limit: 20).map(\.sessionID), ["renamed-session"])
     }
 
-    func testFalsePositiveCandidatesCacheNoMatchWithoutInventingResults() throws {
+    func testFalsePositiveCandidatesCacheNoMatchWithoutInventingResults() async throws {
         let fixture = try makeFixture(enableTgrep: true)
         XCTAssertTrue(fixture.database.supportsTrigramSearch, "The bundled tgrep path must actually run")
         // All four byte trigrams occur, but not as the contiguous literal. This is a
         // deliberate mask-free tgrep collision, not a retired FTS token-query assumption.
         try fixture.database.replace(fixture.session(text: "abc bcd cde def"))
+        fixture.database.scheduleSearchIndexPreparation()
+        await fixture.database.waitForSearchIndexPreparation()
         XCTAssertFalse(try fixture.database.candidateDocumentReferences(for: "abcdef").references.isEmpty)
         XCTAssertEqual(fixture.database.searchDiagnostics.engine, "tgrep")
         XCTAssertTrue(try fixture.repository.search(query: "abcdef").isEmpty)
@@ -91,6 +101,8 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         XCTAssertTrue(try fixture.repository.search(query: "abcdef").isEmpty)
         XCTAssertEqual(fixture.cache.statistics.validatedHits, 1)
         try fixture.database.replace(fixture.session(text: "abcdef now exists"))
+        fixture.database.scheduleSearchIndexPreparation()
+        await fixture.database.waitForSearchIndexPreparation()
         XCTAssertEqual(try fixture.repository.search(query: "abcdef").first?.count, 1)
     }
 
@@ -111,17 +123,26 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         wrong.transcriptID = "wrong"
         XCTAssertNil(try fixture.database.refinementDocument(reference: wrong, cachedGeneration: generation))
         try fixture.database.replace(fixture.session(text: "needle generation two"))
-        let changed = try XCTUnwrap(fixture.database.refinementDocument(reference: reference, cachedGeneration: generation))
+        XCTAssertThrowsError(try fixture.database.refinementDocument(reference: reference,
+            cachedGeneration: generation)) { error in
+            guard case ConversationCatalogError.staleRevision = error else {
+                return XCTFail("A replaced immutable document cannot honor an old reference: \(error)")
+            }
+        }
+        let replacement = try fixture.reference(query: "needle")
+        XCTAssertGreaterThan(replacement.documentID, reference.documentID)
+        let changed = try XCTUnwrap(fixture.database.refinementDocument(reference: replacement,
+            cachedGeneration: generation))
         guard case let .document(next, nextDocument) = changed else { return XCTFail("Revision requires document") }
         XCTAssertGreaterThan(next, generation)
         XCTAssertEqual(nextDocument.text, "needle generation two")
     }
 
-    func testConcurrentReplacementKeepsGenerationAndTextInOneSnapshot() async throws {
+    func testIndependentConcurrentReplacementKeepsGenerationAndTextInOneSnapshot() async throws {
         let fixture = try makeFixture()
         try fixture.database.replace(fixture.session(text: "needle revision 1"))
-        let reference = try fixture.reference(query: "needle")
         let database = fixture.database
+        let independentWriter = try ConversationFileCatalog(file: database.file, enableTgrep: false)
         let template = fixture.session(text: "needle revision 1")
         let permitWrite = RevisionGate()
         let didWrite = RevisionGate()
@@ -133,7 +154,7 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
                     var replacement = template
                     replacement.documents[0].text = "needle revision \(index)"
                     replacement.documents[0].messageSpans = []
-                    let generation = try database.replace(replacement)
+                    let generation = try independentWriter.replace(replacement)
                     XCTAssertEqual(generation, Int64(index))
                     await didWrite.advance(to: index)
                 }
@@ -144,13 +165,21 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         }
 
         func checkSnapshot(expectedGeneration: Int64? = nil) throws {
-            let read = try XCTUnwrap(database.refinementDocument(reference: reference, cachedGeneration: nil))
-            guard case let .document(generation, document) = read else {
-                XCTFail("Expected document")
-                throw FixtureError.unexpectedRead
+            do {
+                let reference = try fixture.reference(query: "needle")
+                let read = try XCTUnwrap(database.refinementDocument(reference: reference, cachedGeneration: nil))
+                guard case let .document(generation, document) = read else {
+                    XCTFail("Expected document")
+                    throw FixtureError.unexpectedRead
+                }
+                if let expectedGeneration { XCTAssertEqual(generation, expectedGeneration) }
+                XCTAssertEqual(document.text, "needle revision \(generation)")
+            } catch ConversationCatalogError.staleRevision {
+                // An overlapping atomic publication can invalidate the reference between its
+                // two reads; it may never return new text mislabeled with the old generation.
+                // After the writer acknowledges, no next write is permitted and retry must work.
+                if expectedGeneration != nil { throw ConversationCatalogError.staleRevision }
             }
-            if let expectedGeneration { XCTAssertEqual(generation, expectedGeneration) }
-            XCTAssertEqual(document.text, "needle revision \(generation)")
         }
         do {
             try checkSnapshot(expectedGeneration: 1)
@@ -292,8 +321,8 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
     private func makeFixture(cache: ConversationSearchRefinementCache = .init(),
                              enableTgrep: Bool = false) throws -> Fixture {
         let fixture = try Fixture(cache: cache, enableTgrep: enableTgrep)
-        // Teardown runs after test locals and awaited task handles have released their DB copies.
-        // Keep the fixture alive until then, close both owned connections, and only then unlink.
+        // Teardown runs after test locals and awaited workers have released their snapshots.
+        // Release repository/catalog descriptors before removing this isolated fixture.
         addTeardownBlock { try fixture.cleanup() }
         return fixture
     }
@@ -302,9 +331,9 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
         let root: URL
         let scope: URL
         let otherScope: URL
-        private var databaseStorage: ConversationIndexDatabase?
+        private var databaseStorage: ConversationFileCatalog?
         private var repositoryStorage: IndexedHistoryRepository?
-        var database: ConversationIndexDatabase { databaseStorage! }
+        var database: ConversationFileCatalog { databaseStorage! }
         var repository: IndexedHistoryRepository { repositoryStorage! }
         let cache: ConversationSearchRefinementCache
 
@@ -313,7 +342,7 @@ final class ConversationSearchRefinementCacheTests: XCTestCase {
             scope = root.appendingPathComponent("history")
             otherScope = root.appendingPathComponent("other-history")
             self.cache = cache
-            let database = try ConversationIndexDatabase(file: root.appendingPathComponent("index.sqlite3"),
+            let database = try ConversationFileCatalog(file: root.appendingPathComponent("catalog"),
                 enableTgrep: enableTgrep, searchRefinementCache: cache)
             databaseStorage = database
             repositoryStorage = IndexedHistoryRepository(configuration: .init(

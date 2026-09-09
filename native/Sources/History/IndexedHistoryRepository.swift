@@ -23,11 +23,12 @@ enum ConversationSearchRefinement: Equatable, Sendable {
     }
 }
 
-/// One small cache per database, shared by scoped repository facades. The generation is intentionally
+/// One small cache per file catalog, shared by scoped repository facades. The generation is intentionally
 /// catalog-wide: metadata-only and live revisions invalidate it too. This accelerates repeated queries
 /// in an unchanged catalog, not first-time queries or repeated revision refreshes.
 final class ConversationSearchRefinementCache: @unchecked Sendable {
     struct Key: Hashable, Sendable {
+        var catalogIdentity: String?
         var documentID: Int64
         var sessionPath: String
         var transcriptID: String
@@ -39,6 +40,7 @@ final class ConversationSearchRefinementCache: @unchecked Sendable {
 
         init(reference: ConversationIndexDocumentReference, query: String,
              options: String.CompareOptions = .caseInsensitive, localeIdentifier: String? = nil) {
+            catalogIdentity = reference.catalogIdentity
             documentID = reference.documentID
             sessionPath = reference.sessionPath
             transcriptID = reference.transcriptID
@@ -48,7 +50,7 @@ final class ConversationSearchRefinementCache: @unchecked Sendable {
         }
 
         var retainedBytes: Int {
-            sessionPath.utf8.count + transcriptID.utf8.count + queryUTF8.count
+            (catalogIdentity?.utf8.count ?? 0) + sessionPath.utf8.count + transcriptID.utf8.count + queryUTF8.count
                 + (localeIdentifier?.utf8.count ?? 0)
         }
     }
@@ -169,13 +171,13 @@ extension ConversationIndexedHistoryProviding {
     }
 }
 
-/// Metadata and content-search facade backed by the app-owned SQLite catalog.
+/// Metadata and content-search facade backed by immutable, file-based catalog packs.
 ///
-/// Detail reads deliberately bypass SQLite and use `HistorySessionLoader`, so replay, analysis,
+/// Detail reads deliberately bypass the derived catalog and use `HistorySessionLoader`, so replay, analysis,
 /// raw/ZIP export, and standalone HTML export always see the current producer-owned transcript.
 struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, ConversationProgressiveHistoryProviding, Sendable {
     let configuration: HistoryConfiguration
-    let database: ConversationIndexDatabase
+    let database: ConversationFileCatalog
     let loader: HistorySessionLoader
     let coordinator: ConversationCatalogCoordinator
 
@@ -191,7 +193,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
 
     init(
         configuration: HistoryConfiguration,
-        database: ConversationIndexDatabase,
+        database: ConversationFileCatalog,
         loader: HistorySessionLoader? = nil,
         coordinator: ConversationCatalogCoordinator? = nil
     ) {
@@ -220,10 +222,10 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             importsRoot: importsRoot
         )
         let file = databaseFile ?? configuration.appDataRoot
-            .appendingPathComponent("conversation-index-v1.sqlite3")
+            .appendingPathComponent("conversation-catalog-v1", isDirectory: true)
         self.init(
             configuration: configuration,
-            database: try ConversationIndexDatabase(file: file)
+            database: try ConversationFileCatalog(file: file)
         )
     }
 
@@ -283,11 +285,11 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             do {
                 return try searchSnapshot(query: query, matcher: matcher, limit: limit,
                     onProgress: onProgress)
-            } catch ConversationIndexDatabaseError.staleRevision where attempt < 2 {
+            } catch ConversationCatalogError.staleRevision where attempt < 2 {
                 try Task.checkCancellation()
             }
         }
-        throw ConversationIndexDatabaseError.staleRevision
+        throw ConversationCatalogError.staleRevision
     }
 
     private func searchSnapshot(
@@ -295,12 +297,14 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         onProgress: (@Sendable (ConversationSearchProgress) -> Void)?
     ) throws -> [HistorySearchHit] {
         var diagnostics: ConversationSearchDiagnostics?
-        let generation = try database.generation()
+        let revision = try database.searchIndexRevision()
+        let catalogIdentity = revision.identity
+        let generation = revision.generation
         func publish(_ phase: ConversationSearchProgress.Phase, hits: [HistorySearchHit]) throws {
             try Task.checkCancellation()
             guard let onProgress else { return }
             onProgress(ConversationSearchProgress(phase: phase, hits: hits,
-                diagnostics: diagnostics, snapshotRevision: generation))
+                diagnostics: diagnostics, snapshotRevision: generation, snapshotIdentity: catalogIdentity))
             try Task.checkCancellation()
         }
         try publish(.preparingCandidates, hits: [])
@@ -312,7 +316,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         // Candidates are located by identity and their transcripts are read one at a time. Asking
         // the catalog for the matching documents themselves made a single keystroke materialize
         // every transcript that matched — the whole indexed corpus for a common word — first
-        // inside SQLite and then again as Swift strings.
+        // as Swift strings. Cold candidate lookup never waits for a tgrep rebuild.
         let sessions = try listSessions(limit: ConversationCatalogLimits.searchScan)
             .sorted(by: HistoryCatalogProjection.searchResultComesFirst)
         let filter = activeFilter
@@ -321,8 +325,12 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             scope: filter.scope,
             deleted: filter.deleted
         )
-        guard try database.generation() == generation else {
-            throw ConversationIndexDatabaseError.staleRevision
+        // Preparation is independent of this foreground worker. Its cancellation/lifecycle is
+        // owned by the catalog, and a missing checkpoint never delays this query's exact scan.
+        database.scheduleSearchIndexPreparation()
+        guard try database.generation() == generation,
+              try database.catalogIdentity() == catalogIdentity else {
+            throw ConversationCatalogError.staleRevision
         }
         var referencesByPath: [String: [ConversationIndexDocumentReference]] = [:]
         for reference in batch.references {
@@ -337,7 +345,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         var lastPublication = ContinuousClock.now
         for metadata in sessions {
             try Task.checkCancellation()
-            let path = ConversationIndexDatabase.normalizedPath(metadata.file)
+            let path = ConversationFileCatalog.normalizedPath(metadata.file)
             // The visible Codex row owns separately indexed child rollouts.
             // Search them after its main/embedded transcripts and attribute a
             // child hit to the parent row, using the same key as its lazy tab.
@@ -345,11 +353,11 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
             // never resolve a parent relationship across directory boundaries.
             var transcripts: [(reference: ConversationIndexDocumentReference, agent: String?)] =
                 (referencesByPath[path] ?? [])
-                    .sorted(by: ConversationIndexDatabase.referenceComesFirst)
+                    .sorted(by: ConversationFileCatalog.referenceComesFirst)
                     .map { ($0, nil) }
             if metadata.source == .codex {
                 for child in metadata.subagentRefs {
-                    let childPath = ConversationIndexDatabase.normalizedPath(child.file)
+                    let childPath = ConversationFileCatalog.normalizedPath(child.file)
                     for reference in referencesByPath[childPath] ?? [] where reference.transcriptID == "main" {
                         transcripts.append((reference, child.threadID))
                     }
@@ -363,7 +371,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
                 let cached = cache.lookup(key)
                 guard let currentGeneration = try database.refinementGeneration(reference: reference),
                       currentGeneration == generation else {
-                    throw ConversationIndexDatabaseError.staleRevision
+                    throw ConversationCatalogError.staleRevision
                 }
                 let refinement: ConversationSearchRefinement
                 let isComplete: Bool
@@ -407,7 +415,7 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
                 let refinement = try refine(reference: item.reference, query: query,
                     matcher: matcher, countingOccurrences: true)
                 guard case let .hit(_, _, _, _, count) = refinement else {
-                    throw ConversationIndexDatabaseError.staleRevision
+                    throw ConversationCatalogError.staleRevision
                 }
                 try database.searchRefinementCache.store(refinement,
                     for: .init(reference: item.reference, query: query), generation: generation)
@@ -420,8 +428,9 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
                 }
             }
         }
-        guard try database.generation() == generation else {
-            throw ConversationIndexDatabaseError.staleRevision
+        guard try database.generation() == generation,
+              try database.catalogIdentity() == catalogIdentity else {
+            throw ConversationCatalogError.staleRevision
         }
         try publish(.completed, hits: hits)
         return hits
@@ -437,30 +446,35 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
         repeat {
             try Task.checkCancellation()
             let batch = try database.searchChunkWindows(reference: reference, query: query,
-                cursor: cursor, limit: countingOccurrences ? 8 : 1)
+                cursor: cursor, limit: countingOccurrences || cursor != nil ? 8 : 1)
             for window in batch.windows {
-                try Task.checkCancellation()
-                guard let match = matcher.match(in: window.text,
-                    countingOccurrences: countingOccurrences,
-                    startingAtUTF16: max(0, resumeUTF16 - window.globalUTF16Start),
-                    ownedUTF16Length: window.ownedUTF16Length) else {
+                // Foundation matching/snippet bridging may autorelease temporary strings.
+                // This worker has no run-loop drain between thousands of archive blocks.
+                let foundFirst = try autoreleasepool { () throws -> Bool in
                     try Task.checkCancellation()
-                    continue
-                }
-                if first == nil {
-                    let offset = window.globalUTF16Start
-                        + match.range.lowerBound.utf16Offset(in: window.text)
-                    let matchLength = match.range.upperBound.utf16Offset(in: window.text)
-                        - match.range.lowerBound.utf16Offset(in: window.text)
-                    guard let snippet = try database.searchChunkSnippet(reference: reference,
-                        offsetUTF16: offset, matchLengthUTF16: matchLength, context: 56) else {
-                        throw ConversationIndexDatabaseError.staleRevision
+                    guard let match = matcher.match(in: window.text,
+                        countingOccurrences: countingOccurrences,
+                        startingAtUTF16: max(0, resumeUTF16 - window.globalUTF16Start),
+                        ownedUTF16Length: window.ownedUTF16Length) else {
+                        try Task.checkCancellation()
+                        return false
                     }
-                    first = (Self.span(at: offset, in: window.messageSpans)?.sequence, snippet)
+                    if first == nil {
+                        let offset = window.globalUTF16Start
+                            + match.range.lowerBound.utf16Offset(in: window.text)
+                        let matchLength = match.range.upperBound.utf16Offset(in: window.text)
+                            - match.range.lowerBound.utf16Offset(in: window.text)
+                        guard let snippet = try database.searchChunkSnippet(reference: reference,
+                            offsetUTF16: offset, matchLengthUTF16: matchLength, context: 56) else {
+                            throw ConversationCatalogError.staleRevision
+                        }
+                        first = (Self.span(at: offset, in: window.messageSpans)?.sequence, snippet)
+                    }
+                    count += match.count
+                    resumeUTF16 = window.globalUTF16Start + match.lastUTF16End
+                    return !countingOccurrences
                 }
-                count += match.count
-                resumeUTF16 = window.globalUTF16Start + match.lastUTF16End
-                if !countingOccurrences { break }
+                if foundFirst { break }
             }
             cursor = batch.nextCursor
         } while cursor != nil && (countingOccurrences || first == nil)

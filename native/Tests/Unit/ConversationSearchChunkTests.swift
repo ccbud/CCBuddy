@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 import XCTest
 @testable import CCBuddy
 
@@ -40,23 +39,32 @@ final class ConversationSearchChunkTests: XCTestCase {
         XCTAssertEqual(ConversationSearchChunk.candidatePrefix("Straße CAFE\u{301}"), "strasse café")
     }
 
-    func testNewStorageHasNoWholeTranscriptColumnOrFTSAndCompressesBody() throws {
+    func testFileStorageHasNoDatabaseOrWholeTranscriptJSONAndCompressesBody() throws {
         let fixture = try makeFixture()
-        let database = try ConversationIndexDatabase(file: fixture.file)
+        let database = try ConversationFileCatalog(file: fixture.file)
         let text = String(repeating: "repeated transcript payload ", count: 20_000)
         try database.replace(makeSession(root: fixture.root, text: text))
-        XCTAssertEqual(try integer("SELECT COUNT(*) FROM pragma_table_info('conversation_documents') WHERE name = 'search_text'", file: fixture.file), 0)
-        XCTAssertEqual(try integer("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'conversation_documents_fts%'", file: fixture.file), 0)
-        XCTAssertEqual(try integer("SELECT COUNT(*) FROM pragma_table_info('conversation_catalog_state') WHERE name = 'fts_dirty'", file: fixture.file), 0)
-        XCTAssertGreaterThan(try integer("SELECT COUNT(*) FROM conversation_search_chunks", file: fixture.file), 1)
-        XCTAssertLessThan(try integer("SELECT SUM(length(body)) FROM conversation_search_chunks", file: fixture.file), Int64(text.utf8.count / 4))
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: fixture.file.path)[.type]
+            as? FileAttributeType, .typeDirectory)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: fixture.file.appendingPathComponent("objects"), includingPropertiesForKeys: [.fileSizeKey])
+        let header = try XCTUnwrap(files.first { $0.pathExtension == "header" })
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: header)) as? [String: Any])
+        let documents = try XCTUnwrap(record["documents"] as? [[String: Any]])
+        let document = try XCTUnwrap(documents.first)
+        XCTAssertNil(document["text"], "Metadata must not duplicate a whole transcript")
+        XCTAssertGreaterThan(try XCTUnwrap(document["chunks"] as? [Any]).count, 1)
+        let packs = files.filter { $0.pathExtension == "pack" }
+        XCTAssertEqual(packs.count, 1)
+        let storedBytes = try packs.reduce(0) { $0 + (try $1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+        XCTAssertLessThan(storedBytes, text.utf8.count / 4)
         XCTAssertEqual(try database.documents(for: fixture.root.appendingPathComponent("source.jsonl")).first?.text, text)
     }
 
-    func testPackagedTgrepCandidatesAndOwnedWindowsPreserveUnicodeAcrossBoundaries() throws {
+    func testPackagedTgrepCandidatesAndOwnedWindowsPreserveUnicodeAcrossBoundaries() async throws {
         XCTAssertTrue(TgrepSearchIndex.isAvailable)
         let fixture = try makeFixture()
-        let database = try ConversationIndexDatabase(file: fixture.file)
+        let database = try ConversationFileCatalog(file: fixture.file)
         let cases = [
             ("Straße", "STRASSE"), ("ΣΙΓΜΑ ς ΟΣ", "σιγμα σ"), ("ﬃxture", "ffi"),
             ("豈可搜索", "豈可搜索"), ("e\u{301}👩‍💻foo_bar/path", "É👩‍💻FOO_BAR/PATH"),
@@ -68,6 +76,8 @@ final class ConversationSearchChunkTests: XCTestCase {
                     + literal + String(repeating: " end", count: 100)
                 let expected = try XCTUnwrap(text.range(of: query, options: .caseInsensitive), query)
                 try database.replace(makeSession(root: fixture.root, text: text))
+                database.scheduleSearchIndexPreparation()
+                await database.waitForSearchIndexPreparation()
                 let reference = try XCTUnwrap(database.candidateDocumentReferences(for: query).references.first,
                     "tgrep dropped a Foundation match for \(query)")
                 XCTAssertEqual(database.searchDiagnostics.engine, "tgrep")
@@ -90,7 +100,7 @@ final class ConversationSearchChunkTests: XCTestCase {
 
     func testArbitrarilyLongQueryUsesBoundedSeedAndQuerySizedLookahead() throws {
         let fixture = try makeFixture()
-        let database = try ConversationIndexDatabase(file: fixture.file)
+        let database = try ConversationFileCatalog(file: fixture.file)
         let query = "unique-start/" + String(repeating: "世界ab", count: 30_000) + "/unique-end"
         let text = String(repeating: "x", count: ConversationSearchChunk.targetBytes - 3) + query + " tail"
         try database.replace(makeSession(root: fixture.root, text: text))
@@ -104,7 +114,7 @@ final class ConversationSearchChunkTests: XCTestCase {
 
     func testSnippetReadsPreviousBlockOnlyForActualHitAndPreservesOldWhitespaceRules() throws {
         let fixture = try makeFixture()
-        let database = try ConversationIndexDatabase(file: fixture.file)
+        let database = try ConversationFileCatalog(file: fixture.file)
         let text = String(repeating: "ab \n", count: ConversationSearchChunk.targetBytes / 4)
             + "needle" + String(repeating: " 後\n", count: 100)
         try database.replace(makeSession(root: fixture.root, text: text))
@@ -119,21 +129,21 @@ final class ConversationSearchChunkTests: XCTestCase {
 
     func testChunkCursorRejectsSemanticRevisionChange() throws {
         let fixture = try makeFixture()
-        let database = try ConversationIndexDatabase(file: fixture.file, enableTgrep: false)
+        let database = try ConversationFileCatalog(file: fixture.file, enableTgrep: false)
         try database.replace(makeSession(root: fixture.root, text: String(repeating: "candidate ", count: 10_000)))
         let reference = try XCTUnwrap(database.candidateDocumentReferences(for: "ca").references.first)
         let first = try database.searchChunkWindows(reference: reference, query: "ca")
         XCTAssertNotNil(first.nextCursor)
         try database.replace(makeSession(root: fixture.root, text: "replacement"))
         XCTAssertThrowsError(try database.searchChunkWindows(reference: reference, query: "ca", cursor: first.nextCursor)) {
-            guard case ConversationIndexDatabaseError.staleRevision = $0 else { return XCTFail("\($0)") }
+            guard case ConversationCatalogError.staleRevision = $0 else { return XCTFail("\($0)") }
         }
     }
 
     private func makeFixture() throws -> (root: URL, file: URL) {
         let root = try HistoryTestSupport.temporaryDirectory("compressed-chunks")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        return (root, root.appendingPathComponent("index.sqlite3"))
+        return (root, root.appendingPathComponent("catalog-v1", isDirectory: true))
     }
 
     private func makeSession(root: URL, text: String) -> ConversationIndexedSession {
@@ -147,18 +157,4 @@ final class ConversationSearchChunkTests: XCTestCase {
                         utf16Length: text.utf16.count, role: "user")])])
     }
 
-    private func integer(_ sql: String, file: URL) throws -> Int64 {
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(file.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
-            throw NSError(domain: "chunk-test-open", code: 1)
-        }
-        defer { sqlite3_close(handle) }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw NSError(domain: "chunk-test-query", code: 2)
-        }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else { throw NSError(domain: "chunk-test-row", code: 3) }
-        return sqlite3_column_int64(statement, 0)
-    }
 }

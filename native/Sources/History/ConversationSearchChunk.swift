@@ -140,12 +140,12 @@ enum ConversationSearchCompression {
 
     static func decode(_ bytes: Data, codec: Int, decodedBytes: Int) throws -> String {
         guard decodedBytes >= 0 else {
-            throw ConversationIndexDatabaseError.corruptRow("negative chunk size")
+            throw ConversationCatalogError.corruptRow("negative chunk size")
         }
         let output: Data
         if codec == 0 {
             guard bytes.count == decodedBytes else {
-                throw ConversationIndexDatabaseError.corruptRow("raw chunk size")
+                throw ConversationCatalogError.corruptRow("raw chunk size")
             }
             output = bytes
         } else if codec == 1, decodedBytes > 0 {
@@ -158,14 +158,14 @@ enum ConversationSearchCompression {
                 }
             }
             guard count == decodedBytes else {
-                throw ConversationIndexDatabaseError.corruptRow("compressed chunk size")
+                throw ConversationCatalogError.corruptRow("compressed chunk size")
             }
             output = decoded
         } else {
-            throw ConversationIndexDatabaseError.corruptRow("unknown chunk codec")
+            throw ConversationCatalogError.corruptRow("unknown chunk codec")
         }
         guard let text = String(data: output, encoding: .utf8) else {
-            throw ConversationIndexDatabaseError.corruptRow("chunk UTF-8")
+            throw ConversationCatalogError.corruptRow("chunk UTF-8")
         }
         return text
     }

@@ -124,24 +124,25 @@ final class NativeSearchExperienceUITests: XCTestCase {
         // This reproduces an unavailable cache, not actual disk exhaustion on the CI host.
         app.terminate()
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
-        let cache = fixtureRoot.appendingPathComponent("app-home/conversation-index-v1.sqlite3.tgrep-chunks-v1")
+        let cache = fixtureRoot.appendingPathComponent("app-home/conversation-catalog-v1/tgrep-groups-v1")
         // The test app may already have created this disposable index. Replace only
-        // this test's cache after termination; its source history and SQLite catalog remain.
+        // this test's cache after termination; its source history and file catalog remain.
         if FileManager.default.fileExists(atPath: cache.path) {
             try FileManager.default.removeItem(at: cache)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
         try Data("fixture blocks cache directory creation".utf8).write(to: cache, options: .withoutOverwriting)
         let project = fixtureRoot.appendingPathComponent("history/projects/experience")
-        // Keep each message within the existing catalog projection's per-message limit,
-        // while requiring fallback to scan a genuinely long transcript before its tail hit.
+        // Require fallback to scan a genuinely long transcript before a hit beyond the
+        // old per-message cutoff. Long message tails must not disappear from global search.
         var contents = Data()
         for turn in 0..<600 {
             contents.append(try liveTurn(turn, answerOverride:
                 String(repeating: "Ordinary text before the exact match. ", count: 50)))
         }
         contents.append(try liveTurn(600, answerOverride:
-            "系统代理 " + String(repeating: "Separate context. ", count: 40)
+            String(repeating: "Long message context. ", count: 4_000)
+                + "系统代理 " + String(repeating: "Separate context. ", count: 40)
                 + "当前版本 remains searchable."))
         try contents.write(to: project.appendingPathComponent("live-anchor.jsonl"))
         app.launch()
@@ -166,6 +167,39 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(element("search.performance.fallback.reason").waitForExistence(timeout: 5))
         XCTAssertFalse(text(element("search.performance.fallback.reason")).isEmpty)
         keepScreenshot("native-search-explicit-cache-fallback")
+    }
+
+    func testGlobalSearchFindsFragmentBeyondOldSingleMessageLimit() throws {
+        let project = fixtureRoot.appendingPathComponent("history/projects/experience")
+        let fragment = "singlemessagetailneedle"
+        try writeSession("long-single", title: "Complete long message", day: 4,
+            answer: String(repeating: "Ordinary content before the searchable tail. ", count: 4_000)
+                + fragment + " — 系统代理 — 当前版本", to: project)
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(waitUntil { refresh.isEnabled })
+        refresh.click()
+        XCTAssertTrue(app.buttons["conversation.session.disk:long-single"].waitForExistence(timeout: 20))
+        openSearch(query: fragment)
+        let hit = element("conversation.search.result.0")
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            hit.exists && hit.label.contains(fragment) && hit.value as? String == "1 match"
+        }, "An exact fragment after 160 KB must be searchable and have a complete count")
+        XCTAssertFalse(element("conversation.search.result.1").exists)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(element("conversation.search.palette").waitForNonExistence(timeout: 5))
+        XCTAssertTrue(waitUntil {
+            self.text(self.element("conversation.title")) == "Complete long message"
+        })
+        let detailField = app.textFields["conversation.detail.search"]
+        XCTAssertTrue(detailField.waitForExistence(timeout: 5))
+        pasteReplacingFocusedText(fragment, in: detailField)
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            self.text(self.element("conversation.detail.search.count")).contains("1/1")
+        })
+        app.buttons["conversation.session.disk:beta"].click()
+        XCTAssertTrue(waitUntil {
+            self.text(self.element("conversation.title")) == "Beta implementation"
+        })
     }
 
     func testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession() throws {

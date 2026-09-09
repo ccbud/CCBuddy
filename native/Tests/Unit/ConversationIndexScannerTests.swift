@@ -37,7 +37,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             configuration: environment.configuration,
             registry: registry
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -91,7 +91,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             configuration: environment.configuration,
             registry: registry
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -184,7 +184,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             registry: registry,
             providesQuickMetadata: true
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let catalog = ScannerRecordingCatalog(database: database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
@@ -231,7 +231,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             registry: registry
         )
         loader.failForDependencyChanges(path: candidate.file.path, count: 1)
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -274,7 +274,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             providesQuickMetadata: true
         )
         loader.failForDependencyChanges(path: candidate.file.path, count: 2)
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -330,8 +330,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             homeDirectory: root,
             importsRoot: root.appendingPathComponent("app/imports")
         )
-        let database = try ConversationIndexDatabase(
-            file: root.appendingPathComponent("app/scanner.sqlite")
+        let database = try ConversationFileCatalog(
+            file: root.appendingPathComponent("app/scanner-catalog")
         )
         let missingProducerFile = missingProducerBase
             .appendingPathComponent("projects/p/resumable.jsonl")
@@ -365,7 +365,7 @@ final class ConversationIndexScannerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let retiredRoot = environment.root.appendingPathComponent("retired", isDirectory: true)
         let retiredFile = retiredRoot.appendingPathComponent("projects/p/private.jsonl")
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         try database.replace(indexedSession(file: retiredFile, scope: retiredRoot.path))
         XCTAssertEqual(try database.candidateDocuments(for: "fixture").documents.count, 1)
 
@@ -403,8 +403,8 @@ final class ConversationIndexScannerTests: XCTestCase {
             withDestinationURL: canonicalRoot
         )
         let importsRoot = root.appendingPathComponent("app/imports", isDirectory: true)
-        let database = try ConversationIndexDatabase(
-            file: root.appendingPathComponent("app/scanner.sqlite")
+        let database = try ConversationFileCatalog(
+            file: root.appendingPathComponent("app/scanner-catalog")
         )
 
         let aliasConfiguration = HistoryConfiguration(
@@ -498,7 +498,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             configuration: environment.configuration,
             registry: registry
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -555,7 +555,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             configuration: environment.configuration,
             registry: registry
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -604,7 +604,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             configuration: environment.configuration,
             registry: registry
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -648,7 +648,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             registry: registry,
             providesQuickMetadata: true
         )
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let catalog = ScannerRecordingCatalog(database: database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
@@ -699,7 +699,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             registry: registry
         )
         loader.loadDelay = 0.12
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -790,7 +790,7 @@ final class ConversationIndexScannerTests: XCTestCase {
         // a loaded machine — it reattached after the scan had finished and saw a second, empty one.
         loader.loadDelay = 0.02
         loader.holdAfter(loads: 1)
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -889,7 +889,7 @@ final class ConversationIndexScannerTests: XCTestCase {
     func testCoordinatorPublishesTerminalFailureInsteadOfSwallowingIt() async throws {
         let environment = try makeEnvironment("coordinator-failure")
         defer { try? FileManager.default.removeItem(at: environment.root) }
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let registry = ScannerTestRegistry(candidates: [])
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
@@ -926,7 +926,7 @@ final class ConversationIndexScannerTests: XCTestCase {
     func testCoordinatorSurfacesWatcherFailureAndRetriesItOnReconcile() async throws {
         let environment = try makeEnvironment("coordinator-watcher-retry")
         defer { try? FileManager.default.removeItem(at: environment.root) }
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let registry = ScannerTestRegistry(candidates: [])
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
@@ -985,7 +985,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         let registry = ScannerTestRegistry(candidates: [candidate])
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -1056,7 +1056,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             registry: registry
         )
         loader.loadDelay = 0.08
-        let database = try ConversationIndexDatabase(file: environment.database)
+        let database = try ConversationFileCatalog(file: environment.database)
         let scanner = ConversationIndexScanner(
             configuration: environment.configuration,
             catalog: database,
@@ -1138,7 +1138,7 @@ final class ConversationIndexScannerTests: XCTestCase {
             historyRoot: historyRoot,
             directory: directory,
             configuration: configuration,
-            database: root.appendingPathComponent("app/scanner.sqlite")
+            database: root.appendingPathComponent("app/scanner-catalog")
         )
     }
 
@@ -1582,11 +1582,11 @@ private final class ScannerRecordingCatalog:
         case full(String)
     }
 
-    private let database: ConversationIndexDatabase
+    private let database: ConversationFileCatalog
     private let lock = NSLock()
     private var mutationStorage: [Mutation] = []
 
-    init(database: ConversationIndexDatabase) {
+    init(database: ConversationFileCatalog) {
         self.database = database
     }
 

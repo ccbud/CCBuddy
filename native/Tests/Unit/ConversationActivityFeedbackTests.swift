@@ -2,6 +2,19 @@ import XCTest
 @testable import CCBuddy
 
 final class ConversationActivityFeedbackTests: XCTestCase {
+    func testBackgroundPreparationIsDirectSearchNotAnAccelerationFailure() {
+        for reason in ["indexPreparing", "indexRestoring"] {
+            XCTAssertTrue(ConversationSearchAccelerationPresentation.isPreparing(reason))
+            XCTAssertEqual(ConversationSearchAccelerationPresentation.explanationKey(reason),
+                "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。")
+        }
+        for reason in ["unsafeCache", "lowDiskSpace", "ioFailure", "operationFailed"] {
+            XCTAssertFalse(ConversationSearchAccelerationPresentation.isPreparing(reason))
+            XCTAssertNotEqual(ConversationSearchAccelerationPresentation.explanationKey(reason),
+                ConversationSearchAccelerationPresentation.explanationKey("indexPreparing"))
+        }
+    }
+
     func testSearchFeedbackOnlyUsesReportedStagesAndEndsWithCompletion() {
         XCTAssertEqual(ConversationActivityStage.searchStage(for: nil), .preparingSearch)
         XCTAssertEqual(ConversationActivityStage.searchStage(for: .preparingCandidates), .preparingSearch)

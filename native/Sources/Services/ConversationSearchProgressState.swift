@@ -15,14 +15,17 @@ struct ConversationSearchProgressState {
     private(set) var hits: [HistorySearchHit] = []
     private(set) var phase: ConversationSearchProgress.Phase = .preparingCandidates
     private(set) var snapshotRevision: Int64?
+    private(set) var snapshotIdentity: String?
     private var lastOrdinal: UInt64 = 0
 
     @discardableResult
     mutating func receive(_ progress: ConversationSearchProgress, ordinal: UInt64) -> Bool {
         guard ordinal > lastOrdinal else { return false }
         lastOrdinal = ordinal
-        if let revision = progress.snapshotRevision, revision != snapshotRevision {
-            snapshotRevision = revision
+        if (progress.snapshotRevision != nil && progress.snapshotRevision != snapshotRevision)
+            || (progress.snapshotIdentity != nil && progress.snapshotIdentity != snapshotIdentity) {
+            snapshotRevision = progress.snapshotRevision
+            snapshotIdentity = progress.snapshotIdentity
             hits = []
             phase = .preparingCandidates
         }

@@ -363,9 +363,15 @@ struct ConversationMutationService: @unchecked Sendable {
             sidecar = configuration.appDataRoot.appendingPathComponent("codex-meta.json")
         } else {
             let prefix = metadata.source.rawValue + ":"
-            key = metadata.id.hasPrefix(prefix)
+            let sessionKey = metadata.id.hasPrefix(prefix)
                 ? String(metadata.id.dropFirst(prefix.count))
                 : metadata.sessionID
+            guard !sessionKey.isEmpty else {
+                throw ConversationMutationError.invalidMetadata("会话标识为空或过长")
+            }
+            // Match ForeignHistorySupport's read key. A bare producer identifier both loses the
+            // edit on reload and collides with another source which happens to reuse that id.
+            key = prefix + sessionKey
             sidecar = configuration.appDataRoot.appendingPathComponent("agent-meta.json")
         }
         guard !key.isEmpty, key.count <= 512, !key.contains("\0") else {

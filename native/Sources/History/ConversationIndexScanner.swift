@@ -208,11 +208,7 @@ extension ConversationIndexScanStoring {
     }
 }
 
-extension ConversationIndexDatabase: ConversationIndexScanStoring {
-    func scannerEntries() throws -> [ConversationIndexEntry] {
-        try listEntries(deleted: nil, limit: .max)
-    }
-}
+extension ConversationFileCatalog: ConversationIndexScanStoring {}
 
 protocol ConversationIndexSourceRegistering: Sendable {
     func manifest(
@@ -238,7 +234,7 @@ extension ConversationSourceAdapterRegistry: ConversationIndexSourceRegistering 
 /// One lock covers discovery, parsing, replacement, and reconciliation. Concurrent full scans and
 /// watcher scans therefore queue instead of interleaving catalog generations or publishing stale
 /// manifests. Producer files are never mutated; every successful projection replacement is one
-/// database transaction.
+/// atomic file-manifest publication.
 final class ConversationIndexScanner: @unchecked Sendable {
     private struct Discovery {
         var candidates: [HistoryFileCandidate]
@@ -263,7 +259,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
 
     init(
         configuration: HistoryConfiguration,
-        database: ConversationIndexDatabase,
+        database: ConversationFileCatalog,
         qoderReader: QoderFileReader = .shared,
         registry: ConversationSourceAdapterRegistry = .init(),
         fileManager: FileManager = FileManager(),
@@ -285,7 +281,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
 
     init(
         configuration: HistoryConfiguration,
-        database: ConversationIndexDatabase,
+        database: ConversationFileCatalog,
         loader: any HistorySessionLoading,
         registry: ConversationSourceAdapterRegistry = .init(),
         availability: (any ConversationIndexScopeAvailabilityChecking)? = nil,

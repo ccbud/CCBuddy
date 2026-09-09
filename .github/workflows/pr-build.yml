@@ -176,7 +176,7 @@ jobs:
           xcrun xcresulttool get test-results tests \
             --path "$result" --compact > "$tests"
           # Allow additions, but never a green run that discovered only the older UI suite.
-          jq -e '.result == "Passed" and .totalTestCount >= 24
+          jq -e '.result == "Passed" and .totalTestCount >= 25
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq -e '[.. | objects | select(.nodeType == "Test Case")] as $cases
@@ -186,6 +186,7 @@ jobs:
                "testLocalSemanticRankingPreservesResultsAndExplainsComputePolicy",
                "testSearchCanReachEveryMatchInALargeResultSet",
                "testUnavailableSearchCacheExplainsFallbackAndStillFindsChineseText",
+               "testGlobalSearchFindsFragmentBeyondOldSingleMessageLimit",
                "testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession",
                "testFocusReadingRestoresCustomLayoutAndFindsWithinTranscript",
                "testDestinationShortcutsAndSearchRoundTrip",
@@ -193,7 +194,7 @@ jobs:
                "testModalSearchOwnsFindShortcutAndTabCannotEditTheCoveredReader",
                "testLiveSearchAnchorSurvivesAppendsUntilLatestResumesFollowing",
                "testLightDarkAndCompactSearchScreenshots"] as $required
-            | (([$cases[] | .nodeIdentifier // "" | select(length > 0)] | unique | length) >= 24)
+            | (([$cases[] | .nodeIdentifier // "" | select(length > 0)] | unique | length) >= 25)
               and all($required[]; . as $name
                 | any($experience[]; .name == $name and .result == "Passed"))' "$tests"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \

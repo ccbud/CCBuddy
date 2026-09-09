@@ -1,5 +1,28 @@
 import SwiftUI
 
+/// Query diagnostics are a snapshot, not a live build-progress feed. A direct search during
+/// background preparation is normal operation and must not look like a stalled/error state.
+enum ConversationSearchAccelerationPresentation {
+    static func isPreparing(_ reason: String) -> Bool {
+        reason == "indexPreparing" || reason == "indexRestoring"
+    }
+
+    static func explanationKey(_ reason: String) -> String {
+        switch reason {
+        case "indexPreparing", "indexRestoring":
+            return "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。"
+        case "lowDiskSpace":
+            return "索引所在磁盘空间不足，搜索加速已暂停。"
+        case "unsafeCache":
+            return "搜索缓存位置不可用，加速引擎未能启动。"
+        case "ioFailure":
+            return "无法读写搜索缓存，正在使用精确搜索。"
+        default:
+            return "搜索加速暂不可用，正在使用精确搜索。"
+        }
+    }
+}
+
 /// Real query measurements live beside the control that opts into local inference. None of the
 /// labels infer ANE execution from the machine architecture or the requested compute policy.
 struct SearchPerformanceView: View {
@@ -22,11 +45,13 @@ struct SearchPerformanceView: View {
                     .accessibilityIdentifier("search.performance.duration")
             }
             if let reason = store.searchDiagnostics?.fallbackReason {
-                Label(language.localized("加速暂不可用"), systemImage: "exclamationmark.triangle")
+                let preparing = ConversationSearchAccelerationPresentation.isPreparing(reason)
+                Label(language.localized(preparing ? "直接搜索" : "加速暂不可用"),
+                      systemImage: preparing ? "doc.text.magnifyingglass" : "exclamationmark.triangle")
                     .font(.ccLabel())
-                    .foregroundStyle(Theme.warning)
+                    .foregroundStyle(preparing ? Theme.mutedForeground : Theme.warning)
                     .help(fallbackExplanation(reason))
-                    .accessibilityIdentifier("search.performance.fallback")
+                    .accessibilityIdentifier(preparing ? "search.performance.direct" : "search.performance.fallback")
             }
             Spacer(minLength: Space.sm)
             if store.isRankingSearch {
@@ -70,16 +95,19 @@ struct SearchPerformanceView: View {
                 .foregroundStyle(Theme.mutedForeground)
             if let lexical = store.searchDiagnostics {
                 LabeledContent(language.localized("搜索引擎"), value: lexical.engine)
-                LabeledContent(language.localized("索引文档"), value: String(lexical.indexedDocuments))
+                LabeledContent(language.localized("索引分组"), value: String(lexical.indexedDocuments))
                 LabeledContent(language.localized("本次候选"), value: String(lexical.candidateCount))
                 LabeledContent(language.localized("候选检索"),
                                value: String(format: "%.1f ms", lexical.queryMilliseconds))
                 if let reason = lexical.fallbackReason {
                     Text(fallbackExplanation(reason))
-                        .foregroundStyle(Theme.warning)
+                        .foregroundStyle(ConversationSearchAccelerationPresentation.isPreparing(reason)
+                            ? Theme.mutedForeground : Theme.warning)
                         .accessibilityIdentifier("search.performance.fallback.reason")
-                    Text(language.localized("精确搜索仍可用；后续搜索会自动重试加速。"))
-                        .foregroundStyle(Theme.mutedForeground)
+                    if !ConversationSearchAccelerationPresentation.isPreparing(reason) {
+                        Text(language.localized("精确搜索仍可用；后续搜索会自动重试加速。"))
+                            .foregroundStyle(Theme.mutedForeground)
+                    }
                     LabeledContent(language.localized("诊断代码"), value: reason)
                 }
             }
@@ -130,15 +158,6 @@ struct SearchPerformanceView: View {
     }
 
     private func fallbackExplanation(_ reason: String) -> String {
-        switch reason {
-        case "lowDiskSpace":
-            return language.localized("索引所在磁盘空间不足，搜索加速已暂停。")
-        case "unsafeCache":
-            return language.localized("搜索缓存位置不可用，加速引擎未能启动。")
-        case "ioFailure":
-            return language.localized("无法读写搜索缓存，正在使用精确搜索。")
-        default:
-            return language.localized("搜索加速暂不可用，正在使用精确搜索。")
-        }
+        language.localized(ConversationSearchAccelerationPresentation.explanationKey(reason))
     }
 }

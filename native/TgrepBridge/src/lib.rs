@@ -1,7 +1,7 @@
 //! A narrow in-process ABI around upstream tgrep. No shell, server, telemetry,
 //! producer-file traversal, or original transcript copies are involved.
 //!
-//! The caller supplies canonical, case-folded UTF-8 documents and stable SQLite
+//! The caller supplies canonical, case-folded UTF-8 documents and stable catalog
 //! IDs. Only trigrams and numeric IDs reach the private temporary disk index.
 //! The live overlay is flushed every 64 MiB of input; streaming merges keep the
 //! full corpus's postings in mmap instead of a second in-memory transcript store.
@@ -25,6 +25,19 @@ use tgrep_core::query::build_literal_plan;
 use tgrep_core::reader::IndexReader;
 
 const FLUSH_BYTES: usize = 64 * 1024 * 1024;
+
+/// The Swift boundary already supplies Foundation-folded, NFC bytes. The bridge
+/// needs only presence, not upstream's per-position or next-byte masks. Keep the
+/// upstream collision-free trigram keys and purpose-built hasher, but avoid
+/// computing and merging two masks for every input byte.
+fn extract_normalized_trigrams(text: &[u8]) -> Vec<u32> {
+    let mut trigrams: HashSet<u32, tgrep_core::trigram::BuildTrigramHasher> =
+        HashSet::with_capacity_and_hasher(text.len().min(16_384), Default::default());
+    for bytes in text.windows(3) {
+        trigrams.insert(tgrep_core::trigram::hash(bytes[0], bytes[1], bytes[2]));
+    }
+    trigrams.into_iter().collect()
+}
 thread_local! {
     // Additive ABI-v2 diagnostic. Numeric codes cannot expose transcript text,
     // query strings, cache paths, or raw operating-system error descriptions.
@@ -725,14 +738,7 @@ impl Engine {
     }
 
     fn upsert(&mut self, id: i64, text: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-        // Upstream's mask-free bulk path avoids a per-(trigram, document) mask
-        // map. Candidate verification stays in Foundation, so masks are optional.
-        // The basic extract() helper uses SipHash once per input byte. Upstream's
-        // merged extractor uses its purpose-built multiply/xorshift trigram
-        // hasher; keeping only its keys retains the bounded mask-free overlay.
-        let trigrams = tgrep_core::trigram::extract_merged_masks(text)
-            .into_keys()
-            .collect();
+        let trigrams = extract_normalized_trigrams(text);
         self.index
             .live
             .upsert_file_with_trigrams(&id.to_string(), trigrams);
@@ -741,6 +747,14 @@ impl Engine {
             self.flush()?;
         }
         Ok(())
+    }
+
+    /// A sealed reader can continue using its immutable mmaps while a separate
+    /// background engine acquires the sole publisher lease and builds its next
+    /// checkpoint. Never remove the reader's live workspace or current files.
+    fn relinquish_publisher(&mut self) {
+        self.persistent_root = None;
+        self._lease = None;
     }
 
     fn retain(&mut self, ids: &[i64]) {
@@ -917,6 +931,27 @@ pub unsafe extern "C" fn ccbuddy_tgrep_persist(
     })
 }
 
+/// Additive ABI-v2 operation: retain a sealed reader while handing publication
+/// authority to the next background builder. Repeated calls are harmless.
+///
+/// # Safety
+/// `engine` must be an exclusively accessed live handle, with no pending writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ccbuddy_tgrep_relinquish_publisher(engine: *mut c_void) -> i32 {
+    if engine.is_null() {
+        LAST_ERROR_CODE.set(4);
+        return -1;
+    }
+    ffi_result(-1, || {
+        let engine = unsafe { &mut *engine.cast::<Engine>() };
+        if engine.index.live.has_pending_changes() {
+            return Err(std::io::Error::other("unsealed publication handoff").into());
+        }
+        engine.relinquish_publisher();
+        Ok(0)
+    })
+}
+
 /// # Safety
 /// A non-null handle must have been returned by this library and must be destroyed
 /// exactly once, after all access to it has stopped.
@@ -1012,6 +1047,95 @@ pub unsafe extern "C" fn ccbuddy_tgrep_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_presence_extraction_matches_independent_byte_window_oracle() {
+        let mut inputs = vec![
+            Vec::new(),
+            vec![0],
+            vec![0, 1],
+            vec![0, 1, 2],
+            "系统代理\0strasse café 👩‍💻".as_bytes().to_vec(),
+            vec![b'a'; 262_144],
+        ];
+        let mut random = Vec::with_capacity(262_144);
+        let mut seed = 0x74ab_9871u32;
+        for _ in 0..262_144 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            random.push(seed as u8);
+        }
+        inputs.push(random);
+        for input in inputs {
+            let expected: std::collections::BTreeSet<u32> = input
+                .windows(3)
+                .map(|bytes| u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]))
+                .collect();
+            let actual = extract_normalized_trigrams(&input);
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(
+                actual
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn publisher_handoff_preserves_old_reader_and_allows_successor_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let mut reader = Engine::persistent(root.path()).unwrap();
+        reader.upsert(1, b"first sealed needle").unwrap();
+        reader.flush().unwrap();
+        reader.persist(b"first manifest").unwrap();
+        reader.relinquish_publisher();
+        reader.relinquish_publisher();
+        let mut successor = Engine::persistent(root.path()).unwrap();
+        assert!(successor.persistent_root.is_some());
+        assert_eq!(successor.manifest, b"first manifest");
+        let competing = Engine::persistent(root.path()).unwrap();
+        assert!(competing.persistent_root.is_none());
+        successor.upsert(1, b"second sealed replacement").unwrap();
+        successor.flush().unwrap();
+        successor.persist(b"second manifest").unwrap();
+        assert_eq!(reader.search("needle"), vec![1]);
+        assert!(reader.search("replacement").is_empty());
+        assert_eq!(successor.search("replacement"), vec![1]);
+        drop(competing);
+        drop(reader);
+        assert_eq!(successor.search("replacement"), vec![1]);
+        drop(successor);
+        let reopened = Engine::persistent(root.path()).unwrap();
+        assert_eq!(reopened.manifest, b"second manifest");
+        assert_eq!(reopened.search("replacement"), vec![1]);
+    }
+
+    #[test]
+    fn abandoned_successor_keeps_checkpoint_and_handoff_can_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut reader = Engine::persistent(root.path()).unwrap();
+        reader.upsert(1, b"last complete original").unwrap();
+        reader.flush().unwrap();
+        reader.persist(b"durable original").unwrap();
+        reader.relinquish_publisher();
+        {
+            let mut canceled = Engine::persistent(root.path()).unwrap();
+            assert!(canceled.persistent_root.is_some());
+            canceled.upsert(2, b"uncommitted replacement").unwrap();
+        }
+        assert_eq!(reader.search("original"), vec![1]);
+        let mut retry = Engine::persistent(root.path()).unwrap();
+        assert!(retry.persistent_root.is_some());
+        assert_eq!(retry.manifest, b"durable original");
+        assert!(retry.search("replacement").is_empty());
+        retry.upsert(2, b"published retry").unwrap();
+        retry.flush().unwrap();
+        retry.persist(b"retry complete").unwrap();
+        assert_eq!(reader.search("original"), vec![1]);
+        assert_eq!(retry.search("retry"), vec![2]);
+    }
 
     #[test]
     fn failure_codes_are_sanitized_and_success_clears_them() {
@@ -1686,6 +1810,38 @@ mod tests {
         assert!(!child.workspace.exists());
         drop(replacement);
         assert!(working_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn relinquished_reader_survives_cross_process_publisher_and_competing_secondary() {
+        let root = tempfile::tempdir().unwrap();
+        let mut reader = Engine::persistent(root.path()).unwrap();
+        reader.upsert(1, b"stable prehandoff needle").unwrap();
+        reader.flush().unwrap();
+        reader.persist(b"prehandoff manifest").unwrap();
+        reader.relinquish_publisher();
+        let mut publisher = WorkspaceProcess::start(root.path());
+        assert!(publisher.is_publisher);
+        assert_eq!(reader.search("prehandoff needle"), vec![1]);
+        let mut competing = Engine::persistent(root.path()).unwrap();
+        assert!(competing.persistent_root.is_none());
+        competing.upsert(99, b"private competing overlay").unwrap();
+        competing.flush().unwrap();
+        competing
+            .persist(b"cannot replace cross process publisher")
+            .unwrap();
+        publisher.verify_alive();
+        assert_eq!(reader.search("prehandoff needle"), vec![1]);
+        drop(competing);
+        drop(reader);
+        publisher.verify_alive();
+        publisher.finish();
+        let recovered = Engine::persistent(root.path()).unwrap();
+        assert!(recovered.persistent_root.is_some());
+        assert_eq!(recovered.manifest, b"child checkpoint");
+        assert_eq!(recovered.search("prehandoff needle"), vec![1]);
+        assert_eq!(recovered.search("live child fixture"), vec![73]);
+        assert!(recovered.search("competing overlay").is_empty());
     }
 
     #[test]

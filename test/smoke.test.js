@@ -41,6 +41,14 @@ function serve() {
   return new Promise((r) => server.listen(PORT, () => r(server)));
 }
 
+async function isolateTelemetry(page) {
+  // Renderer behavior is under test, not a changing third-party tracking script.
+  // Keep its real loader path, but never send fixture sessions to external analytics
+  // or let vendor-generated tracking pixels affect the strict CSP/error assertions.
+  await page.route(/^https:\/\/(?:[^/]+\.)?clarity\.ms\/|^https:\/\/c\.bing\.com\//,
+    route => route.fulfill({ status: 200, contentType: 'application/javascript', body: '' }));
+}
+
 async function run(chromium, exe) {
   const server = await serve();
   const browser = await chromium.launch({ executablePath: exe });
@@ -55,6 +63,7 @@ async function run(chromium, exe) {
   };
 
   const page = await browser.newPage();
+  await isolateTelemetry(page);
   watch(page, 'main');
   await page.addInitScript(stubScript());
   await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: 'networkidle' });
@@ -99,6 +108,7 @@ async function run(chromium, exe) {
   check('theme toggle flips data-theme', (await page.getAttribute('html', 'data-theme')) !== before);
 
   const pop = await browser.newPage();
+  await isolateTelemetry(pop);
   watch(pop, 'popover');
   await pop.addInitScript(stubScript());
   await pop.goto(`http://127.0.0.1:${PORT}/popover.html`, { waitUntil: 'networkidle' });

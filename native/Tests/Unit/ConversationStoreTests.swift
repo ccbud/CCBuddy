@@ -827,13 +827,14 @@ final class ConversationStoreTests: XCTestCase {
         let line = #"{"type":"user","uuid":"recovered-user","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"recovered","cwd":"/tmp/recovered","message":{"role":"user","content":"hello"}}"#
         try Data((line + "\n").utf8).write(to: transcript)
 
-        // An unsafe directory at the catalog path deterministically forces the initial raw-file
+        // A regular file at the catalog-directory path deterministically forces the initial raw-file
         // fallback without touching any producer data or the user's real application index.
-        let blockedCatalog = appDataRoot.appendingPathComponent("conversation-index-v1.sqlite3")
+        let blockedCatalog = appDataRoot.appendingPathComponent("conversation-catalog-v1")
         try FileManager.default.createDirectory(
-            at: blockedCatalog,
+            at: appDataRoot,
             withIntermediateDirectories: true
         )
+        try Data("not a catalog directory".utf8).write(to: blockedCatalog)
         var config = AppConfig.fixture
         config.historyDirs = [historyRoot.path]
         config.historyActive = "all"

@@ -1,8 +1,104 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import CCBuddy
 
 final class ConversationMutationServiceTests: XCTestCase {
+    func testEverySourceMetadataMutationSurvivesRawRepositoryReload() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let sources: [HistorySource] = [.qoder, .grok, .copilot, .antigravity, .codex, .claude]
+
+        for source in sources {
+            let file = try fixture.writeProducerSession(source: source, id: "round-trip")
+            let original = try Data(contentsOf: file)
+            let metadata = try fixture.repository().getSession(file: file).metadata
+            XCTAssertEqual(metadata.source, source)
+            let title = "Edited \(source.rawValue)"
+            try fixture.service.updateMetadata(
+                for: metadata,
+                patch: .init(title: title, tags: [" keep ", "keep"], deleted: true,
+                    starred: true, pinned: true)
+            )
+
+            // A new raw repository deliberately bypasses all catalog/in-memory metadata.
+            let reloaded = try fixture.repository().getSession(file: file).metadata
+            XCTAssertEqual(reloaded.title, title, source.rawValue)
+            XCTAssertEqual(reloaded.tags, ["keep"], source.rawValue)
+            XCTAssertTrue(reloaded.deleted, source.rawValue)
+            XCTAssertTrue(reloaded.starred, source.rawValue)
+            XCTAssertTrue(reloaded.pinned, source.rawValue)
+            XCTAssertFalse(fixture.repository().listSessions().contains { $0.file == file })
+            XCTAssertTrue(fixture.repository(active: "__trash__").listSessions()
+                .contains { $0.file == file })
+            if source != .claude {
+                XCTAssertEqual(try Data(contentsOf: file), original,
+                    "live foreign transcript must remain untouched: \(source.rawValue)")
+            }
+
+            try fixture.service.updateMetadata(
+                for: reloaded,
+                patch: .init(title: "", tags: [], deleted: false, starred: false, pinned: false)
+            )
+            let restored = try fixture.repository().getSession(file: file).metadata
+            XCTAssertEqual(restored.title, restored.autoTitle, source.rawValue)
+            XCTAssertEqual(restored.tags, [], source.rawValue)
+            XCTAssertFalse(restored.deleted, source.rawValue)
+            XCTAssertFalse(restored.starred, source.rawValue)
+            XCTAssertFalse(restored.pinned, source.rawValue)
+            XCTAssertTrue(fixture.repository().listSessions().contains { $0.file == file })
+            XCTAssertFalse(fixture.repository(active: "__trash__").listSessions()
+                .contains { $0.file == file })
+        }
+    }
+
+    func testForeignMetadataWithSharedProducerIDStaysSourceScopedAndPreservesLegacyKeys() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let sources: [HistorySource] = [.qoder, .grok, .copilot, .antigravity]
+        let id = "shared-producer-id"
+        let files = try sources.map { try fixture.writeProducerSession(source: $0, id: id) }
+        let sidecar = fixture.configuration.appDataRoot.appendingPathComponent("agent-meta.json")
+        try FileManager.default.createDirectory(at: sidecar.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        let legacy: [String: Any] = ["title": "Ambiguous legacy title", "starred": true]
+        try JSONSerialization.data(withJSONObject: [id: legacy]).write(to: sidecar)
+
+        for (index, file) in files.enumerated() {
+            let metadata = try fixture.repository().getSession(file: file).metadata
+            XCTAssertFalse(metadata.starred, "unscoped legacy facts cannot be attributed safely")
+            try fixture.service.updateMetadata(
+                for: metadata,
+                patch: .init(title: "Owned by \(sources[index].rawValue)", tags: [sources[index].rawValue],
+                    deleted: index.isMultiple(of: 2), starred: true, pinned: index.isMultiple(of: 2))
+            )
+        }
+
+        for (index, file) in files.enumerated() {
+            let metadata = try fixture.repository().getSession(file: file).metadata
+            XCTAssertEqual(metadata.title, "Owned by \(sources[index].rawValue)")
+            XCTAssertEqual(metadata.tags, [sources[index].rawValue])
+            XCTAssertEqual(metadata.deleted, index.isMultiple(of: 2))
+            XCTAssertTrue(metadata.starred)
+            XCTAssertEqual(metadata.pinned, index.isMultiple(of: 2))
+        }
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: sidecar))
+            as? [String: Any])
+        XCTAssertEqual(Set(root.keys), Set([id] + sources.map { "\($0.rawValue):\(id)" }))
+        XCTAssertEqual(root[id] as? NSDictionary, legacy as NSDictionary,
+            "do not delete or guess a source for an existing unscoped record")
+    }
+
+    func testForeignMetadataFallbackSessionIDKeepsItsSourcePrefix() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try fixture.writeProducerSession(source: .qoder, id: "fallback")
+        var metadata = try fixture.repository().getSession(file: file).metadata
+        metadata.id = "nonstandard-producer-identity"
+        try fixture.service.updateMetadata(for: metadata, patch: .init(starred: true))
+        XCTAssertTrue(try fixture.repository().getSession(file: file).metadata.starred)
+    }
+
     func testInlineMetadataEditNormalizesAndClearsFields() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -345,6 +441,56 @@ private final class Fixture {
     func writeSession(name: String, text: String) throws -> URL {
         let file = projectDirectory.appendingPathComponent("\(name).jsonl")
         try Data(text.utf8).write(to: file)
+        return file
+    }
+
+    func repository(active: String = "all") -> HistoryRepository {
+        HistoryRepository(historyDirs: configuration.historyDirs, active: active,
+            homeDirectory: configuration.homeDirectory, importsRoot: configuration.importsRoot)
+    }
+
+    func writeProducerSession(source: HistorySource, id: String) throws -> URL {
+        let relativePath: String
+        let text: String
+        switch source {
+        case .claude:
+            relativePath = "projects/-tmp-claude/\(id).jsonl"
+            text = #"{"type":"user","sessionId":"\#(id)","message":{"role":"user","content":"hello"}}"#
+        case .codex:
+            relativePath = "sessions/\(id).jsonl"
+            text = #"{"type":"session_meta","payload":{"id":"\#(id)","cwd":"/tmp/test"}}"# + "\n"
+                + #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}"#
+        case .qoder:
+            relativePath = "projects/-tmp-qoder/\(id).jsonl"
+            text = #"{"type":"ai-title","sessionId":"\#(id)","aiTitle":"Qoder fixture"}"# + "\n"
+                + #"{"type":"user","sessionId":"\#(id)","message":{"role":"user","content":"hello"}}"#
+        case .grok:
+            relativePath = "sessions/%2Ftmp%2Ftest/\(id)/chat_history.jsonl"
+            text = #"{"type":"user","content":"hello"}"#
+        case .copilot:
+            relativePath = "session-state/\(id)/events.jsonl"
+            text = #"{"type":"session.start","data":{"sessionId":"\#(id)"}}"# + "\n"
+                + #"{"type":"user.message","data":{"content":"hello"}}"#
+        case .antigravity:
+            relativePath = "conversations/\(id).db"
+            text = ""
+        }
+        let file = historyRoot.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        if source == .antigravity {
+            // Producer-owned SQLite fixture: protobuf field 19 contains user field 2, "hello".
+            var database: OpaquePointer?
+            let status = sqlite3_open(file.path, &database)
+            defer { if let database { sqlite3_close(database) } }
+            guard status == SQLITE_OK, let database,
+                  sqlite3_exec(database, "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB); "
+                    + "INSERT INTO steps VALUES (0, X'9A0107120568656C6C6F')", nil, nil, nil) == SQLITE_OK else {
+                throw NSError(domain: "ConversationMutationServiceTests", code: 1)
+            }
+        } else {
+            try Data((text + "\n").utf8).write(to: file)
+        }
         return file
     }
 

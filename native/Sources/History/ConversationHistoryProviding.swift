@@ -17,7 +17,7 @@ extension ConversationHistoryProviding {
 
 /// Optional progressive exact search. Plain providers retain the original final-result API.
 /// Callbacks are synchronous, serial, and finish before this method returns or throws.
-/// They run on the caller's worker, never while holding a catalog database lock.
+/// They run on the caller's worker, never while holding a catalog publication lock.
 protocol ConversationProgressiveHistoryProviding: ConversationHistoryProviding {
     func search(
         query: String,
@@ -28,8 +28,8 @@ protocol ConversationProgressiveHistoryProviding: ConversationHistoryProviding {
 
 struct ConversationSearchProgress: Equatable, Sendable {
     enum Phase: Equatable, Sendable {
-        /// Includes catalog snapshot/candidate preparation, a cold index build,
-        /// or an exact fallback scan; it does not imply a percentage of completion.
+        /// Catalog snapshot/candidate preparation only. Background index construction is
+        /// independent; this phase does not imply a percentage of completion.
         case preparingCandidates
         /// Candidate verification may publish a first exact match before its total is counted.
         case refiningResults
@@ -52,6 +52,8 @@ struct ConversationSearchProgress: Equatable, Sendable {
     /// Catalog snapshot used by this batch. A different non-nil revision restarts the prefix;
     /// hits from the prior revision must never be merged into this snapshot's results.
     var snapshotRevision: Int64? = nil
+    /// Rebuilt file catalogs may start at the same revision; their instance identity is distinct.
+    var snapshotIdentity: String? = nil
 }
 
 struct ConversationScopeSnapshot: Equatable, Sendable {
