@@ -484,8 +484,10 @@ Both the offscreen logical rows and rendered native rows publish AppKit's standa
 `AXRow` / `AXTableRow` classification through the modern and legacy accessibility
 interfaces. A real `NSTableView` comparison checks all 12,001 row classifications,
 visible and offscreen ancestry, and that this inspection realizes no extra views.
-Failed long-tail UI assertions record a bounded public hierarchy diagnostic only
-after the original predicate budget has expired; passing criteria are unchanged.
+Failed long-tail UI assertions retain only the samples already collected by the
+original predicate; failure reporting issues no additional accessibility queries.
+The 12,000-message UI case also runs as an early, separately reported preflight.
+Passing it never substitutes for the complete native and UI suites below.
 
 An earlier isolated Release preview opened the **458,822,422-byte, 16,921-message**
 real session at source sequence 12,192 on visible tool-use owner 12,191. Detail

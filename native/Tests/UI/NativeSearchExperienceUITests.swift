@@ -524,14 +524,12 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
         })
-        // This fixture has one table row per source message; its footer follows all 12,000.
-        // Traverse direct native children instead of searching every earlier message subtree.
-        // The final identifier still requires the actual mounted host, not its logical row/cell.
-        // These public queries narrow traversal; they do not assume constant-time resolution.
-        let table = app.tables.matching(identifier: "conversation.timeline.table").firstMatch
-        let tailRow = table.children(matching: .tableRow).element(boundBy: 11_999)
-        let tail = tailRow.children(matching: .cell).firstMatch
-            .children(matching: .any).matching(identifier: "conversation.message.11999").firstMatch
+        // Require the unique actual host, never an offscreen logical row/cell. Use exhaustive
+        // unique resolution: XCTest's firstMatch traversal spent the failure spindump building
+        // and describing candidate sets. Do not prune the app's complete accessibility tree
+        // or assume the client's tableRow list has the same indices as the source transcript.
+        let tail = app.descendants(matching: .any)
+            .matching(identifier: "conversation.message.11999").element
         var tailSamples: [String] = []
         let tailIsReachable = waitUntil(timeout: 15) {
             let started = ProcessInfo.processInfo.systemUptime
@@ -543,8 +541,12 @@ final class NativeSearchExperienceUITests: XCTestCase {
             return hittable
         }
         if !tailIsReachable {
-            tailSamples.append(tailAccessibilityFailureDiagnostics(
-                table: table, rowIndex: 11_999, hostIdentifier: "conversation.message.11999"))
+            // Preserve the completed predicate's samples before asserting. A fresh AX query
+            // here can itself time out and obscure the original failure on a large transcript.
+            let attachment = XCTAttachment(string: tailSamples.joined(separator: "\n"))
+            attachment.name = "twelve-thousand-tail-accessibility-failure"
+            attachment.lifetime = .keepAlways
+            add(attachment)
         }
         XCTAssertTrue(tailIsReachable,
                       "The exact tail hit must be reachable without materializing every earlier row. AX samples: \(tailSamples)")
@@ -552,7 +554,7 @@ final class NativeSearchExperienceUITests: XCTestCase {
         // elsewhere in the application's accessibility tree.
         let preparedTail = tail.descendants(matching: .staticText)
             .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
-                                  "final searchable answer.", "final searchable answer.")).firstMatch
+                                  "final searchable answer.", "final searchable answer.")).element
         XCTAssertTrue(preparedTail.waitForExistence(timeout: 10),
                       "A visible message shell is insufficient: its asynchronous prose must finish preparing")
         XCTAssertTrue(tail.isHittable,
@@ -821,49 +823,6 @@ final class NativeSearchExperienceUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
-    }
-
-    private func tailAccessibilityFailureDiagnostics(
-        table: XCUIElement, rowIndex: Int, hostIdentifier: String
-    ) -> String {
-        // Failure-only: the original predicate has already finished and cannot be rescued here.
-        // At most two public remote resolutions, with no retry/wait loop. Derive all child
-        // classifications from one snapshot instead of repeating a slow query at each level.
-        // XCTest's synchronous resolutions have no public per-call wall-clock timeout.
-        let started = ProcessInfo.processInfo.systemUptime
-        let tableExists = table.exists
-        var samples = ["table.exists=\(tableExists), seconds=\(ProcessInfo.processInfo.systemUptime - started)"]
-        if tableExists {
-            let snapshotStarted = ProcessInfo.processInfo.systemUptime
-            do {
-                let snapshot = try table.snapshot()
-                let children = snapshot.children
-                let rows = children.filter { $0.elementType == .tableRow }
-                let row = rows.indices.contains(rowIndex) ? rows[rowIndex] : nil
-                let cell = row?.children.first { $0.elementType == .cell }
-                let host = cell?.children.first { $0.identifier == hostIdentifier }
-                samples.append("snapshot.seconds=\(ProcessInfo.processInfo.systemUptime - snapshotStarted), directChildren.count=\(children.count), tableRows.count=\(rows.count)")
-                samples.append("snapshot.tailRow.exists=\(row != nil), tailCell.exists=\(cell != nil), tailHost.exists=\(host != nil)")
-                if children.indices.contains(rowIndex) {
-                    let rawRow = children[rowIndex]
-                    let rawCell = rawRow.children.first { $0.elementType == .cell }
-                    let rawHost = rawCell?.children.first { $0.identifier == hostIdentifier }
-                    samples.append("snapshot.directTail.type=\(rawRow.elementType.rawValue), directTail.children.count=\(rawRow.children.count), directTail.cell.exists=\(rawCell != nil), directTail.host.exists=\(rawHost != nil)")
-                }
-            } catch {
-                let failure = error as NSError
-                samples.append("snapshot.error.domain=\(failure.domain), code=\(failure.code), seconds=\(ProcessInfo.processInfo.systemUptime - snapshotStarted)")
-            }
-        } else {
-            samples.append("snapshot.skipped=table absent")
-        }
-        // Only counts, public element types and existence are retained, never transcript text.
-        let report = samples.joined(separator: "\n")
-        let attachment = XCTAttachment(string: report)
-        attachment.name = "twelve-thousand-tail-accessibility-failure"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-        return report
     }
 
     private func writeSession(_ id: String, title: String, day: Int, answer: String, to project: URL) throws {
