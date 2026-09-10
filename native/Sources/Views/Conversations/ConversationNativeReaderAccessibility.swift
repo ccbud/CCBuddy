@@ -64,6 +64,24 @@ struct ConversationNativeReaderHostedContent: View {
     }
 }
 
+/// Geometry belongs to the actual view, not NSCell's default bezel/title metrics or an older
+/// SwiftUI accessibility wrapper. A clipped control activates within its visible, real bounds.
+enum ConversationNativeReaderViewGeometry {
+    static func frame(of view: NSView) -> NSRect {
+        guard let window = view.window else { return .zero }
+        return window.convertToScreen(view.convert(view.bounds, to: nil))
+    }
+
+    static func activationPoint(of view: NSView) -> NSPoint {
+        // A SwiftUI hosting ancestor may not clip subviews: AppKit's visibleRect can then extend
+        // beyond this button's own bounds. Only their intersection is actually drawn by it.
+        let visibleBounds = view.bounds.intersection(view.visibleRect)
+        guard let window = view.window, !visibleBounds.isEmpty else { return .zero }
+        let rect = window.convertToScreen(view.convert(visibleBounds, to: nil))
+        return NSPoint(x: rect.midX, y: rect.midY)
+    }
+}
+
 final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReaderHostedContent> {
 
     // Keep the public legacy client path on the same objects as the modern AX tree.
@@ -108,8 +126,14 @@ final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReader
     }
 
     var onIntrinsicSizeInvalidated: (() -> Void)?
+    var messageIdentifier: String?
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    override func accessibilityIdentifier() -> String { messageIdentifier ?? "" }
+    override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
+    override func accessibilityActivationPoint() -> NSPoint {
+        ConversationNativeReaderViewGeometry.activationPoint(of: self)
+    }
     override func invalidateIntrinsicContentSize() {
         super.invalidateIntrinsicContentSize()
         onIntrinsicSizeInvalidated?()
@@ -196,6 +220,7 @@ final class ConversationNativeReaderCell: NSTableCellView {
         retainsTextFocus = false
         sourceIndex = nil
         projection = nil
+        host.messageIdentifier = nil
         host.rootView = ConversationNativeReaderHostedContent(
             content: AnyView(EmptyView()), environment: EnvironmentValues(), width: 1)
     }
@@ -205,6 +230,7 @@ final class ConversationNativeReaderCell: NSTableCellView {
     }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .cell }
+    override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
     override func accessibilityRowIndexRange() -> NSRange { NSRange(location: logicalIndex, length: 1) }
     override func accessibilityColumnIndexRange() -> NSRange { NSRange(location: 0, length: 1) }
     override func accessibilityChildren() -> [Any]? { [host] }
@@ -269,6 +295,7 @@ final class ConversationNativeReaderRowView: NSTableRowView {
     var logicalIndex = -1
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .row }
+    override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
     override func accessibilityParent() -> Any? { table }
     override func accessibilityIndex() -> Int { logicalIndex }
     override func accessibilityChildren() -> [Any]? {

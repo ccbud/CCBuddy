@@ -141,7 +141,7 @@ jobs:
             --path "$result" --compact > "$summary"
           xcrun xcresulttool get test-results tests \
             --path "$result" --compact > "$tests"
-          jq -e '.result == "Passed" and .totalTestCount >= 1044
+          jq -e '.result == "Passed" and .totalTestCount >= 1048
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq -e '[.. | objects | select(.nodeType == "Test Case")
@@ -176,13 +176,14 @@ jobs:
           xcrun xcresulttool get test-results tests \
             --path "$result" --compact > "$tests"
           # Allow additions, but never a green run that discovered only the older UI suite.
-          jq -e '.result == "Passed" and .totalTestCount >= 27
+          jq -e '.result == "Passed" and .totalTestCount >= 28
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq -e '[.. | objects | select(.nodeType == "Test Case")] as $cases
             | [$cases[] | select((.nodeIdentifier // "") | startswith("NativeSearchExperienceUITests/"))
             | {name: ((.nodeIdentifier // "") | split("/") | last | rtrimstr("()")), result}] as $experience
             | ["testFullTextSearchReportsTgrepAndKeyboardOpensSelectedResult",
+               "testVisibleProgressiveRowsUpdateEveryFinalCountWithoutRemountingPalette",
                "testLocalSemanticRankingPreservesResultsAndExplainsComputePolicy",
                "testSearchCanReachEveryMatchInALargeResultSet",
                "testUnavailableSearchCacheExplainsFallbackAndStillFindsChineseText",
@@ -196,7 +197,7 @@ jobs:
                "testModalSearchOwnsFindShortcutAndTabCannotEditTheCoveredReader",
                "testLiveSearchAnchorSurvivesAppendsUntilLatestResumesFollowing",
                "testLightDarkAndCompactSearchScreenshots"] as $required
-            | (([$cases[] | .nodeIdentifier // "" | select(length > 0)] | unique | length) >= 27)
+            | (([$cases[] | .nodeIdentifier // "" | select(length > 0)] | unique | length) >= 28)
               and all($required[]; . as $name
                 | any($experience[]; .name == $name and .result == "Passed"))' "$tests"
           jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \

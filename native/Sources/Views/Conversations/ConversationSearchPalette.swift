@@ -26,6 +26,16 @@ struct ConversationSearchPalette: View {
             ? Array(sessions.prefix(6)) : sessions
     }
 
+    private var rowSnapshots: [ConversationSearchRowSnapshot] {
+        let sessions = results
+        let selectedID = selection.file.flatMap { file in
+            sessions.contains { $0.conversationListIdentity == file } ? file : nil
+        } ?? (sessions.indices.contains(selection.index)
+            ? sessions[selection.index].conversationListIdentity : nil)
+        return ConversationSearchRowSnapshot.make(sessions: sessions, hits: store.contentHits,
+            query: store.listQuery, selectedID: selectedID, language: appLanguage)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
@@ -154,12 +164,17 @@ struct ConversationSearchPalette: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .frame(height: Self.quietHeight)
         } else {
+            // Keep membership and selection as explicit values across the reader closure.
+            // Mounted result rows independently observe the store's hit/query refinements.
+            let snapshots = rowSnapshots
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 1) {
-                        ForEach(Array(results.enumerated()), id: \.element.conversationListIdentity) { index, session in
-                            row(session, index: index)
-                                .id(index)
+                        ForEach(snapshots) { snapshot in
+                            ConversationSearchPaletteResultRow(store: store, snapshot: snapshot) {
+                                open(snapshot.metadata)
+                            }
+                            .id(snapshot.index)
                         }
                     }
                     .padding(Space.sm)
@@ -170,58 +185,6 @@ struct ConversationSearchPalette: View {
                 }
             }
         }
-    }
-
-    private func row(_ session: HistorySessionMetadata, index: Int) -> some View {
-        let hit = store.contentHit(for: session)
-        let selected = index == selection.index
-        return Button {
-            open(session)
-        } label: {
-            HStack(alignment: .top, spacing: Space.md) {
-                AgentBrandMark(source: session.source, size: 22)
-                    .frame(width: 36, height: 36)
-                    .background(Theme.fillSubtle, in: RoundedRectangle(cornerRadius: Radius.button))
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    Text(session.title.isEmpty ? appLanguage.localized("无标题") : session.title)
-                        .font(.ccBody(.semibold))
-                        .foregroundStyle(Theme.foreground)
-                        .lineLimit(1)
-                    HStack(spacing: Space.xs + 2) {
-                        Text(ConversationPresentation.projectName(session.project, language: appLanguage))
-                        Text(verbatim: "·")
-                        Text(ConversationPresentation.relativeDate(session.lastActivity, language: appLanguage))
-                        Spacer(minLength: 0)
-                        if let hit { ConversationSearchCountLabel(hit: hit) }
-                    }
-                    .font(.ccLabel())
-                    .foregroundStyle(Theme.mutedForeground)
-                    .lineLimit(1)
-                    if let hit, !hit.snippet.isEmpty {
-                        ConversationPlainHighlightedText(value: hit.snippet, query: store.listQuery)
-                            .font(.ccCaption())
-                            .foregroundStyle(Theme.mutedForeground)
-                            .lineLimit(1)
-                    }
-                }
-                if selected {
-                    Image(systemName: "return")
-                        .font(.ccCaption(.medium))
-                        .foregroundStyle(Theme.accentText)
-                        .frame(width: 24, height: 28)
-                }
-            }
-            .padding(.horizontal, Space.md)
-            .padding(.vertical, Space.sm + 2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Theme.selection : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .accessibilityValue(hit.map { ConversationSearchCountPresentation.label(for: $0, language: appLanguage) } ?? "")
-        .accessibilityIdentifier("conversation.search.result.\(index)")
     }
 
     private var footer: some View {
@@ -375,6 +338,68 @@ final class ConversationSearchFocusSession: ObservableObject {
             window.makeFirstResponder(field)
             field.selectText(nil)
         }
+    }
+}
+
+/// A mounted result subscribes directly to hit refinements, independently of the reader's
+/// lazy content closure. Count changes update this view's values, never its stable identity.
+private struct ConversationSearchPaletteResultRow: View {
+    @ObservedObject var store: ConversationStore
+    @Environment(\.appLanguage) private var language
+
+    let snapshot: ConversationSearchRowSnapshot
+    let action: () -> Void
+
+    var body: some View {
+        let session = snapshot.metadata
+        let hit = store.contentHit(for: session)
+        let query = store.listQuery
+        let selected = snapshot.selected
+        return Button(action: action) {
+            HStack(alignment: .top, spacing: Space.md) {
+                AgentBrandMark(source: session.source, size: 22)
+                    .frame(width: 36, height: 36)
+                    .background(Theme.fillSubtle, in: RoundedRectangle(cornerRadius: Radius.button))
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    Text(session.title.isEmpty ? language.localized("无标题") : session.title)
+                        .font(.ccBody(.semibold))
+                        .foregroundStyle(Theme.foreground)
+                        .lineLimit(1)
+                    HStack(spacing: Space.xs + 2) {
+                        Text(ConversationPresentation.projectName(session.project, language: language))
+                        Text(verbatim: "·")
+                        Text(ConversationPresentation.relativeDate(session.lastActivity, language: language))
+                        Spacer(minLength: 0)
+                        if let hit { ConversationSearchCountLabel(hit: hit) }
+                    }
+                    .font(.ccLabel())
+                    .foregroundStyle(Theme.mutedForeground)
+                    .lineLimit(1)
+                    if let hit, !hit.snippet.isEmpty {
+                        ConversationPlainHighlightedText(value: hit.snippet, query: query)
+                            .font(.ccCaption())
+                            .foregroundStyle(Theme.mutedForeground)
+                            .lineLimit(1)
+                    }
+                }
+                if selected {
+                    Image(systemName: "return")
+                        .font(.ccCaption(.medium))
+                        .foregroundStyle(Theme.accentText)
+                        .frame(width: 24, height: 28)
+                }
+            }
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.sm + 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Theme.selection : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityValue(hit.map { ConversationSearchCountPresentation.label(for: $0, language: language) } ?? "")
+        .accessibilityIdentifier("conversation.search.result.\(snapshot.index)")
     }
 }
 

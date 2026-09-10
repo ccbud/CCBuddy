@@ -4,6 +4,67 @@ import XCTest
 
 @MainActor
 final class ConversationSourceSearchPresentationTests: XCTestCase {
+    func testMountedSearchRowInputsChangeForFinalCountsWithoutChangingIdentityOrMetadata() throws {
+        let sessions = (0..<4).map { index in
+            var metadata = Self.metadata()
+            metadata.file = URL(fileURLWithPath: "/tmp/source-row-\(index).jsonl")
+            metadata.id = "source-row-\(index)"
+            metadata.sessionID = metadata.id
+            return metadata
+        }
+        let initialHits = sessions.map { metadata in
+            var hit = Self.hit(metadata)
+            hit.isCountComplete = false
+            return hit
+        }
+        let completedHits = initialHits.enumerated().map { index, previous in
+            var hit = previous
+            hit.count = [3, 4, 7, 2][index]
+            hit.isCountComplete = true
+            return hit
+        }
+        func snapshots(_ hits: [HistorySearchHit]) -> [ConversationSearchRowSnapshot] {
+            ConversationSearchRowSnapshot.make(sessions: sessions,
+                hits: Dictionary(uniqueKeysWithValues: hits.map { (ConversationFilter.fileKey($0.file), $0) }),
+                query: "needle", selectedID: sessions[1].conversationListIdentity, language: .english)
+        }
+        let initial = snapshots(initialHits)
+        let completed = snapshots(completedHits)
+        XCTAssertEqual(initial.map(\.id), completed.map(\.id), "Counting must not remount the lazy rows")
+        XCTAssertEqual(initial.map(\.metadata), completed.map(\.metadata))
+        XCTAssertEqual(initial.map(\.selected), completed.map(\.selected))
+        for index in initial.indices {
+            XCTAssertNotEqual(initial[index], completed[index], "ForEach input must carry the changed hit")
+            let lowerBound = try XCTUnwrap(initial[index].hit)
+            let final = try XCTUnwrap(completed[index].hit)
+            XCTAssertEqual(ConversationSearchCountPresentation.label(for: lowerBound, language: .english), "At least 1 match")
+            XCTAssertEqual(ConversationSearchCountPresentation.label(for: final, language: .english),
+                "\([3, 4, 7, 2][index]) matches")
+            XCTAssertEqual(final.snippet, lowerBound.snippet)
+        }
+    }
+
+    func testRowSnapshotsIncludeQuerySelectionLanguageAndSnippetAsValuesNotIdentity() throws {
+        let metadata = Self.metadata()
+        let hit = Self.hit(metadata)
+        func snapshot(query: String = "needle", selected: Bool = false,
+                      language: AppLanguage = .english, value: HistorySearchHit? = nil) throws -> ConversationSearchRowSnapshot {
+            try XCTUnwrap(ConversationSearchRowSnapshot.make(sessions: [metadata],
+                hits: [metadata.conversationListIdentity: value ?? hit], query: query,
+                selectedID: selected ? metadata.conversationListIdentity : nil, language: language).first)
+        }
+        let initial = try snapshot()
+        var changedSnippet = hit
+        changedSnippet.snippet = "needle from a refreshed query snapshot"
+        let alternatives = try [snapshot(query: "NEEDLE"), snapshot(selected: true),
+            snapshot(language: AppLanguage.allCases.first { $0 != .english } ?? .english),
+            snapshot(value: changedSnippet)]
+        for changed in alternatives {
+            XCTAssertEqual(changed.id, initial.id)
+            XCTAssertNotEqual(changed, initial)
+        }
+    }
+
     func testSourceHitBecomesAVisibleRowBeforeTheCatalogContainsIt() {
         let metadata = Self.metadata()
         let hit = Self.hit(metadata)

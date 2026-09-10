@@ -96,6 +96,75 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertFalse(element("conversation.search.result.2").exists)
     }
 
+    func testVisibleProgressiveRowsUpdateEveryFinalCountWithoutRemountingPalette() throws {
+        let project = fixtureRoot.appendingPathComponent("history/projects/experience", isDirectory: true)
+        let query = "visiblecountneedle"
+        // Real production counting, not an injected delay: all three sources match immediately
+        // and each has a slow full count. One slow source followed by tiny sources can coalesce
+        // every final update into one UI transaction and fail to exercise mounted-row refresh.
+        try writeSession("count-slow", title: "Slow exact count", day: 6,
+            answer: String(repeating: query + " ", count: 1_000_000), to: project)
+        try writeSession("count-middle", title: "Second slow exact count", day: 5,
+            answer: String(repeating: query + " ", count: 1_000_001), to: project)
+        try writeSession("count-last", title: "Third slow exact count", day: 4,
+            answer: String(repeating: query + " ", count: 1_000_002), to: project)
+        let refresh = app.buttons["conversation.library.refresh"]
+        XCTAssertTrue(waitUntil { refresh.isEnabled })
+        refresh.click()
+        XCTAssertTrue(waitUntil(timeout: 20) {
+            self.text(self.element("conversation.list.count")) == "6 sessions"
+                && !self.element("conversation.indexing.progress").exists && refresh.isEnabled
+        }, "The immutable fixtures must finish catalog publication before the measured search")
+        XCTAssertFalse(element("conversation.indexing.incomplete").exists)
+        XCTAssertFalse(element("conversation.indexing.failure").exists)
+
+        openSearch(query: nil)
+        pasteReplacingFocusedText(query, in: app.textFields["conversation.search.palette.field"])
+        let rows = (0..<3).map { element("conversation.search.result.\($0)") }
+        let lowerBounds = Array(repeating: "At least 1 match", count: 3)
+        let expected = ["1000000 matches", "1000001 matches", "1000002 matches"]
+        var sawInitial = false
+        var sawMiddle = false
+        var sawFinal = false
+        var originalFrames: [CGRect]?
+        var observed: [[String]] = []
+        // Do not dismiss/reopen, scroll, or change selection: any of those can recreate a lazy
+        // row and hide the stale captured-input defect. One shared deadline preserves the 15s
+        // query budget. NSPredicate's coarser polling can miss the real split-completion window;
+        // the test process only pumps its own run loop, without delaying the production worker.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while ContinuousClock.now < deadline {
+            if rows.allSatisfy({ $0.exists && $0.isHittable }) {
+                let values = rows.map { $0.value as? String ?? "" }
+                if observed.last != values { observed.append(values) }
+                if values == lowerBounds {
+                    sawInitial = true
+                    if originalFrames == nil { originalFrames = rows.map(\.frame) }
+                }
+                if sawInitial, values == [expected[0], lowerBounds[1], lowerBounds[2]] {
+                    sawMiddle = true
+                }
+                if values == expected {
+                    sawFinal = true
+                    break
+                }
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.025))
+        }
+        XCTAssertTrue(sawInitial, "Three mounted rows must first show real lower bounds: \(observed)")
+        XCTAssertTrue(sawMiddle, "The first count must finish while both trailing rows are still lower bounds: \(observed)")
+        XCTAssertTrue(sawFinal, "Every same mounted row must reach its exact count within 15s: \(observed)")
+        let frames = try XCTUnwrap(originalFrames)
+        XCTAssertTrue(element("conversation.search.palette").exists)
+        XCTAssertFalse(element("conversation.search.partial.error").exists)
+        for (row, frame) in zip(rows, frames) {
+            // The activity line can disappear and move the whole result region. Relative
+            // positions must stay fixed; requiring its old absolute Y would test that banner.
+            XCTAssertEqual(row.frame.minY - rows[0].frame.minY,
+                frame.minY - frames[0].minY, accuracy: 1, "A count update must not change row order")
+        }
+    }
+
     func testSearchCanReachEveryMatchInALargeResultSet() throws {
         let project = fixtureRoot.appendingPathComponent("history/projects/experience", isDirectory: true)
         for index in 0..<96 {
@@ -650,20 +719,37 @@ final class NativeSearchExperienceUITests: XCTestCase {
         // room for a real two-axis shrink; demanding 1100 × 740 first exceeds that display.
         XCTAssertGreaterThan(original.width, 968, "The fresh window must allow a measurable width reduction: \(original)")
         XCTAssertGreaterThan(original.height, 648, "The fresh window must allow a measurable height reduction: \(original)")
-        // Drag straight-edge midpoints independently. A point two pixels inside the rounded
-        // bottom-right corner can be outside the actual window and never start live resizing.
+        // A display-wide window has its right resize band outside the desktop. A point just
+        // inside that edge hits the content instead (the CI event recording confirms this).
+        // Move the real title bar left first, then grab the exposed native resize band.
+        let titleBar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 12))
+        titleBar.press(forDuration: 0.2,
+                       thenDragTo: titleBar.withOffset(CGVector(dx: -48, dy: 0)))
+        XCTAssertTrue(waitUntil { window.frame.minX < original.minX - 24 },
+                      "Expose the native resize edge by moving the window: \(window.frame)")
+        XCTAssertEqual(window.frame.width, original.width, accuracy: 1)
+        XCTAssertEqual(window.frame.height, original.height, accuracy: 1)
         let rightEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-            .withOffset(CGVector(dx: -1, dy: 0))
+            .withOffset(CGVector(dx: 1, dy: 0))
+        let widthDelta = 940 - window.frame.width
         rightEdge.press(forDuration: 0.2, thenDragTo:
-            window.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
-                .withOffset(CGVector(dx: 939, dy: 0)))
+            rightEdge.withOffset(CGVector(dx: widthDelta, dy: 0)))
         XCTAssertTrue(waitUntil { abs(window.frame.width - 940) <= 8 },
                       "Dragging the right edge must resize the window: \(window.frame)")
+        // Return the shrunken window fully onto the desktop before checking compact controls.
+        let restoreTitleBar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 12))
+        let restoreOffset = original.minX - window.frame.minX
+        restoreTitleBar.press(forDuration: 0.2,
+                              thenDragTo: restoreTitleBar.withOffset(CGVector(dx: restoreOffset, dy: 0)))
+        XCTAssertTrue(waitUntil { abs(window.frame.minX - original.minX) <= 8 },
+                      "The compact window must be fully back on screen: \(window.frame)")
         let bottomEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
-            .withOffset(CGVector(dx: 0, dy: -1))
+            .withOffset(CGVector(dx: 0, dy: 1))
+        let heightDelta = 620 - window.frame.height
         bottomEdge.press(forDuration: 0.2, thenDragTo:
-            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-                .withOffset(CGVector(dx: 0, dy: 619)))
+            bottomEdge.withOffset(CGVector(dx: 0, dy: heightDelta)))
         XCTAssertTrue(waitUntil {
             abs(window.frame.width - 940) <= 8 && abs(window.frame.height - 620) <= 8
         }, "Compact layout must really run at the app's 940 × 620 minimum: \(window.frame)")

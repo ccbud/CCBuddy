@@ -397,6 +397,14 @@ paired-output owner's accessibility visibility and the 12,000-message search-fie
 query still failed. Packaging after that failed gate did not run. Earlier builds,
 manual checks and local compilation are not substitutes for exact-head CI.
 
+The subsequent `42c59c8` artifacts contain **1,044/1,044 distinct native tests**,
+including the same **11/11 installed-CLI/Bifrost E2Es**, with zero skips. Its UI
+result was **24/27**, not a pass: the paired-result mouse click missed the drawn
+button, the visible 12,000-message tail failed accessibility hit testing, and a
+display-wide window did not resize from a point inside its client edge. The next
+revision unifies real view geometry and exposes the resize band using a normal
+window move; complete exact-head CI remains required.
+
 The reader now owns an `NSScrollView`/`NSTableView` boundary. Only available rows
 host message content; logical offscreen accessibility rows retain source identities
 without loading text from accessibility getters. Real row/cell/hosting objects
@@ -406,6 +414,18 @@ prevents unrelated Store updates from rebuilding the transcript. Cached heights
 and source-row/pixel anchors preserve reading position through append and reflow;
 manual input revokes pending navigation. Disclosure choices survive row reuse
 without keeping offscreen transcript strings alive.
+Message identifiers belong to their real visible hosting views. These hosts and
+the actual Result button derive modern/legacy accessibility frames and activation
+points from the same live view bounds, including clipping after a scroll.
+
+Search palette and sidebar rows carry explicit metadata/hit/query/selection/language
+snapshots as their lazy-list inputs. Stable file identity is retained while counts,
+snippets and accessibility values update. Each mounted row also observes current
+Store refinements directly, independent of its surrounding lazy reader closures.
+This addresses real-history rows retaining
+their first lower bound until the palette was reopened. A three-source slow-count
+UI regression requires observed initial, intermediate and final values without
+reopening or scrolling the palette; real-history checks cover the original case.
 
 One responsive toolbar layout keeps a single native search editor through width
 changes instead of constructing two interactive fields in `ViewThatFits`. Local
@@ -429,7 +449,7 @@ checks were repeated successfully with this control.
 Local XCTest/IDE handshakes have failed before business cases started; these
 failures are not native test passes. A standalone diagnostic executed the 29 native
 reader/button test method bodies with their assertions; that is not an XCTest run.
-Exact-head CI requires at least 1,044 native cases and all 27 UI cases, including six
+Exact-head CI requires at least 1,048 native cases and all 28 UI cases, including six
 actual text-selection/copy operations, live following, replacement/cancellation,
 large-message tails and light/dark/compact presentation. The CI artifacts and PR
 record the executed final revision; this document does not substitute for them.

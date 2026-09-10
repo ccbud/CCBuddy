@@ -203,6 +203,7 @@ struct ConversationNativeTimelineView: NSViewRepresentable {
             let source = rowMap.sourceIndices.indices.contains(row) ? rowMap.sourceIndices[row] : nil
             cell.logicalIndex = row
             cell.sourceIndex = source
+            cell.host.messageIdentifier = source.map { "conversation.message.\($0)" }
             cell.projection = inputs.projection
             cell.contentGeneration = contentGeneration
             cell.onIntrinsicSizeInvalidated = { [weak self, weak cell] in
@@ -223,8 +224,6 @@ struct ConversationNativeTimelineView: NSViewRepresentable {
                 .padding(.bottom, Space.xxl)
                 .frame(maxWidth: Metrics.readingMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("conversation.message.\(index)")
                 .id(ContentIdentity(generation: contentGeneration, index: index)))
             } else {
                 content = AnyView(Color.clear.frame(height: 68).accessibilityHidden(true))

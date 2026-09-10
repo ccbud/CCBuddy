@@ -138,6 +138,10 @@ final class ConversationToolResultNativeButton: NSButton {
     override func accessibilityTitle() -> String? { resultLabel }
     override func accessibilityLabel() -> String? { resultLabel }
     override func accessibilityValue() -> Any? { expanded ? expandedValue : collapsedValue }
+    override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
+    override func accessibilityActivationPoint() -> NSPoint {
+        ConversationNativeReaderViewGeometry.activationPoint(of: self)
+    }
     override func accessibilityPerformPress() -> Bool {
         guard isEnabled else { return false }
         performClick(nil)
@@ -147,7 +151,8 @@ final class ConversationToolResultNativeButton: NSButton {
     @available(macOS, deprecated: 10.10)
     override func accessibilityAttributeNames() -> [NSAccessibility.Attribute] {
         var names = super.accessibilityAttributeNames()
-        for name: NSAccessibility.Attribute in [.title, .description, .value] where !names.contains(name) {
+        for name: NSAccessibility.Attribute in [.title, .description, .value, .position, .size]
+            where !names.contains(name) {
             names.append(name)
         }
         return names
@@ -158,6 +163,8 @@ final class ConversationToolResultNativeButton: NSButton {
         switch attribute {
         case .title, .description: return resultLabel
         case .value: return accessibilityValue()
+        case .position: return NSValue(point: accessibilityFrame().origin)
+        case .size: return NSValue(size: accessibilityFrame().size)
         default: return super.accessibilityAttributeValue(attribute)
         }
     }

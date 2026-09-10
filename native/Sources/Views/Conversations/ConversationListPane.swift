@@ -188,20 +188,21 @@ struct ConversationListPane: View {
                     showsProgress: store.isSearchingContent
                 )
             } else {
+                let rows = ConversationSearchRowSnapshot.make(sessions: sessions, hits: store.contentHits,
+                    query: store.listQuery, selectedID: store.selectedFile.map(ConversationFilter.fileKey),
+                    language: appLanguage)
                 ScrollView {
                     LazyVStack(spacing: Space.xs) {
-                        ForEach(sessions, id: \.conversationListIdentity) { session in
-                            ConversationSessionRow(
-                                metadata: session,
-                                selected: store.selectedFile.map(ConversationFilter.fileKey)
-                                    == ConversationFilter.fileKey(session.file),
-                                hit: store.contentHit(for: session),
-                                searchQuery: store.listQuery
+                        ForEach(rows) { row in
+                            ConversationObservedSessionRow(
+                                store: store,
+                                metadata: row.metadata,
+                                selected: row.selected
                             ) {
                                 Task {
                                     await store.select(
-                                        session,
-                                        searchHit: store.contentHit(for: session)
+                                        row.metadata,
+                                        searchHit: store.contentHit(for: row.metadata)
                                     )
                                 }
                             }
@@ -251,6 +252,21 @@ struct ConversationListPane: View {
                 if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
                 return lhs.id < rhs.id
             }
+    }
+}
+
+private struct ConversationObservedSessionRow: View {
+    @ObservedObject var store: ConversationStore
+
+    let metadata: HistorySessionMetadata
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        // Each mounted row observes refinements itself. Its refresh does not depend on a
+        // surrounding lazy container reevaluating a closure whose metadata is unchanged.
+        ConversationSessionRow(metadata: metadata, selected: selected,
+            hit: store.contentHit(for: metadata), searchQuery: store.listQuery, action: action)
     }
 }
 
