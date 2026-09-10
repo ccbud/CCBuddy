@@ -20,6 +20,62 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         XCTAssertEqual(last.accessibilityVisibleChildren()?.count, 0)
     }
 
+    @available(macOS, deprecated: 10.10)
+    func testPublishedLogicalAndRealRowsMatchStandardTableRowClassification() throws {
+        let fixture = try geometryTable(messageCount: 12_000, target: 11_999)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let standardWindow = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 480, height: 300),
+                                      styleMask: [.borderless], backing: .buffered, defer: false)
+        standardWindow.isReleasedWhenClosed = false
+        defer { standardWindow.close() }
+        let standardScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 300))
+        let standardTable = NSTableView(frame: NSRect(x: 0, y: 0, width: 480, height: 0))
+        standardTable.addTableColumn(NSTableColumn(identifier: .init("classification")))
+        standardTable.headerView = nil
+        standardTable.rowHeight = 100
+        let source = Source(count: 12_001)
+        standardTable.delegate = source
+        standardTable.dataSource = source
+        standardScroll.documentView = standardTable
+        standardWindow.contentView = standardScroll
+        standardTable.reloadData()
+        standardTable.scrollRowToVisible(11_999)
+        standardScroll.layoutSubtreeIfNeeded()
+        // AppKit's internal published row proxy need not formally adopt the Swift-imported
+        // NSAccessibilityRow protocol. Compare its public legacy attributes through NSArray.
+        let standardRows = try XCTUnwrap(standardTable.accessibilityAttributeValue(.rows) as? NSArray)
+        XCTAssertEqual(standardRows.count, 12_001)
+        let realizedBefore = fixture.source.viewRequests
+        let rows = table.accessibilityArrayAttributeValues(.rows, index: 0, maxCount: Int.max)
+        XCTAssertEqual(rows.count, 12_001)
+        XCTAssertTrue(rows[0] is ConversationNativeReaderLogicalRow)
+        XCTAssertTrue(rows[11_999] is ConversationNativeReaderRowView)
+        XCTAssertEqual(rows.filter {
+            ($0 as? any NSAccessibilityProtocol)?.accessibilitySubrole() == .tableRow
+        }.count, 12_001, "Every row, including offscreen rows, must retain the same table-row classification")
+        XCTAssertEqual(rows.filter {
+            ($0 as? NSObject)?.accessibilityAttributeValue(.subrole) as? String
+                == NSAccessibility.Subrole.tableRow.rawValue
+        }.count, 12_001)
+        for index in [0, 11_999] {
+            let standard = try XCTUnwrap(standardRows.object(at: index) as? NSObject)
+            let row = try XCTUnwrap(rows[index] as? any NSAccessibilityProtocol)
+            let legacy = try XCTUnwrap(rows[index] as? NSObject)
+            XCTAssertEqual(standard.accessibilityAttributeValue(.subrole) as? String,
+                           NSAccessibility.Subrole.tableRow.rawValue)
+            XCTAssertEqual(row.accessibilityRole()?.rawValue, standard.accessibilityAttributeValue(.role) as? String)
+            XCTAssertEqual(row.accessibilitySubrole()?.rawValue, standard.accessibilityAttributeValue(.subrole) as? String)
+            XCTAssertEqual(row.accessibilityRoleDescription(), standard.accessibilityAttributeValue(.roleDescription) as? String)
+            XCTAssertTrue(legacy.accessibilityAttributeNames().contains(.subrole))
+            XCTAssertEqual(legacy.accessibilityAttributeValue(.subrole) as? String, row.accessibilitySubrole()?.rawValue)
+            XCTAssertTrue((row.accessibilityWindow() as AnyObject?) === fixture.window)
+            XCTAssertTrue((row.accessibilityTopLevelUIElement() as AnyObject?) === fixture.window)
+        }
+        XCTAssertEqual(fixture.source.viewRequests, realizedBefore,
+                       "Comparing complete public row semantics cannot realize offscreen message content")
+    }
+
     func testLogicalRowAndCellStayTheSameObjectsAcrossAppendAndPairing() throws {
         let fixture = table(sourceIndices: [0, 2, 4])
         let original = try XCTUnwrap(fixture.table.accessibilityRows()?[2] as? ConversationNativeReaderLogicalRow)

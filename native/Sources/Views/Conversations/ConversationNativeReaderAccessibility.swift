@@ -21,6 +21,7 @@ enum ConversationNativeReaderLegacyAccessibility {
     static func value(_ object: any NSAccessibilityProtocol, attribute: NSAccessibility.Attribute) -> Value {
         switch attribute {
         case .role: return .handled(object.accessibilityRole()?.rawValue)
+        case .subrole: return .handled(object.accessibilitySubrole()?.rawValue)
         case .roleDescription: return .handled(object.accessibilityRoleDescription())
         case .parent: return .handled(object.accessibilityParent())
         case .children: return .handled(object.accessibilityChildren() ?? [])
@@ -325,7 +326,7 @@ final class ConversationNativeReaderRowView: NSTableRowView {
 
     @available(macOS, deprecated: 10.10)
     override func accessibilityAttributeNames() -> [NSAccessibility.Attribute] {
-        ConversationNativeReaderLegacyAccessibility.names(super.accessibilityAttributeNames(), extra: [.index])
+        ConversationNativeReaderLegacyAccessibility.names(super.accessibilityAttributeNames(), extra: [.index, .subrole])
     }
 
     @available(macOS, deprecated: 10.10)
@@ -365,6 +366,9 @@ final class ConversationNativeReaderRowView: NSTableRowView {
     var logicalIndex = -1
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .row }
+    // AppKit normally publishes a table-row proxy carrying this subrole. Our real row replaces
+    // that proxy, so it must preserve the same public classification as every logical row.
+    override func accessibilitySubrole() -> NSAccessibility.Subrole? { .tableRow }
     override func accessibilityHitTest(_ point: NSPoint) -> Any? {
         ConversationNativeReaderAccessibilityHitTesting.hitTest(in: self, point: point) {
             super.accessibilityHitTest(point)
@@ -687,7 +691,7 @@ final class ConversationNativeReaderLogicalRow: NSAccessibilityElement, NSAccess
 
     @available(macOS, deprecated: 10.10)
     override func accessibilityAttributeNames() -> [NSAccessibility.Attribute] {
-        ConversationNativeReaderLegacyAccessibility.names(super.accessibilityAttributeNames(), extra: [.index])
+        ConversationNativeReaderLegacyAccessibility.names(super.accessibilityAttributeNames(), extra: [.index, .subrole])
     }
 
     @available(macOS, deprecated: 10.10)
@@ -737,6 +741,7 @@ final class ConversationNativeReaderLogicalRow: NSAccessibilityElement, NSAccess
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .row }
+    override func accessibilitySubrole() -> NSAccessibility.Subrole? { .tableRow }
     override func accessibilityParent() -> Any? { table }
     override func accessibilityIndex() -> Int { index }
     override func accessibilityIdentifier() -> String {
