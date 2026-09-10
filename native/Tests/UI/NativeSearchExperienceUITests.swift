@@ -524,7 +524,14 @@ final class NativeSearchExperienceUITests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 15) {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
         })
-        let tail = element("conversation.message.11999")
+        // This fixture has one table row per source message; its footer follows all 12,000.
+        // Traverse direct native children instead of searching every earlier message subtree.
+        // The final identifier still requires the actual mounted host, not its logical row/cell.
+        // These public queries narrow traversal; they do not assume constant-time resolution.
+        let table = app.tables.matching(identifier: "conversation.timeline.table").firstMatch
+        let tailRow = table.children(matching: .tableRow).element(boundBy: 11_999)
+        let tail = tailRow.children(matching: .cell).firstMatch
+            .children(matching: .any).matching(identifier: "conversation.message.11999").firstMatch
         var tailSamples: [String] = []
         let tailIsReachable = waitUntil(timeout: 15) {
             let started = ProcessInfo.processInfo.systemUptime
@@ -537,9 +544,9 @@ final class NativeSearchExperienceUITests: XCTestCase {
         }
         XCTAssertTrue(tailIsReachable,
                       "The exact tail hit must be reachable without materializing every earlier row. AX samples: \(tailSamples)")
-        // SwiftUI can propagate the row identifier to several leaf AX elements rather
-        // than expose one parent container. Match the unique fixture prose directly.
-        let preparedTail = app.descendants(matching: .staticText)
+        // Require the unique fixture prose inside that same real host, not another message
+        // elsewhere in the application's accessibility tree.
+        let preparedTail = tail.descendants(matching: .staticText)
             .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
                                   "final searchable answer.", "final searchable answer.")).firstMatch
         XCTAssertTrue(preparedTail.waitForExistence(timeout: 10),

@@ -168,6 +168,7 @@ struct ConversationNativeTimelineView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
+            table?.scheduleAccessibilityLayoutChange()
             guard let cell = rowView.view(atColumn: 0) as? ConversationNativeReaderCell else { return }
             cell.onIntrinsicSizeInvalidated = nil
             if cell.canRetainTextFocus(projection: inputs?.projection, generation: contentGeneration,
@@ -178,6 +179,10 @@ struct ConversationNativeTimelineView: NSViewRepresentable {
                 cell.discardContent()
                 if reusableCells.count < 12 { reusableCells.append(cell) }
             }
+        }
+
+        func tableView(_ tableView: NSTableView, didAdd rowView: NSTableRowView, forRow row: Int) {
+            table?.scheduleAccessibilityLayoutChange()
         }
 
         func widthChanged() {
@@ -335,7 +340,7 @@ struct ConversationNativeTimelineView: NSViewRepresentable {
             guard let table, row >= 0, row < table.numberOfRows else { return }
             userDidScroll()
             table.scrollRowToVisible(row)
-            NSAccessibility.post(element: table, notification: .layoutChanged)
+            table.scheduleAccessibilityLayoutChange()
         }
 
         func userDidScroll() {

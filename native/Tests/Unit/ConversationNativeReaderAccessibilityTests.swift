@@ -73,6 +73,73 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         XCTAssertEqual(fixture.source.viewRequests, 0)
     }
 
+    func testBulkAXSlicesOnlyLookUpVisibleNativeRowsAndPreserveTheCompleteTable() throws {
+        var lookedUp: [Int] = []
+        let result = ConversationNativeReaderAccessibilityRowSlice.resolve(
+            count: 12_001, index: 0, maxCount: Int.max,
+            visibleRange: NSRange(location: 11_995, length: 6), logical: { "logical.\($0)" },
+            rendered: { row in
+                lookedUp.append(row)
+                return row == 11_999 ? "actual.11999" : nil
+            })
+        XCTAssertEqual(lookedUp, Array(11_995...12_000),
+                       "A full 12k snapshot must perform native lookups only for the visible intersection")
+        XCTAssertEqual(result.count, 12_001)
+        XCTAssertEqual(result[0] as? String, "logical.0")
+        XCTAssertEqual(result[11_998] as? String, "logical.11998")
+        XCTAssertEqual(result[11_999] as? String, "actual.11999")
+        XCTAssertEqual(result[12_000] as? String, "logical.12000")
+        lookedUp.removeAll()
+        _ = ConversationNativeReaderAccessibilityRowSlice.resolve(
+            count: 12_001, index: 2, maxCount: 1,
+            visibleRange: NSRange(location: NSNotFound, length: Int.max), logical: { $0 },
+            rendered: { lookedUp.append($0); return nil })
+        XCTAssertTrue(lookedUp.isEmpty)
+
+        let fixture = try geometryTable(messageCount: 12_000, target: 11_999)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let realizedBefore = fixture.source.viewRequests
+        let actualTail = try XCTUnwrap(table.rowView(atRow: 11_999, makeIfNecessary: false))
+        for attribute: NSAccessibility.Attribute in [.rows, .children, .childrenInNavigationOrderAttribute] {
+            let rows = table.accessibilityArrayAttributeValues(attribute, index: 0, maxCount: Int.max)
+            XCTAssertEqual(rows.count, 12_001)
+            XCTAssertTrue(rows[0] is ConversationNativeReaderLogicalRow)
+            XCTAssertTrue((rows[11_999] as AnyObject) === actualTail)
+        }
+        XCTAssertEqual(fixture.source.viewRequests, realizedBefore)
+    }
+
+    func testAXLayoutChangesPublishOnceForRealMembershipOrTopologyChangesOnly() throws {
+        let fixture = try geometryTable(messageCount: 12_000, target: 20)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        _ = table.publishAccessibilityLayoutChangeIfNeeded()
+        XCTAssertFalse(table.publishAccessibilityLayoutChangeIfNeeded())
+        table.scrollRowToVisible(11_999)
+        fixture.scroll.layoutSubtreeIfNeeded()
+        let realizedBeforePublish = fixture.source.viewRequests
+        XCTAssertTrue(table.publishAccessibilityLayoutChangeIfNeeded(),
+                      "Ordinary navigation replaces viewport logical rows with real mounted rows")
+        XCTAssertEqual(fixture.source.viewRequests, realizedBeforePublish,
+                       "Publishing an accessibility change cannot realize any additional row")
+        for _ in 0..<3 {
+            fixture.scroll.reflectScrolledClipView(fixture.scroll.contentView)
+            table.scheduleAccessibilityLayoutChange()
+        }
+        XCTAssertFalse(table.publishAccessibilityLayoutChangeIfNeeded(),
+                       "Repeated reflections/measurements with the same members must not cause notification loops")
+        XCTAssertEqual(table.accessibilityArrayAttributeCount(.rows), 12_001)
+        table.installLogicalRows(sourceIndices: Array(0..<12_000), resetting: true)
+        XCTAssertTrue(table.publishAccessibilityLayoutChangeIfNeeded(),
+                      "Replacing offscreen logical handles is a real tree change even if mounted rows stay the same")
+        XCTAssertFalse(table.publishAccessibilityLayoutChangeIfNeeded())
+        fixture.window.contentView = nil
+        table.scheduleAccessibilityLayoutChange()
+        XCTAssertFalse(table.publishAccessibilityLayoutChangeIfNeeded(),
+                       "Detached readers cannot publish stale changes to an external client")
+    }
+
     func testAvailableButOffscreenCellUsesTheSameLogicalParentAsTheTablesRows() throws {
         let fixture = table(sourceIndices: Array(0..<40))
         let available = try XCTUnwrap(fixture.table.view(atColumn: 0, row: 20, makeIfNecessary: true))

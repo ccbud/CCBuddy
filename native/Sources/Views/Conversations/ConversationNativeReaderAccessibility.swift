@@ -125,6 +125,22 @@ enum ConversationNativeReaderAccessibilityHitTesting {
     }
 }
 
+enum ConversationNativeReaderAccessibilityRowSlice {
+    static func resolve(count: Int, index: Int, maxCount: Int, visibleRange: NSRange,
+                        logical: (Int) -> Any, rendered: (Int) -> Any?) -> [Any] {
+        guard index >= 0, maxCount > 0, index < count else { return [] }
+        return (index..<(index + min(maxCount, count - index))).map { row in
+            if contains(row, in: visibleRange), let actual = rendered(row) { return actual }
+            return logical(row)
+        }
+    }
+
+    static func contains(_ row: Int, in range: NSRange) -> Bool {
+        range.location >= 0 && range.location != NSNotFound
+            && row >= range.location && row - range.location < range.length
+    }
+}
+
 final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReaderHostedContent> {
 
     // Keep the public legacy client path on the same objects as the modern AX tree.
@@ -422,11 +438,12 @@ final class ConversationNativeReaderTable: NSTableView {
                                                     index: Int, maxCount: Int) -> [Any] {
         if [.children, .rows, .childrenInNavigationOrderAttribute].contains(attribute) {
             guard index >= 0, maxCount > 0, index < logicalRows.count else { return [] }
-            return (index..<(index + min(maxCount, logicalRows.count - index))).map { row -> Any in
-                if rect(ofRow: row).intersects(visibleRect),
-                   let actual = rowView(atRow: row, makeIfNecessary: false) { return actual }
-                return logicalRows[row]
-            }
+            // A complete client snapshot still gets every logical row. Only the visible slice
+            // needs AppKit view lookup; do not perform row geometry work 12,000 times per page.
+            return ConversationNativeReaderAccessibilityRowSlice.resolve(
+                count: logicalRows.count, index: index, maxCount: maxCount,
+                visibleRange: rows(in: visibleRect), logical: { self.logicalRows[$0] },
+                rendered: { self.rowView(atRow: $0, makeIfNecessary: false) })
         }
         if [.visibleChildren, .visibleRows].contains(attribute) {
             return ConversationNativeReaderLegacyAccessibility.slice(accessibilityVisibleRows() ?? [],
@@ -446,8 +463,14 @@ final class ConversationNativeReaderTable: NSTableView {
     var rowActionTitle: ((Int?) -> String)?
     private var lastWidth: CGFloat = 0
     private var logicalRows: [ConversationNativeReaderLogicalRow] = []
+    private var accessibilityTopologyRevision: UInt64 = 0
+    private var publishedAccessibilityTopologyRevision: UInt64 = 0
+    private var publishedAccessibilityRows: [Int: ObjectIdentifier] = [:]
+    private var accessibilityLayoutChangeScheduled = false
 
     func installLogicalRows(sourceIndices: [Int], resetting: Bool) {
+        let topologyChanged = resetting || logicalRows.count != sourceIndices.count + 1
+            || zip(logicalRows, sourceIndices).contains { $0.sourceIndex != $1 }
         let retainedSources = Set(sourceIndices)
         for row in logicalRows where resetting || row.sourceIndex.map({ !retainedSources.contains($0) }) == true {
             row.table = nil
@@ -466,6 +489,48 @@ final class ConversationNativeReaderTable: NSTableView {
                                                                   sourceIndex: nil)
         bottom.index = sourceIndices.count
         logicalRows.append(bottom)
+        if topologyChanged { accessibilityTopologyRevision &+= 1 }
+        scheduleAccessibilityLayoutChange()
+    }
+
+    override func layout() {
+        super.layout()
+        scheduleAccessibilityLayoutChange()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            accessibilityLayoutChangeScheduled = false
+            publishedAccessibilityRows.removeAll()
+        } else {
+            scheduleAccessibilityLayoutChange()
+        }
+    }
+
+    func scheduleAccessibilityLayoutChange() {
+        guard window != nil, !accessibilityLayoutChangeScheduled else { return }
+        accessibilityLayoutChangeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.accessibilityLayoutChangeScheduled else { return }
+            self.publishAccessibilityLayoutChangeIfNeeded()
+        }
+    }
+
+    @discardableResult
+    func publishAccessibilityLayoutChangeIfNeeded() -> Bool {
+        accessibilityLayoutChangeScheduled = false
+        guard window != nil else { return false }
+        let mounted = mountedAccessibilityRows().mapValues { ObjectIdentifier($0) }
+        guard accessibilityTopologyRevision != publishedAccessibilityTopologyRevision
+                || mounted != publishedAccessibilityRows else { return false }
+        publishedAccessibilityTopologyRevision = accessibilityTopologyRevision
+        publishedAccessibilityRows = mounted
+        // Logical rows remain present while only viewport entries switch to real hosted rows.
+        // Tell external clients when that actual membership changes, including ordinary search
+        // navigation; unchanged measurements/scroll reflections must not create a notification loop.
+        NSAccessibility.post(element: self, notification: .layoutChanged)
+        return true
     }
 
     func synchronizeWidth(_ width: CGFloat) {
@@ -488,18 +553,25 @@ final class ConversationNativeReaderTable: NSTableView {
     override func accessibilityColumnCount() -> Int { 1 }
 
     override func accessibilityRows() -> [any NSAccessibilityRow]? {
-        var actual: [Int: ConversationNativeReaderRowView] = [:]
-        enumerateAvailableRowViews { view, index in
-            if let row = view as? ConversationNativeReaderRowView, self.rect(ofRow: index).intersects(self.visibleRect) {
-                actual[index] = row
-            }
-        }
+        let actual = mountedAccessibilityRows()
         // Do not collapse the table to its viewport. Offscreen logical row/cell elements remain
         // stable and expose an explicit action that scrolls their real content into existence.
         return logicalRows.enumerated().map { index, row -> any NSAccessibilityRow in
             if let visible = actual[index] { return visible }
             return row
         }
+    }
+
+    private func mountedAccessibilityRows() -> [Int: ConversationNativeReaderRowView] {
+        let visibleRange = rows(in: visibleRect)
+        var actual: [Int: ConversationNativeReaderRowView] = [:]
+        enumerateAvailableRowViews { view, index in
+            if let row = view as? ConversationNativeReaderRowView,
+               ConversationNativeReaderAccessibilityRowSlice.contains(index, in: visibleRange) {
+                actual[index] = row
+            }
+        }
+        return actual
     }
 
     override func accessibilityChildren() -> [Any]? { accessibilityRows() }
@@ -519,7 +591,7 @@ final class ConversationNativeReaderTable: NSTableView {
 
     override func accessibilityCell(forColumn column: Int, row: Int) -> Any? {
         guard column == 0, logicalRows.indices.contains(row) else { return nil }
-        if rect(ofRow: row).intersects(visibleRect),
+        if ConversationNativeReaderAccessibilityRowSlice.contains(row, in: rows(in: visibleRect)),
            let cell = view(atColumn: 0, row: row, makeIfNecessary: false) { return cell }
         return logicalRows[row].cell
     }
@@ -555,6 +627,11 @@ final class ConversationNativeReaderScrollView: NSScrollView {
     override func layout() {
         super.layout()
         (documentView as? ConversationNativeReaderTable)?.synchronizeWidth(contentSize.width)
+    }
+
+    override func reflectScrolledClipView(_ clipView: NSClipView) {
+        super.reflectScrolledClipView(clipView)
+        (documentView as? ConversationNativeReaderTable)?.scheduleAccessibilityLayoutChange()
     }
 
     private func routeNestedWheel(_ event: NSEvent) -> NSEvent? {

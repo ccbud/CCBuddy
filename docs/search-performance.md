@@ -412,6 +412,16 @@ compact resizing passed; tail accessibility hit testing and the slow-count test'
 initial observation window still failed. Packaging after that failed gate did not
 run. Local successful Release checks for that revision are separate evidence.
 
+The `1a1e53f` artifacts contain **1,051/1,051 distinct native tests**, including
+**11/11 installed-CLI/Bifrost E2Es**, and **27/28 UI tests passed**, with zero skips
+or expected failures. The slow-count regression passed. The remaining 12,000-message
+failure recorded a 14.233-second whole-app existence query returning false before
+hittability was evaluated, while the CI recording showed the complete tail visible.
+The next regression lookup uses the real table/row/cell/host hierarchy and retains
+the same timeouts, exact host identifier, hittability and prepared-text assertions;
+this does not claim constant-time XCTest snapshots. Complete exact-head CI is still
+required, and packaging did not run after that failed gate.
+
 The reader now owns an `NSScrollView`/`NSTableView` boundary. Only available rows
 host message content; logical offscreen accessibility rows retain source identities
 without loading text from accessibility getters. Real row/cell/hosting objects
@@ -429,6 +439,10 @@ same row/cell/host ancestry, preserving native controls and SwiftUI's own semant
 descendants. This avoids the default table resolver stopping at an outer cell
 while the identified message host is visible. Clipped/offscreen content is not
 made hittable, and querying a hit does not materialize offscreen logical rows.
+Paged row lookup computes the visible range once and only asks for already-rendered
+native rows in that range; all requested offscreen logical rows remain available.
+Actual mounted-row or logical-topology changes coalesce accessibility layout
+notifications. Unchanged layout does not repeatedly notify or move focus.
 
 Search palette and sidebar rows carry explicit metadata/hit/query/selection/language
 snapshots as their lazy-list inputs. Stable file identity is retained while counts,
@@ -461,7 +475,7 @@ checks were repeated successfully with this control.
 Local XCTest/IDE handshakes have failed before business cases started; these
 failures are not native test passes. A predecessor standalone diagnostic executed the 31 native
 reader/button test method bodies with their assertions; that is not an XCTest run.
-Exact-head CI requires at least 1,051 native cases and all 28 UI cases, including six
+Exact-head CI requires at least 1,053 native cases and all 28 UI cases, including six
 actual text-selection/copy operations, live following, replacement/cancellation,
 large-message tails and light/dark/compact presentation. The CI artifacts and PR
 record the executed final revision; this document does not substitute for them.
