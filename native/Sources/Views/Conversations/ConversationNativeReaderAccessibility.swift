@@ -142,6 +142,48 @@ enum ConversationNativeReaderAccessibilityRowSlice {
     }
 }
 
+/// AXChildren is the complete child collection; AppKit separately defines linear navigation
+/// order. Put real viewport rows first in that collection so bounded client snapshots can reach
+/// their rendered content, without removing or reparenting a single offscreen logical row.
+struct ConversationNativeReaderAccessibilityChildOrder {
+    let count: Int
+    let prioritized: [Int]
+
+    init(count: Int, prioritized: [Int]) {
+        self.count = max(0, count)
+        self.prioritized = Set(prioritized.filter { $0 >= 0 && $0 < count }).sorted()
+    }
+
+    func indices(index: Int, maxCount: Int) -> [Int] {
+        guard index >= 0, maxCount > 0, index < count else { return [] }
+        let end = index + min(maxCount, count - index)
+        var result: [Int] = []
+        result.reserveCapacity(end - index)
+        if index < prioritized.count {
+            result.append(contentsOf: prioritized[index..<min(end, prioritized.count)])
+        }
+        guard end > prioritized.count else { return result }
+        var row = max(index, prioritized.count) - prioritized.count
+        // Convert an ordinal in the non-prioritized suffix back to a document row.
+        for visible in prioritized {
+            if visible <= row { row += 1 } else { break }
+        }
+        let visible = Set(prioritized)
+        while result.count < end - index && row < count {
+            if !visible.contains(row) { result.append(row) }
+            row += 1
+        }
+        return result
+    }
+
+    func index(ofRow row: Int) -> Int {
+        guard row >= 0, row < count else { return NSNotFound }
+        if let index = prioritized.firstIndex(of: row) { return index }
+        let preceding = prioritized.prefix { $0 < row }.count
+        return row - preceding + prioritized.count
+    }
+}
+
 final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReaderHostedContent> {
 
     // Keep the public legacy client path on the same objects as the modern AX tree.
@@ -446,7 +488,8 @@ final class ConversationNativeReaderTable: NSTableView {
 
     override func accessibilityArrayAttributeValues(_ attribute: NSAccessibility.Attribute,
                                                     index: Int, maxCount: Int) -> [Any] {
-        if [.children, .rows, .childrenInNavigationOrderAttribute].contains(attribute) {
+        if attribute == .children { return accessibilityChildRows(index: index, maxCount: maxCount) }
+        if [.rows, .childrenInNavigationOrderAttribute].contains(attribute) {
             guard index >= 0, maxCount > 0, index < logicalRows.count else { return [] }
             // A complete client snapshot still gets every logical row. Only the visible slice
             // needs AppKit view lookup; do not perform row geometry work 12,000 times per page.
@@ -463,9 +506,16 @@ final class ConversationNativeReaderTable: NSTableView {
     }
 
     override func accessibilityIndex(ofChild child: Any) -> Int {
-        if let row = child as? ConversationNativeReaderRowView, row.table === self { return row.logicalIndex }
-        if let row = child as? ConversationNativeReaderLogicalRow, row.table === self { return row.index }
-        return NSNotFound
+        let index: Int
+        if let row = child as? ConversationNativeReaderRowView, row.table === self { index = row.logicalIndex }
+        else if let row = child as? ConversationNativeReaderLogicalRow, row.table === self { index = row.index }
+        else { return NSNotFound }
+        guard logicalRows.indices.contains(index) else { return NSNotFound }
+        let actual = mountedAccessibilityRows()
+        let published: AnyObject = (actual[index] as AnyObject?) ?? logicalRows[index]
+        guard published === (child as AnyObject) else { return NSNotFound }
+        return ConversationNativeReaderAccessibilityChildOrder(count: logicalRows.count,
+                                                               prioritized: Array(actual.keys)).index(ofRow: index)
     }
 
     var onWidthChanged: (() -> Void)?
@@ -584,8 +634,20 @@ final class ConversationNativeReaderTable: NSTableView {
         return actual
     }
 
-    override func accessibilityChildren() -> [Any]? { accessibilityRows() }
+    private func accessibilityChildRows(index: Int, maxCount: Int) -> [Any] {
+        guard index >= 0, maxCount > 0, index < logicalRows.count else { return [] }
+        let actual = mountedAccessibilityRows()
+        let order = ConversationNativeReaderAccessibilityChildOrder(count: logicalRows.count,
+                                                                    prioritized: Array(actual.keys))
+        return order.indices(index: index, maxCount: maxCount).map { row -> Any in
+            if let visible = actual[row] { return visible }
+            return logicalRows[row]
+        }
+    }
+
+    override func accessibilityChildren() -> [Any]? { accessibilityChildRows(index: 0, maxCount: Int.max) }
     override func accessibilityChildrenInNavigationOrder() -> [any NSAccessibilityElementProtocol]? {
+        // Unlike the child collection, AXRows and linear navigation always retain document order.
         accessibilityRows()?.map { $0 as any NSAccessibilityElementProtocol }
     }
 

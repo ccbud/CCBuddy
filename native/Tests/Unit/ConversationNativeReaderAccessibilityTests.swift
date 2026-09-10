@@ -157,13 +157,136 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
         let realizedBefore = fixture.source.viewRequests
         let actualTail = try XCTUnwrap(table.rowView(atRow: 11_999, makeIfNecessary: false))
-        for attribute: NSAccessibility.Attribute in [.rows, .children, .childrenInNavigationOrderAttribute] {
+        for attribute: NSAccessibility.Attribute in [.rows, .childrenInNavigationOrderAttribute] {
             let rows = table.accessibilityArrayAttributeValues(attribute, index: 0, maxCount: Int.max)
             XCTAssertEqual(rows.count, 12_001)
             XCTAssertTrue(rows[0] is ConversationNativeReaderLogicalRow)
             XCTAssertTrue((rows[11_999] as AnyObject) === actualTail)
         }
         XCTAssertEqual(fixture.source.viewRequests, realizedBefore)
+    }
+
+    func testAccessibilityChildPermutationIsCompleteBoundedAndInvertible() {
+        for count in [0, 1, 2, 257, 12_001] {
+            let requested = [-1, count, count - 1, count / 2, 0, 0]
+            let priority = Set(requested.filter { $0 >= 0 && $0 < count }).sorted()
+            let expected = priority + (0..<count).filter { !priority.contains($0) }
+            let order = ConversationNativeReaderAccessibilityChildOrder(count: count, prioritized: requested)
+            XCTAssertEqual(order.indices(index: 0, maxCount: Int.max), expected)
+            XCTAssertTrue(order.indices(index: -1, maxCount: 2).isEmpty)
+            XCTAssertTrue(order.indices(index: 0, maxCount: 0).isEmpty)
+            XCTAssertTrue(order.indices(index: count, maxCount: Int.max).isEmpty)
+            XCTAssertEqual(order.index(ofRow: -1), NSNotFound)
+            XCTAssertEqual(order.index(ofRow: count), NSNotFound)
+            for (index, row) in expected.enumerated() { XCTAssertEqual(order.index(ofRow: row), index) }
+            for index in [0, priority.count - 1, priority.count, count - 2] where index >= 0 && index < count {
+                XCTAssertEqual(order.indices(index: index, maxCount: 3),
+                               Array(expected[index..<min(count, index + 3)]))
+            }
+        }
+        let huge = ConversationNativeReaderAccessibilityChildOrder(count: Int.max,
+                                                                    prioritized: [0, Int.max - 2])
+        XCTAssertEqual(huge.indices(index: 0, maxCount: 3), [0, Int.max - 2, 1])
+        XCTAssertEqual(huge.indices(index: Int.max - 2, maxCount: Int.max), [Int.max - 3, Int.max - 1])
+        XCTAssertEqual(huge.index(ofRow: Int.max - 1), Int.max - 1)
+    }
+
+    @available(macOS, deprecated: 10.10)
+    func testViewportFirstChildrenPreserveEveryRowAndDocumentNavigation() throws {
+        let fixture = try geometryTable(messageCount: 12_000, target: 11_999)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let realized = fixture.source.viewRequests
+        let rows = table.accessibilityArrayAttributeValues(.rows, index: 0, maxCount: Int.max)
+        let children = try XCTUnwrap(table.accessibilityChildren())
+        let navigation = try XCTUnwrap(table.accessibilityChildrenInNavigationOrder())
+        let identities: ([Any]) -> [ObjectIdentifier] = { $0.map { ObjectIdentifier($0 as AnyObject) } }
+        XCTAssertEqual(rows.count, 12_001)
+        XCTAssertEqual(children.count, rows.count)
+        XCTAssertEqual(Set(identities(children)), Set(identities(rows)))
+        XCTAssertEqual(Set(identities(children)).count, 12_001, "No logical or rendered child can occur twice")
+        XCTAssertEqual(identities(navigation), identities(rows), "Linear navigation always keeps document order")
+        let visible = try XCTUnwrap(table.accessibilityVisibleRows())
+        XCTAssertEqual(identities(Array(children.prefix(visible.count))), identities(visible))
+        XCTAssertTrue(children[visible.count] is ConversationNativeReaderLogicalRow)
+        XCTAssertEqual((children[visible.count] as? ConversationNativeReaderLogicalRow)?.index, 0)
+        let tail = try XCTUnwrap(table.rowView(atRow: 11_999, makeIfNecessary: false))
+        XCTAssertTrue((rows[11_999] as AnyObject) === tail)
+        XCTAssertTrue(children.prefix(visible.count).contains { ($0 as AnyObject) === tail })
+        for (index, child) in children.enumerated() {
+            XCTAssertEqual(table.accessibilityIndex(ofChild: child), index)
+            XCTAssertTrue(((child as? any NSAccessibilityProtocol)?.accessibilityParent() as AnyObject?) === table)
+        }
+        for (index, row) in rows.enumerated() {
+            XCTAssertEqual((row as? any NSAccessibilityProtocol)?.accessibilityIndex(), index)
+        }
+        for attribute: NSAccessibility.Attribute in [.children, .rows, .childrenInNavigationOrderAttribute] {
+            let expected = attribute == .children ? children : rows
+            XCTAssertEqual(table.accessibilityArrayAttributeCount(attribute), expected.count)
+            let legacy = try XCTUnwrap(table.accessibilityAttributeValue(attribute) as? [Any])
+            XCTAssertEqual(identities(legacy), identities(expected))
+            for index in [0, visible.count - 1, visible.count, 999, 11_999, 12_001, Int.max] {
+                let page = table.accessibilityArrayAttributeValues(attribute, index: index, maxCount: 3)
+                let expectedPage = index < expected.count ? Array(expected[index..<min(expected.count, index + 3)]) : []
+                XCTAssertEqual(identities(page), identities(expectedPage))
+            }
+        }
+        XCTAssertTrue((table.accessibilityCell(forColumn: 0, row: 11_999) as AnyObject?) === fixture.cell)
+        XCTAssertEqual(fixture.source.viewRequests, realized, "Reordering complete AX collections cannot hydrate text")
+    }
+
+    func testThousandChildSnapshotCanReachTheActualTailWithoutPruningTheTable() throws {
+        let fixture = try geometryTable(messageCount: 12_000, target: 11_999)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let realized = fixture.source.viewRequests
+        let sourcePrefix = table.accessibilityArrayAttributeValues(.rows, index: 0, maxCount: 1000)
+        XCTAssertTrue(sourcePrefix.allSatisfy { $0 is ConversationNativeReaderLogicalRow })
+        var pending: [NSObject] = [table]
+        var seen = Set<ObjectIdentifier>()
+        var foundActualHost = false
+        while let node = pending.popLast() {
+            guard seen.insert(ObjectIdentifier(node)).inserted else { continue }
+            if node === fixture.cell.host { foundActualHost = true }
+            let children = node.accessibilityArrayAttributeValues(.children, index: 0, maxCount: 1000)
+            pending.append(contentsOf: children.compactMap { $0 as? NSObject })
+        }
+        XCTAssertTrue(foundActualHost, "A per-node 1000-child client limit must still reach the real visible 11999 host")
+        XCTAssertEqual(fixture.cell.host.messageIdentifier, "conversation.message.11999")
+        XCTAssertEqual(table.accessibilityArrayAttributeCount(.children), 12_001)
+        XCTAssertEqual(table.accessibilityArrayAttributeCount(.rows), 12_001)
+        XCTAssertEqual(table.accessibilityArrayAttributeCount(.childrenInNavigationOrderAttribute), 12_001)
+        XCTAssertEqual(fixture.source.viewRequests, realized)
+    }
+
+    func testChildPermutationTracksViewportAndRejectsReplacedHandles() throws {
+        let fixture = try geometryTable(messageCount: 12_000, target: 20)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let initial = try XCTUnwrap(table.accessibilityRows())
+        let stable = try XCTUnwrap(initial[0] as? ConversationNativeReaderLogicalRow)
+        let oldLogicalTail = try XCTUnwrap(initial[11_999] as? ConversationNativeReaderLogicalRow)
+        let oldActual = try XCTUnwrap(table.rowView(atRow: 20, makeIfNecessary: false))
+        _ = table.publishAccessibilityLayoutChangeIfNeeded()
+        table.scrollRowToVisible(11_999)
+        fixture.scroll.layoutSubtreeIfNeeded()
+        let realized = fixture.source.viewRequests
+        XCTAssertTrue(table.publishAccessibilityLayoutChangeIfNeeded())
+        XCTAssertFalse(table.publishAccessibilityLayoutChangeIfNeeded())
+        let current = try XCTUnwrap(table.accessibilityRows())
+        XCTAssertTrue((current[0] as AnyObject) === stable)
+        XCTAssertEqual(table.accessibilityIndex(ofChild: oldLogicalTail), NSNotFound,
+                       "The replaced logical handle is not a currently published child")
+        XCTAssertEqual(table.accessibilityIndex(ofChild: oldActual), NSNotFound,
+                       "An offscreen cached real row cannot masquerade as its current logical replacement")
+        let visibleCount = table.accessibilityVisibleRows()?.count ?? 0
+        XCTAssertEqual(table.accessibilityIndex(ofChild: stable), visibleCount)
+        XCTAssertEqual(stable.accessibilityIndex(), 0)
+        var reveals: [Int] = []
+        table.onAccessibilityReveal = { reveals.append($0) }
+        XCTAssertTrue(try XCTUnwrap(stable.accessibilityCustomActions()?.first?.handler)())
+        XCTAssertEqual(reveals, [0], "Reveal addresses the global document row, never the reordered child position")
+        XCTAssertEqual(fixture.source.viewRequests, realized)
     }
 
     func testAXLayoutChangesPublishOnceForRealMembershipOrTopologyChangesOnly() throws {

@@ -475,7 +475,7 @@ checks were repeated successfully with this control.
 Local XCTest/IDE handshakes have failed before business cases started; these
 failures are not native test passes. A predecessor standalone diagnostic executed the 31 native
 reader/button test method bodies with their assertions; that is not an XCTest run.
-Exact-head CI requires at least 1,055 native cases and all 28 UI cases, including six
+Exact-head CI requires at least 1,059 native cases and all 28 UI cases, including six
 actual text-selection/copy operations, live following, replacement/cancellation,
 large-message tails and light/dark/compact presentation. The CI artifacts and PR
 record the executed final revision; this document does not substitute for them.
@@ -484,6 +484,15 @@ Both the offscreen logical rows and rendered native rows publish AppKit's standa
 `AXRow` / `AXTableRow` classification through the modern and legacy accessibility
 interfaces. A real `NSTableView` comparison checks all 12,001 row classifications,
 visible and offscreen ancestry, and that this inspection realizes no extra views.
+The generic children collection prioritizes the actual mounted viewport rows,
+then includes every remaining logical row exactly once. The public AppKit
+contract allows `AXChildrenInNavigationOrder` to order that same complete set
+differently: navigation and `AXRows` therefore keep document order, global row
+indices, cell lookup and explicit offscreen reveal. Parent relationships are
+unchanged. Legacy child paging and child-index lookup use the generic children
+order, not the separate logical row index. This avoids hiding visible controls
+behind thousands of offscreen placeholders in clients taking a bounded prefix;
+it does not prune the accessibility tree or create substitute message controls.
 Reused message hosts store their identifiers through AppKit's native getter and
 setter, preserving the standard property-change notifications instead of exposing
 a second plain-variable identity. Regression coverage compares native view/hosting
