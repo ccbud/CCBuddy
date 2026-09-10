@@ -82,6 +82,49 @@ enum ConversationNativeReaderViewGeometry {
     }
 }
 
+/// Publishing children does not make NSView's default accessibility hit test descend into them.
+/// In particular NSTableView stops at its cell, outside the identified hosting view's ancestry.
+/// Follow the actual rendered view hit first, then let that native control/SwiftUI host resolve
+/// its own deepest accessibility descendant. No offscreen row lookup or realization is needed.
+enum ConversationNativeReaderAccessibilityHitTesting {
+    static func hitTest(in view: NSView, point: NSPoint, preservesVirtualDescendants: Bool = false,
+                        inherited: () -> Any?) -> Any? {
+        guard let window = view.window, !view.isHiddenOrHasHiddenAncestor else { return nil }
+        let windowPoint = window.convertPoint(fromScreen: point)
+        let localPoint = view.convert(windowPoint, from: nil)
+        guard view.bounds.intersection(view.visibleRect).contains(localPoint) else { return nil }
+        let inheritedHit = preservesVirtualDescendants ? inherited() : nil
+        if preservesVirtualDescendants, let inheritedHit,
+           (inheritedHit as AnyObject) !== view, isDescendant(inheritedHit, of: view) {
+            return inheritedHit
+        }
+        let hitPoint = view.superview?.convert(windowPoint, from: nil) ?? windowPoint
+        if let hit = view.hitTest(hitPoint), hit !== view, hit.isDescendant(of: view) {
+            var descendant: NSView? = hit
+            while let candidate = descendant, candidate !== view {
+                if candidate.isAccessibilityElement() {
+                    return candidate.accessibilityHitTest(point)
+                }
+                descendant = candidate.superview
+            }
+        }
+        // SwiftUI text can be a virtual AX descendant, with no separate NSView to hit. Preserve
+        // the hosting view's normal resolver rather than replacing its prose with a parent group.
+        return preservesVirtualDescendants ? inheritedHit : inherited()
+    }
+
+    static func isDescendant(_ element: Any, of ancestor: NSView) -> Bool {
+        var current: Any? = element
+        var seen = Set<ObjectIdentifier>()
+        while let node = current as? any NSAccessibilityElementProtocol {
+            if (node as AnyObject) === ancestor { return true }
+            guard seen.insert(ObjectIdentifier(node)).inserted else { return false }
+            current = node.accessibilityParent()
+        }
+        return false
+    }
+}
+
 final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReaderHostedContent> {
 
     // Keep the public legacy client path on the same objects as the modern AX tree.
@@ -133,6 +176,12 @@ final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReader
     override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
     override func accessibilityActivationPoint() -> NSPoint {
         ConversationNativeReaderViewGeometry.activationPoint(of: self)
+    }
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        ConversationNativeReaderAccessibilityHitTesting.hitTest(in: self, point: point,
+                                                               preservesVirtualDescendants: true) {
+            super.accessibilityHitTest(point)
+        }
     }
     override func invalidateIntrinsicContentSize() {
         super.invalidateIntrinsicContentSize()
@@ -230,6 +279,11 @@ final class ConversationNativeReaderCell: NSTableCellView {
     }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .cell }
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        ConversationNativeReaderAccessibilityHitTesting.hitTest(in: self, point: point) {
+            super.accessibilityHitTest(point)
+        }
+    }
     override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
     override func accessibilityRowIndexRange() -> NSRange { NSRange(location: logicalIndex, length: 1) }
     override func accessibilityColumnIndexRange() -> NSRange { NSRange(location: 0, length: 1) }
@@ -295,6 +349,11 @@ final class ConversationNativeReaderRowView: NSTableRowView {
     var logicalIndex = -1
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .row }
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        ConversationNativeReaderAccessibilityHitTesting.hitTest(in: self, point: point) {
+            super.accessibilityHitTest(point)
+        }
+    }
     override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
     override func accessibilityParent() -> Any? { table }
     override func accessibilityIndex() -> Int { logicalIndex }
@@ -420,6 +479,11 @@ final class ConversationNativeReaderTable: NSTableView {
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .table }
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        ConversationNativeReaderAccessibilityHitTesting.hitTest(in: self, point: point) {
+            super.accessibilityHitTest(point)
+        }
+    }
     override func accessibilityRowCount() -> Int { numberOfRows }
     override func accessibilityColumnCount() -> Int { 1 }
 
@@ -471,6 +535,12 @@ final class ConversationNativeReaderScrollView: NSScrollView {
     var onForwardedUserScroll: (() -> Void)?
     private var wheelMonitor: Any?
     private var routing = ConversationNestedScrollRouting()
+
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        ConversationNativeReaderAccessibilityHitTesting.hitTest(in: self, point: point) {
+            super.accessibilityHitTest(point)
+        }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

@@ -236,6 +236,100 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         XCTAssertEqual(host.accessibilityIdentifier(), "", "Reused hosts cannot retain a stale message identifier")
     }
 
+    func testAccessibilityHitTestingReachesActualHostedControlsAndTheirMessageAncestor() throws {
+        let fixture = try geometryTable(messageCount: 12_000, target: 11_999)
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let row = try XCTUnwrap(table.rowView(atRow: 11_999, makeIfNecessary: false))
+        let button = try XCTUnwrap(nativeResultButton(in: fixture.cell.host))
+        let point = button.accessibilityActivationPoint()
+        let roots: [NSView] = [fixture.scroll, table, row, fixture.cell, fixture.cell.host]
+        let realizedBefore = fixture.source.viewRequests
+        for root in roots {
+            let hit = try XCTUnwrap(root.accessibilityHitTest(point))
+            XCTAssertTrue(hasAccessibilityAncestor(hit, button),
+                          "The public AX hit must reach the real button or its native NSButtonCell, not stop at its table/cell/group")
+            XCTAssertTrue(hasAccessibilityAncestor(hit, fixture.cell.host),
+                          "The identified message host must be in the actual hit's ancestry")
+        }
+        XCTAssertEqual(table.accessibilityRows()?.count, 12_001)
+        XCTAssertEqual(fixture.source.viewRequests, realizedBefore,
+                       "Hit testing only visits already-rendered views; it must not realize offscreen rows")
+        XCTAssertLessThan(realizedBefore, 20)
+    }
+
+    func testAccessibilityHitTestingRejectsClippedAndOutsideViewportPoints() throws {
+        let fixture = try geometryTable()
+        defer { fixture.window.close() }
+        let table = try XCTUnwrap(fixture.scroll.documentView as? ConversationNativeReaderTable)
+        let button = try XCTUnwrap(nativeResultButton(in: fixture.cell.host))
+        let buttonInDocument = button.convert(button.bounds, to: table)
+        fixture.scroll.contentView.scroll(to: NSPoint(x: 0,
+            y: buttonInDocument.minY + buttonInDocument.height * 0.75))
+        fixture.scroll.layoutSubtreeIfNeeded()
+        let visiblePoint = button.accessibilityActivationPoint()
+        let visibleHit = try XCTUnwrap(fixture.scroll.accessibilityHitTest(visiblePoint))
+        XCTAssertTrue(hasAccessibilityAncestor(visibleHit, button))
+        let hiddenDocumentPoint = NSPoint(x: buttonInDocument.midX, y: buttonInDocument.minY + 1)
+        let hiddenPoint = fixture.window.convertPoint(toScreen: table.convert(hiddenDocumentPoint, to: nil))
+        let hiddenLocalPoint = button.convert(hiddenDocumentPoint, from: table)
+        XCTAssertFalse(button.bounds.intersection(button.visibleRect).contains(hiddenLocalPoint))
+        let outsidePoint = fixture.window.convertPoint(toScreen: NSPoint(x: -10, y: -10))
+        for point in [hiddenPoint, outsidePoint] {
+            XCTAssertNil(fixture.scroll.accessibilityHitTest(point))
+            XCTAssertNil(table.accessibilityHitTest(point))
+            XCTAssertNil(fixture.cell.accessibilityHitTest(point))
+            XCTAssertNil(fixture.cell.host.accessibilityHitTest(point))
+        }
+    }
+
+    func testAccessibilityHitTestingPreservesNativeSelectableTextAndMessagePadding() throws {
+        let fixture = try geometryTable()
+        defer { fixture.window.close() }
+        let host = fixture.cell.host
+        let prose = NSTextView(frame: NSRect(x: 16, y: 3, width: 240, height: 25))
+        prose.string = "Actual selectable native prose"
+        prose.isEditable = false
+        prose.isSelectable = true
+        host.addSubview(prose)
+        let prosePoint = fixture.window.convertPoint(toScreen: prose.convert(
+            NSPoint(x: prose.bounds.midX, y: prose.bounds.midY), to: nil))
+        for root in [fixture.scroll, host] {
+            let hit = try XCTUnwrap(root.accessibilityHitTest(prosePoint))
+            XCTAssertTrue(hasAccessibilityAncestor(hit, prose),
+                          "Selectable text must keep its real native AX element rather than be flattened into the message")
+            XCTAssertTrue(hasAccessibilityAncestor(hit, host))
+        }
+        let button = try XCTUnwrap(nativeResultButton(in: host))
+        var inheritedCalls = 0
+        let inheritedSemanticHit = ConversationNativeReaderAccessibilityHitTesting.hitTest(
+            in: host, point: button.accessibilityActivationPoint(), preservesVirtualDescendants: true
+        ) {
+            inheritedCalls += 1
+            // An actual mounted semantic text object stands in for the result of SwiftUI's
+            // native resolver. Its result takes precedence over a coarser NSView-only hit.
+            return prose
+        }
+        XCTAssertEqual(inheritedCalls, 1)
+        XCTAssertTrue((inheritedSemanticHit as AnyObject?) === prose)
+        let visible = host.bounds.intersection(host.visibleRect)
+        let paddingPoint = fixture.window.convertPoint(toScreen: host.convert(
+            NSPoint(x: visible.maxX - 2, y: visible.maxY - 2), to: nil))
+        let paddingHit = try XCTUnwrap(fixture.scroll.accessibilityHitTest(paddingPoint))
+        XCTAssertTrue(hasAccessibilityAncestor(paddingHit, host),
+                      "Actual message padding remains part of its real identified host, not its enclosing cell")
+    }
+
+    private func hasAccessibilityAncestor(_ element: Any, _ ancestor: NSView) -> Bool {
+        var current: Any? = element
+        for _ in 0..<30 {
+            guard let node = current as? any NSAccessibilityElementProtocol else { return false }
+            if (node as AnyObject) === ancestor { return true }
+            current = node.accessibilityParent()
+        }
+        return false
+    }
+
     private func nativeResultButton(in view: NSView) -> ConversationToolResultNativeButton? {
         if let button = view as? ConversationToolResultNativeButton { return button }
         for child in view.subviews {
@@ -244,7 +338,7 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         return nil
     }
 
-    private func geometryTable() throws -> (window: NSWindow, scroll: NSScrollView,
+    private func geometryTable(messageCount: Int = 40, target: Int = 20) throws -> (window: NSWindow, scroll: NSScrollView,
                                            cell: ConversationNativeReaderCell, source: GeometrySource) {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 480, height: 300),
@@ -258,16 +352,16 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         table.headerView = nil
         table.rowHeight = 100
         table.intercellSpacing = .zero
-        let source = GeometrySource()
+        let source = GeometrySource(count: messageCount)
         table.delegate = source
         table.dataSource = source
-        table.installLogicalRows(sourceIndices: Array(0..<40), resetting: true)
+        table.installLogicalRows(sourceIndices: Array(0..<messageCount), resetting: true)
         scroll.documentView = table
         window.contentView = scroll
         table.reloadData()
-        table.scrollRowToVisible(20)
+        table.scrollRowToVisible(target)
         scroll.layoutSubtreeIfNeeded()
-        let cell = try XCTUnwrap(table.view(atColumn: 0, row: 20, makeIfNecessary: false)
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: target, makeIfNecessary: false)
             as? ConversationNativeReaderCell)
         cell.layoutSubtreeIfNeeded()
         cell.host.layoutSubtreeIfNeeded()
@@ -275,8 +369,12 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
     }
 
     private final class GeometrySource: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-        func numberOfRows(in tableView: NSTableView) -> Int { 41 }
+        let count: Int
+        var viewRequests = 0
+        init(count: Int) { self.count = count }
+        func numberOfRows(in tableView: NSTableView) -> Int { count + 1 }
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            viewRequests += 1
             let cell = ConversationNativeReaderCell()
             cell.host.messageIdentifier = "conversation.message.\(row)"
             let content = VStack(alignment: .leading, spacing: 0) {

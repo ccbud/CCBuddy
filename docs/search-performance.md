@@ -405,6 +405,13 @@ display-wide window did not resize from a point inside its client edge. The next
 revision unifies real view geometry and exposes the resize band using a normal
 window move; complete exact-head CI remains required.
 
+The `069f4c8` artifacts contain **1,048/1,048 distinct native tests**, including
+**11/11 installed-CLI/Bifrost E2Es**, with zero skips or expected failures. All
+**28 UI methods** were discovered, with **26 passed**. Paired-result clicking and
+compact resizing passed; tail accessibility hit testing and the slow-count test's
+initial observation window still failed. Packaging after that failed gate did not
+run. Local successful Release checks for that revision are separate evidence.
+
 The reader now owns an `NSScrollView`/`NSTableView` boundary. Only available rows
 host message content; logical offscreen accessibility rows retain source identities
 without loading text from accessibility getters. Real row/cell/hosting objects
@@ -417,6 +424,11 @@ without keeping offscreen transcript strings alive.
 Message identifiers belong to their real visible hosting views. These hosts and
 the actual Result button derive modern/legacy accessibility frames and activation
 points from the same live view bounds, including clipping after a scroll.
+Public accessibility hit testing follows the actual rendered NSView hit into the
+same row/cell/host ancestry, preserving native controls and SwiftUI's own semantic
+descendants. This avoids the default table resolver stopping at an outer cell
+while the identified message host is visible. Clipped/offscreen content is not
+made hittable, and querying a hit does not materialize offscreen logical rows.
 
 Search palette and sidebar rows carry explicit metadata/hit/query/selection/language
 snapshots as their lazy-list inputs. Stable file identity is retained while counts,
@@ -447,9 +459,9 @@ remain local. The full-output, scroll-away, width-change and retained-disclosure
 checks were repeated successfully with this control.
 
 Local XCTest/IDE handshakes have failed before business cases started; these
-failures are not native test passes. A standalone diagnostic executed the 29 native
+failures are not native test passes. A predecessor standalone diagnostic executed the 31 native
 reader/button test method bodies with their assertions; that is not an XCTest run.
-Exact-head CI requires at least 1,048 native cases and all 28 UI cases, including six
+Exact-head CI requires at least 1,051 native cases and all 28 UI cases, including six
 actual text-selection/copy operations, live following, replacement/cancellation,
 large-message tails and light/dark/compact presentation. The CI artifacts and PR
 record the executed final revision; this document does not substitute for them.

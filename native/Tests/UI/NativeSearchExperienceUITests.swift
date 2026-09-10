@@ -100,10 +100,13 @@ final class NativeSearchExperienceUITests: XCTestCase {
         let project = fixtureRoot.appendingPathComponent("history/projects/experience", isDirectory: true)
         let query = "visiblecountneedle"
         // Real production counting, not an injected delay: all three sources match immediately
-        // and each has a slow full count. One slow source followed by tiny sources can coalesce
-        // every final update into one UI transaction and fail to exercise mounted-row refresh.
+        // and each has a slow full count. CI needs about two seconds after paste to confirm the
+        // field and sample all three AX values; a 1M first source can finish before that sample.
+        // A 3M first source preserves an observable all-lower-bound window, while the trailing
+        // 1M sources keep completion split across UI transactions. The 15s query budget stays
+        // unchanged; the approximately 95MB fixture is prepared before that measured search.
         try writeSession("count-slow", title: "Slow exact count", day: 6,
-            answer: String(repeating: query + " ", count: 1_000_000), to: project)
+            answer: String(repeating: query + " ", count: 3_000_000), to: project)
         try writeSession("count-middle", title: "Second slow exact count", day: 5,
             answer: String(repeating: query + " ", count: 1_000_001), to: project)
         try writeSession("count-last", title: "Third slow exact count", day: 4,
@@ -122,7 +125,7 @@ final class NativeSearchExperienceUITests: XCTestCase {
         pasteReplacingFocusedText(query, in: app.textFields["conversation.search.palette.field"])
         let rows = (0..<3).map { element("conversation.search.result.\($0)") }
         let lowerBounds = Array(repeating: "At least 1 match", count: 3)
-        let expected = ["1000000 matches", "1000001 matches", "1000002 matches"]
+        let expected = ["3000000 matches", "1000001 matches", "1000002 matches"]
         var sawInitial = false
         var sawMiddle = false
         var sawFinal = false
@@ -522,8 +525,18 @@ final class NativeSearchExperienceUITests: XCTestCase {
             self.text(self.element("conversation.detail.search.count")).contains("1/1")
         })
         let tail = element("conversation.message.11999")
-        XCTAssertTrue(waitUntil(timeout: 15) { tail.exists && tail.isHittable },
-                      "The exact tail hit must be reachable without materializing every earlier row")
+        var tailSamples: [String] = []
+        let tailIsReachable = waitUntil(timeout: 15) {
+            let started = ProcessInfo.processInfo.systemUptime
+            let exists = tail.exists
+            let existenceDuration = ProcessInfo.processInfo.systemUptime - started
+            let hittable = exists && tail.isHittable
+            let totalDuration = ProcessInfo.processInfo.systemUptime - started
+            tailSamples.append("exists=\(exists), hittable=\(hittable), existsSeconds=\(existenceDuration), totalSeconds=\(totalDuration)")
+            return hittable
+        }
+        XCTAssertTrue(tailIsReachable,
+                      "The exact tail hit must be reachable without materializing every earlier row. AX samples: \(tailSamples)")
         // SwiftUI can propagate the row identifier to several leaf AX elements rather
         // than expose one parent container. Match the unique fixture prose directly.
         let preparedTail = app.descendants(matching: .staticText)
