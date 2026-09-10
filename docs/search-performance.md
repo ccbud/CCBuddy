@@ -475,7 +475,7 @@ checks were repeated successfully with this control.
 Local XCTest/IDE handshakes have failed before business cases started; these
 failures are not native test passes. A predecessor standalone diagnostic executed the 31 native
 reader/button test method bodies with their assertions; that is not an XCTest run.
-Exact-head CI requires at least 1,054 native cases and all 28 UI cases, including six
+Exact-head CI requires at least 1,055 native cases and all 28 UI cases, including six
 actual text-selection/copy operations, live following, replacement/cancellation,
 large-message tails and light/dark/compact presentation. The CI artifacts and PR
 record the executed final revision; this document does not substitute for them.
@@ -484,8 +484,13 @@ Both the offscreen logical rows and rendered native rows publish AppKit's standa
 `AXRow` / `AXTableRow` classification through the modern and legacy accessibility
 interfaces. A real `NSTableView` comparison checks all 12,001 row classifications,
 visible and offscreen ancestry, and that this inspection realizes no extra views.
-Failed long-tail UI assertions retain only the samples already collected by the
-original predicate; failure reporting issues no additional accessibility queries.
+Reused message hosts store their identifiers through AppKit's native getter and
+setter, preserving the standard property-change notifications instead of exposing
+a second plain-variable identity. Regression coverage compares native view/hosting
+view transitions through a distant message and clearing with modern/legacy reads.
+Failed long-tail UI assertions first retain the original predicate samples, then
+may collect one application snapshot for bounded local membership diagnostics.
+That diagnostic never retries a query or changes the completed predicate result.
 The 12,000-message UI case also runs as an early, separately reported preflight.
 Passing it never substitutes for the complete native and UI suites below.
 

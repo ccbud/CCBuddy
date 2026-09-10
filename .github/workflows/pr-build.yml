@@ -171,7 +171,7 @@ jobs:
             --path "$result" --compact > "$summary"
           xcrun xcresulttool get test-results tests \
             --path "$result" --compact > "$tests"
-          jq -e '.result == "Passed" and .totalTestCount >= 1054
+          jq -e '.result == "Passed" and .totalTestCount >= 1055
             and .passedTests == .totalTestCount and .failedTests == 0
             and .skippedTests == 0 and .expectedFailures == 0' "$summary"
           jq -e '[.. | objects | select(.nodeType == "Test Case")

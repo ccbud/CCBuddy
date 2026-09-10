@@ -541,12 +541,13 @@ final class NativeSearchExperienceUITests: XCTestCase {
             return hittable
         }
         if !tailIsReachable {
-            // Preserve the completed predicate's samples before asserting. A fresh AX query
-            // here can itself time out and obscure the original failure on a large transcript.
+            // Preserve the completed predicate's samples before any later diagnostic snapshot,
+            // whose own failure must not lose this evidence from the original 15-second budget.
             let attachment = XCTAttachment(string: tailSamples.joined(separator: "\n"))
             attachment.name = "twelve-thousand-tail-accessibility-failure"
             attachment.lifetime = .keepAlways
             add(attachment)
+            keepFailedTailApplicationSnapshot()
         }
         XCTAssertTrue(tailIsReachable,
                       "The exact tail hit must be reachable without materializing every earlier row. AX samples: \(tailSamples)")
@@ -821,6 +822,103 @@ final class NativeSearchExperienceUITests: XCTestCase {
     private func keepScreenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func keepFailedTailApplicationSnapshot() {
+        // The failure samples are already attached. Resolve the application itself exactly
+        // once, without a query/firstMatch/exists probe; all remaining work is on this value.
+        // A synchronous public snapshot has no configurable hard deadline and may throw.
+        let started = ProcessInfo.processInfo.systemUptime
+        var report: [String] = []
+        do {
+            let snapshot = try app.snapshot()
+            report.append("snapshot.seconds=\(ProcessInfo.processInfo.systemUptime - started)")
+            var pending: [(node: any XCUIElementSnapshot, depth: Int, ancestors: String)] = [(snapshot, 0, "root")]
+            var visited = Set<ObjectIdentifier>()
+            var roleCounts: [String: Int] = [:]
+            var messageIndices: [Int] = []
+            var rowIndices: [Int] = []
+            var cellIndices: [Int] = []
+            var knownTailNodes: [String] = []
+            var phraseNodes: [String] = []
+            var phraseCount = 0
+            var tableDetails: [String] = []
+            var maximumDepth = 0
+            var repeatedReferences = 0
+            var tableCount = 0
+            let nodeLimit = 100_000
+            func summary(_ node: any XCUIElementSnapshot) -> String {
+                let identifier = node.identifier.hasPrefix("conversation.") ? node.identifier : "<other>"
+                return "type=\(node.elementType.rawValue), id=\(identifier)"
+            }
+            func ends(_ values: [Int]) -> String {
+                let sorted = values.sorted()
+                return "count=\(sorted.count), unique=\(Set(sorted).count), first=\(Array(sorted.prefix(12))), last=\(Array(sorted.suffix(12))), contains11999=\(sorted.contains(11_999))"
+            }
+            while !pending.isEmpty, visited.count < nodeLimit {
+                let entry = pending.removeLast()
+                guard visited.insert(ObjectIdentifier(entry.node as AnyObject)).inserted else {
+                    repeatedReferences += 1
+                    continue
+                }
+                let node = entry.node
+                let children = node.children
+                let identifier = node.identifier
+                let path = "\(entry.ancestors) > {\(summary(node))}"
+                maximumDepth = max(maximumDepth, entry.depth)
+                roleCounts[String(node.elementType.rawValue), default: 0] += 1
+                let phraseInLabel = node.label.contains("final searchable answer.")
+                let phraseInValue = (node.value as? String)?.contains("final searchable answer.") == true
+                if phraseInLabel || phraseInValue {
+                    phraseCount += 1
+                    if phraseNodes.count < 12 {
+                        phraseNodes.append("type=\(node.elementType.rawValue), depth=\(entry.depth), labelMatch=\(phraseInLabel), valueMatch=\(phraseInValue), frame=\(node.frame), path=\(path)")
+                    }
+                }
+                if identifier.hasPrefix("conversation.message."),
+                   let index = Int(identifier.dropFirst("conversation.message.".count)) {
+                    messageIndices.append(index)
+                }
+                if identifier.hasPrefix("conversation.timeline.row.") {
+                    let suffix = String(identifier.dropFirst("conversation.timeline.row.".count))
+                    if let index = Int(suffix) { rowIndices.append(index) }
+                    if suffix.hasSuffix(".cell"), let index = Int(suffix.dropLast(".cell".count)) {
+                        cellIndices.append(index)
+                    }
+                }
+                if ["conversation.message.11999", "conversation.timeline.row.11999",
+                    "conversation.timeline.row.11999.cell"].contains(identifier), knownTailNodes.count < 12 {
+                    knownTailNodes.append("\(summary(node)), depth=\(entry.depth), path=\(path), frame=\(node.frame), children=\(children.count)")
+                }
+                if node.elementType == .table || identifier == "conversation.timeline.table" {
+                    tableCount += 1
+                    if tableDetails.count < 8 {
+                        let childTypes = Dictionary(grouping: children, by: { String($0.elementType.rawValue) })
+                            .mapValues(\.count)
+                        tableDetails.append("\(summary(node)), depth=\(entry.depth), directChildren=\(children.count), childTypes=\(childTypes), first=\(children.prefix(3).map(summary)), last=\(children.suffix(3).map(summary))")
+                    }
+                }
+                pending.append(contentsOf: children.reversed().map { ($0, entry.depth + 1, path) })
+            }
+            report.append("walk.nodes=\(visited.count), maxDepth=\(maximumDepth), repeatedReferences=\(repeatedReferences), nodeLimit=\(nodeLimit), nodeBudgetExhausted=\(!pending.isEmpty)")
+            report.append("walk.roleCounts=\(roleCounts)")
+            report.append("messageIndices: \(ends(messageIndices))")
+            report.append("logicalRowIndices: \(ends(rowIndices))")
+            report.append("logicalCellIndices: \(ends(cellIndices))")
+            report.append("knownTailNodes=\(knownTailNodes)")
+            report.append("knownPhrase.count=\(phraseCount), details=\(phraseNodes)")
+            report.append("tables.count=\(tableCount), details=\(tableDetails)")
+        } catch {
+            let failure = error as NSError
+            report.append("snapshot.error.domain=\(failure.domain), code=\(failure.code)")
+        }
+        report.append("diagnostic.totalSeconds=\(ProcessInfo.processInfo.systemUptime - started)")
+        // Identifier/geometry summaries from this synthetic fixture only: no labels, values,
+        // transcript text, full debugDescription, or remote child/property queries are emitted.
+        let attachment = XCTAttachment(string: report.joined(separator: "\n"))
+        attachment.name = "twelve-thousand-tail-application-snapshot"
         attachment.lifetime = .keepAlways
         add(attachment)
     }

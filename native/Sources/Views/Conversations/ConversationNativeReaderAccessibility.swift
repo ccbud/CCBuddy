@@ -186,10 +186,16 @@ final class ConversationNativeReaderHost: NSHostingView<ConversationNativeReader
     }
 
     var onIntrinsicSizeInvalidated: (() -> Void)?
-    var messageIdentifier: String?
+    // Reused hosts must update AppKit's observable identifier storage, not a separate backing
+    // property hidden behind a getter override. The legacy bridge reads this same native value.
+    var messageIdentifier: String? {
+        // NSAccessibilityElementProtocol also declares this getter nonnull. Use the full
+        // protocol's nullable declaration so clearing the native value does not become "".
+        get { (self as any NSAccessibilityProtocol).accessibilityIdentifier() }
+        set { setAccessibilityIdentifier(newValue) }
+    }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
-    override func accessibilityIdentifier() -> String { messageIdentifier ?? "" }
     override func accessibilityFrame() -> NSRect { ConversationNativeReaderViewGeometry.frame(of: self) }
     override func accessibilityActivationPoint() -> NSPoint {
         ConversationNativeReaderViewGeometry.activationPoint(of: self)

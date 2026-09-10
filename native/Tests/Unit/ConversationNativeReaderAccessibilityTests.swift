@@ -236,10 +236,63 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         cell.onIntrinsicSizeInvalidated = {}
         cell.discardContent()
         XCTAssertNil(cell.sourceIndex)
-        XCTAssertEqual(cell.host.accessibilityIdentifier(), "")
+        XCTAssertNil((cell.host as any NSAccessibilityProtocol).accessibilityIdentifier())
         XCTAssertFalse(cell.retainsTextFocus)
         XCTAssertNil(cell.onWillDetach)
         XCTAssertNil(cell.onIntrinsicSizeInvalidated)
+    }
+
+    @available(macOS, deprecated: 10.10)
+    func testReusedHostIdentifierMatchesNativeStorageAndObservableChanges() {
+        let cell = ConversationNativeReaderCell()
+        let originalHost = cell.host
+        let nativeView = NSView()
+        let nativeHost = NSHostingView(rootView: Text("Native identifier reference"))
+        let initial = "conversation.message.0"
+        cell.host.messageIdentifier = initial
+        nativeView.setAccessibilityIdentifier(initial)
+        nativeHost.setAccessibilityIdentifier(initial)
+        let views: [NSView] = [nativeView, nativeHost, cell.host]
+        let recorders = views.map { view in
+            let recorder = ConversationNativeReaderIdentifierRecorder()
+            view.addObserver(recorder, forKeyPath: "accessibilityIdentifier", options: [.old, .new], context: nil)
+            return recorder
+        }
+        defer {
+            for (view, recorder) in zip(views, recorders) {
+                view.removeObserver(recorder, forKeyPath: "accessibilityIdentifier")
+            }
+        }
+        let identifiers: [String?] = ["conversation.message.11999", nil, "conversation.message.7", nil]
+        for identifier in identifiers {
+            nativeView.setAccessibilityIdentifier(identifier)
+            nativeHost.setAccessibilityIdentifier(identifier)
+            if let identifier {
+                cell.host.messageIdentifier = identifier
+            } else {
+                cell.discardContent()
+            }
+            XCTAssertTrue(cell.host === originalHost, "Cell reuse must update the existing real host")
+            XCTAssertEqual(cell.host.messageIdentifier, identifier)
+            XCTAssertEqual((cell.host as any NSAccessibilityProtocol).accessibilityIdentifier(),
+                           (nativeView as any NSAccessibilityProtocol).accessibilityIdentifier())
+            XCTAssertEqual((cell.host as any NSAccessibilityProtocol).accessibilityIdentifier(),
+                           (nativeHost as any NSAccessibilityProtocol).accessibilityIdentifier())
+            // Stock AppKit's direct deprecated getter need not bridge its modern identifier.
+            // Our explicit compatibility bridge must return that same native, current value.
+            XCTAssertEqual(cell.host.accessibilityAttributeValue(.identifier) as? String, identifier)
+        }
+        let directNativeIdentifier = "conversation.message.42"
+        for view in views { view.setAccessibilityIdentifier(directNativeIdentifier) }
+        XCTAssertEqual(cell.host.messageIdentifier, directNativeIdentifier,
+                       "Native setters and the compatibility property cannot have separate storage")
+        XCTAssertEqual(cell.host.accessibilityAttributeValue(.identifier) as? String, directNativeIdentifier)
+        let expectedOld: [String?] = [initial, "conversation.message.11999", nil, "conversation.message.7", nil]
+        let expectedNew = identifiers + [directNativeIdentifier]
+        for recorder in recorders {
+            XCTAssertEqual(recorder.oldValues, expectedOld)
+            XCTAssertEqual(recorder.newValues, expectedNew)
+        }
     }
 
     func testResultDisclosureIsOneRealNativeButtonWithItsVisibleTitleAndState() {
@@ -356,7 +409,8 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
         // a direct in-process getter may be empty even for a standard ordered NSHostingView.
         // The UI tests require the real Result control and exact prose through that external tree.
         fixture.cell.discardContent()
-        XCTAssertEqual(host.accessibilityIdentifier(), "", "Reused hosts cannot retain a stale message identifier")
+        XCTAssertNil((host as any NSAccessibilityProtocol).accessibilityIdentifier(),
+                     "Reused hosts cannot retain a stale message identifier")
     }
 
     func testAccessibilityHitTestingReachesActualHostedControlsAndTheirMessageAncestor() throws {
@@ -547,5 +601,16 @@ final class ConversationNativeReaderAccessibilityTests: XCTestCase {
             viewRequests += 1
             return NSView()
         }
+    }
+}
+
+private final class ConversationNativeReaderIdentifierRecorder: NSObject {
+    var oldValues: [String?] = []
+    var newValues: [String?] = []
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        oldValues.append(change?[.oldKey] as? String)
+        newValues.append(change?[.newKey] as? String)
     }
 }
