@@ -79,6 +79,14 @@ xcodebuild -project native/CCBuddy.xcodeproj -scheme CCBuddy \
 
 The helper scripts build for the current Mac; release builds bundle both arm64 and x86_64. No local tgrep checkout is required: Cargo pins the upstream revision and dependency lockfile.
 
+### Releases
+
+Every push to `main`, including PR merges and direct pushes, starts the official release pipeline. No manual tag is needed. The workflow creates an immutable snapshot of that exact source commit with only synchronized version-field changes, allocates the next patch version, and pushes an annotated tag. It does not write bot version commits back to `main`.
+
+The same workflow then runs shared and native unit/UI tests, builds the universal app, signs it with Developer ID, notarizes it with Apple, and publishes a complete GitHub Release containing the DMG, updater archive, signature, and `latest.json`. Failed checks leave the release unpublished; rerun the failed Actions jobs to resume.
+
+Retries reuse the source commit's existing tag. Consecutive pushes queue serially (GitHub permits up to 100 pending runs); a late older source cannot replace the latest updater channel or Homebrew cask. Explicit `vX.Y.Z` tag pushes remain supported. See the [release workflow](.github/workflows/release.yml).
+
 See the [native build and test guide](native/README.md) for universal builds, isolated unit/integration tests and UI tests with a separate bundle identifier. The [architecture guide](docs/architecture.md) maps the native modules, data flow and compatibility boundaries.
 
 ## License

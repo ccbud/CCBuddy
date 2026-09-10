@@ -79,6 +79,14 @@ xcodebuild -project native/CCBuddy.xcodeproj -scheme CCBuddy \
 
 辅助脚本默认构建当前 Mac 的架构，发布构建同时打包 arm64 与 x86_64。无需本机存在 tgrep 源码目录，Cargo 会使用固定的上游版本与依赖锁文件。
 
+### 正式发布
+
+任何推送到 `main` 的提交（包括 PR 合并与直接 push）都会触发正式发布流水线，不再需要手动打标签。流水线为该次提交创建只修改版本字段的不可变发布快照，自动分配下一个补丁版本，并生成 annotated tag；`main` 本身不会被机器人版本提交反复改写。
+
+同一次工作流随后完成共享测试、原生单元/UI 测试、Universal 打包、Developer ID 签名与 Apple 公证，再一次性公开包含 DMG、更新压缩包、签名和 `latest.json` 的 GitHub Release。测试通过但发布阶段失败时不会提前公开不完整产物；在 Actions 重跑失败任务即可继续。
+
+重复执行同一提交会复用原标签，不创建额外版本。连续推送进入串行队列（GitHub 上限为 100 个等待任务）；较旧提交即使晚完成也不会覆盖最新更新通道或 Homebrew。手动推送合法的 `vX.Y.Z` 标签仍受支持。[发布工作流](.github/workflows/release.yml)
+
 Universal 构建、隔离单元/集成测试，以及使用独立 Bundle ID 运行 UI 测试的命令见[原生开发指南](native/README.md)。[架构说明](docs/architecture.md)介绍原生模块、数据流与兼容边界。
 
 ## 许可证

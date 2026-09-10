@@ -2,66 +2,125 @@ name: Native macOS Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
 
 concurrency:
-  group: native-release-${{ github.ref }}
+  # Keep every queued main push and serialize version allocation/publication.
+  group: native-release
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Verify tag, ancestry, version, and shared tests
+  prepare:
+    name: Prepare the main push or explicit version tag
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     outputs:
-      version: ${{ steps.tag.outputs.version }}
+      should_release: ${{ steps.version.outputs.should_release == 'true' && steps.existing.outputs.published != 'true' }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          # This isolated job pushes only the immutable annotated version tag.
+          # Checkout removes its temporary GITHUB_TOKEN credentials afterwards.
+          persist-credentials: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.19.0
+      - name: Prepare an immutable version snapshot or resolve the supplied tag
+        id: version
+        run: node scripts/prepare-main-release.js
+      - name: Do not republish an already public immutable release
+        if: steps.version.outputs.should_release == 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft 2>/dev/null)"; then
+            if [[ "$(jq -r '.isDraft' <<< "$release")" == false ]]; then
+              echo 'published=true' >> "$GITHUB_OUTPUT"
+              echo "$RELEASE_TAG is already public; keeping its immutable assets."
+            fi
+          fi
+
+  verify:
+    name: Verify tag, ancestry, version, and shared tests
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      tag: ${{ needs.prepare.outputs.tag }}
+      commit: ${{ needs.prepare.outputs.commit }}
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify the release tag without release credentials
         id: tag
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
           fail() { echo "release tag verification failed: $*" >&2; exit 1; }
 
-          tag="$GITHUB_REF_NAME"
+          tag="$RELEASE_TAG"
           [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
             || fail "tag must be an exact vX.Y.Z version"
           version="${tag#v}"
           major="${version%%.*}"
           [[ "$major" != 0 && "$major" != 1 ]] \
             || fail "native releases must have major version 2 or newer"
-          [[ "$GITHUB_REF" == "refs/tags/$tag" ]] || fail "event ref is not the release tag"
+          git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
           [[ "$(git cat-file -t "refs/tags/$tag")" == tag ]] \
             || fail "release tags must be annotated"
           tag_commit="$(git rev-parse "refs/tags/$tag^{commit}")"
-          [[ "$tag_commit" == "$GITHUB_SHA" ]] \
-            || fail "tag does not peel to the workflow commit"
+          [[ "$tag_commit" == "$RELEASE_COMMIT" ]] \
+            || fail "tag does not peel to the prepared release commit"
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_COMMIT" ]] \
+            || fail "checkout does not match the prepared release commit"
 
           git fetch --force --no-tags origin \
             '+refs/heads/main:refs/remotes/origin/main'
-          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main \
-            || fail "release commit is not an ancestor of origin/main"
+          git merge-base --is-ancestor "$RELEASE_SOURCE_SHA" refs/remotes/origin/main \
+            || fail "release source is not an ancestor of origin/main"
           git fetch --force --tags origin
 
           exact_tags="$(git tag --list | \
             grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true)"
           [[ -n "$exact_tags" ]] || fail "release tag is missing after fetching tags"
-          highest_tag="$(printf '%s\n' "$exact_tags" | sort -V | tail -n 1)"
-          [[ "$highest_tag" == "$tag" ]] \
-            || fail "$tag is not greater than existing exact version tag $highest_tag"
-
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 24.19.0
           cache: npm
+      - name: Verify source ancestry and exact version-only snapshot contents
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: node scripts/prepare-main-release.js --verify "$RELEASE_COMMIT"
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: 1.98.0
@@ -96,6 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
@@ -273,6 +333,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
@@ -461,10 +522,26 @@ jobs:
     environment: release
     permissions:
       contents: write
+    outputs:
+      is_latest: ${{ steps.channel.outputs.is_latest }}
     env:
       VERSION: ${{ needs.verify.outputs.version }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ needs.verify.outputs.tag }}
+      RELEASE_SOURCE_SHA: ${{ needs.verify.outputs.source_sha }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.19.0
+      - name: Keep the update channel monotonic in both source history and version
+        id: channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-publish-policy.js
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
           name: native-release-${{ needs.verify.outputs.version }}
@@ -513,6 +590,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_LATEST: ${{ steps.channel.outputs.is_latest }}
         run: |
           set -euo pipefail
           expected="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
@@ -523,20 +601,22 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern latest.json --dir "$RUNNER_TEMP/release-check"
           cmp dist/latest.json "$RUNNER_TEMP/release-check/latest.json"
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$IS_LATEST"
 
   homebrew:
     name: Publish universal macOS Homebrew cask
     needs: [verify, publish]
+    if: needs.publish.outputs.is_latest == 'true'
     runs-on: ubuntu-22.04
     environment: release
     env:
       HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ccbud/homebrew-tap' }}
       VERSION: ${{ needs.verify.outputs.version }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ needs.verify.outputs.tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:

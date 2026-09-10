@@ -13,6 +13,9 @@ const SUITES = [
   'file-size.test.js',
   'release-package-cleanup.test.js',
   'release-pipeline.test.js',
+  'main-release-workflow.test.js',
+  'prepare-main-release.test.js',
+  'release-publish-policy.test.js',
   'release-selfcheck-mode.test.js',
   'smoke.test.js',
 ];
