@@ -36,13 +36,6 @@ struct HistoryCatalogThreadProjection: Codable, Equatable, Sendable {
 /// Rebuildable catalog input derived from the exact normalized session shown by the detail view.
 /// Raw producer files remain authoritative; this value contains only list/search projection data.
 struct HistoryCatalogProjection: Codable, Equatable, Sendable {
-    /// Search projections are derived cache data, so they must not grow with arbitrarily large
-    /// producer payloads. These byte limits mirror Wake's indexing boundaries without changing
-    /// the normalized `HistorySession` used by detail, replay, and export paths.
-    static let maximumMessageSearchTextBytes = 32 * 1024
-    static let maximumToolSearchTextBytes = 16 * 1024
-    static let maximumRawSearchTextBytes = 16 * 1024
-
     var metadata: HistorySessionMetadata
     var threads: [HistoryCatalogThreadProjection]
 
@@ -77,7 +70,7 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         }
     }
 
-    /// Performs the existing first-thread-wins search in memory. The SQLite implementation can
+    /// Performs the existing first-thread-wins search in memory. The file catalog can
     /// use the same thread ordering and text to preserve observable legacy behavior.
     func firstMatch(query rawQuery: String) -> (thread: HistoryCatalogThreadProjection, count: Int)? {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -89,7 +82,7 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         return nil
     }
 
-    // MARK: - Bounded legacy-compatible search document
+    // MARK: - Complete normalized search document
 
     private static func thread(
         transcriptID: String,
@@ -133,58 +126,19 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         )
     }
 
-    /// Preserves `HistoryRepository.search`'s text ordering while bounding the derived SQLite
-    /// payload. Each tool/raw block is clipped first, then the complete message is clipped so a
-    /// message containing many individually small blocks cannot bypass the message limit.
-    private static func legacySearchText(for message: HistoryMessage) -> String {
+    /// Preserve every searchable block, including the tail of a large tool result or message.
+    /// Bounded disk blocks and incremental verification control query memory; truncating the
+    /// projection would silently make valid conversation fragments impossible to find.
+    static func legacySearchText(for message: HistoryMessage) -> String {
         var lines: [String] = []
         for block in message.content {
             guard var text = HistoryParsingSupport.plainText(block) ?? block.raw?.jsonString,
                   !text.isEmpty else { continue }
             if message.role == "user" { text = stripInjectedText(text) }
             guard !text.isEmpty else { continue }
-            lines.append(clippedSearchText(
-                text,
-                maximumUTF8Bytes: searchLimit(for: block)
-            ))
+            lines.append(text)
         }
-        return clippedSearchText(
-            lines.joined(separator: "\n"),
-            maximumUTF8Bytes: maximumMessageSearchTextBytes
-        )
-    }
-
-    private static func searchLimit(for block: HistoryContentBlock) -> Int {
-        switch block.type {
-        case "text":
-            maximumMessageSearchTextBytes
-        case "thinking", "tool_use", "tool_result":
-            maximumToolSearchTextBytes
-        default:
-            maximumRawSearchTextBytes
-        }
-    }
-
-    /// Returns valid UTF-8 whose complete representation, including the marker, fits the limit.
-    /// Iterating by extended grapheme cluster also avoids splitting emoji or composed characters.
-    private static func clippedSearchText(
-        _ value: String,
-        maximumUTF8Bytes: Int
-    ) -> String {
-        guard value.utf8.count > maximumUTF8Bytes else { return value }
-
-        let marker = "\n… (truncated)"
-        let prefixLimit = max(0, maximumUTF8Bytes - marker.utf8.count)
-        var usedBytes = 0
-        var end = value.startIndex
-        while end < value.endIndex {
-            let next = value.index(after: end)
-            let characterBytes = value[end..<next].utf8.count
-            guard usedBytes + characterBytes <= prefixLimit else { break }
-            usedBytes += characterBytes
-            end = next
-        }
-        return String(value[..<end]) + marker
+        return lines.joined(separator: "\n")
     }
 
     private static func stripInjectedText(_ text: String) -> String {
@@ -337,6 +291,21 @@ struct HistoryCatalogProjection: Codable, Equatable, Sendable {
         _ sessions: [HistorySessionMetadata]
     ) -> [HistorySessionMetadata] {
         sessions.sorted(by: sessionComesFirst)
+    }
+
+    /// Progressive search and its UI must agree on every tie-breaker. The catalog's historical
+    /// ordering uses creation time and descending producer IDs; applying that order to search
+    /// prefixes and then reversing ties in the palette moves its selected row as batches arrive.
+    /// Preserve search's existing activity-descending, stable-ID-ascending presentation policy.
+    static func searchResultComesFirst(
+        _ lhs: HistorySessionMetadata,
+        _ rhs: HistorySessionMetadata
+    ) -> Bool {
+        if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
+        if lhs.id != rhs.id { return lhs.id < rhs.id }
+        // Imported/copied transcripts can share producer IDs. Avoid an input-order-dependent
+        // tie without normalizing URLs repeatedly inside the sort comparator.
+        return lhs.file.path < rhs.file.path
     }
 
     static func projects(

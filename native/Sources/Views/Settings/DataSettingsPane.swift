@@ -1,5 +1,31 @@
 import AppKit
+import Darwin
 import SwiftUI
+
+/// Count each regular inode once: immutable tgrep checkpoints may share hard-linked files.
+/// Symlinks are not followed, and no transcript content is opened just to report storage usage.
+enum ConversationStorageFootprint {
+    static func bytes(in roots: [URL]) -> Int64 {
+        struct Identity: Hashable { let device: Int32; let inode: UInt64 }
+        var seen = Set<Identity>()
+        var pending = roots
+        var total: Int64 = 0
+        while let file = pending.popLast(), !Task.isCancelled {
+            var info = stat()
+            guard lstat(file.path, &info) == 0 else { continue }
+            let kind = info.st_mode & S_IFMT
+            guard kind == S_IFREG || kind == S_IFDIR,
+                  seen.insert(.init(device: info.st_dev, inode: info.st_ino)).inserted else { continue }
+            if kind == S_IFDIR {
+                pending.append(contentsOf: (try? FileManager.default.contentsOfDirectory(
+                    at: file, includingPropertiesForKeys: nil)) ?? [])
+            } else if info.st_size > 0, total <= Int64.max - info.st_size {
+                total += info.st_size
+            }
+        }
+        return total
+    }
+}
 
 /// What CC Buddy itself stores on disk.
 ///
@@ -11,6 +37,7 @@ struct DataSettingsPane: View {
     @Environment(\.appLanguage) private var appLanguage
 
     @State private var indexBytes: Int64?
+    @State private var legacyBytes: Int64 = 0
     @State private var sessionCount: Int?
 
     private var storageDirectory: URL {
@@ -43,6 +70,9 @@ struct DataSettingsPane: View {
                     appLanguage.localized("会话索引"),
                     value: indexBytes.map(Self.formatBytes) ?? appLanguage.localized("正在统计…")
                 )
+                if legacyBytes > 0 {
+                    infoRow(appLanguage.localized("旧版缓存（未使用）"), value: Self.formatBytes(legacyBytes))
+                }
                 infoRow(
                     appLanguage.localized("已收录会话"),
                     value: sessionCount.map { appLanguage.localized("\($0) 个会话") }
@@ -103,20 +133,20 @@ struct DataSettingsPane: View {
 
     private func refresh() async {
         let directory = storageDirectory
-        let bytes = await Task.detached(priority: .utility) { () -> Int64 in
-            let manager = FileManager.default
-            let names = [
+        let sizes = await Task.detached(priority: .utility) { () -> (Int64, Int64) in
+            let legacyNames = [
                 "conversation-index-v1.sqlite3",
                 "conversation-index-v1.sqlite3-wal",
                 "conversation-index-v1.sqlite3-shm",
+                "conversation-index-v1.sqlite3.tgrep-v2",
+                "conversation-index-v1.sqlite3.tgrep-chunks-v1",
             ]
-            return names.reduce(into: Int64(0)) { total, name in
-                let path = directory.appendingPathComponent(name).path
-                let size = (try? manager.attributesOfItem(atPath: path)[.size]) as? NSNumber
-                total += size?.int64Value ?? 0
-            }
+            return (ConversationStorageFootprint.bytes(in: [directory.appendingPathComponent("conversation-catalog-v1")]),
+                ConversationStorageFootprint.bytes(in: legacyNames.map { directory.appendingPathComponent($0) }))
         }.value
-        indexBytes = bytes
+        guard !Task.isCancelled else { return }
+        indexBytes = sizes.0
+        legacyBytes = sizes.1
 
         let statistics = await model.historyDirectoryStatistics()
         sessionCount = statistics.reduce(0) { $0 + $1.sessionCount }

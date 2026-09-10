@@ -158,7 +158,7 @@ struct ConversationPressableButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.82 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : CCMotion.response, value: configuration.isPressed)
     }
 }
 
@@ -203,6 +203,11 @@ indirect enum ConversationMarkdownBlock: Equatable, Sendable {
 
 enum ConversationMarkdownParser {
     static func parse(_ source: String) -> [ConversationMarkdownBlock] {
+        (try? parseCancellable(source)) ?? []
+    }
+
+    static func parseCancellable(_ source: String) throws -> [ConversationMarkdownBlock] {
+        try Task.checkCancellation()
         let normalized = source
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -211,6 +216,7 @@ enum ConversationMarkdownParser {
         var index = 0
 
         while index < lines.count {
+            try Task.checkCancellation()
             if lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
                 index += 1
                 continue
@@ -220,6 +226,7 @@ enum ConversationMarkdownParser {
                 index += 1
                 var body: [String] = []
                 while index < lines.count, !closesFence(lines[index], fence: fence) {
+                    try Task.checkCancellation()
                     body.append(lines[index])
                     index += 1
                 }
@@ -240,10 +247,11 @@ enum ConversationMarkdownParser {
             if quotedLine(lines[index]) != nil {
                 var quoted: [String] = []
                 while index < lines.count, let line = quotedLine(lines[index]) {
+                    try Task.checkCancellation()
                     quoted.append(line)
                     index += 1
                 }
-                blocks.append(.blockquote(parse(quoted.joined(separator: "\n"))))
+                blocks.append(.blockquote(try parseCancellable(quoted.joined(separator: "\n"))))
                 continue
             }
 
@@ -256,6 +264,7 @@ enum ConversationMarkdownParser {
                     while index < lines.count,
                           !lines[index].trimmingCharacters(in: .whitespaces).isEmpty,
                           lines[index].contains("|") {
+                        try Task.checkCancellation()
                         var cells = tableCells(lines[index])
                         if cells.count < header.count {
                             cells.append(contentsOf: repeatElement("", count: header.count - cells.count))
@@ -275,12 +284,14 @@ enum ConversationMarkdownParser {
                 let ordered = firstItem.ordered
                 let start = firstItem.start
                 while index < lines.count, let item = listItem(lines[index]), item.ordered == ordered {
+                    try Task.checkCancellation()
                     var value = item.text
                     index += 1
                     while index < lines.count,
                           !lines[index].trimmingCharacters(in: .whitespaces).isEmpty,
                           listItem(lines[index]) == nil,
                           !startsBlock(lines[index]) {
+                        try Task.checkCancellation()
                         value += "\n" + lines[index].trimmingCharacters(in: .whitespaces)
                         index += 1
                     }
@@ -301,6 +312,7 @@ enum ConversationMarkdownParser {
             while index < lines.count,
                   !lines[index].trimmingCharacters(in: .whitespaces).isEmpty,
                   !startsBlock(lines[index]) {
+                try Task.checkCancellation()
                 if index + 1 < lines.count, tableDelimiter(lines[index + 1]) != nil { break }
                 paragraph.append(lines[index])
                 index += 1
@@ -308,6 +320,7 @@ enum ConversationMarkdownParser {
             blocks.append(.paragraph(paragraph.joined(separator: "\n")))
         }
 
+        try Task.checkCancellation()
         return blocks
     }
 
@@ -439,45 +452,355 @@ enum ConversationMarkdownParser {
     }
 }
 
+struct ConversationTextPreparationRequest: Equatable, Sendable {
+    let source: String
+    let query: String
+    let current: Bool
+    let parsesMarkdown: Bool
+
+    init(source: String, query: String = "", current: Bool = false, parsesMarkdown: Bool = true) {
+        self.source = source
+        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.current = current
+        self.parsesMarkdown = parsesMarkdown
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // Typing changes this cheap prefix. Never hash the entire Markdown body as a cache key.
+        lhs.query == rhs.query && lhs.current == rhs.current
+            && lhs.parsesMarkdown == rhs.parsesMarkdown && lhs.source == rhs.source
+    }
+}
+
+struct ConversationPreparedInline: Sendable {
+    let attributed: AttributedString
+    let rendered: String
+    var listMarker: String?
+
+    static func make(_ source: String, parsesMarkdown: Bool, listMarker: String? = nil) throws -> Self {
+        try Task.checkCancellation()
+        let attributed: AttributedString
+        if parsesMarkdown {
+            // Literal HTML remains text, exactly as in the original inline renderer.
+            let safeSource = source.replacingOccurrences(of: "<", with: "\\<")
+            attributed = (try? AttributedString(markdown: safeSource,
+                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+        } else {
+            attributed = AttributedString(source)
+        }
+        try Task.checkCancellation()
+        return Self(attributed: attributed, rendered: String(attributed.characters), listMarker: listMarker)
+    }
+
+    func highlighting(query: String, current: Bool, locale: Locale = .current) throws -> AttributedString {
+        guard !query.isEmpty else { return attributed }
+        var result = attributed
+        var cursor = rendered.startIndex
+        // Bound no-hit Foundation scans as well as match loops. Keep complete graphemes and
+        // enough canonical-fold overlap for a match crossing a window; no text is truncated.
+        let overlap = max(1, query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
+            .decomposedStringWithCanonicalMapping.unicodeScalars.count)
+        while cursor < rendered.endIndex {
+            try Task.checkCancellation()
+            let chunkEnd = rendered.index(cursor, offsetBy: 16_384, limitedBy: rendered.endIndex) ?? rendered.endIndex
+            let scanEnd = rendered.index(chunkEnd, offsetBy: overlap, limitedBy: rendered.endIndex) ?? rendered.endIndex
+            while cursor < chunkEnd {
+                try Task.checkCancellation()
+                guard let range = rendered.range(of: query, options: [.caseInsensitive, .diacriticInsensitive],
+                    range: cursor..<scanEnd, locale: locale), range.lowerBound < chunkEnd else { break }
+                guard !range.isEmpty else {
+                    cursor = rendered.index(after: range.lowerBound)
+                    continue
+                }
+                if let lower = AttributedString.Index(range.lowerBound, within: result),
+                   let upper = AttributedString.Index(range.upperBound, within: result) {
+                    let attributedRange = lower..<upper
+                    // Preserve links, emphasis and inline code even while highlighting. Applying
+                    // bold per existing run avoids flattening differently formatted matched text.
+                    let runs = result[attributedRange].runs.map { ($0.range, $0.inlinePresentationIntent ?? []) }
+                    for (run, intent) in runs {
+                        try Task.checkCancellation()
+                        result[run].inlinePresentationIntent = intent.union(.stronglyEmphasized)
+                    }
+                    result[attributedRange].foregroundColor = current ? Theme.accentText : Theme.accent
+                }
+                cursor = range.upperBound
+            }
+            cursor = max(cursor, chunkEnd)
+        }
+        try Task.checkCancellation()
+        return result
+    }
+}
+
+/// One source snapshot per prose view. Structural paths are tiny keys; source text is never used
+/// as a hashed key, and no global cache retains conversations after their views are released.
+final class ConversationPreparedTextBase: Sendable {
+    let source: String
+    let parsesMarkdown: Bool
+    let blocks: [ConversationMarkdownBlock]
+    let inlines: [[Int]: ConversationPreparedInline]
+    let codeLineNumbers: [[Int]: String]
+
+    private init(source: String, parsesMarkdown: Bool, blocks: [ConversationMarkdownBlock],
+                 inlines: [[Int]: ConversationPreparedInline], codeLineNumbers: [[Int]: String] = [:]) {
+        self.source = source
+        self.parsesMarkdown = parsesMarkdown
+        self.blocks = blocks
+        self.inlines = inlines
+        self.codeLineNumbers = codeLineNumbers
+    }
+
+    static func make(source: String, parsesMarkdown: Bool) throws -> ConversationPreparedTextBase {
+        try Task.checkCancellation()
+        guard parsesMarkdown else {
+            return ConversationPreparedTextBase(source: source, parsesMarkdown: false, blocks: [],
+                inlines: [[]: try .make(source, parsesMarkdown: false)])
+        }
+        let blocks = try ConversationMarkdownParser.parseCancellable(source)
+        var inlines: [[Int]: ConversationPreparedInline] = [:]
+        var codeLineNumbers: [[Int]: String] = [:]
+        func visit(_ blocks: [ConversationMarkdownBlock], prefix: [Int]) throws {
+            for index in blocks.indices {
+                try Task.checkCancellation()
+                let path = prefix + [index]
+                switch blocks[index] {
+                case .paragraph(let text), .heading(_, let text):
+                    inlines[path] = try .make(text, parsesMarkdown: true)
+                case .list(let ordered, let start, let items):
+                    for offset in items.indices {
+                        let trimmed = items[offset].trimmingCharacters(in: .whitespaces)
+                        let checked = trimmed.hasPrefix("[x]") || trimmed.hasPrefix("[X]")
+                        let task = checked || trimmed.hasPrefix("[ ]")
+                        let text = task ? String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces) : items[offset]
+                        let marker = ordered ? "\(start + offset)." : task ? (checked ? "☑" : "☐") : "•"
+                        inlines[path + [offset]] = try .make(text, parsesMarkdown: true, listMarker: marker)
+                    }
+                case .blockquote(let children):
+                    try visit(children, prefix: path)
+                case .table(let header, _, let rows):
+                    for column in header.indices {
+                        inlines[path + [-1, column]] = try .make(header[column], parsesMarkdown: true)
+                    }
+                    for row in rows.indices {
+                        for column in header.indices {
+                            inlines[path + [row, column]] = try .make(
+                                rows[row].indices.contains(column) ? rows[row][column] : "", parsesMarkdown: true)
+                        }
+                    }
+                case .code(_, let value):
+                    let count = value.utf8.reduce(1) { $1 == 10 ? $0 + 1 : $0 }
+                    codeLineNumbers[path] = (1...count).map(String.init).joined(separator: "\n")
+                case .thematicBreak: break
+                }
+            }
+        }
+        try visit(blocks, prefix: [])
+        try Task.checkCancellation()
+        return ConversationPreparedTextBase(source: source, parsesMarkdown: true, blocks: blocks,
+                                            inlines: inlines, codeLineNumbers: codeLineNumbers)
+    }
+}
+
+struct ConversationPreparedTextSnapshot: Sendable {
+    let base: ConversationPreparedTextBase
+    let query: String
+    let current: Bool
+    let highlighted: [[Int]: AttributedString]
+
+    func inline(at path: [Int], query: String, current: Bool) -> AttributedString {
+        // A cleared or newer query displays the already prepared base immediately, never stale
+        // highlights. Source replacement is separately guarded before any snapshot is displayed.
+        if !query.isEmpty, self.query == query, self.current == current, let value = highlighted[path] {
+            return value
+        }
+        return base.inlines[path]?.attributed ?? AttributedString("")
+    }
+}
+
+actor ConversationTextPreparationWorker {
+    typealias PrepareBase = @Sendable (String, Bool) throws -> ConversationPreparedTextBase
+    private let prepareBase: PrepareBase
+    private var base: ConversationPreparedTextBase?
+    private var baseLifetime: UUID?
+    private let defaultLifetime = UUID()
+
+    init(prepareBase: @escaping PrepareBase = { try ConversationPreparedTextBase.make(source: $0, parsesMarkdown: $1) }) {
+        self.prepareBase = prepareBase
+    }
+
+    func prepare(_ request: ConversationTextPreparationRequest,
+                 lifetime: UUID? = nil) throws -> ConversationPreparedTextSnapshot {
+        // Actor isolation bounds each view to one active CPU preparation. Canceled queued
+        // keystrokes exit before parsing; they cannot fan out into concurrent giant-body scans.
+        try Task.checkCancellation()
+        let prepared: ConversationPreparedTextBase
+        let canReuseBase = base?.parsesMarkdown == request.parsesMarkdown && base?.source == request.source
+        if canReuseBase, let base {
+            prepared = base
+        } else {
+            base = nil
+            baseLifetime = nil
+            prepared = try prepareBase(request.source, request.parsesMarkdown)
+            try Task.checkCancellation()
+            base = prepared
+        }
+        baseLifetime = lifetime ?? defaultLifetime
+        var highlighted: [[Int]: AttributedString] = [:]
+        if !request.query.isEmpty {
+            for (path, inline) in prepared.inlines {
+                try Task.checkCancellation()
+                highlighted[path] = try inline.highlighting(query: request.query, current: request.current)
+            }
+        }
+        try Task.checkCancellation()
+        return ConversationPreparedTextSnapshot(base: prepared, query: request.query,
+                                                 current: request.current, highlighted: highlighted)
+    }
+
+    func release(lifetime: UUID) {
+        // Actor jobs can be reordered. A release queued by disappearance must not erase a
+        // base that has already been adopted by the view's newer appearance, even same-source.
+        guard baseLifetime == lifetime else { return }
+        base = nil
+        baseLifetime = nil
+    }
+}
+
+@MainActor
+final class ConversationTextPreparation: ObservableObject {
+    @Published private(set) var snapshot: ConversationPreparedTextSnapshot?
+    private let worker: ConversationTextPreparationWorker
+    private var activeTask: Task<ConversationPreparedTextSnapshot, Error>?
+    private var generation = UUID()
+    private var lifetime = UUID()
+
+    init(worker: ConversationTextPreparationWorker = ConversationTextPreparationWorker()) {
+        self.worker = worker
+    }
+
+    func prepare(_ request: ConversationTextPreparationRequest) async {
+        guard !Task.isCancelled else { return }
+        let generation = UUID()
+        self.generation = generation
+        activeTask?.cancel()
+        if let snapshot, snapshot.base.parsesMarkdown != request.parsesMarkdown
+            || snapshot.base.source != request.source {
+            // This source is no longer displayed. Do not retain its attributed text/highlights
+            // while a different giant source is being prepared or after that work is canceled.
+            self.snapshot = nil
+        }
+        let worker = worker
+        let requestLifetime = lifetime
+        let task = Task.detached(priority: .userInitiated) {
+            try await worker.prepare(request, lifetime: requestLifetime)
+        }
+        activeTask = task
+        defer {
+            if self.generation == generation { activeTask = nil }
+        }
+        do {
+            let snapshot = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
+            guard !Task.isCancelled, self.generation == generation else { return }
+            self.snapshot = snapshot
+        } catch {
+            // Cancellation preserves the same-source base while its newest query is prepared.
+        }
+    }
+
+    @discardableResult
+    func release() -> Task<Void, Never> {
+        generation = UUID()
+        let releasedLifetime = lifetime
+        lifetime = UUID()
+        activeTask?.cancel()
+        activeTask = nil
+        snapshot = nil
+        // Keep one worker even while an uncancellable Foundation operation is returning. A
+        // reappearing row must queue behind it, not launch another concurrent giant-body parse.
+        // Drop the heavy cache on that actor; the retained StateObject itself stays lightweight.
+        let worker = worker
+        return Task { await worker.release(lifetime: releasedLifetime) }
+    }
+}
+
 /// Full block-Markdown conversation prose. Raw HTML is never interpreted: parsing produces only
-/// native SwiftUI primitives, and inline markup is handled by Foundation's bounded inline parser.
+/// native SwiftUI primitives, with Foundation inline parsing prepared off the input path.
+@MainActor
 struct ConversationHighlightedText: View {
     let value: String
     var query: String = ""
     var current = false
     var fontSize: CGFloat = 13
     var color: Color = Theme.foreground
+    @StateObject private var preparation = ConversationTextPreparation()
 
     var body: some View {
-        ConversationMarkdownBlocksView(
-            blocks: ConversationMarkdownParser.parse(value),
-            query: query,
-            current: current,
-            fontSize: fontSize,
-            color: color
-        )
+        let request = ConversationTextPreparationRequest(source: value, query: query, current: current)
+        Group {
+            if let snapshot = preparation.snapshot, snapshot.base.source == value, snapshot.base.parsesMarkdown {
+                ConversationMarkdownBlocksView(
+                    blocks: snapshot.base.blocks, snapshot: snapshot,
+                    query: request.query, current: current, fontSize: fontSize, color: color
+                )
+            } else {
+                ConversationTextPreparationPlaceholder()
+            }
+        }
+        .task(id: request) { await preparation.prepare(request) }
+        .onDisappear { preparation.release() }
         .textSelection(.enabled)
     }
 }
 
+@MainActor
 struct ConversationPlainHighlightedText: View {
     let value: String
     var query: String = ""
     var current = false
+    @StateObject private var preparation = ConversationTextPreparation()
 
     var body: some View {
-        ConversationInlineMarkup.text(
-            value,
-            query: query,
-            current: current,
-            parsesMarkdown: false
-        )
+        let request = ConversationTextPreparationRequest(source: value, query: query,
+                                                        current: current, parsesMarkdown: false)
+        Group {
+            if let snapshot = preparation.snapshot, snapshot.base.source == value, !snapshot.base.parsesMarkdown {
+                Text(snapshot.inline(at: [], query: request.query, current: current))
+            } else if value.utf8.count <= 4_096 {
+                // Tiny plain snippets need no parsing and can remain immediately readable.
+                Text(verbatim: value)
+            } else {
+                ConversationTextPreparationPlaceholder()
+            }
+        }
+        .task(id: request) { await preparation.prepare(request) }
+        .onDisappear { preparation.release() }
         .textSelection(.enabled)
+    }
+}
+
+private struct ConversationTextPreparationPlaceholder: View {
+    @Environment(\.appLanguage) private var language
+
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            ConversationActivityIndicator(controlSize: .mini)
+                .accessibilityHidden(true)
+            Text(language.localized("正在读取会话…"))
+                .font(.ccCaption())
+                .foregroundStyle(Theme.mutedForeground)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("conversation.message.preparing")
     }
 }
 
 private struct ConversationMarkdownBlocksView: View {
     let blocks: [ConversationMarkdownBlock]
+    let snapshot: ConversationPreparedTextSnapshot
+    var path: [Int] = []
     let query: String
     let current: Bool
     let fontSize: CGFloat
@@ -485,40 +808,40 @@ private struct ConversationMarkdownBlocksView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: max(6, fontSize * 0.55)) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            ForEach(blocks.indices, id: \.self) { index in
+                blockView(blocks[index], at: path + [index])
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    @ViewBuilder private func blockView(_ block: ConversationMarkdownBlock) -> some View {
+    @ViewBuilder private func blockView(_ block: ConversationMarkdownBlock, at path: [Int]) -> some View {
         switch block {
-        case .paragraph(let value):
-            inlineText(value)
+        case .paragraph:
+            inlineText(at: path)
                 .font(.system(size: fontSize))
                 .foregroundStyle(color)
                 .lineSpacing(max(1, fontSize * 0.18))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-        case .heading(let level, let value):
-            inlineText(value)
+        case .heading(let level, _):
+            inlineText(at: path)
                 .font(.system(size: headingSize(level), weight: level <= 2 ? .bold : .semibold))
                 .tracking(level <= 2 ? -0.18 : -0.08)
                 .foregroundStyle(color)
                 .padding(.top, level <= 2 ? 3 : 1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-        case .list(let ordered, let start, let items):
+        case .list(let ordered, _, let items):
             VStack(alignment: .leading, spacing: max(3, fontSize * 0.24)) {
-                ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
+                ForEach(items.indices, id: \.self) { offset in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(listMarker(item: item, ordered: ordered, number: start + offset))
+                        Text(snapshot.base.inlines[path + [offset]]?.listMarker ?? "•")
                             .font(.system(size: fontSize, weight: .medium, design: ordered ? .monospaced : .default))
                             .foregroundStyle(Theme.mutedForeground)
                             .frame(width: ordered ? 24 : 15, alignment: .trailing)
-                        inlineText(listText(item))
+                        inlineText(at: path + [offset])
                             .font(.system(size: fontSize))
                             .foregroundStyle(color)
                             .lineSpacing(max(1, fontSize * 0.14))
@@ -534,6 +857,8 @@ private struct ConversationMarkdownBlocksView: View {
                     .frame(width: 3)
                 ConversationMarkdownBlocksView(
                     blocks: quotedBlocks,
+                    snapshot: snapshot,
+                    path: path,
                     query: query,
                     current: current,
                     fontSize: max(10.5, fontSize * 0.94),
@@ -543,13 +868,16 @@ private struct ConversationMarkdownBlocksView: View {
             .padding(.vertical, 2)
 
         case .code(let language, let value):
-            ConversationMarkdownCodeBlock(value: value, language: language, fontSize: fontSize)
+            ConversationMarkdownCodeBlock(value: value, language: language, fontSize: fontSize,
+                                           lineNumbers: snapshot.base.codeLineNumbers[path] ?? "1")
 
         case .table(let header, let alignments, let rows):
             ConversationMarkdownTable(
                 header: header,
                 alignments: alignments,
                 rows: rows,
+                snapshot: snapshot,
+                path: path,
                 query: query,
                 current: current,
                 fontSize: fontSize
@@ -563,8 +891,8 @@ private struct ConversationMarkdownBlocksView: View {
         }
     }
 
-    private func inlineText(_ value: String) -> Text {
-        ConversationInlineMarkup.text(value, query: query, current: current, parsesMarkdown: true)
+    private func inlineText(at path: [Int]) -> Text {
+        Text(snapshot.inline(at: path, query: query, current: current))
     }
 
     private func headingSize(_ level: Int) -> CGFloat {
@@ -572,69 +900,6 @@ private struct ConversationMarkdownBlocksView: View {
         return fontSize * factors[min(max(level - 1, 0), factors.count - 1)]
     }
 
-    private func listMarker(item: String, ordered: Bool, number: Int) -> String {
-        if ordered { return "\(number)." }
-        let trimmed = item.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("[x]") || trimmed.hasPrefix("[X]") { return "☑" }
-        if trimmed.hasPrefix("[ ]") { return "☐" }
-        return "•"
-    }
-
-    private func listText(_ item: String) -> String {
-        let trimmed = item.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("[x]") || trimmed.hasPrefix("[X]") || trimmed.hasPrefix("[ ]") {
-            return String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-        }
-        return item
-    }
-}
-
-private enum ConversationInlineMarkup {
-    static func text(
-        _ source: String,
-        query: String,
-        current: Bool,
-        parsesMarkdown: Bool
-    ) -> Text {
-        let rendered: String
-        let attributed: AttributedString?
-        if parsesMarkdown {
-            // Escaping '<' preserves literal transcript text and prevents Markdown's raw-HTML
-            // grammar from swallowing or reinterpreting user/model output.
-            let safeSource = source.replacingOccurrences(of: "<", with: "\\<")
-            attributed = try? AttributedString(
-                markdown: safeSource,
-                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            )
-            rendered = attributed.map { String($0.characters) } ?? source
-        } else {
-            attributed = nil
-            rendered = source
-        }
-
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else {
-            if let attributed { return Text(attributed) }
-            return Text(rendered)
-        }
-
-        var output = Text("")
-        var cursor = rendered.startIndex
-        while cursor < rendered.endIndex,
-              let range = rendered.range(
-                  of: needle,
-                  options: [.caseInsensitive, .diacriticInsensitive],
-                  range: cursor..<rendered.endIndex,
-                  locale: .current
-              ) {
-            output = output + Text(String(rendered[cursor..<range.lowerBound]))
-            output = output + Text(String(rendered[range]))
-                .bold()
-                .foregroundColor(current ? Theme.accentText : Theme.accent)
-            cursor = range.upperBound
-        }
-        return output + Text(String(rendered[cursor...]))
-    }
 }
 
 private struct ConversationMarkdownCodeBlock: View {
@@ -643,6 +908,7 @@ private struct ConversationMarkdownCodeBlock: View {
     let value: String
     let language: String?
     let fontSize: CGFloat
+    let lineNumbers: String
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
@@ -683,11 +949,6 @@ private struct ConversationMarkdownCodeBlock: View {
         }
     }
 
-    private var lineNumbers: String {
-        let count = max(1, value.components(separatedBy: "\n").count)
-        return (1...count).map(String.init).joined(separator: "\n")
-    }
-
     private var codeBackground: Color {
         colorScheme == .dark ? Color(red: 0.047, green: 0.055, blue: 0.071) : Color(red: 0.965, green: 0.973, blue: 0.98)
     }
@@ -701,6 +962,8 @@ private struct ConversationMarkdownTable: View {
     let header: [String]
     let alignments: [ConversationMarkdownAlignment]
     let rows: [[String]]
+    let snapshot: ConversationPreparedTextSnapshot
+    let path: [Int]
     let query: String
     let current: Bool
     let fontSize: CGFloat
@@ -708,9 +971,9 @@ private struct ConversationMarkdownTable: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                tableRow(header, isHeader: true)
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    tableRow(row, isHeader: false)
+                tableRow(at: -1, isHeader: true)
+                ForEach(rows.indices, id: \.self) { row in
+                    tableRow(at: row, isHeader: false)
                 }
             }
         }
@@ -718,15 +981,10 @@ private struct ConversationMarkdownTable: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.separator))
     }
 
-    private func tableRow(_ values: [String], isHeader: Bool) -> some View {
+    private func tableRow(at row: Int, isHeader: Bool) -> some View {
         GridRow {
-            ForEach(Array(header.indices), id: \.self) { column in
-                ConversationInlineMarkup.text(
-                    values.indices.contains(column) ? values[column] : "",
-                    query: query,
-                    current: current,
-                    parsesMarkdown: true
-                )
+            ForEach(header.indices, id: \.self) { column in
+                Text(snapshot.inline(at: path + [row, column], query: query, current: current))
                 .font(.system(size: max(10.5, fontSize * 0.96), weight: isHeader ? .semibold : .regular))
                 .foregroundStyle(Theme.foreground)
                 .padding(.horizontal, 10)

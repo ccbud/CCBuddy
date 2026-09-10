@@ -4,6 +4,152 @@ import XCTest
 @testable import CCBuddy
 
 final class HistorySessionLoaderTests: XCTestCase {
+    func testPrecancelledDetailLoadDoesNotReturnASession() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("cancelled-detail")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("projects/-cancelled/session.jsonl")
+        try HistoryTestSupport.write([
+            HistoryTestSupport.claudeLine(type: "user", role: "user", contentJSON: #""complete""#,
+                sessionID: "cancelled", cwd: "/cancelled", timestamp: "2026-08-24T00:00:00Z"),
+        ], to: file)
+        let loader = HistorySessionLoader(historyDirs: [root.path], homeDirectory: root)
+        let worker = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try loader.getSession(file: file)
+        }
+        do {
+            _ = try await worker.value
+            XCTFail("A cancelled detail load must not publish a session")
+        } catch is CancellationError {}
+    }
+
+    func testCancellationDuringAdapterParsingDoesNotPublishItsSession() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("cancelled-adapter")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("projects/-cancelled/session.jsonl")
+        try HistoryTestSupport.write([
+            HistoryTestSupport.claudeLine(type: "user", role: "user", contentJSON: #""complete""#,
+                sessionID: "cancelled", cwd: "/cancelled", timestamp: "2026-08-24T00:00:00Z"),
+        ], to: file)
+        let session = HistorySession(metadata: makeMetadata(file: file), messages: [])
+        let loader = HistorySessionLoader(
+            configuration: HistoryConfiguration(historyDirs: [root.path], homeDirectory: root),
+            adapters: ConversationSourceAdapterRegistry(adapters: [CancellingSessionAdapter(session: session)])
+        )
+        let worker = Task.detached { try loader.getSession(file: file) }
+        do {
+            _ = try await worker.value
+            XCTFail("Cancellation that happens inside a synchronous parser must be observed on return")
+        } catch is CancellationError {}
+    }
+
+    func testQoderCancellationAfterReadIsNotWrappedOrPublished() async throws {
+        let root = try HistoryTestSupport.temporaryDirectory("cancelled-qoder-read")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let qoderRoot = root.appendingPathComponent(".qoder")
+        let file = qoderRoot.appendingPathComponent("projects/-cancelled/session.jsonl")
+        try HistoryTestSupport.write([#"{"not":"the injected transcript"}"#], to: file)
+        let access = QuickMetadataQoderAccess(data: Data((
+            #"{"type":"user","sessionId":"cancelled","message":{"role":"user","content":"complete"}}"#
+                + "\n").utf8), onRead: { withUnsafeCurrentTask { $0?.cancel() } })
+        let reader = QoderFileReader(fileAccess: access,
+            helperResolver: QuickMetadataQoderResolver(), helperRunner: QuickMetadataQoderRunner())
+        let loader = HistorySessionLoader(historyDirs: [qoderRoot.path], homeDirectory: root,
+                                          qoderReader: reader)
+        let worker = Task.detached { try loader.getSession(file: file) }
+        do {
+            _ = try await worker.value
+            XCTFail("A cancelled permission-aware read must not continue into parsing")
+        } catch is CancellationError {}
+        XCTAssertEqual(access.readCount, 1)
+    }
+
+    func testDetailByURLAndPathSkipsCatalogProjectionAndKeepsSubagents() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("detail-without-catalog")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("projects/-detail/session.jsonl")
+        let child = root.appendingPathComponent(
+            "projects/-detail/session/subagents/agent-child.jsonl"
+        )
+        try HistoryTestSupport.write([
+            HistoryTestSupport.claudeLine(
+                type: "user", role: "user", contentJSON: #""full detail""#,
+                sessionID: "detail", cwd: "/detail", timestamp: "2026-08-24T00:00:00Z"
+            ),
+        ], to: file)
+        try HistoryTestSupport.write([
+            HistoryTestSupport.claudeLine(
+                type: "assistant", role: "assistant", contentJSON: #""child detail""#,
+                sessionID: "detail", cwd: "/detail", timestamp: "2026-08-24T00:00:01Z"
+            ),
+        ], to: child)
+        let counter = CatalogProjectionBuildCounter()
+        let loader = HistorySessionLoader(
+            configuration: HistoryConfiguration(historyDirs: [root.path], homeDirectory: root),
+            makeCatalogProjection: { session in
+                counter.increment()
+                return HistoryCatalogProjection(session: session)
+            }
+        )
+
+        let detail = try loader.getSession(file: file)
+        let pathDetail = try loader.getSession(filePath: file.path)
+        XCTAssertEqual(counter.count, 0, "Opening detail must not build a catalog search copy")
+        XCTAssertEqual(detail, pathDetail)
+        XCTAssertEqual(detail.messages.first?.content.first?.text, "full detail")
+        XCTAssertEqual(detail.subagents["agent:child"]?.messages.first?.content.first?.text,
+                       "child detail")
+
+        let indexed = try loader.load(file: file, consistency: .dependencyStable)
+        XCTAssertEqual(counter.count, 1, "Indexing must still build its searchable projection")
+        XCTAssertEqual(detail, indexed.session)
+        XCTAssertEqual(indexed.projection.threads.map(\.transcriptID), ["main", "agent:child"])
+    }
+
+    func testStableIndexLoadStillChecksDependenciesAfterProjection() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("projection-consistency")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("projects/-detail/session.jsonl")
+        try HistoryTestSupport.write([
+            HistoryTestSupport.claudeLine(
+                type: "user", role: "user", contentJSON: #""before""#,
+                sessionID: "detail", cwd: "/detail", timestamp: "2026-08-24T00:00:00Z"
+            ),
+        ], to: file)
+        let loader = HistorySessionLoader(
+            configuration: HistoryConfiguration(historyDirs: [root.path], homeDirectory: root),
+            makeCatalogProjection: { session in
+                let projection = HistoryCatalogProjection(session: session)
+                // A producer may change the file while catalog text is being prepared. The
+                // stability check must remain after that work, not just after raw parsing.
+                try? Data("changed generation\n".utf8).write(to: file, options: .atomic)
+                return projection
+            }
+        )
+
+        XCTAssertThrowsError(try loader.load(file: file, consistency: .dependencyStable)) {
+            XCTAssertEqual($0 as? HistorySessionLoadError,
+                           .dependenciesChanged(file.standardizedFileURL))
+        }
+    }
+
+    func testDetailStillRejectsFilesOutsideConfiguredRoots() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("detail-path-validation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("outside/projects/-detail/session.jsonl")
+        try HistoryTestSupport.write([#"{"type":"fixture"}"#], to: file)
+        let loader = HistorySessionLoader(
+            historyDirs: [root.appendingPathComponent("allowed").path], homeDirectory: root
+        )
+
+        XCTAssertThrowsError(try loader.getSession(file: file)) {
+            XCTAssertEqual($0 as? HistoryError, .pathOutsideConfiguredRoots(file.standardizedFileURL))
+        }
+        XCTAssertThrowsError(try loader.getSession(filePath: file.path)) {
+            XCTAssertEqual($0 as? HistoryError, .pathOutsideConfiguredRoots(file.standardizedFileURL))
+        }
+    }
+
     func testLoaderReusesClaudeParserAndBuildsStableProjection() throws {
         let root = try HistoryTestSupport.temporaryDirectory("session-loader")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -75,8 +221,8 @@ final class HistorySessionLoaderTests: XCTestCase {
         XCTAssertEqual(projection.threads[0].messageSpans[1].utf16Location, 6)
     }
 
-    func testOversizedMessagesToolsAndRawBlocksProduceBoundedIndexButFullDetail() throws {
-        let root = try HistoryTestSupport.temporaryDirectory("bounded-catalog-projection")
+    func testOversizedMessageToolResultAndRawTailsRemainSearchableWithExactAnchors() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("complete-catalog-projection")
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("projects/-large/session.jsonl")
         let messageText = "message-head-"
@@ -153,33 +299,21 @@ final class HistorySessionLoaderTests: XCTestCase {
         }
 
         XCTAssertEqual(indexedSegments.count, 4)
-        XCTAssertLessThanOrEqual(
-            indexedSegments[0].utf8.count,
-            HistoryCatalogProjection.maximumMessageSearchTextBytes
-        )
-        XCTAssertLessThanOrEqual(
-            indexedSegments[1].utf8.count,
-            HistoryCatalogProjection.maximumToolSearchTextBytes
-        )
-        XCTAssertLessThanOrEqual(
-            indexedSegments[2].utf8.count,
-            HistoryCatalogProjection.maximumToolSearchTextBytes
-        )
-        XCTAssertLessThanOrEqual(
-            indexedSegments[3].utf8.count,
-            HistoryCatalogProjection.maximumRawSearchTextBytes
-        )
+        XCTAssertEqual(indexedSegments[0], messageText)
+        XCTAssertTrue(indexedSegments[1].contains(toolText))
+        XCTAssertEqual(indexedSegments[2], toolResultText)
+        XCTAssertTrue(indexedSegments[3].contains(rawText))
         XCTAssertTrue(thread.searchText.contains("message-head"))
         XCTAssertTrue(thread.searchText.contains("tool-head"))
         XCTAssertTrue(thread.searchText.contains("result-head"))
         XCTAssertTrue(thread.searchText.contains("raw-head"))
-        XCTAssertFalse(thread.searchText.contains("message-tail"))
-        XCTAssertFalse(thread.searchText.contains("tool-tail"))
-        XCTAssertFalse(thread.searchText.contains("result-tail"))
-        XCTAssertFalse(thread.searchText.contains("raw-tail"))
+        XCTAssertTrue(thread.searchText.contains("message-tail"))
+        XCTAssertTrue(thread.searchText.contains("tool-tail"))
+        XCTAssertTrue(thread.searchText.contains("result-tail"))
+        XCTAssertTrue(thread.searchText.contains("raw-tail"))
 
-        let database = try ConversationIndexDatabase(
-            file: root.appendingPathComponent("app/catalog.sqlite3")
+        let database = try ConversationFileCatalog(
+            file: root.appendingPathComponent("app/catalog-v1")
         )
         _ = try database.replace(ConversationIndexedSession(
             projection: loaded.projection,
@@ -190,17 +324,18 @@ final class HistorySessionLoaderTests: XCTestCase {
         ))
         let stored = try XCTUnwrap(try database.documents(for: file).first)
         XCTAssertEqual(stored.text, thread.searchText)
-        XCTAssertLessThanOrEqual(
-            stored.text.utf8.count,
-            HistoryCatalogProjection.maximumMessageSearchTextBytes
-                + (2 * HistoryCatalogProjection.maximumToolSearchTextBytes)
-                + HistoryCatalogProjection.maximumRawSearchTextBytes
-                + 3
-        )
+        let repository = IndexedHistoryRepository(configuration: configuration, database: database)
+        for (sequence, query) in ["message-tail", "tool-tail", "result-tail", "raw-tail"].enumerated() {
+            let hit = try XCTUnwrap(repository.search(query: query, limit: 10).first)
+            XCTAssertEqual(hit.count, 1)
+            XCTAssertEqual(hit.sequence, sequence)
+            XCTAssertTrue(hit.snippet.contains(query))
+        }
 
         // Detail, replay, and export callers all reload this normalized raw session rather than
-        // reading the bounded SQLite projection.
+        // reading the file catalog projection.
         let detail = try loader.getSession(file: file)
+        XCTAssertEqual(detail, loaded.session)
         XCTAssertEqual(detail.messages[0].content[0].text, messageText)
         XCTAssertEqual(detail.messages[1].content[0].input?["payload"]?.stringValue, toolText)
         XCTAssertEqual(detail.messages[2].content[0].content?.stringValue, toolResultText)
@@ -423,6 +558,11 @@ final class HistorySessionLoaderTests: XCTestCase {
         XCTAssertEqual(quick.metadata.source, .qoder)
         XCTAssertEqual(quick.metadata.sessionID, "reader-session")
         XCTAssertEqual(quick.metadata.title, "reader title")
+
+        let detail = try loader.getSession(file: file)
+        XCTAssertEqual(detail.metadata.source, .qoder)
+        XCTAssertEqual(detail.metadata.sessionID, "reader-session")
+        XCTAssertEqual(detail.messages.first?.content.first?.text, "reader title")
     }
 
     func testCodexQuickMetadataMergesCompletedStateAndFullLoadKeepsManualName() throws {
@@ -487,6 +627,7 @@ final class HistorySessionLoaderTests: XCTestCase {
         XCTAssertEqual(full.session.metadata.title, "manual name")
         XCTAssertEqual(full.session.metadata.sessionID, stateID)
         XCTAssertEqual(full.session.messages.last?.content.first?.text, "full tail")
+        XCTAssertEqual(try loader.getSession(file: rollout), full.session)
     }
 
     func testCodexStatePublishesQuickMetadataWhenFirstRecordExceedsPrefixBudget() throws {
@@ -542,8 +683,8 @@ final class HistorySessionLoaderTests: XCTestCase {
         XCTAssertEqual(quick.metadata.cwd, "/state-only")
         XCTAssertEqual(quick.metadata.totals.inputTokens, 4321)
 
-        let index = try ConversationIndexDatabase(
-            file: root.appendingPathComponent("app/scanner.sqlite")
+        let index = try ConversationFileCatalog(
+            file: root.appendingPathComponent("app/scanner-catalog")
         )
         let scanner = ConversationIndexScanner(configuration: configuration, database: index)
         let progress = QuickMetadataScanProgressProbe()
@@ -656,6 +797,39 @@ final class HistorySessionLoaderTests: XCTestCase {
     }
 }
 
+private struct CancellingSessionAdapter: ConversationSourceAdapter {
+    let source = HistorySource.claude
+    let format = HistoryTranscriptFormat.claude
+    let session: HistorySession
+
+    func dependencies(for candidate: HistoryFileCandidate,
+                      configuration: HistoryConfiguration) -> [ConversationSourceDependency] {
+        [.init(file: candidate.file, role: .primaryTranscript)]
+    }
+
+    func parse(_ input: ConversationSourceParseInput) throws -> HistorySession {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return session
+    }
+}
+
+private final class CatalogProjectionBuildCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
+    }
+}
+
 private final class QuickMetadataScanProgressProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [ConversationIndexScanResult] = []
@@ -676,11 +850,13 @@ private final class QuickMetadataScanProgressProbe: @unchecked Sendable {
 private final class QuickMetadataQoderAccess: QoderFileAccessing, @unchecked Sendable {
     private let system = SystemQoderFileAccess()
     private let data: Data
+    private let onRead: @Sendable () -> Void
     private let lock = NSLock()
     private var reads = 0
 
-    init(data: Data) {
+    init(data: Data, onRead: @escaping @Sendable () -> Void = {}) {
         self.data = data
+        self.onRead = onRead
     }
 
     var readCount: Int {
@@ -693,6 +869,7 @@ private final class QuickMetadataQoderAccess: QoderFileAccessing, @unchecked Sen
         lock.lock()
         reads += 1
         lock.unlock()
+        onRead()
         return data
     }
 

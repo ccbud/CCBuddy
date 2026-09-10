@@ -208,11 +208,7 @@ extension ConversationIndexScanStoring {
     }
 }
 
-extension ConversationIndexDatabase: ConversationIndexScanStoring {
-    func scannerEntries() throws -> [ConversationIndexEntry] {
-        try listEntries(deleted: nil, limit: .max)
-    }
-}
+extension ConversationFileCatalog: ConversationIndexScanStoring {}
 
 protocol ConversationIndexSourceRegistering: Sendable {
     func manifest(
@@ -238,7 +234,7 @@ extension ConversationSourceAdapterRegistry: ConversationIndexSourceRegistering 
 /// One lock covers discovery, parsing, replacement, and reconciliation. Concurrent full scans and
 /// watcher scans therefore queue instead of interleaving catalog generations or publishing stale
 /// manifests. Producer files are never mutated; every successful projection replacement is one
-/// database transaction.
+/// atomic file-manifest publication.
 final class ConversationIndexScanner: @unchecked Sendable {
     private struct Discovery {
         var candidates: [HistoryFileCandidate]
@@ -263,7 +259,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
 
     init(
         configuration: HistoryConfiguration,
-        database: ConversationIndexDatabase,
+        database: ConversationFileCatalog,
         qoderReader: QoderFileReader = .shared,
         registry: ConversationSourceAdapterRegistry = .init(),
         fileManager: FileManager = FileManager(),
@@ -285,7 +281,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
 
     init(
         configuration: HistoryConfiguration,
-        database: ConversationIndexDatabase,
+        database: ConversationFileCatalog,
         loader: any HistorySessionLoading,
         registry: ConversationSourceAdapterRegistry = .init(),
         availability: (any ConversationIndexScopeAvailabilityChecking)? = nil,
@@ -556,7 +552,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
             let entry = entriesByPath[path]
             let preflight = preflight(candidate, entry: entry)
             if let preflight,
-               entry?.fingerprint == preflight.fingerprint,
+               entry?.fingerprint.matchesSourceRevision(preflight.fingerprint) == true,
                entry?.scope == candidate.directory.id {
                 manifestsByPath[path] = preflight.manifest
                 deferredReparseDeadlines.removeValue(forKey: path)
@@ -581,47 +577,51 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 continue
             }
 
-            let loaded: LoadedHistorySession
-            do {
-                loaded = try loadRetryingDependencyChange(candidate)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                result.failed += 1
-                onProgress?(result)
-                continue
-            }
-            try Self.checkCancellation(isCancelled)
-            guard let fingerprint = Self.fingerprint(
-                manifest: loaded.manifest,
-                snapshot: loaded.dependencySnapshot
-            ) else {
-                result.failed += 1
-                onProgress?(result)
-                continue
-            }
+            // Drain parser/projection/pack-writing Foundation temporaries per source. The
+            // scanner retains only metadata and dependency identities after this publication.
+            try autoreleasepool {
+                let loaded: LoadedHistorySession
+                do {
+                    loaded = try loadRetryingDependencyChange(candidate)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    result.failed += 1
+                    onProgress?(result)
+                    return
+                }
+                try Self.checkCancellation(isCancelled)
+                guard let fingerprint = Self.fingerprint(
+                    manifest: loaded.manifest,
+                    snapshot: loaded.dependencySnapshot
+                ) else {
+                    result.failed += 1
+                    onProgress?(result)
+                    return
+                }
 
-            let indexed = ConversationIndexedSession(
-                projection: loaded.projection,
-                scope: candidate.directory.id,
-                fingerprint: fingerprint
-            )
-            try Self.checkCancellation(isCancelled)
-            let replacementGeneration = try catalog.replace(indexed)
-            lastGeneration = replacementGeneration
-            result.generation = replacementGeneration
-            entriesByPath[path] = ConversationIndexEntry(
-                sourcePath: path,
-                metadata: loaded.projection.metadata,
-                scope: candidate.directory.id,
-                fingerprint: fingerprint,
-                indexedAt: Date()
-            )
-            manifestsByPath[path] = loaded.manifest
-            fullyParsedAt[path] = Date()
-            deferredReparseDeadlines.removeValue(forKey: path)
-            result.parsed += 1
-            onProgress?(result)
+                let indexed = ConversationIndexedSession(
+                    projection: loaded.projection,
+                    scope: candidate.directory.id,
+                    fingerprint: fingerprint
+                )
+                try Self.checkCancellation(isCancelled)
+                let replacementGeneration = try catalog.replace(indexed)
+                lastGeneration = replacementGeneration
+                result.generation = replacementGeneration
+                entriesByPath[path] = ConversationIndexEntry(
+                    sourcePath: path,
+                    metadata: loaded.projection.metadata,
+                    scope: candidate.directory.id,
+                    fingerprint: fingerprint,
+                    indexedAt: Date()
+                )
+                manifestsByPath[path] = loaded.manifest
+                fullyParsedAt[path] = Date()
+                deferredReparseDeadlines.removeValue(forKey: path)
+                result.parsed += 1
+                onProgress?(result)
+            }
         }
     }
 
@@ -647,7 +647,7 @@ final class ConversationIndexScanner: @unchecked Sendable {
         let changed = candidates.filter { candidate in
             let entry = entriesByPath[Self.path(of: candidate)]
             guard let preflight = preflight(candidate, entry: entry) else { return true }
-            return entry?.fingerprint != preflight.fingerprint
+            return entry?.fingerprint.matchesSourceRevision(preflight.fingerprint) != true
                 || entry?.scope != candidate.directory.id
         }
         guard !changed.isEmpty else { return }
@@ -866,7 +866,10 @@ final class ConversationIndexScanner: @unchecked Sendable {
                 timeIntervalSince1970: Double(nanoseconds) / 1_000_000_000
             ),
             sizeBytes: sizeBytes,
-            dependencyFingerprint: snapshot.fingerprint
+            dependencyFingerprint: snapshot.fingerprint,
+            searchContentFingerprint: ConversationIndexFingerprint.contentFingerprint(
+                manifest: manifest, snapshot: snapshot
+            )
         )
     }
 

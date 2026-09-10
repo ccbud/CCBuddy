@@ -12,6 +12,31 @@ struct CodexNormalizedTranscript: Sendable {
 }
 
 enum CodexMessageNormalizer {
+    /// Content and message positions are record-local. Model/usage backfilling never changes
+    /// searchable text or inserts messages. Reuse the parser's exact handlers while releasing
+    /// each raw record during a query instead of retaining the entire transcript.
+    static func searchMessages(for record: [String: HistoryValue]) -> [HistoryMessage] {
+        var line = CodexRecord.split(record)
+        // Search anchors are normalized array positions, never presentation dates. Constructing
+        // ISO8601 formatters for every old message would add unrelated work to fresh-source scans.
+        line.timestampText = nil
+        var messages: [HistoryMessage] = []
+        switch line.kind {
+        case "compacted":
+            if let text = nonempty(line.payload["message"]?.stringValue) {
+                messages.append(message(role: "user", blocks: [.init(type: "text", text: text)], line: line))
+            }
+        case "event_msg":
+            var totals = HistoryTotals()
+            handleEvent(line, messages: &messages, totals: &totals)
+        case "response_item":
+            handleResponseItem(line, model: nil, messages: &messages)
+        default:
+            break
+        }
+        return messages
+    }
+
     static func normalize(_ records: [[String: HistoryValue]]) -> CodexNormalizedTranscript {
         let lines = records.map(CodexRecord.split)
         var messages: [HistoryMessage] = []

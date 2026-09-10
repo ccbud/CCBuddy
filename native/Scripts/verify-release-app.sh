@@ -57,6 +57,17 @@ require_universal() {
 }
 require_universal "main executable" "$EXECUTABLE"
 require_universal "bifrost-http" "$HELPER"
+readonly TGREP_LIBRARY="$APP_PATH/Contents/Frameworks/libccbuddy_tgrep.dylib"
+[[ -f "$TGREP_LIBRARY" ]] || fail "embedded tgrep library is missing"
+require_universal "embedded tgrep" "$TGREP_LIBRARY"
+[[ -d "$APP_PATH/Contents/Resources/MiniLMSemantic.mlmodelc" ]] \
+  || fail "compiled offline semantic model is missing"
+[[ -f "$APP_PATH/Contents/Resources/minilm-vocab.txt" ]] \
+  || fail "semantic model tokenizer is missing"
+cmp -s "$APP_PATH/Contents/Resources/TgrepThirdPartyNotices.txt" \
+  "$ROOT/native/Resources/TgrepThirdPartyNotices.txt" || fail "tgrep license notices are missing or changed"
+cmp -s "$APP_PATH/Contents/Resources/MiniLM-LICENSE.txt" \
+  "$ROOT/native/Resources/SemanticSearch/MiniLM-LICENSE.txt" || fail "MiniLM license is missing or changed"
 cmp -s "$APP_PATH/Contents/Resources/LICENSE" "$ROOT/LICENSE" \
   || fail "GPL-3.0 license resource is missing or changed"
 cmp -s "$APP_PATH/Contents/Resources/Bifrost-LICENSE.txt" \
@@ -70,10 +81,19 @@ if [[ "$MODE" != "unsigned" ]]; then
   command -v jq >/dev/null || fail "jq is required to compare signed entitlements"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
   codesign --verify --strict --verbose=2 "$HELPER"
+  codesign --verify --strict --verbose=2 "$TGREP_LIBRARY"
 
   APP_SIGNATURE="$(codesign -dvvv "$APP_PATH" 2>&1)"
   HELPER_SIGNATURE="$(codesign -dvvv "$HELPER" 2>&1)"
   readonly APP_SIGNATURE HELPER_SIGNATURE
+  TGREP_SIGNATURE="$(codesign -dvvv "$TGREP_LIBRARY" 2>&1)"
+  readonly TGREP_SIGNATURE
+  grep -Fq 'Authority=Developer ID Application:' <<<"$TGREP_SIGNATURE" \
+    || fail "embedded tgrep is not Developer ID signed"
+  grep -Fq "TeamIdentifier=$EXPECTED_TEAM_ID" <<<"$TGREP_SIGNATURE" \
+    || fail "embedded tgrep Team ID mismatch"
+  grep -Fq 'Timestamp=' <<<"$TGREP_SIGNATURE" \
+    || fail "embedded tgrep signature has no secure timestamp"
   grep -Fq "Authority=Developer ID Application:" <<<"$APP_SIGNATURE" || fail "app is not Developer ID signed"
   grep -Fq "Identifier=$EXPECTED_BUNDLE_ID" <<<"$APP_SIGNATURE" || fail "app signature identifier mismatch"
   grep -Fq "TeamIdentifier=$EXPECTED_TEAM_ID" <<<"$APP_SIGNATURE" || fail "app Team ID mismatch"

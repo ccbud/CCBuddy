@@ -2,15 +2,55 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Reflow the same controls instead of putting two copies of the text field in ViewThatFits.
+/// The native field editor, focus and accessibility identity must survive toolbar wrapping.
+struct ConversationToolbarLayout: Layout {
+    var spacing: CGFloat
+
+    static func wraps(availableWidth: CGFloat, idealWidths: [CGFloat], spacing: CGFloat) -> Bool {
+        idealWidths.count > 1
+            && idealWidths.reduce(0, +) + CGFloat(idealWidths.count - 1) * spacing > availableWidth
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified) }
+        let width = proposal.width ?? ideal.reduce(0) { $0 + $1.width }
+            + CGFloat(max(0, subviews.count - 1)) * spacing
+        let wraps = Self.wraps(availableWidth: width, idealWidths: ideal.map(\.width), spacing: spacing)
+        let sizes = subviews.map { $0.sizeThatFits(.init(width: width, height: nil)) }
+        let height = wraps ? sizes.reduce(0) { $0 + $1.height }
+            + CGFloat(max(0, subviews.count - 1)) * spacing : sizes.map(\.height).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified) }
+        let wraps = Self.wraps(availableWidth: bounds.width, idealWidths: ideal.map(\.width), spacing: spacing)
+        var y = bounds.minY
+        for index in subviews.indices {
+            let width = wraps || subviews.count == 1 ? bounds.width : ideal[index].width
+            let childProposal = ProposedViewSize(width: width, height: nil)
+            let size = subviews[index].sizeThatFits(childProposal)
+            let trailing = index == subviews.count - 1
+            subviews[index].place(at: CGPoint(x: trailing ? bounds.maxX : bounds.minX,
+                                             y: wraps ? y : bounds.midY),
+                                  anchor: wraps ? (trailing ? .topTrailing : .topLeading)
+                                    : (trailing ? .trailing : .leading),
+                                  proposal: childProposal)
+            if wraps { y += size.height + spacing }
+        }
+    }
+}
+
 struct ConversationTimelinePane: View {
     @ObservedObject var store: ConversationStore
     @ObservedObject var columns: ColumnLayout
     var fontSize: Int?
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appLanguage) private var appLanguage
     @State private var showingMetadataEditor = false
     @State private var confirmingPermanentDelete = false
+    @FocusState private var detailSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,12 +94,28 @@ struct ConversationTimelinePane: View {
     /// worse rather than better. The provenance now rides beside the title, and the folder joins the
     /// statistics on a single line that truncates in the middle rather than wrapping.
     private func sessionHeader(_ metadata: HistorySessionMetadata) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs + 2) {
-            HStack(alignment: .center, spacing: Space.sm) {
-                AgentBrandMark(source: metadata.source, size: 16)
-                sessionTitle(metadata)
-                Spacer(minLength: Space.sm)
-                actionButtons
+        let statistics = headerStatistics(ConversationHeaderStatistics.metadata(
+            selectedMetadata: metadata,
+            loadedParent: store.selectedSession,
+            activeTranscript: store.activeTranscript
+        )).joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: Space.xs + 2) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: Space.sm) {
+                    AgentBrandMark(source: metadata.source, size: 20)
+                    sessionTitle(metadata).fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: Space.sm)
+                    actionButtons
+                }
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    HStack(spacing: Space.sm) {
+                        AgentBrandMark(source: metadata.source, size: 20)
+                        sessionTitle(metadata)
+                        Spacer(minLength: 0)
+                    }
+                    actionButtons
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
             HStack(spacing: Space.xs + 2) {
@@ -80,9 +136,12 @@ struct ConversationTimelinePane: View {
                         .truncationMode(.middle)
                         .help(cwd)
                 }
-                Text(headerStatistics(metadata).joined(separator: " · "))
+                Text(statistics)
                     .lineLimit(1)
                     .layoutPriority(1)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(statistics)
+                    .accessibilityIdentifier("conversation.statistics")
                 ForEach(metadata.tags.prefix(2), id: \.self) { tag in
                     metadataBadge(tag)
                 }
@@ -104,9 +163,10 @@ struct ConversationTimelinePane: View {
     private func sessionTitle(_ metadata: HistorySessionMetadata) -> some View {
         Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
             .font(.ccTitle())
-            .tracking(-0.35)
+            .tracking(-0.65)
             .lineLimit(1)
             .help(metadata.title)
+            .accessibilityIdentifier("conversation.title")
     }
 
     private func metadataBadge(_ value: String) -> some View {
@@ -136,15 +196,16 @@ struct ConversationTimelinePane: View {
     /// pane below shows. The tabs take the left because they name the thing; search takes the right
     /// because it is a tool, and it keeps the row when a session has no subagents to switch between.
     private var secondaryBar: some View {
-        HStack(spacing: Space.sm) {
-            if store.transcriptTabs.count > 1 {
-                transcriptTabs
-            }
-            Spacer(minLength: Space.xs)
+        ConversationToolbarLayout(spacing: Space.sm) {
+            if store.transcriptTabs.count > 1 { transcriptTabs }
             searchControls
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.bottom, Space.sm + 2)
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.xs)
+        .ccGlass(radius: Radius.row)
+        .padding(.horizontal, Space.md)
+        .padding(.bottom, Space.md)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.toolbar")
     }
 
@@ -189,11 +250,10 @@ struct ConversationTimelinePane: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
             .help(activeSubagent?.description ?? appLanguage.localized("子代理"))
             .accessibilityIdentifier("conversation.transcript.subagents")
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.transcript.tabs")
     }
 
@@ -240,18 +300,30 @@ struct ConversationTimelinePane: View {
                 )
                 .textFieldStyle(.plain)
                 .font(.ccCaption())
+                .focused($detailSearchFocused)
+                .onSubmit { store.nextDetailMatch() }
                 .disabled(store.selectedSession == nil)
                 .accessibilityIdentifier("conversation.detail.search")
+                if store.isSearchingDetail {
+                    ConversationActivityIndicator(controlSize: .mini)
+                        .help(appLanguage.localized(ConversationActivityStage.searchingMessages.titleKey))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(appLanguage.localized(ConversationActivityStage.searchingMessages.titleKey))
+                        .accessibilityIdentifier("conversation.detail.search.progress")
+                }
             }
             .padding(.horizontal, Space.sm + 1)
             .frame(minWidth: 110, idealWidth: 200, maxWidth: 260, minHeight: Metrics.controlHeight)
             .background(Theme.fill)
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
 
-            Text(store.detailSearchPositionText)
+            Text(store.isSearchingDetail ? "…" : store.detailSearchPositionText)
                 .font(.ccMono(Typography.label))
                 .foregroundStyle(Theme.mutedForeground)
                 .frame(minWidth: 32)
+                .accessibilityLabel(store.isSearchingDetail
+                    ? appLanguage.localized(ConversationActivityStage.searchingMessages.titleKey)
+                    : store.detailSearchPositionText)
                 .accessibilityIdentifier("conversation.detail.search.count")
 
             toolbarButton("arrow.up", label: "上一个匹配", identifier: "conversation.detail.search.previous") {
@@ -269,6 +341,12 @@ struct ConversationTimelinePane: View {
                     store.updateDetailQuery("")
                 }
             }
+        }
+        .background {
+            Button("") { detailSearchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
         }
     }
 
@@ -292,8 +370,6 @@ struct ConversationTimelinePane: View {
                     analysisMenu(compact: true)
                 }
             }
-            .fixedSize()
-
             if store.isTrash {
                 toolbarButton("arrow.uturn.backward", label: "恢复", identifier: "conversation.action.restore") {
                     Task { await store.restoreSelected() }
@@ -494,7 +570,7 @@ struct ConversationTimelinePane: View {
                 Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .loading:
-            ConversationDetailState(symbol: "clock.arrow.circlepath", title: "正在读取会话…", showsProgress: true)
+            loadingFeedback
         case .failed(let message):
             ConversationDetailState(symbol: "exclamationmark.triangle", title: message) {
                 Button("重试") { Task { await store.retrySelectedSession() } }
@@ -510,69 +586,52 @@ struct ConversationTimelinePane: View {
         }
     }
 
-    private func timeline(_ session: HistorySession) -> some View {
-        // Taken from the store, which computes them once per transcript. Rebuilding them here meant
-        // walking every message on every redraw.
-        let projection = store.transcriptProjection
-        let pairedIDs = projection.pairedToolResultIDs
-        let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
-            ? store.detailMatches[store.detailMatchIndex].messageIndex
-            : nil
-
-        return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    // Indices, not `enumerated()`: the latter copies the whole message array into
-                    // a fresh array of tuples every time the body runs.
-                    ForEach(session.messages.indices, id: \.self) { index in
-                        let message = session.messages[index]
-                        if ConversationMessageView.isVisible(message, pairedToolResultIDs: pairedIDs) {
-                            ConversationMessageView(
-                                message: message,
-                                messageIndex: index,
-                                sourceRawValue: session.metadata.source.rawValue,
-                                projection: projection,
-                                searchQuery: store.detailQuery,
-                                isCurrentSearchMatch: currentMatch == index,
-                                fontSize: CGFloat(fontSize ?? 13)
-                            )
-                            .id(ConversationPresentation.messageAnchor(index))
-                        }
-                    }
-                    Color.clear.frame(height: 1).id(ConversationPresentation.bottomAnchor)
-                }
-                .padding(.horizontal, Space.xl)
-                .padding(.vertical, Space.lg)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var loadingFeedback: some View {
+        VStack(spacing: Space.lg) {
+            ConversationActivityFeedback(stage: .openingSession, prominent: true)
+                .accessibilityIdentifier("conversation.detail.loading.status")
+            if let metadata = store.selectedMetadata, metadata.sizeBytes > 0 {
+                Label(ByteCountFormatter.string(fromByteCount: Int64(clamping: metadata.sizeBytes), countStyle: .file),
+                      systemImage: "doc.text")
+                    .font(.ccLabel())
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.mutedForeground)
+                    .help(metadata.file.lastPathComponent)
+                    .accessibilityIdentifier("conversation.detail.loading.size")
             }
-            .textSelection(.enabled)
-            .onAppear {
-                if store.isSelectedSessionLive {
-                    proxy.scrollTo(ConversationPresentation.bottomAnchor, anchor: .bottom)
-                }
-            }
-            .onChange(of: store.jumpRequest) { request in
-                guard let request else { return }
-                scroll(proxy, to: ConversationPresentation.messageAnchor(request.messageIndex), anchor: .center)
-            }
-            .onChange(of: store.followLatestRevision) { _ in
-                scroll(proxy, to: ConversationPresentation.bottomAnchor, anchor: .bottom)
-            }
-            .accessibilityIdentifier("conversation.timeline.scroll")
+            Button(appLanguage.localized("取消打开")) { store.clearSelection() }
+                .buttonStyle(CCButtonStyle())
+                .accessibilityIdentifier("conversation.detail.loading.cancel")
         }
+        .padding(Space.xxl)
+        .frame(maxWidth: 360)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
         .padding(.horizontal, Space.md)
         .padding(.bottom, Space.md)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation.detail.loading")
     }
 
-    private func scroll(_ proxy: ScrollViewProxy, to id: String, anchor: UnitPoint) {
-        if reduceMotion {
-            proxy.scrollTo(id, anchor: anchor)
-        } else {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: anchor) }
-        }
+    private func timeline(_ session: HistorySession) -> some View {
+        let currentMatch = store.detailMatchIndex >= 0 && store.detailMatchIndex < store.detailMatches.count
+            ? store.detailMatches[store.detailMatchIndex].messageIndex
+            : nil
+        let transcriptFile = store.activeTranscriptFile ?? session.metadata.file
+        let inputs = ConversationTimelineReaderInputs(
+                projection: store.transcriptProjection,
+                scope: .init(file: transcriptFile, transcriptID: store.activeTranscriptID),
+                sourceRawValue: session.metadata.source.rawValue,
+                query: store.detailQuery,
+                currentMatch: currentMatch,
+                fontSize: CGFloat(fontSize ?? 13),
+                layoutRequest: store.scrollLayoutRequest,
+                jumpLayoutRequest: store.jumpLayoutRequest,
+                isFollowingLatest: store.isFollowingLatest,
+                followLatestRevision: store.followLatestRevision)
+        return ConversationTimelineReader(messages: session.messages, inputs: inputs, store: store)
+            .equatable()
     }
 
     private func toolbarButton(

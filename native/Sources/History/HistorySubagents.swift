@@ -6,6 +6,26 @@ import Foundation
 /// ordinary on-disk entry; symlinks are intentionally ignored for the same reason main history
 /// discovery rejects them.
 enum HistorySubagentReader {
+    /// Same direct-file/sidecar ownership as detail loading, without decoding child bodies.
+    static func searchTranscripts(mainFile: URL)
+        -> [(file: URL, transcriptID: String, agentType: String)] {
+        let stemDirectory = mainFile.deletingLastPathComponent()
+            .appendingPathComponent(mainFile.deletingPathExtension().lastPathComponent, isDirectory: true)
+        guard isOrdinaryDirectory(stemDirectory) else { return [] }
+        var result: [String: (file: URL, transcriptID: String, agentType: String)] = [:]
+        for file in qoderPrefetchFiles(mainFile: mainFile).sorted(by: {
+            $0.lastPathComponent < $1.lastPathComponent
+        }) {
+            guard let agentID = exactAgentID(file.lastPathComponent, suffix: ".jsonl") else { continue }
+            let meta = readMetadata(file.deletingLastPathComponent()
+                .appendingPathComponent("agent-\(agentID).meta.json"), qoder: false, qoderReader: .shared)
+            let key = meta["toolUseId"]?.stringValue ?? "agent:\(agentID)"
+            result[key] = (file, key,
+                meta["agentType"]?.stringValue ?? meta["subagent_type"]?.stringValue ?? "agent")
+        }
+        return result.values.sorted { $0.file.lastPathComponent < $1.file.lastPathComponent }
+    }
+
     static func attach(
         to session: HistorySession,
         mainRecords: [[String: HistoryValue]],

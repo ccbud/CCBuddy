@@ -8,26 +8,10 @@ enum ClaudeHistoryParser {
         var model: String?
 
         for record in records {
-            let type = record["type"]?.stringValue ?? ""
-            guard type == "user" || type == "assistant",
-                  record["isMeta"]?.boolValue != true,
-                  let envelope = record["message"]?.objectValue,
-                  let role = envelope["role"]?.stringValue else { continue }
-
-            let usage = type == "assistant" ? HistoryParsingSupport.usage(from: envelope["usage"]) : nil
-            if let usage { totals.add(usage) }
-            if type == "assistant", let actual = envelope["model"]?.stringValue { model = actual }
-            let timestampText = record["timestamp"]?.stringValue
-            messages.append(HistoryMessage(
-                role: role,
-                content: HistoryParsingSupport.blocks(from: envelope["content"]),
-                timestamp: HistoryDateParser.parse(timestampText),
-                timestampText: timestampText,
-                modelActual: type == "assistant" ? envelope["model"]?.stringValue : nil,
-                usage: usage,
-                stopReason: type == "assistant" ? envelope["stop_reason"]?.stringValue : nil,
-                isSidechain: record["isSidechain"]?.boolValue ?? false
-            ))
+            guard let value = message(from: record) else { continue }
+            if let usage = value.usage { totals.add(usage) }
+            if let actual = value.modelActual { model = actual }
+            messages.append(value)
         }
 
         let metadataRecord = records.first(where: { $0["cwd"] != nil })
@@ -78,5 +62,24 @@ enum ClaudeHistoryParser {
             diagnostics: context.document.diagnostics
         )
         return HistorySession(metadata: metadata, messages: messages)
+    }
+
+    static func message(from record: [String: HistoryValue], parsingTimestamp: Bool = true) -> HistoryMessage? {
+        let type = record["type"]?.stringValue ?? ""
+        guard type == "user" || type == "assistant",
+              record["isMeta"]?.boolValue != true,
+              let envelope = record["message"]?.objectValue,
+              let role = envelope["role"]?.stringValue else { return nil }
+        let timestampText = record["timestamp"]?.stringValue
+        return HistoryMessage(
+            role: role,
+            content: HistoryParsingSupport.blocks(from: envelope["content"]),
+            timestamp: parsingTimestamp ? HistoryDateParser.parse(timestampText) : nil,
+            timestampText: timestampText,
+            modelActual: type == "assistant" ? envelope["model"]?.stringValue : nil,
+            usage: type == "assistant" ? HistoryParsingSupport.usage(from: envelope["usage"]) : nil,
+            stopReason: type == "assistant" ? envelope["stop_reason"]?.stringValue : nil,
+            isSidechain: record["isSidechain"]?.boolValue ?? false
+        )
     }
 }

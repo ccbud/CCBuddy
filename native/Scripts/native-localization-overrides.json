@@ -1,4 +1,417 @@
 {
+  "本地搜索": {
+    "en": "Local search",
+    "ja": "ローカル検索",
+    "ko": "로컬 검색",
+    "zh-Hans": "本地搜索",
+    "zh-Hant": "本機搜尋"
+  },
+  "智能排序": {
+    "en": "Smart ranking",
+    "ja": "スマート並べ替え",
+    "ko": "스마트 정렬",
+    "zh-Hans": "智能排序",
+    "zh-Hant": "智慧排序"
+  },
+  "正在智能排序": {
+    "en": "Ranking locally",
+    "ja": "ローカルで並べ替え中",
+    "ko": "로컬 정렬 중",
+    "zh-Hans": "正在智能排序",
+    "zh-Hant": "正在智慧排序"
+  },
+  "离线模型为前 32 条结果排序，适合英文与代码查询。": {
+    "en": "An offline model ranks the first 32 results for English and code queries.",
+    "ja": "オフラインモデルで先頭32件を並べ替えます。英語とコードの検索に適しています。",
+    "ko": "오프라인 모델로 처음 32개 결과를 정렬합니다. 영어와 코드 검색에 적합합니다.",
+    "zh-Hans": "离线模型为前 32 条结果排序，适合英文与代码查询。",
+    "zh-Hant": "離線模型為前 32 筆結果排序，適合英文與程式碼查詢。"
+  },
+  "搜索与加速详情": {
+    "en": "Search and acceleration details",
+    "ja": "検索と高速化の詳細",
+    "ko": "검색 및 가속 세부 정보",
+    "zh-Hans": "搜索与加速详情",
+    "zh-Hant": "搜尋與加速詳情"
+  },
+  "本机完成，隐私留在本机": {
+    "en": "On your Mac. Private by design.",
+    "ja": "Mac内で処理。データもMac内に。",
+    "ko": "Mac에서 처리하고 데이터를 보호합니다",
+    "zh-Hans": "本机完成，隐私留在本机",
+    "zh-Hant": "本機完成，隱私留在本機"
+  },
+  "tgrep 缩小候选范围，再精确核对原文；智能排序不会移除匹配结果。": {
+    "en": "tgrep narrows the candidates before exact text verification. Smart ranking keeps every matching result.",
+    "ja": "tgrepで候補を絞り原文と正確に照合します。スマート並べ替えは一致する結果を除外しません。",
+    "ko": "tgrep으로 후보를 좁힌 후 원문을 정확히 확인합니다. 스마트 정렬은 일치하는 결과를 제거하지 않습니다.",
+    "zh-Hans": "tgrep 缩小候选范围，再精确核对原文；智能排序不会移除匹配结果。",
+    "zh-Hant": "tgrep 縮小候選範圍，再精確核對原文；智慧排序不會移除符合的結果。"
+  },
+  "搜索引擎": {
+    "en": "Search engine",
+    "ja": "検索エンジン",
+    "ko": "검색 엔진",
+    "zh-Hans": "搜索引擎",
+    "zh-Hant": "搜尋引擎"
+  },
+  "索引文档": {
+    "en": "Indexed documents",
+    "ja": "インデックス内の文書",
+    "ko": "색인 문서",
+    "zh-Hans": "索引文档",
+    "zh-Hant": "索引文件"
+  },
+  "本次候选": {
+    "en": "Query candidates",
+    "ja": "今回の候補",
+    "ko": "검색 후보",
+    "zh-Hans": "本次候选",
+    "zh-Hant": "本次候選"
+  },
+  "本地模型": {
+    "en": "Local model",
+    "ja": "ローカルモデル",
+    "ko": "로컬 모델",
+    "zh-Hans": "本地模型",
+    "zh-Hant": "本機模型"
+  },
+  "计算策略": {
+    "en": "Compute policy",
+    "ja": "計算ポリシー",
+    "ko": "계산 정책",
+    "zh-Hans": "计算策略",
+    "zh-Hant": "計算策略"
+  },
+  "ANE 优选算子": {
+    "en": "ANE preferred operations",
+    "ja": "ANE優先演算",
+    "ko": "ANE 우선 연산",
+    "zh-Hans": "ANE 优选算子",
+    "zh-Hant": "ANE 優選運算子"
+  },
+  "向量缓存命中": {
+    "en": "Embedding cache hits",
+    "ja": "埋め込みキャッシュヒット",
+    "ko": "임베딩 캐시 적중",
+    "zh-Hans": "向量缓存命中",
+    "zh-Hant": "向量快取命中"
+  },
+  "Neural Engine 由 Core ML 调度；计算计划不代表逐次运行的硬件计数。": {
+    "en": "Core ML schedules Neural Engine work. Its compute plan is not per-inference hardware telemetry.",
+    "ja": "Neural EngineはCore MLが制御します。計算計画は実行ごとのハードウェア計測値ではありません。",
+    "ko": "Core ML이 Neural Engine을 제어합니다. 계산 계획은 추론별 하드웨어 측정값이 아닙니다.",
+    "zh-Hans": "Neural Engine 由 Core ML 调度；计算计划不代表逐次运行的硬件计数。",
+    "zh-Hant": "Neural Engine 由 Core ML 排程；計算計畫不代表逐次執行的硬體計數。"
+  },
+  "专注阅读": {
+    "en": "Focus on reading",
+    "ja": "集中して読む",
+    "ko": "읽기에 집중",
+    "zh-Hans": "专注阅读",
+    "zh-Hant": "專注閱讀"
+  },
+  "前往": {
+    "en": "Go",
+    "ja": "移動",
+    "ko": "이동",
+    "zh-Hans": "前往",
+    "zh-Hant": "前往"
+  },
+  "退出专注": {
+    "en": "Exit Focus",
+    "ja": "集中モードを終了",
+    "ko": "집중 모드 종료",
+    "zh-Hans": "退出专注",
+    "zh-Hant": "退出專注"
+  },
+  "你的本地 AI 工作台": {
+    "en": "Local AI workspace",
+    "ja": "ローカルAIワークスペース",
+    "ko": "로컬 AI 작업 공간",
+    "zh-Hans": "你的本地 AI 工作台",
+    "zh-Hant": "你的本機 AI 工作台"
+  },
+  "工作空间": {
+    "en": "Workspace",
+    "ja": "ワークスペース",
+    "ko": "작업 공간",
+    "zh-Hans": "工作空间",
+    "zh-Hant": "工作空間"
+  },
+  "最近会话": {
+    "en": "Recent sessions",
+    "ja": "最近のセッション",
+    "ko": "최근 세션",
+    "zh-Hans": "最近会话",
+    "zh-Hant": "最近會話"
+  },
+  "会话结果": {
+    "en": "Session results",
+    "ja": "セッションの結果",
+    "ko": "세션 결과",
+    "zh-Hans": "会话结果",
+    "zh-Hant": "會話結果"
+  },
+  "打开": {
+    "en": "Open",
+    "ja": "開く",
+    "ko": "열기",
+    "zh-Hans": "打开",
+    "zh-Hant": "開啟"
+  },
+  "最新消息": {
+    "en": "Latest message",
+    "ja": "最新のメッセージ",
+    "ko": "최신 메시지",
+    "zh-Hans": "最新消息",
+    "zh-Hant": "最新訊息"
+  },
+  "This model supports English and code queries. Keyword order is preserved for other languages.": {
+    "en": "This model supports English and code queries. Keyword order is preserved for other languages.",
+    "ja": "英語とコードの検索に対応しています。ほかの言語ではキーワード順を保持します。",
+    "ko": "영어와 코드 검색을 지원합니다. 다른 언어에서는 키워드 순서를 유지합니다.",
+    "zh-Hans": "此模型支持英文与代码查询；其他语言保留关键词顺序。",
+    "zh-Hant": "此模型支援英文與程式碼查詢；其他語言保留關鍵字順序。"
+  },
+  "Local semantic model unavailable. Keyword results remain available.": {
+    "en": "Local semantic model unavailable. Keyword results remain available.",
+    "ja": "ローカルの意味モデルを利用できません。キーワード結果は引き続き利用できます。",
+    "ko": "로컬 의미 모델을 사용할 수 없습니다. 키워드 결과는 계속 사용할 수 있습니다.",
+    "zh-Hans": "本地语义模型不可用。关键词结果仍可使用。",
+    "zh-Hant": "本機語意模型無法使用。關鍵字結果仍可使用。"
+  },
+  "首次使用会准备本地模型，精确搜索结果始终可用。": {
+    "en": "The first use prepares the local model. Exact search results stay available.",
+    "ja": "初回はローカルモデルを準備します。完全一致の検索結果はその間も利用できます。",
+    "ko": "처음 사용할 때 로컬 모델을 준비합니다. 정확한 검색 결과는 계속 사용할 수 있습니다.",
+    "zh-Hans": "首次使用会准备本地模型，精确搜索结果始终可用。",
+    "zh-Hant": "首次使用會準備本機模型，精確搜尋結果始終可用。"
+  },
+  "本地智能排序已完成。": {
+    "en": "Local smart ranking is complete.",
+    "ja": "ローカルのスマート並べ替えが完了しました。",
+    "ko": "로컬 스마트 정렬을 완료했습니다.",
+    "zh-Hans": "本地智能排序已完成。",
+    "zh-Hant": "本機智慧排序已完成。"
+  },
+  "分析": {
+    "en": "Analyze",
+    "ja": "分析",
+    "ko": "분석",
+    "zh-Hans": "分析",
+    "zh-Hant": "分析"
+  },
+  "正在本机整理消息与工具记录，可随时切换其他会话。": {
+    "en": "Messages and tool records are being prepared locally. You can switch sessions at any time.",
+    "ja": "メッセージとツールの記録をローカルで準備しています。いつでも別のセッションに切り替えられます。",
+    "ko": "기기에서 메시지와 도구 기록을 준비하고 있습니다. 언제든 다른 세션으로 전환할 수 있습니다.",
+    "zh-Hans": "正在本机整理消息与工具记录，可随时切换其他会话。",
+    "zh-Hant": "正在本機整理訊息與工具記錄，可隨時切換其他會話。"
+  },
+  "取消打开": {
+    "en": "Cancel opening",
+    "ja": "開くのをキャンセル",
+    "ko": "열기 취소",
+    "zh-Hans": "取消打开",
+    "zh-Hant": "取消開啟"
+  },
+  "正在查找候选会话…": {
+    "en": "Finding candidate sessions…",
+    "ja": "候補のセッションを検索中…",
+    "ko": "후보 세션 찾는 중…",
+    "zh-Hans": "正在查找候选会话…",
+    "zh-Hant": "正在尋找候選會話…"
+  },
+  "正在核对匹配内容…": {
+    "en": "Verifying matching content…",
+    "ja": "一致する内容を確認中…",
+    "ko": "일치하는 내용 확인 중…",
+    "zh-Hans": "正在核对匹配内容…",
+    "zh-Hant": "正在核對符合的內容…"
+  },
+  "已找到的结果可先打开，也可继续输入。": {
+    "en": "Open results as they arrive, or keep typing.",
+    "ja": "見つかった結果を開くか、入力を続けられます。",
+    "ko": "찾은 결과를 바로 열거나 계속 입력할 수 있습니다.",
+    "zh-Hans": "已找到的结果可先打开，也可继续输入。",
+    "zh-Hant": "可先開啟已找到的結果，也可繼續輸入。"
+  },
+  "搜索未完成，当前显示部分结果。": {
+    "en": "Search is incomplete. Showing partial results.",
+    "ja": "検索が完了していません。一部の結果を表示しています。",
+    "ko": "검색이 완료되지 않았습니다. 일부 결과를 표시합니다.",
+    "zh-Hans": "搜索未完成，当前显示部分结果。",
+    "zh-Hant": "搜尋尚未完成，目前顯示部分結果。"
+  },
+  "候选检索": {
+    "en": "Candidate lookup",
+    "ja": "候補の検索",
+    "ko": "후보 조회",
+    "zh-Hans": "候选检索",
+    "zh-Hant": "候選檢索"
+  },
+  "首批结果": {
+    "en": "First results",
+    "ja": "最初の結果",
+    "ko": "첫 결과",
+    "zh-Hans": "首批结果",
+    "zh-Hant": "首批結果"
+  },
+  "完整搜索": {
+    "en": "Complete search",
+    "ja": "検索完了",
+    "ko": "전체 검색",
+    "zh-Hans": "完整搜索",
+    "zh-Hant": "完整搜尋"
+  },
+  "可继续输入或清空搜索。": {
+    "en": "Keep typing or clear the search at any time.",
+    "ja": "入力を続けるか、いつでも検索をクリアできます。",
+    "ko": "계속 입력하거나 언제든지 검색을 지울 수 있습니다.",
+    "zh-Hans": "可继续输入或清空搜索。",
+    "zh-Hant": "可繼續輸入或清空搜尋。"
+  },
+  "加速暂不可用": {
+    "en": "Acceleration paused",
+    "ja": "高速化を一時停止",
+    "ko": "가속 일시 중지",
+    "zh-Hans": "加速暂不可用",
+    "zh-Hant": "加速暫不可用"
+  },
+  "本次查询直接核对新增或已变化的原始记录，已确认的匹配会先显示。": {
+    "en": "This query verifies new or changed source records directly. Confirmed matches appear as they are found.",
+    "ja": "この検索は新規または変更された元の記録を直接確認します。確認済みの一致から順次表示します。",
+    "ko": "이 검색은 새로 추가되거나 변경된 원본 기록을 직접 확인합니다. 확인된 일치 항목부터 표시합니다.",
+    "zh-Hans": "本次查询直接核对新增或已变化的原始记录，已确认的匹配会先显示。",
+    "zh-Hant": "本次查詢直接核對新增或已變更的原始記錄，已確認的符合項目會先顯示。"
+  },
+  "精确搜索仍可用；后续搜索会自动重试加速。": {
+    "en": "Exact search remains available. Later searches automatically retry acceleration.",
+    "ja": "完全一致検索は引き続き利用できます。以降の検索で高速化を自動的に再試行します。",
+    "ko": "정확한 검색은 계속 사용할 수 있습니다. 이후 검색에서 가속을 자동으로 다시 시도합니다.",
+    "zh-Hans": "精确搜索仍可用；后续搜索会自动重试加速。",
+    "zh-Hant": "精確搜尋仍可用；後續搜尋會自動重試加速。"
+  },
+  "诊断代码": {
+    "en": "Diagnostic code",
+    "ja": "診断コード",
+    "ko": "진단 코드",
+    "zh-Hans": "诊断代码",
+    "zh-Hant": "診斷代碼"
+  },
+  "索引所在磁盘空间不足，搜索加速已暂停。": {
+    "en": "The index volume is low on space. Search acceleration is paused.",
+    "ja": "インデックスの保存先ディスクの空き容量が不足しているため、検索の高速化を一時停止しています。",
+    "ko": "인덱스 디스크의 여유 공간이 부족하여 검색 가속이 일시 중지되었습니다.",
+    "zh-Hans": "索引所在磁盘空间不足，搜索加速已暂停。",
+    "zh-Hant": "索引所在磁碟空間不足，搜尋加速已暫停。"
+  },
+  "搜索缓存位置不可用，加速引擎未能启动。": {
+    "en": "The search cache location is unavailable. Acceleration could not start.",
+    "ja": "検索キャッシュの保存先が利用できないため、高速化エンジンを起動できませんでした。",
+    "ko": "검색 캐시 위치를 사용할 수 없어 가속 엔진을 시작하지 못했습니다.",
+    "zh-Hans": "搜索缓存位置不可用，加速引擎未能启动。",
+    "zh-Hant": "搜尋快取位置不可用，加速引擎未能啟動。"
+  },
+  "无法读写搜索缓存，正在使用精确搜索。": {
+    "en": "The search cache could not be read or written. Using exact search.",
+    "ja": "検索キャッシュを読み書きできないため、完全一致検索を使用しています。",
+    "ko": "검색 캐시를 읽거나 쓸 수 없어 정확한 검색을 사용하고 있습니다.",
+    "zh-Hans": "无法读写搜索缓存，正在使用精确搜索。",
+    "zh-Hant": "無法讀寫搜尋快取，正在使用精確搜尋。"
+  },
+  "搜索加速暂不可用，正在使用精确搜索。": {
+    "en": "Search acceleration is temporarily unavailable. Using exact search.",
+    "ja": "検索の高速化は一時的に利用できません。完全一致検索を使用しています。",
+    "ko": "검색 가속을 일시적으로 사용할 수 없어 정확한 검색을 사용하고 있습니다.",
+    "zh-Hans": "搜索加速暂不可用，正在使用精确搜索。",
+    "zh-Hant": "搜尋加速暫不可用，正在使用精確搜尋。"
+  },
+  "正在统计全部匹配次数…": {
+    "en": "Counting all matches…",
+    "ja": "すべての一致件数を集計中…",
+    "ko": "전체 일치 횟수 집계 중…",
+    "zh-Hans": "正在统计全部匹配次数…",
+    "zh-Hant": "正在統計全部符合次數…"
+  },
+  "{count} 处匹配": {
+    "en": "{count} matches",
+    "ja": "{count} 件一致",
+    "ko": "{count}회 일치",
+    "zh-Hans": "{count} 处匹配",
+    "zh-Hant": "{count} 處符合"
+  },
+  "1 处匹配": {
+    "en": "1 match",
+    "ja": "1 件一致",
+    "ko": "1회 일치",
+    "zh-Hans": "1 处匹配",
+    "zh-Hant": "1 處符合"
+  },
+  "至少 {count} 处匹配": {
+    "en": "At least {count} matches",
+    "ja": "少なくとも {count} 件一致",
+    "ko": "최소 {count}회 일치",
+    "zh-Hans": "至少 {count} 处匹配",
+    "zh-Hant": "至少 {count} 處符合"
+  },
+  "至少 1 处匹配": {
+    "en": "At least 1 match",
+    "ja": "少なくとも 1 件一致",
+    "ko": "최소 1회 일치",
+    "zh-Hans": "至少 1 处匹配",
+    "zh-Hant": "至少 1 處符合"
+  },
+  "匹配次数统计完成。": {
+    "en": "The occurrence count is complete.",
+    "ja": "一致件数の集計が完了しました。",
+    "ko": "일치 횟수 집계가 완료되었습니다.",
+    "zh-Hans": "匹配次数统计完成。",
+    "zh-Hant": "符合次數統計完成。"
+  },
+  "已确认匹配，完整次数尚未统计完成。": {
+    "en": "A match is verified. Its total count is not complete yet.",
+    "ja": "一致は確認済みです。総件数の集計はまだ完了していません。",
+    "ko": "일치가 확인되었습니다. 전체 횟수 집계는 아직 완료되지 않았습니다.",
+    "zh-Hans": "已确认匹配，完整次数尚未统计完成。",
+    "zh-Hant": "已確認符合，完整次數尚未統計完成。"
+  },
+  "搜索次数统计尚未完成，请重试。": {
+    "en": "Search returned an unfinished occurrence count. Please retry.",
+    "ja": "一致件数の集計が未完了です。もう一度お試しください。",
+    "ko": "검색 일치 횟수 집계가 완료되지 않았습니다. 다시 시도하세요.",
+    "zh-Hans": "搜索次数统计尚未完成，请重试。",
+    "zh-Hant": "搜尋次數統計尚未完成，請重試。"
+  },
+  "旧版缓存（未使用）": {
+    "en": "Legacy cache (unused)",
+    "ja": "旧バージョンのキャッシュ（未使用）",
+    "ko": "이전 캐시 (사용 안 함)",
+    "zh-Hans": "旧版缓存（未使用）",
+    "zh-Hant": "舊版快取（未使用）"
+  },
+  "直接搜索": {
+    "en": "Direct search",
+    "ja": "直接検索",
+    "ko": "직접 검색",
+    "zh-Hans": "直接搜索",
+    "zh-Hant": "直接搜尋"
+  },
+  "索引分组": {
+    "en": "Indexed groups",
+    "ja": "インデックスのグループ",
+    "ko": "색인 그룹",
+    "zh-Hans": "索引分组",
+    "zh-Hant": "索引群組"
+  },
+  "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。": {
+    "en": "This query checks compressed text directly without waiting for an index. Acceleration prepares in the background for later queries.",
+    "ja": "この検索はインデックスを待たずに圧縮された本文を直接照合します。高速化はバックグラウンドで準備され、以降の検索で自動的に使用されます。",
+    "ko": "이 검색은 색인을 기다리지 않고 압축된 본문을 직접 확인합니다. 가속은 백그라운드에서 준비되며 이후 검색에 자동으로 사용됩니다.",
+    "zh-Hans": "本次查询直接核对压缩正文，不等待索引；加速在后台准备，后续查询自动使用。",
+    "zh-Hant": "本次查詢直接核對壓縮內文，不等待索引；加速在背景準備，後續查詢自動使用。"
+  },
   "会话时间线": {
     "en": "Conversation timeline",
     "ja": "会話タイムライン",

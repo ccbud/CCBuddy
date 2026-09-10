@@ -28,14 +28,20 @@ final class ColumnLayout: ObservableObject {
     @Published var inspectorWidth: CGFloat {
         didSet { store.set(inspectorWidth, forKey: Self.inspector.key) }
     }
-    @Published var railVisible: Bool { didSet { store.set(railVisible, forKey: Self.railVisibleKey) } }
-    @Published var streamVisible: Bool { didSet { store.set(streamVisible, forKey: Self.streamVisibleKey) } }
+    @Published var railVisible: Bool {
+        didSet { if !focusModeEnabled { store.set(railVisible, forKey: Self.railVisibleKey) } }
+    }
+    @Published var streamVisible: Bool {
+        didSet { if !focusModeEnabled { store.set(streamVisible, forKey: Self.streamVisibleKey) } }
+    }
     /// The session overview. It is a column rather than a popover — the facts about a session are
     /// something you read *alongside* the transcript, and a sheet that covers the transcript to
     /// show them is the wrong shape. It only takes space while a session is open.
     @Published var inspectorVisible: Bool {
-        didSet { store.set(inspectorVisible, forKey: Self.inspectorVisibleKey) }
+        didSet { if !focusModeEnabled { store.set(inspectorVisible, forKey: Self.inspectorVisibleKey) } }
     }
+    @Published private(set) var focusModeEnabled = false
+    private var focusRestore: (rail: Bool, stream: Bool, inspector: Bool)?
 
     private static let railVisibleKey = "layout.rail.visible"
     private static let streamVisibleKey = "layout.stream.visible"
@@ -97,6 +103,30 @@ final class ColumnLayout: ObservableObject {
     func toggleStream() { streamVisible.toggle() }
 
     func toggleInspector() { inspectorVisible.toggle() }
+
+    /// Focus is a temporary presentation, not a saved layout. Leaving the last deliberate layout
+    /// in defaults also makes an interrupted process relaunch with every original column intact.
+    func toggleFocusMode() {
+        if focusModeEnabled {
+            endFocusMode()
+        } else {
+            focusRestore = (railVisible, streamVisible, inspectorVisible)
+            focusModeEnabled = true
+            railVisible = false
+            streamVisible = false
+            inspectorVisible = false
+        }
+    }
+
+    func endFocusMode() {
+        guard let previous = focusRestore else { return }
+        // Keep persistence suspended until all three original values have been restored.
+        railVisible = previous.rail
+        streamVisible = previous.stream
+        inspectorVisible = previous.inspector
+        focusRestore = nil
+        focusModeEnabled = false
+    }
 
     /// What the columns actually get, given the space there is.
     ///
@@ -184,7 +214,8 @@ struct ColumnDivider: View {
 
     let column: ColumnLayout.Column
     var side: Side = .leading
-    @Binding var width: CGFloat
+    /// The width on screen, which can be narrower than the remembered preference in a small window.
+    let width: CGFloat
     var onCommit: (CGFloat) -> Void = { _ in }
     var identifier: String?
 
@@ -208,7 +239,9 @@ struct ColumnDivider: View {
                         if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
                     }
                     .gesture(
-                        DragGesture(minimumDistance: 1)
+                        // This rule moves as its column changes width. Its own local coordinate
+                        // system would feed that movement back into the next pointer sample.
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
                             .onChanged { value in
                                 let origin = dragOrigin ?? width
                                 if dragOrigin == nil { dragOrigin = origin }
@@ -217,7 +250,15 @@ struct ColumnDivider: View {
                                     : -value.translation.width
                                 onCommit(ColumnLayout.clamped(origin + travel, in: column))
                             }
-                            .onEnded { _ in dragOrigin = nil }
+                            .onEnded { value in
+                                if let origin = dragOrigin {
+                                    let travel = side == .leading
+                                        ? value.translation.width
+                                        : -value.translation.width
+                                    onCommit(ColumnLayout.clamped(origin + travel, in: column))
+                                }
+                                dragOrigin = nil
+                            }
                     )
                     .onTapGesture(count: 2) { onCommit(column.default) }
             }

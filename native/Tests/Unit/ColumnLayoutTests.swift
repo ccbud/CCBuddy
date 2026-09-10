@@ -212,4 +212,51 @@ final class ColumnLayoutTests: XCTestCase {
         XCTAssertTrue(layout.railVisible)
         XCTAssertEqual(layout.railWidth, 320, "coming back at the default would undo a deliberate size")
     }
+
+    // MARK: - Window frame and content minimums
+
+    func testWindowContentMinimumAccountsForTheMeasuredNativeTitlebar() {
+        XCTAssertEqual(WindowConfigurator.minimumFrameSize.width, 940)
+        XCTAssertEqual(WindowConfigurator.minimumFrameSize.height, 620)
+        for frameHeight: CGFloat in [620, 800] {
+            for inset: CGFloat in [22, 28, 32] {
+                let contentMinimum = WindowConfigurator.minimumContentHeight(
+                    frameHeight: frameHeight,
+                    contentLayoutHeight: frameHeight - inset
+                )
+                XCTAssertEqual(contentMinimum + inset, 620, accuracy: 0.001,
+                               "The outer minimum must stay 620 points across native titlebar sizes")
+            }
+        }
+    }
+
+    func testWindowContentMinimumUsesTheFullMinimumWithoutATitlebarInset() {
+        XCTAssertEqual(WindowConfigurator.minimumContentHeight(
+            frameHeight: 800, contentLayoutHeight: 800
+        ), 620)
+    }
+
+    func testWindowContentMinimumClampsANegativeMeasuredInsetToZero() {
+        XCTAssertEqual(WindowConfigurator.minimumContentHeight(
+            frameHeight: 800, contentLayoutHeight: 824
+        ), 620, "An inconsistent layout measurement must not increase the declared minimum")
+    }
+
+    func testWindowContentMinimumNeverBecomesNegativeWithAnOversizedInset() {
+        XCTAssertEqual(WindowConfigurator.minimumContentHeight(
+            frameHeight: 1_000, contentLayoutHeight: 100
+        ), 0)
+    }
+
+    func testWindowContentMinimumFallsBackForEveryNonfiniteMeasurement() {
+        let invalidMeasurements: [CGFloat] = [.nan, .infinity, -.infinity]
+        for invalid in invalidMeasurements {
+            XCTAssertEqual(WindowConfigurator.minimumContentHeight(
+                frameHeight: invalid, contentLayoutHeight: 768
+            ), 620)
+            XCTAssertEqual(WindowConfigurator.minimumContentHeight(
+                frameHeight: 800, contentLayoutHeight: invalid
+            ), 620)
+        }
+    }
 }

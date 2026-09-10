@@ -372,6 +372,14 @@ final class AppModel: ObservableObject {
                         isDirectory: true
                     ).path,
             ]
+            // Developer performance runs can load the real multi-agent corpus while keeping
+            // catalog/configuration writes in the isolated CCBUD_HOME. This is gated by the
+            // existing debug-only UI-testing runtime and is never a release environment override.
+            if let encodedRoots = environment["CCBUD_UI_HISTORY_DIRS"]?.data(using: .utf8),
+               let roots = try? JSONDecoder().decode([String].self, from: encodedRoots),
+               !roots.isEmpty {
+                fixture.historyDirs = roots
+            }
             fixture.historyActive = "all"
             if environment["CCBUD_UI_TRAY_USAGE"] == "1" {
                 fixture.trayUsage.enabled = true

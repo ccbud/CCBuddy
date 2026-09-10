@@ -72,7 +72,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
     typealias WatcherStarter = @Sendable (ConversationHistoryWatcher) -> Bool
 
     let scanner: ConversationIndexScanner
-    private let database: ConversationIndexDatabase
+    private let database: ConversationFileCatalog
 
     private let workerQueue = DispatchQueue(
         label: "dev.ccbud.conversation-catalog-coordinator",
@@ -100,7 +100,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
 
     init(
         configuration: HistoryConfiguration,
-        database: ConversationIndexDatabase,
+        database: ConversationFileCatalog,
         loader: (any HistorySessionLoading)? = nil,
         scanner: ConversationIndexScanner? = nil,
         watcherStarter: @escaping WatcherStarter = { $0.start() }
@@ -152,6 +152,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
         running = true
         let runIdentifier = UUID()
         self.runIdentifier = runIdentifier
+        database.registerIndexLifecycle(runIdentifier)
         currentEvent = nil
         watcherState = .unknown
         stateLock.unlock()
@@ -191,8 +192,8 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
     }
 
     func stop() {
-        database.cancelDeferredMaintenance()
         stateLock.lock()
+        if let runIdentifier { database.unregisterIndexLifecycle(runIdentifier) }
         running = false
         runIdentifier = nil
         eventObserver = nil
@@ -371,7 +372,7 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             ConversationIndexScanCancellation
         ) throws -> ConversationIndexScanResult
     ) throws -> ConversationIndexScanResult {
-        database.cancelDeferredMaintenance()
+        database.yieldDeferredMaintenanceForActivity()
         if let identifier {
             guard isCurrent(identifier) else { throw CancellationError() }
             publish(.started(revision: scanner.generation), identifier: identifier)
@@ -401,7 +402,14 @@ final class ConversationCatalogCoordinator: @unchecked Sendable {
             guard isCurrent(identifier) else { throw CancellationError() }
             let rootsChanged = rearmWatcherIfNeeded()
             publish(.finished(result), identifier: identifier)
-            database.scheduleDeferredMaintenance()
+            // Stop/start and maintenance scheduling share this lifecycle lock. A scan which
+            // passed its previous isCurrent check cannot restart work after stop's barrier.
+            stateLock.lock()
+            if running, runIdentifier == identifier {
+                database.scheduleDeferredMaintenance()
+                database.scheduleSearchIndexPreparation()
+            }
+            stateLock.unlock()
             if rootsChanged { queueVerification(identifier: identifier) }
             scheduleDeferredReparse(identifier: identifier)
             return result

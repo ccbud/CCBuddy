@@ -2,6 +2,23 @@ import XCTest
 @testable import CCBuddy
 
 final class SettingsPresentationTests: XCTestCase {
+    func testFileCatalogStorageUsageCountsHardLinksOnceAndDoesNotFollowSymlinks() throws {
+        let root = try HistoryTestSupport.temporaryDirectory("file-catalog-footprint")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalog = root.appendingPathComponent("catalog", isDirectory: true)
+        try FileManager.default.createDirectory(at: catalog, withIntermediateDirectories: true)
+        let pack = catalog.appendingPathComponent("body.pack")
+        let checkpoint = catalog.appendingPathComponent("checkpoint.bin")
+        try Data([1, 2, 3, 4]).write(to: pack)
+        try FileManager.default.linkItem(at: pack, to: checkpoint)
+        let outside = root.appendingPathComponent("unrelated")
+        try Data(repeating: 7, count: 1_024).write(to: outside)
+        try FileManager.default.createSymbolicLink(at: catalog.appendingPathComponent("link"),
+                                                   withDestinationURL: outside)
+        XCTAssertEqual(ConversationStorageFootprint.bytes(in: [catalog, checkpoint]), 4)
+        XCTAssertEqual(ConversationStorageFootprint.bytes(in: [root.appendingPathComponent("missing")]), 0)
+    }
+
     func testDataDirectoryPickerCollapsesProducerSubdirectoriesToTheirRoot() {
         let root = URL(fileURLWithPath: "/tmp/ccbud-history-root", isDirectory: true)
         XCTAssertEqual(

@@ -75,3 +75,33 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## MiniLM semantic search model
+
+CC Buddy includes a modified Core ML conversion of
+[`sentence-transformers/all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/tree/1110a243fdf4706b3f48f1d95db1a4f5529b4d41),
+licensed under the Apache License 2.0. The full license is included as
+`MiniLM-LICENSE.txt`, with the upstream model card as `MODEL-CARD.md`.
+
+CC Buddy converts the original transformer's linear projections into equivalent
+1×1 convolutions, uses static four-dimensional attention, and quantizes weights
+to int8 for local Core ML inference. The conversion script, pinned source
+revision, SHA-256 checksums, and numerical parity results are included in
+`native/Scripts/build-semantic-model.py` and
+`native/Resources/SemanticSearch/manifest.json`. The model is distributed with
+the application; conversation text and embeddings are never sent to its authors.
+
+## tgrep
+
+CC Buddy embeds [`tgrep-core`](https://github.com/microsoft/tgrep), version
+1.0.4 at revision `e2007b52d2b8fe4176159d0da20c9ba4a46d5aab`, under the MIT
+License. Copyright (c) Microsoft Corporation. The complete license is shipped
+in `native/Resources/TgrepThirdPartyNotices.txt`, together with the original
+license and copyright notices of its locked Rust dependency graph, including
+the additional BSD and Unicode terms. These notices are reproducible with
+`node native/Scripts/generate-tgrep-notices.js` after preparing the library;
+use `--check` to verify the checked-in resource without changing it.
+The upstream library is unmodified; CC Buddy's in-process C ABI and bounded
+working overlay with a persistent sealed checkpoint are in
+`native/TgrepBridge`, with immutable upstream and transitive dependency pins
+recorded in `Cargo.toml` and `Cargo.lock`.

@@ -56,32 +56,61 @@ struct ConversationListPane: View {
     }
 
     private func listHeader(_ sessions: [HistorySessionMetadata]) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(workbench.contextTitle(
-                projects: store.projects,
-                historyActive: store.historyActive,
-                language: appLanguage
-            ))
-                .font(.ccTitle())
-                .tracking(-0.35)
-                .lineLimit(1)
-            CCBadge(text: "\(sessions.count)")
-            Spacer(minLength: 0)
-            indexingStatus
-            ColumnToggle(
-                symbol: "sidebar.left",
-                help: appLanguage.localized("隐藏会话列表"),
-                identifier: "layout.toggle.stream"
-            ) {
-                columns.toggleStream()
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(workbench.contextTitle(
+                    projects: store.projects,
+                    historyActive: store.historyActive,
+                    language: appLanguage
+                ))
+                    .font(.ccTitle())
+                    .tracking(-0.65)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                ColumnToggle(
+                    symbol: "sidebar.left",
+                    help: appLanguage.localized("隐藏会话列表"),
+                    identifier: "layout.toggle.stream"
+                ) {
+                    columns.toggleStream()
+                }
+            }
+            HStack(spacing: Space.sm) {
+                Text(appLanguage.localized("\(sessions.count) 个会话"))
+                    .font(.ccCaption())
+                    .foregroundStyle(Theme.mutedForeground)
+                    .monospacedDigit()
+                    .accessibilityIdentifier("conversation.list.count")
+                Spacer(minLength: 0)
+                indexingStatus
+            }
+            if !store.listQuery.isEmpty {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "magnifyingglass")
+                    Text(store.listQuery).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button { store.updateListQuery("") } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(appLanguage.localized("清空搜索"))
+                        .accessibilityIdentifier("conversation.list.filter.clear")
+                }
+                .font(.ccCaption())
+                .foregroundStyle(Theme.accentText)
+                .padding(Space.sm)
+                .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Radius.button))
             }
         }
         .padding(.horizontal, Space.lg)
         // The column carries the traffic-light band in its own material rather than the shell
         // painting a title strip across all three columns.
         .padding(.top, Metrics.titleBarHeight - Space.sm)
-        .padding(.bottom, Space.sm + 2)
-        .background(WindowDragRegion())
+        .padding(.bottom, Space.lg)
+        .background(alignment: .top) {
+            // Keep AppKit's mouseDown/performDrag surface physically above the SwiftUI buttons.
+            // A full-header native background can compete with their hit regions after resizing.
+            WindowDragRegion()
+                .frame(height: Metrics.titleBarHeight - Space.sm)
+        }
     }
 
     @ViewBuilder private var indexingStatus: some View {
@@ -159,32 +188,29 @@ struct ConversationListPane: View {
                     showsProgress: store.isSearchingContent
                 )
             } else {
+                let rows = ConversationSearchRowSnapshot.make(sessions: sessions, hits: store.contentHits,
+                    query: store.listQuery, selectedID: store.selectedFile.map(ConversationFilter.fileKey),
+                    language: appLanguage)
                 ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(sessions, id: \.conversationListIdentity) { session in
-                            ConversationSessionRow(
-                                metadata: session,
-                                selected: store.selectedFile.map(ConversationFilter.fileKey)
-                                    == ConversationFilter.fileKey(session.file),
-                                hit: store.contentHit(for: session),
-                                searchQuery: store.listQuery
+                    LazyVStack(spacing: Space.xs) {
+                        ForEach(rows) { row in
+                            ConversationObservedSessionRow(
+                                store: store,
+                                metadata: row.metadata,
+                                selected: row.selected
                             ) {
                                 Task {
                                     await store.select(
-                                        session,
-                                        searchHit: store.contentHit(for: session)
+                                        row.metadata,
+                                        searchHit: store.contentHit(for: row.metadata)
                                     )
                                 }
                             }
                         }
 
                         if store.isSearchingContent {
-                            HStack(spacing: 7) {
-                                ProgressView().controlSize(.mini)
-                                Text("正在搜索会话内容…")
-                            }
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.mutedForeground)
+                            ConversationSearchActivityFeedback(phase: store.contentSearchPhase,
+                                hasVerifiedResults: !store.contentHits.isEmpty)
                             .padding(12)
                         } else if let error = store.contentSearchError {
                             Label(
@@ -229,6 +255,21 @@ struct ConversationListPane: View {
     }
 }
 
+private struct ConversationObservedSessionRow: View {
+    @ObservedObject var store: ConversationStore
+
+    let metadata: HistorySessionMetadata
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        // Each mounted row observes refinements itself. Its refresh does not depend on a
+        // surrounding lazy container reevaluating a closure whose metadata is unchanged.
+        ConversationSessionRow(metadata: metadata, selected: selected,
+            hit: store.contentHit(for: metadata), searchQuery: store.listQuery, action: action)
+    }
+}
+
 /// Internal rather than private so the off-screen proof sheets can render it: this row is the most
 /// repeated element in the application, and it is worth being able to look at without a GUI session.
 struct ConversationSessionRow: View {
@@ -254,7 +295,7 @@ struct ConversationSessionRow: View {
         let sourceName = ConversationPresentation.sourceName(rawValue: metadata.source.rawValue)
 
         return Button(action: action) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Space.sm) {
                 HStack(spacing: 6) {
                     if ConversationStore.isLive(lastActivity: metadata.lastActivity) {
                         Circle()
@@ -272,8 +313,8 @@ struct ConversationSessionRow: View {
                             .help(appLanguage.localized("子代理"))
                     }
                     Text(metadata.title.isEmpty ? appLanguage.localized("无标题") : metadata.title)
-                        .font(.ccBody(.medium))
-                        .lineLimit(1)
+                        .font(.ccBody(selected ? .semibold : .medium))
+                        .lineLimit(2)
                         .help(metadata.title)
                     if metadata.pinned {
                         Image(systemName: "pin.fill")
@@ -291,16 +332,12 @@ struct ConversationSessionRow: View {
                 }
 
                 HStack(spacing: Space.xs + 2) {
-                    AgentBrandMark(source: metadata.source, size: 15)
-                    Text(sourceName)
-                        .lineLimit(1)
+                    AgentBrandMark(source: metadata.source, size: 16)
                     if !metadata.project.isEmpty {
                         Text(metadata.project)
                             .lineLimit(1)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Theme.fill)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
+                    } else {
+                        Text(sourceName).lineLimit(1)
                     }
                     if metadata.imported {
                         Image(systemName: "square.and.arrow.down")
@@ -311,6 +348,7 @@ struct ConversationSessionRow: View {
                             .foregroundStyle(Theme.danger)
                     }
                     Spacer(minLength: 0)
+                    if let hit { ConversationSearchCountLabel(hit: hit) }
                     Text(activityRelative)
                         .help(appLanguage.localized("更新于 \(activityAbsolute)"))
                 }
@@ -326,15 +364,24 @@ struct ConversationSessionRow: View {
                 }
             }
             .padding(.horizontal, Space.md)
-            .padding(.vertical, Space.sm)
+            .padding(.vertical, Space.md)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected ? Theme.selection : (hovering ? Theme.hover : Color.clear))
             .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule().fill(Theme.accent)
+                        .frame(width: 3, height: 24)
+                        .padding(.leading, 2)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(ConversationPressableButtonStyle())
         .onHover { hovering = $0 }
         .accessibilityLabel("\(metadata.title)，\(sourceName)")
+        .accessibilityValue(hit.map { ConversationSearchCountPresentation.label(for: $0, language: appLanguage) } ?? "")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier(metadata.conversationRowAccessibilityIdentifier)
     }
 

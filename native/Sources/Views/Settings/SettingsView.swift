@@ -22,7 +22,7 @@ struct SettingsView: View {
                     .padding(.top, Metrics.titleBarHeight + Space.sm)
                     .padding(.bottom, Space.xxl)
                     .frame(maxWidth: 780, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .transition(.opacity)
                     .id(model.navigation.settingsPane)
             }
@@ -90,10 +90,11 @@ struct SettingsView: View {
                 Image(systemName: item.symbol)
                     .font(.system(size: Typography.body))
                     .frame(width: Rail.leadBox)
+                    .foregroundStyle(selected ? Theme.accentText : Theme.mutedForeground)
                 Text(appLanguage.localized(item.title)).lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .font(.ccBody(selected ? .medium : .regular))
+            .font(.ccBody(selected ? .semibold : .regular))
             .foregroundStyle(selected ? Theme.foreground : Theme.mutedForeground)
             .padding(.horizontal, Space.sm)
             .frame(maxWidth: .infinity, minHeight: Metrics.rowHeight)
@@ -102,6 +103,7 @@ struct SettingsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier("settings.nav.\(item.rawValue)")
     }
 
@@ -125,4 +127,3 @@ struct SettingsView: View {
         }
     }
 }
-

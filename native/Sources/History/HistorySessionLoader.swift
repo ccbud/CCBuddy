@@ -61,15 +61,20 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     let configuration: HistoryConfiguration
     let qoderReader: QoderFileReader
     let adapters: ConversationSourceAdapterRegistry
+    private let makeCatalogProjection: @Sendable (HistorySession) -> HistoryCatalogProjection
 
     init(
         configuration: HistoryConfiguration,
         qoderReader: QoderFileReader = .shared,
-        adapters: ConversationSourceAdapterRegistry = .init()
+        adapters: ConversationSourceAdapterRegistry = .init(),
+        makeCatalogProjection: @escaping @Sendable (HistorySession) -> HistoryCatalogProjection = {
+            HistoryCatalogProjection(session: $0)
+        }
     ) {
         self.configuration = configuration
         self.qoderReader = qoderReader
         self.adapters = adapters
+        self.makeCatalogProjection = makeCatalogProjection
     }
 
     init(
@@ -140,10 +145,95 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
         return loaded
     }
 
+    /// Search cannot interpret a failed bounded preview as proof that a source has no content.
+    /// Keep scanner startup's 256 KiB budget unchanged, but allow a query worker to decode the
+    /// first complete ordinary JSONL record when that preview could not identify the producer.
+    /// The visitor stops immediately after this record; it never retains the full transcript.
+    func loadSearchMetadata(_ candidates: [HistoryFileCandidate]) throws -> [QuickLoadedHistorySession] {
+        try Task.checkCancellation()
+        let authorized = try candidates.map { requested -> HistoryFileCandidate in
+            try Task.checkCancellation()
+            var candidate = try pathResolver.validatedCandidate(for: requested.file)
+            guard candidate.directory.id == requested.directory.id else {
+                throw HistoryError.invalidPath(requested.file)
+            }
+            candidate.formatHint = requested.formatHint ?? candidate.formatHint
+            return candidate
+        }
+        var loaded = loadQuickMetadata(authorized)
+        try Task.checkCancellation()
+        let known = Set(loaded.map { $0.candidate.file.standardizedFileURL.path })
+        for requested in authorized where !known.contains(requested.file.standardizedFileURL.path) {
+            try Task.checkCancellation()
+            guard requested.formatHint != .antigravity, requested.formatHint != .qoder,
+                  !QoderFileReader.isQoderDataPath(requested.file) else { continue }
+            var candidate = try pathResolver.validatedCandidate(for: requested.file)
+            guard candidate.directory.id == requested.directory.id else {
+                throw HistoryError.invalidPath(requested.file)
+            }
+            candidate.formatHint = requested.formatHint ?? candidate.formatHint
+            let dependency = ConversationSourceDependency(file: candidate.file, role: .primaryTranscript)
+            let before = ConversationDependencyStamp.read(dependency)
+            var sample: HistoryJSONLDocument?
+            do {
+                _ = try HistoryJSONLDocument.visitRecords(from: candidate.file) { record in
+                    sample = HistoryJSONLDocument(records: [record],
+                        diagnostics: .init(decodedLines: 1, malformedLines: 0))
+                    throw SearchMetadataSample.complete
+                }
+            } catch SearchMetadataSample.complete {}
+            try Task.checkCancellation()
+            guard let sample else { continue }
+            do {
+                let value = try loadQuickMetadata(candidate, sampledDocument: sample)
+                guard value.dependencySnapshot.stamp(for: candidate.file, role: .primaryTranscript) == before else {
+                    throw HistorySessionLoadError.dependenciesChanged(candidate.file)
+                }
+                loaded.append(value)
+            } catch HistoryError.unsupportedTranscript {
+                // A structurally valid unrelated JSON object is still not a conversation.
+                continue
+            }
+        }
+        try Task.checkCancellation()
+        return loaded
+    }
+
+    private enum SearchMetadataSample: Error { case complete }
+
     func load(
         _ candidate: HistoryFileCandidate,
         consistency: HistorySessionLoadConsistency = .dependencyStable
     ) throws -> LoadedHistorySession {
+        let parsed = try parseSession(candidate, consistency: consistency)
+        let projection = makeCatalogProjection(parsed.session)
+        try Task.checkCancellation()
+        let dependenciesAfterParse = parsed.manifest.snapshot()
+        if consistency == .dependencyStable,
+           parsed.dependenciesBeforeParse != dependenciesAfterParse {
+            throw HistorySessionLoadError.dependenciesChanged(candidate.file)
+        }
+        return LoadedHistorySession(
+            session: parsed.session,
+            projection: projection,
+            manifest: parsed.manifest,
+            dependencySnapshot: dependenciesAfterParse
+        )
+    }
+
+    private struct ParsedSession {
+        var session: HistorySession
+        var manifest: ConversationDependencyManifest
+        var dependenciesBeforeParse: ConversationDependencySnapshot
+    }
+
+    /// Detail/export need the lossless normalized session, not the catalog's searchable copy.
+    /// Keep the producer parsing path shared without making each open build an unused projection.
+    private func parseSession(
+        _ candidate: HistoryFileCandidate,
+        consistency: HistorySessionLoadConsistency
+    ) throws -> ParsedSession {
+        try Task.checkCancellation()
         let primaryRole: ConversationDependencyRole = candidate.formatHint == .antigravity
             ? .primaryDatabase
             : .primaryTranscript
@@ -162,6 +252,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
                 qoderReader: qoderReader
             )
         }
+        try Task.checkCancellation()
 
         let adapter = try adapters.adapter(for: candidate, document: document)
         let manifest = ConversationDependencyManifest(
@@ -182,12 +273,14 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
             candidate.file,
             records: document?.records ?? []
         )
+        try Task.checkCancellation()
         var session = try adapter.parse(ConversationSourceParseInput(
             candidate: candidate,
             document: document,
             facts: facts,
             configuration: configuration
         ))
+        try Task.checkCancellation()
         if adapter.attachesSubagents {
             session = HistorySubagentReader.attach(
                 to: session,
@@ -196,6 +289,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
                 qoderReader: qoderReader
             )
         }
+        try Task.checkCancellation()
 
         if session.metadata.source == .codex,
            let state = CodexStateDatabase.quickMetadata(
@@ -204,18 +298,12 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
            )[candidate.file.standardizedFileURL.path] {
             session.metadata = Self.mergeCodexState(state, into: session.metadata)
         }
+        try Task.checkCancellation()
 
-        let projection = HistoryCatalogProjection(session: session)
-        let dependenciesAfterParse = manifest.snapshot()
-        if consistency == .dependencyStable,
-           dependenciesBeforeParse != dependenciesAfterParse {
-            throw HistorySessionLoadError.dependenciesChanged(candidate.file)
-        }
-        return LoadedHistorySession(
+        return ParsedSession(
             session: session,
-            projection: projection,
             manifest: manifest,
-            dependencySnapshot: dependenciesAfterParse
+            dependenciesBeforeParse: dependenciesBeforeParse
         )
     }
 
@@ -230,7 +318,11 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     }
 
     func getSession(file: URL) throws -> HistorySession {
-        try load(file: file, consistency: .bestEffort).session
+        try Task.checkCancellation()
+        return try parseSession(
+            pathResolver.validatedCandidate(for: file),
+            consistency: .bestEffort
+        ).session
     }
 
     func getSession(filePath: String) throws -> HistorySession {
@@ -238,7 +330,8 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
     }
 
     private func loadQuickMetadata(
-        _ candidate: HistoryFileCandidate
+        _ candidate: HistoryFileCandidate,
+        sampledDocument: HistoryJSONLDocument? = nil
     ) throws -> QuickLoadedHistorySession {
         let facts = try HistoryFileFacts.read(candidate.file, records: [])
         let adapter: any ConversationSourceAdapter
@@ -255,7 +348,7 @@ struct HistorySessionLoader: HistorySessionLoading, Sendable {
                 appDataRoot: configuration.appDataRoot
             )
         } else {
-            let document = try quickDocument(candidate)
+            let document = try sampledDocument ?? quickDocument(candidate)
             adapter = try adapters.adapter(for: candidate, document: document)
             let session = try adapter.parse(ConversationSourceParseInput(
                 candidate: candidate,

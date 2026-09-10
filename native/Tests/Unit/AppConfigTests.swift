@@ -1230,22 +1230,59 @@ final class AppModelTests: XCTestCase {
             )
         )
         let pluginManager = AppModelControlledPluginManager()
+        let restartGate = AppModelStartupVerificationGate()
         let fixture = try makeRunningGatewayFixture(
             named: "stale-plugin-reconcile",
-            pluginManager: pluginManager
+            pluginManager: pluginManager,
+            // This is an ordering test, not a process-start latency test. Keep the real
+            // shell readiness gate, with 10 s of polling budget for a loaded test host.
+            healthCheckAttempts: 2_000,
+            gatewayStartupVerificationHook: { await restartGate.pauseOnFirstRestart() }
         )
         defer {
+            restartGate.release()
             fixture.session.invalidateAndCancel()
             AppModelGatewayURLProtocol.clearReadinessFile()
             try? FileManager.default.removeItem(at: fixture.root)
         }
         await fixture.model.startGateway()
-
-        var edited = try XCTUnwrap(fixture.model.config.activeProvider)
+        guard fixture.model.gatewayState.isRunning else {
+            let diagnostics = await fixture.supervisor.diagnostics
+            XCTFail("Gateway fixture did not start: \(fixture.model.gatewayState); "
+                + "\(fixture.model.lastError ?? "no model error"); "
+                + "shell ready: \(FileManager.default.fileExists(atPath: fixture.readinessFile.path)); "
+                + diagnostics.formatted)
+            await fixture.model.shutdown()
+            return
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.readinessFile.path),
+                      "Startup must observe actual shell readiness, not an unconditional healthy stub")
+        // The shell may exit normally on TERM. Its production supervisor can escalate to
+        // SIGKILL after 500 ms, so that shell must not serve as this test's mutation gate.
+        var edited: Provider
+        do {
+            try Data().write(to: fixture.releaseStopFile)
+            edited = try XCTUnwrap(fixture.model.config.activeProvider)
+        } catch {
+            await fixture.model.shutdown()
+            throw error
+        }
         edited.name = "Gate-owning provider edit"
         let providerEdit = Task { await fixture.model.upsertProvider(edited) }
-        let observedStop = await waitForFile(fixture.stopObservedFile)
-        XCTAssertTrue(observedStop)
+        let restartDeadline = Date().addingTimeInterval(15)
+        while Date() < restartDeadline, !restartGate.isPaused {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        guard restartGate.isPaused else {
+            restartGate.release()
+            await providerEdit.value
+            XCTFail("Provider edit did not reach startup verification: "
+                + "\(fixture.model.gatewayState); \(fixture.model.lastError ?? "no model error")")
+            await fixture.model.shutdown()
+            return
+        }
+        // Startup verification runs while the real config-mutation gate is owned.
+        // Only this test releases it; scheduling or the supervisor's kill timeout cannot.
 
         let olderRefresh = Task { await fixture.model.refreshPlugins() }
         let observedOlderCall = await waitForCatalogCalls(
@@ -1259,7 +1296,7 @@ final class AppModelTests: XCTestCase {
         )
         let olderPublishDeadline = Date().addingTimeInterval(2)
         while Date() < olderPublishDeadline, fixture.model.plugins.first?.id != "older" {
-            try await Task.sleep(nanoseconds: 5_000_000)
+            try? await Task.sleep(nanoseconds: 5_000_000)
         }
         XCTAssertEqual(fixture.model.plugins.first?.id, "older")
 
@@ -1278,7 +1315,7 @@ final class AppModelTests: XCTestCase {
         await newerRefresh.value
         XCTAssertEqual(fixture.model.plugins.first?.id, "newer")
 
-        try Data().write(to: fixture.releaseStopFile)
+        restartGate.release()
         await providerEdit.value
         await olderRefresh.value
 
@@ -1792,6 +1829,7 @@ final class AppModelTests: XCTestCase {
         let supervisor: BifrostSupervisor
         let model: AppModel
         let session: URLSession
+        let readinessFile: URL
         let stopObservedFile: URL
         let releaseStopFile: URL
     }
@@ -1801,7 +1839,9 @@ final class AppModelTests: XCTestCase {
         connectCLIs: Bool = false,
         fileWriter: CLIConnectionManager.FileWriter? = nil,
         pluginManager: (any PluginManaging)? = nil,
-        exitImmediatelyAfterHealth: Bool = false
+        exitImmediatelyAfterHealth: Bool = false,
+        healthCheckAttempts: Int = 300,
+        gatewayStartupVerificationHook: (@MainActor () async -> Void)? = nil
     ) throws -> RunningGatewayFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "ccbud-appmodel-\(name)-\(UUID().uuidString)",
@@ -1869,13 +1909,14 @@ final class AppModelTests: XCTestCase {
         let supervisor = BifrostSupervisor(
             session: session,
             environment: environment,
-            healthCheckAttempts: 300,
+            healthCheckAttempts: healthCheckAttempts,
             healthCheckIntervalNanoseconds: 5_000_000
         )
         let exitAfterHealthFile = appDirectory.appendingPathComponent("exit-after-health")
         let startupVerificationHook: (@MainActor () async -> Void)?
         if exitImmediatelyAfterHealth {
             startupVerificationHook = {
+                await gatewayStartupVerificationHook?()
                 try? Data().write(to: exitAfterHealthFile)
                 let deadline = Date().addingTimeInterval(2)
                 while Date() < deadline {
@@ -1884,7 +1925,7 @@ final class AppModelTests: XCTestCase {
                 }
             }
         } else {
-            startupVerificationHook = nil
+            startupVerificationHook = gatewayStartupVerificationHook
         }
         let model = AppModel(
             repository: repository,
@@ -1901,6 +1942,7 @@ final class AppModelTests: XCTestCase {
             supervisor: supervisor,
             model: model,
             session: session,
+            readinessFile: readinessFile,
             stopObservedFile: stopObservedFile,
             releaseStopFile: releaseStopFile
         )
@@ -1926,6 +1968,33 @@ final class AppModelTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         return false
+    }
+}
+
+/// An explicit async barrier at the existing production verification seam. The first startup
+/// passes through; only the provider edit's restart pauses, retaining its config-mutation gate.
+@MainActor
+private final class AppModelStartupVerificationGate {
+    private var visits = 0
+    private var isReleased = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var isPaused = false
+
+    func pauseOnFirstRestart() async {
+        visits += 1
+        guard visits == 2, !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            isPaused = true
+        }
+        isPaused = false
+    }
+
+    func release() {
+        isReleased = true
+        let pending = continuation
+        continuation = nil
+        pending?.resume()
     }
 }
 

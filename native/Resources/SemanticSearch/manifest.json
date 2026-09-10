@@ -1,0 +1,26 @@
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+  "license": "Apache-2.0",
+  "language": "en",
+  "source_weight_sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+  "max_tokens": 128,
+  "dimensions": 384,
+  "coremltools": "8.3.0",
+  "torch": "2.7.0",
+  "conversion": "Static 4D attention, 1x1 convolution projections, float16 compute, int8 weights",
+  "reference_cosine_similarities": [
+    0.9995293617248535,
+    0.9994913935661316,
+    0.9995569586753845,
+    0.9996220469474792
+  ],
+  "sha256": {
+    "MiniLM-LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "MODEL-CARD.md": "dcd602d2fd35c203a247304a06fec6654a12f7941b739f9221a064fe8dc3b7f0",
+    "MiniLMSemantic.mlpackage/Data/com.apple.CoreML/model.mlmodel": "61a2dcb61013b0f8b2a46307e640f4ae0b6b9ef35b571e1866ac8e9c0f8e00ae",
+    "MiniLMSemantic.mlpackage/Data/com.apple.CoreML/weights/weight.bin": "d3aa522a9052434243db074b67398a658cfaa2b41f23855e84299ffc44087d44",
+    "MiniLMSemantic.mlpackage/Manifest.json": "9722e72bb9b3310e5ba0d4ad0d07bcfcdc06176003d0035a96012574bb213dd7",
+    "minilm-vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+  }
+}

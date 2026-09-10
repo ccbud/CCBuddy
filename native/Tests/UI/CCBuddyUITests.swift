@@ -7,9 +7,7 @@ final class CCBuddyUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        isolatedHome = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-xcui-home-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: isolatedHome, withIntermediateDirectories: true)
+        isolatedHome = try UITestFixtureDirectory.make(named: "home")
         app = makeIsolatedApplication()
         terminateAppIfRunning()
         app.launchEnvironment["CCBUD_MONITOR_UI_FIXTURE"] = "1"
@@ -70,8 +68,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testProviderHeroReadsFullHistoryUsageInsteadOfMonitorBuffer() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-usage-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "usage")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -106,8 +103,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testMenuBarStatusAndPanelReadLocalizedHistoryUsage() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-menubar-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "menubar")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -361,8 +357,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testWakeConversationWorkbenchVisualStates() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-wake-workbench-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "wake-workbench")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -452,8 +447,7 @@ final class CCBuddyUITests: XCTestCase {
     }
 
     func testLibraryGroupsCollapseAndComeBack() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-rail-groups-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "rail-groups")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -559,14 +553,33 @@ final class CCBuddyUITests: XCTestCase {
             "dragging the rule between two columns has to move it"
         )
 
+        let widenedWidth = stream.frame.width
         app.buttons["layout.toggle.stream"].click()
         XCTAssertTrue(stream.waitForNonExistence(timeout: 3))
         XCTAssertTrue(app.buttons["layout.toggle.stream"].waitForExistence(timeout: 3))
+        app.buttons["layout.toggle.stream"].click()
+        XCTAssertTrue(stream.waitForExistence(timeout: 3))
+        XCTAssertEqual(stream.frame.width, widenedWidth, accuracy: 1,
+                       "Restoring a resized column must preserve the reader's chosen width")
+
+        // Shrinking has room even when the earlier expansion hit the reading pane's minimum.
+        // Measure the actual visible width: a remembered, squeezed preference must not create
+        // dead travel, and a moving local gesture coordinate must not lose pointer distance.
+        let shrinkStart = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        shrinkStart.press(forDuration: 0.2, thenDragTo: shrinkStart.withOffset(CGVector(dx: -48, dy: 0)))
+        let shrunk = XCTNSPredicateExpectation(
+            predicate: NSPredicate { element, _ in
+                guard let element = element as? XCUIElement else { return false }
+                return abs(element.frame.width - (widenedWidth - 48)) <= 2
+            },
+            object: stream
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [shrunk], timeout: 3), .completed,
+                       "A 48-point drag must shrink the displayed column by 48 points")
     }
 
     func testDeterministicVisualParityScreenshots() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ccbud-ui-visual-\(UUID().uuidString)", isDirectory: true)
+        let root = try UITestFixtureDirectory.make(named: "visual")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("projects/fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -822,13 +835,13 @@ final class CCBuddyUITests: XCTestCase {
             return
         }
 
-        // The three columns must still be told apart by tone alone in the title-bar band, which is
-        // also what proves the opaque shell reaches under it. Values are Theme.sidebar, Theme.list
-        // and Theme.background.
-        let samples: [(name: String, point: CGPoint, expectedRGB: UInt32)] = [
-            ("sidebar", CGPoint(x: 112, y: 12), 0xEDEBE4),
-            ("conversation list", CGPoint(x: 392, y: 12), 0xF7F5F0),
-            ("conversation detail", CGPoint(x: 870, y: 12), 0xF1EFE9),
+        // Reading and list surfaces stay opaque beneath the title bar. The sidebar now uses
+        // native backdrop material, so its resolved RGB depends on the wallpaper; only its
+        // final composited opacity is stable. Solid accessibility fallbacks have unit contrast tests.
+        let samples: [(name: String, point: CGPoint, expectedRGB: UInt32?)] = [
+            ("sidebar", CGPoint(x: 112, y: 12), nil),
+            ("conversation list", CGPoint(x: 392, y: 12), 0xF6F8FC),
+            ("conversation detail", CGPoint(x: 870, y: 12), 0xEDF1F7),
         ]
         let xScale = CGFloat(bitmap.pixelsWide) / frame.width
         let yScale = CGFloat(bitmap.pixelsHigh) / frame.height
@@ -852,15 +865,16 @@ final class CCBuddyUITests: XCTestCase {
                 continue
             }
 
-            let expectedRed = CGFloat((sample.expectedRGB >> 16) & 0xFF) / 255
-            let expectedGreen = CGFloat((sample.expectedRGB >> 8) & 0xFF) / 255
-            let expectedBlue = CGFloat(sample.expectedRGB & 0xFF) / 255
             XCTAssertEqual(
                 sRGB.alphaComponent,
                 1,
                 accuracy: 0.02,
                 "The \(sample.name) top surface must be opaque"
             )
+            guard let rgb = sample.expectedRGB else { continue }
+            let expectedRed = CGFloat((rgb >> 16) & 0xFF) / 255
+            let expectedGreen = CGFloat((rgb >> 8) & 0xFF) / 255
+            let expectedBlue = CGFloat(rgb & 0xFF) / 255
             XCTAssertEqual(
                 sRGB.redComponent,
                 expectedRed,

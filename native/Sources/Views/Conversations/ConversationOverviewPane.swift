@@ -23,6 +23,10 @@ struct ConversationOverviewPane: View {
             } else {
                 VStack(spacing: 0) {
                     HStack {
+                        Image(systemName: "sidebar.right")
+                            .foregroundStyle(Theme.accentText)
+                        Text(appLanguage.localized("概览"))
+                            .font(.ccHeading())
                         Spacer(minLength: 0)
                         Button(action: toggleCollapsed) {
                             Image(systemName: "chevron.right")
@@ -32,9 +36,10 @@ struct ConversationOverviewPane: View {
                         .accessibilityLabel(appLanguage.localized("收起会话概览"))
                         .accessibilityIdentifier("conversation.overview.collapse")
                     }
-                    .padding(.horizontal, 8)
-                    .frame(height: 40)
-                    .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
+                    .padding(.horizontal, Space.lg)
+                    .padding(.top, Metrics.titleBarHeight - Space.sm)
+                    .padding(.bottom, Space.md)
+                    .background(WindowDragRegion())
 
                     if let session = store.activeTranscript {
                         overview(session)
@@ -44,29 +49,35 @@ struct ConversationOverviewPane: View {
                 }
             }
         }
-        .background(Theme.surface)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.list)
+        .clipped()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.overview")
     }
 
     private func overview(_ session: HistorySession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            railHeading("概览")
             VStack(spacing: 0) {
-                ForEach(Array(statRows(session).enumerated()), id: \.offset) { _, row in
+                ForEach(Array(statRows(session).enumerated()), id: \.offset) { index, row in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(appLanguage.localized(row.0))
                             .foregroundStyle(Theme.mutedForeground)
-                        Spacer(minLength: 4)
+                            .fixedSize(horizontal: true, vertical: false)
                         Text(row.1)
                             .font(.ccMono(Typography.label))
                             .foregroundStyle(Theme.foreground)
                             .lineLimit(1)
                             // Paths and thread ids differ at the end, so the end is what survives.
                             .truncationMode(.middle)
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
+                            .layoutPriority(-1)
                             .help(row.1)
+                            .accessibilityIdentifier("conversation.overview.value.\(index)")
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 11))
-                    .padding(.vertical, 4.5)
+                    .padding(.vertical, Space.sm)
                     .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
                 }
 
@@ -80,12 +91,16 @@ struct ConversationOverviewPane: View {
                     .padding(.vertical, 7)
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.xs)
+            .frame(maxWidth: .infinity)
+            .panelSurface(radius: Radius.row)
+            .padding(.horizontal, Space.sm)
 
             railHeading("导航")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
-                    let entries = tableOfContents(session.messages)
+                    let entries = store.transcriptProjection.tableOfContents
                     if entries.isEmpty {
                         Text("没有用户消息可供导航")
                             .font(.ccLabel())
@@ -117,8 +132,10 @@ struct ConversationOverviewPane: View {
                 .padding(.horizontal, 7)
                 .padding(.bottom, 10)
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("conversation.toc")
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder private var overviewLoadingState: some View {
@@ -187,16 +204,6 @@ struct ConversationOverviewPane: View {
         }
     }
 
-    private func tableOfContents(_ messages: [HistoryMessage]) -> [(index: Int, title: String, fullText: String)] {
-        messages.enumerated().compactMap { index, message in
-            guard message.role == "user", !message.isMetadata else { return nil }
-            let value = ConversationVisibleText.visibleUserText(message)
-                .split(whereSeparator: { $0.isWhitespace })
-                .joined(separator: " ")
-            guard !value.isEmpty else { return nil }
-            return (index, String(value.prefix(32)), String(value.prefix(200)))
-        }
-    }
 }
 
 private struct FlexibleOverviewTags: View {

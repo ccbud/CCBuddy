@@ -99,6 +99,9 @@ try {
     'native/Vendor/bifrost-http',
     'arm64 x86_64',
   ]);
+  run('bash', ['native/Scripts/build-tgrep.sh'], {
+    env: { CCBUD_TGREP_ARCH: 'universal' },
+  });
 
   run(process.execPath, ['scripts/release-version.js', 'set', version]);
   run('xcodegen', ['generate', '--spec', 'native/project.yml', '--project', 'native']);

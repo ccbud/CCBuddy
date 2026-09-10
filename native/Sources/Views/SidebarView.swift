@@ -23,13 +23,22 @@ struct SidebarView: View {
                 .frame(height: Metrics.titleBarHeight)
 
             wordmark
-                .padding(.bottom, Space.md)
+                .padding(.bottom, Space.lg)
 
             SidebarSearchRow(store: model.conversationStore)
                 .padding(.horizontal, Space.xs)
                 .padding(.bottom, Space.md)
 
             VStack(spacing: 2) {
+                HStack {
+                    Text(appLanguage.localized("工作空间"))
+                        .font(.ccLabel(.semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(Theme.mutedForeground)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, Rail.leadInset)
+                .padding(.bottom, Space.xs)
                 ForEach(SidebarView.destinations) { destination in
                     destinationRow(destination)
                 }
@@ -50,7 +59,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, Rail.edge)
         .padding(.bottom, Space.sm)
-        .background(Theme.sidebar)
+        .ccSidebarMaterial()
     }
 
     /// Sessions are absent for the opposite reason to Settings: the library below *is* the session
@@ -62,11 +71,18 @@ struct SidebarView: View {
 
     private var wordmark: some View {
         HStack(spacing: Space.sm) {
-            AppLogo().frame(width: 20, height: 20)
-            Text(verbatim: "CC Buddy")
-                .font(.ccHeading())
-                .foregroundStyle(Theme.foreground)
-                .lineLimit(1)
+            AppLogo().frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: "CC Buddy")
+                    .font(.ccHeading(.bold))
+                    .tracking(-0.4)
+                    .foregroundStyle(Theme.foreground)
+                    .lineLimit(1)
+                Text(appLanguage.localized("你的本地 AI 工作台"))
+                    .font(.ccLabel())
+                    .foregroundStyle(Theme.mutedForeground)
+                    .lineLimit(1)
+            }
             Spacer(minLength: 0)
             ColumnToggle(
                 symbol: "sidebar.leading",
@@ -141,7 +157,7 @@ struct SidebarRow: View {
                 Text(title)
                     .font(.system(
                         size: nested ? Typography.caption : Typography.body,
-                        weight: selected ? .medium : .regular
+                        weight: selected ? .semibold : .medium
                     ))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -159,7 +175,7 @@ struct SidebarRow: View {
             .frame(maxWidth: .infinity, minHeight: nested ? Metrics.subRowHeight : Metrics.rowHeight)
             .background(rowBackground)
             // The wash moves with the pointer and the selection instead of snapping between them.
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: selected)
+            .animation(reduceMotion ? nil : CCMotion.response, value: selected)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: hovering)
             .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
             .contentShape(Rectangle())
@@ -168,6 +184,7 @@ struct SidebarRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier(identifier)
     }
 
@@ -176,7 +193,7 @@ struct SidebarRow: View {
         case .symbol(let name, let size):
             Image(systemName: name)
                 .font(.system(size: size, weight: .regular))
-                .foregroundStyle(selected ? Theme.foreground : Theme.mutedForeground)
+                .foregroundStyle(selected ? Theme.accentText : Theme.mutedForeground)
         case .brand(let source):
             AgentBrandMark(source: source, size: nested ? 15 : 18)
         }
@@ -205,7 +222,7 @@ private struct SidebarGroupHead: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Space.xs + 2) {
-                Text(title).font(.ccBody())
+                Text(title).font(.ccLabel(.semibold)).tracking(0.3)
                 Spacer(minLength: 0)
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
@@ -281,9 +298,9 @@ private struct SidebarSearchRow: View {
             }
         }
         .padding(.horizontal, Space.sm)
-        .frame(height: Metrics.rowHeight)
-        .background(hovering ? Theme.hover : Theme.fill)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+        .frame(height: 40)
+        .background(hovering ? Theme.hover : Color.clear)
+        .ccGlass(radius: Radius.row, interactive: true)
         .onHover { hovering = $0 }
         .help(appLanguage.localized("搜索全部会话"))
     }
@@ -295,6 +312,8 @@ extension Notification.Name {
     static let ccbudFocusSearch = Notification.Name("dev.ccbud.focus-search")
     static let ccbudRefreshCatalog = Notification.Name("dev.ccbud.refresh-catalog")
     static let ccbudOpenSettings = Notification.Name("dev.ccbud.open-settings")
+    static let ccbudToggleFocusMode = Notification.Name("dev.ccbud.toggle-focus-mode")
+    static let ccbudNavigate = Notification.Name("dev.ccbud.navigate")
 }
 
 // MARK: - Library

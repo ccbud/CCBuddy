@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The window shell: the library rail plus one destination, with a rule between them you can move.
@@ -12,6 +13,7 @@ struct AppShellView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var conversationWorkbench = ConversationWorkbenchState()
     @StateObject private var columns = ColumnLayout()
+    @StateObject private var searchFocusSession = ConversationSearchFocusSession()
     @State private var searchPaletteVisible = false
 
     var body: some View {
@@ -21,7 +23,7 @@ struct AppShellView: View {
                     .frame(width: columns.railWidth)
                 ColumnDivider(
                     column: ColumnLayout.rail,
-                    width: $columns.railWidth,
+                    width: columns.railWidth,
                     onCommit: { columns.resize(ColumnLayout.rail, to: $0) },
                     identifier: "layout.divider.rail"
                 )
@@ -52,6 +54,10 @@ struct AppShellView: View {
                     }
                 }
         }
+        // The palette is a modal keyboard task, not merely a visual scrim. Disable covered
+        // controls/shortcuts and remove that layer from VoiceOver while keeping it resident.
+        .disabled(searchPaletteVisible)
+        .accessibilityHidden(searchPaletteVisible)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
         // The marker rides the background layer because that is the one that genuinely spans the
@@ -68,13 +74,32 @@ struct AppShellView: View {
         // destination is on screen; activating on the sessions page left the rail showing empty
         // agent and project groups everywhere else.
         .onAppear { model.conversationStore.activate() }
-        .onDisappear { model.conversationStore.deactivate() }
+        .onDisappear {
+            searchFocusSession.end(restoringFocus: false)
+            restoreFocusLayout()
+            model.conversationStore.deactivate()
+        }
+        .overlay(alignment: .topTrailing) {
+            if columns.focusModeEnabled && !searchPaletteVisible {
+                Button(action: toggleFocusMode) {
+                    Label(appLanguage.localized("退出专注"), systemImage: "arrow.down.right.and.arrow.up.left")
+                        .font(.ccCaption(.medium))
+                        .padding(.horizontal, Space.md)
+                        .frame(height: 28)
+                }
+                .buttonStyle(.plain)
+                .ccGlass(radius: Radius.button, interactive: true)
+                .padding(.trailing, Space.md)
+                .padding(.top, 4)
+                .help("⌘⇧S")
+                .accessibilityIdentifier("layout.focus.exit")
+            }
+        }
         .overlay {
             if searchPaletteVisible {
-                ConversationSearchPalette(store: model.conversationStore) {
-                    withAnimation(.easeOut(duration: 0.12)) { searchPaletteVisible = false }
-                }
-                .transition(.opacity)
+                ConversationSearchPalette(store: model.conversationStore,
+                    focusSession: searchFocusSession, dismiss: dismissSearchPalette)
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudFocusSearch)) { _ in
@@ -84,9 +109,10 @@ struct AppShellView: View {
             // agent or location you happened to be browsing would make the promise false.
             // Pressing the shortcut again dismisses the panel, the way every command palette does.
             guard !searchPaletteVisible else {
-                withAnimation(.easeOut(duration: 0.12)) { searchPaletteVisible = false }
+                dismissSearchPalette(restoringFocus: true)
                 return
             }
+            searchFocusSession.begin(in: NSApp.keyWindow)
             model.selected = .conversations
             conversationWorkbench.showAll()
             if model.conversationStore.historyActive != "all" {
@@ -98,8 +124,38 @@ struct AppShellView: View {
             model.conversationStore.retryIndexing()
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccbudOpenSettings)) { _ in
+            restoreFocusLayout()
+            dismissSearchPalette(restoringFocus: false)
             model.selected = .settings
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ccbudToggleFocusMode)) { _ in
+            toggleFocusMode()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccbudNavigate)) { notification in
+            guard let destination = notification.object as? AppModel.Destination else { return }
+            restoreFocusLayout()
+            dismissSearchPalette(restoringFocus: false)
+            model.selected = destination
+        }
+        .onChange(of: model.selected) { destination in
+            if destination != .conversations { restoreFocusLayout() }
+        }
+    }
+
+    private func dismissSearchPalette(restoringFocus: Bool) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { searchPaletteVisible = false }
+        searchFocusSession.end(restoringFocus: restoringFocus)
+    }
+
+    private func toggleFocusMode() {
+        withAnimation(reduceMotion ? nil : CCMotion.response) {
+            model.selected = .conversations
+            columns.toggleFocusMode()
+        }
+    }
+
+    private func restoreFocusLayout() {
+        columns.endFocusMode()
     }
 
     @ViewBuilder private var content: some View {
@@ -147,7 +203,7 @@ struct DestinationHeader<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.ccTitle())
-                    .tracking(-0.35)
+                    .tracking(-0.65)
                     .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
@@ -161,7 +217,7 @@ struct DestinationHeader<Trailing: View>: View {
         }
         .padding(.horizontal, Space.xl)
         .padding(.top, Metrics.titleBarHeight - Space.sm)
-        .padding(.bottom, Space.md)
+        .padding(.bottom, Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(WindowDragRegion())
     }

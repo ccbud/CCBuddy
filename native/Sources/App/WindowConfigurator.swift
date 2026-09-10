@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 
 struct WindowConfigurator: NSViewRepresentable {
+    static let minimumFrameSize = NSSize(width: 940, height: 620)
+
+    /// SwiftUI constrains the safe-area content, while the design specifies the complete window.
+    /// Ask AppKit for its actual title-bar inset instead of assuming one macOS version's height.
+    static func minimumContentHeight(frameHeight: CGFloat, contentLayoutHeight: CGFloat) -> CGFloat {
+        guard frameHeight.isFinite, contentLayoutHeight.isFinite else { return minimumFrameSize.height }
+        let titleBarInset = max(0, frameHeight - contentLayoutHeight)
+        return max(0, minimumFrameSize.height - titleBarInset)
+    }
+
     final class Coordinator {
         private weak var window: NSWindow?
         private var observationTokens: [NSObjectProtocol] = []
@@ -75,8 +85,10 @@ struct WindowConfigurator: NSViewRepresentable {
     }
 
     var onWindowAvailable: ((NSWindow) -> Void)?
+    var colorScheme: ColorScheme?
 
-    init(onWindowAvailable: ((NSWindow) -> Void)? = nil) {
+    init(colorScheme: ColorScheme? = nil, onWindowAvailable: ((NSWindow) -> Void)? = nil) {
+        self.colorScheme = colorScheme
         self.onWindowAvailable = onWindowAvailable
     }
 
@@ -98,6 +110,13 @@ struct WindowConfigurator: NSViewRepresentable {
 
     private func configure(_ window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
+        // Liquid Glass and AppKit controls resolve their dynamic colors through NSAppearance.
+        // SwiftUI's preferredColorScheme alone can leave existing native glass in light Aqua
+        // after an in-app theme change, even while the reading canvas has already become dark.
+        if let colorScheme {
+            let name: NSAppearance.Name = colorScheme == .dark ? .darkAqua : .aqua
+            if window.appearance?.name != name { window.appearance = NSAppearance(named: name) }
+        }
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -110,7 +129,7 @@ struct WindowConfigurator: NSViewRepresentable {
         // A clear, non-opaque window makes the desktop bleed through behind the traffic lights.
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
-        window.minSize = NSSize(width: 940, height: 620)
+        window.minSize = Self.minimumFrameSize
         window.collectionBehavior.insert(.fullScreenPrimary)
         configureLegacySmokeContentSize(window)
         coordinator.attach(to: window)
