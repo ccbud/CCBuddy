@@ -80,6 +80,22 @@ struct AppConfig: Codable, Equatable {
             item.name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
             if item.name.isEmpty { item.name = "Unnamed" }
             item.models = item.models.filter { !$0.alias.isEmpty || !$0.upstream.isEmpty }
+            // A blank per-protocol address is the user saying "this provider does not speak
+            // that protocol", so it is removed rather than stored as an upstream with no host.
+            var protocolUrls: [String: String] = [:]
+            for (key, value) in item.protocolUrls {
+                guard Provider.WireProtocol(rawValue: key) != nil else { continue }
+                var url = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                while url.count > 1 && url.hasSuffix("/") { url.removeLast() }
+                if !url.isEmpty { protocolUrls[key] = url }
+            }
+            item.protocolUrls = protocolUrls
+            if !protocolUrls.isEmpty, !item.configuredProtocols.contains(item.protocol),
+               let primary = item.configuredProtocols.first {
+                // `protocol` takes every caller the provider has no matching upstream for, so it
+                // must name one of the addresses that survived.
+                item.protocol = primary
+            }
             if item.protocol == .anthropic,
                item.baseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 == "https://open.bigmodel.cn/api/anthropic" {

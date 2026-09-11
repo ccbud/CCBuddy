@@ -191,7 +191,7 @@ struct GatewaySettingsPane: View {
                 Text(provider?.name ?? providerID)
                     .font(.ccBody(.medium))
                     .lineLimit(1)
-                if let url = provider?.baseUrl, !url.isEmpty {
+                if let url = provider?.primaryUpstreamURL, !url.isEmpty {
                     Text(url)
                         .font(.ccLabel())
                         .foregroundStyle(Theme.mutedForeground)

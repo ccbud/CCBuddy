@@ -21,7 +21,60 @@ final class ProviderPresetCatalogTests: XCTestCase {
                 preset.baseURL.hasPrefix("https://"),
                 "\(preset.name) would carry its API key over plaintext: \(preset.baseURL)"
             )
+            for (wireProtocol, endpoint) in preset.resolvedEndpoints {
+                XCTAssertTrue(
+                    endpoint.hasPrefix("https://"),
+                    "\(preset.name) \(wireProtocol.rawValue): \(endpoint)"
+                )
+            }
         }
+    }
+
+    /// The base URL is the root the editor derives from and discovery falls back to, so it must
+    /// not itself be one protocol's endpoint — that is what the per-protocol addresses are for.
+    func testBaseURLsCarryNoProtocolSpecificPath() {
+        for preset in ProviderPreset.all where !preset.baseURL.isEmpty {
+            for suffix in ["/messages", "/chat/completions", "/responses", "/anthropic"] {
+                XCTAssertFalse(
+                    preset.baseURL.hasSuffix(suffix),
+                    "\(preset.name) put a protocol path in its base URL: \(preset.baseURL)"
+                )
+            }
+        }
+    }
+
+    /// Every preset names the endpoint that also takes the callers it publishes nothing for.
+    func testThePrimaryProtocolIsAlwaysOneOfTheBoundEndpoints() {
+        for preset in ProviderPreset.all where !preset.baseURL.isEmpty {
+            XCTAssertNotNil(
+                preset.resolvedEndpoints[preset.wireProtocol],
+                "\(preset.name) would convert every caller onto an address it does not bind"
+            )
+        }
+    }
+
+    /// Applying a preset is what puts a provider into the "three of three" or "one of three"
+    /// state the gateway routes on, so the addresses have to survive the copy.
+    func testApplyingAPresetBindsEveryEndpointItPublishes() throws {
+        let deepSeek = try XCTUnwrap(ProviderPreset.all.first { $0.id == "deepseek" })
+        var draft = Provider(
+            baseUrl: "https://old", protocolUrls: ["openai-responses": "https://old/responses"]
+        )
+        deepSeek.apply(to: &draft)
+
+        XCTAssertEqual(draft.baseUrl, "https://api.deepseek.com")
+        XCTAssertEqual(
+            draft.upstreamURL(for: .anthropic), "https://api.deepseek.com/anthropic"
+        )
+        XCTAssertEqual(
+            draft.upstreamURL(for: .openAIChat), "https://api.deepseek.com/chat/completions"
+        )
+        XCTAssertNil(
+            draft.upstreamURL(for: .openAIResponses),
+            "the previous provider's address must not survive into this one"
+        )
+        XCTAssertEqual(draft.configuredProtocols, [.anthropic, .openAIChat])
+        XCTAssertFalse(draft.servesEveryProtocolDirectly)
     }
 
     func testWebsiteLinksCarryNoReferralParameters() {
@@ -38,9 +91,15 @@ final class ProviderPresetCatalogTests: XCTestCase {
         XCTAssertEqual(endpointless.map(\.id), ["custom"])
     }
 
-    func testCatalogIsSubstantiallyLargerThanTheOldHandWrittenList() {
-        // The hand-written list had ten entries and covered almost nothing people actually use.
-        XCTAssertGreaterThan(ProviderPreset.all.count, 50)
+    func testCatalogListsOnlyFirstPartyVendors() {
+        // Aggregators and resellers were dropped: their endpoints move, their protocol support is
+        // whatever their own upstream exposes that week, and listing them implied vetting this
+        // app cannot do. What is left is vendors serving their own models.
+        XCTAssertGreaterThan(ProviderPreset.all.count, 15)
+        XCTAssertEqual(Set(ProviderPreset.all.map(\.category)), [.official, .vendor, .custom])
+        for removed in ["packycode", "openrouter", "aihubmix", "siliconflow", "dmxapi"] {
+            XCTAssertNil(ProviderPreset.all.first { $0.id == removed }, removed)
+        }
     }
 
     func testGroupingCoversEveryNonCustomPresetExactlyOnce() {
@@ -65,6 +124,10 @@ final class ProviderPresetCatalogTests: XCTestCase {
 
         let byModel = ProviderPreset.all.filter { $0.matches("kimi-for-coding") }
         XCTAssertFalse(byModel.isEmpty, "searching by model id should find the vendor")
+
+        // The address people have in hand is often one protocol's endpoint, not the root.
+        let byEndpoint = ProviderPreset.all.filter { $0.matches("api/paas/v4") }
+        XCTAssertEqual(byEndpoint.map(\.id).sorted(), ["zhipu-glm", "zhipu-glm-en"])
     }
 
     func testEmptyQueryReturnsEveryGroup() {
@@ -81,6 +144,7 @@ final class ProviderPresetCatalogTests: XCTestCase {
 
         XCTAssertEqual(draft.name, preset.name)
         XCTAssertEqual(draft.baseUrl, preset.baseURL)
+        XCTAssertEqual(draft.configuredUpstreamURLs, preset.resolvedEndpoints)
         XCTAssertEqual(draft.defaultModel, preset.defaultModel)
         XCTAssertEqual(draft.smallFastModel, preset.smallModel)
         XCTAssertEqual(draft.protocol, preset.wireProtocol)

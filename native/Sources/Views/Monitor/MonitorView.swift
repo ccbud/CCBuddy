@@ -65,7 +65,7 @@ struct MonitorView: View {
                     MonitorDetailDrawer(
                         store: store,
                         revealsSensitiveData: $revealsSensitiveData,
-                        upstreamProtocol: activeProvider?.protocol,
+                        upstreamProtocol: activeProvider?.primaryProtocol,
                         width: detailExpanded
                             ? proxy.size.width
                             : min(640, max(480, proxy.size.width * 0.82)),
@@ -238,8 +238,8 @@ struct MonitorView: View {
             value: activeProvider?.name ?? "—",
             subtitle: activeProvider.map {
                 revealsSensitiveData
-                    ? $0.baseUrl
-                    : MonitorPrivacyRedactor.redact($0.baseUrl, language: appLanguage)
+                    ? $0.primaryUpstreamURL
+                    : MonitorPrivacyRedactor.redact($0.primaryUpstreamURL, language: appLanguage)
             } ?? appLanguage.localized("未选择服务"),
             accent: Theme.foreground,
             subtitlePrivacySensitive: true

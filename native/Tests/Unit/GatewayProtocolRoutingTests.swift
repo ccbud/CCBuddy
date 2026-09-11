@@ -221,6 +221,102 @@ final class GatewayProtocolRoutingTests: XCTestCase {
         XCTAssertEqual(route.wireModel, "ccbud-1-abc/gpt-5.4")
     }
 
+    /// One vendor publishing all three of its own endpoints is the case worth not converting for.
+    ///
+    /// DeepSeek answers Anthropic Messages, Chat Completions and Responses itself. Before
+    /// addresses were bound per protocol, a provider was one protocol, so two of those three
+    /// callers were translated on the way to an upstream that spoke their language natively.
+    func testOneProviderBindingThreeAddressesConvertsForNobody() {
+        var deepSeek = provider("ds", .anthropic, primary: "deepseek-chat")
+        deepSeek.baseUrl = "https://api.deepseek.com"
+        deepSeek.protocolUrls = [
+            "anthropic": "https://api.deepseek.com/anthropic",
+            "openai-chat": "https://api.deepseek.com/chat/completions",
+            "openai-responses": "https://api.deepseek.com/responses",
+        ]
+        let router = GatewayProtocolRouter(config: config([deepSeek]))
+
+        XCTAssertEqual(router.routes.count, 3)
+        XCTAssertTrue(router.servesEveryProtocolDirectly)
+        XCTAssertTrue(
+            router.pinsProviderName,
+            "three Bifrost entries share one provider, so the request has to name which"
+        )
+        for clientProtocol in GatewayClientProtocol.allCases {
+            XCTAssertEqual(router.route(for: clientProtocol)?.provider.id, "ds")
+            XCTAssertEqual(
+                router.route(for: clientProtocol)?.wireProtocol,
+                clientProtocol.passthroughProtocol
+            )
+            XCTAssertFalse(router.requiresConversion(for: clientProtocol), clientProtocol.rawValue)
+        }
+        // The primary — the address that would take an unmatched caller — heads the list.
+        XCTAssertEqual(router.primaryRoute?.wireProtocol, .anthropic)
+    }
+
+    /// Binding two of three is the on-demand case: the caller the vendor publishes nothing for is
+    /// the only one converted.
+    func testAProviderBindingTwoAddressesConvertsOnlyTheThirdCaller() {
+        var deepSeek = provider("ds", .anthropic, primary: "deepseek-chat")
+        deepSeek.baseUrl = "https://api.deepseek.com"
+        deepSeek.protocolUrls = [
+            "anthropic": "https://api.deepseek.com/anthropic",
+            "openai-chat": "https://api.deepseek.com/chat/completions",
+        ]
+        let router = GatewayProtocolRouter(config: config([deepSeek]))
+
+        XCTAssertFalse(router.servesEveryProtocolDirectly)
+        XCTAssertFalse(router.requiresConversion(for: .anthropic))
+        XCTAssertFalse(router.requiresConversion(for: .openAIChat))
+        XCTAssertTrue(
+            router.requiresConversion(for: .openAIResponses),
+            "a Codex client has no Responses upstream here, so Bifrost has to translate"
+        )
+        XCTAssertEqual(router.route(for: .openAIResponses)?.wireProtocol, .anthropic)
+    }
+
+    /// Failover is between providers. A provider contributing three routes must not occupy the
+    /// whole fallback chain with itself, or the second provider in the queue never gets tried.
+    func testFallbacksStillWalkTheProviderQueueWhenOneProviderBindsEveryProtocol() throws {
+        var multi = provider("multi", .anthropic, primary: "multi-up")
+        multi.protocolUrls = [
+            "anthropic": "https://multi.example.com/anthropic",
+            "openai-chat": "https://multi.example.com/chat/completions",
+            "openai-responses": "https://multi.example.com/responses",
+        ]
+        let config = config([multi, chatProvider])
+        let router = GatewayProtocolRouter(config: config)
+        let routing = LegacyModelRoutingCompatibility(config: config)
+        let backup = try XCTUnwrap(
+            router.routes.first { $0.provider.id == "chat" }?.bifrostName
+        )
+        let pinned = try XCTUnwrap(router.routes.first {
+            $0.provider.id == "multi" && $0.wireProtocol == .openAIResponses
+        }?.bifrostName)
+
+        let route = routing.resolve("claude-sonnet-5", clientProtocol: .openAIResponses)
+        XCTAssertEqual(route?.pinnedProviderName, pinned)
+        XCTAssertEqual(
+            route?.fallbackModels, ["\(backup)/chat-up"],
+            "the other provider is the fallback; the same provider's other addresses are not"
+        )
+    }
+
+    /// A provider whose per-protocol addresses were never filled in keeps the single upstream it
+    /// has always had, addressed by its base URL.
+    func testAProviderSavedBeforePerProtocolAddressesKeepsItsSingleUpstream() {
+        let legacy = provider("legacy", .openAIChat, primary: "chat-up")
+        XCTAssertTrue(legacy.protocolUrls.isEmpty)
+        XCTAssertEqual(legacy.configuredProtocols, [.openAIChat])
+        XCTAssertEqual(legacy.upstreamURL(for: .openAIChat), "https://legacy.example.com")
+        XCTAssertNil(legacy.upstreamURL(for: .anthropic))
+
+        let router = GatewayProtocolRouter(config: config([legacy]))
+        XCTAssertEqual(router.routes.count, 1)
+        XCTAssertFalse(router.pinsProviderName)
+        XCTAssertTrue(router.requiresConversion(for: .anthropic))
+    }
+
     func testNoConfiguredProviderProducesNoRoute() {
         let router = GatewayProtocolRouter(config: AppConfig())
         XCTAssertNil(router.route(for: .anthropic))

@@ -325,9 +325,15 @@ enum BifrostConfigBuilder {
     static let codexPrimaryAliases = ["gpt-5.4", "gpt-5.5-ccbud"]
     static let codexFastAliases = ["gpt-5.4-mini"]
 
+    /// One Bifrost provider entry: a configured provider, one of the protocols it binds, and the
+    /// address that serves it. A provider that publishes two or three of its own endpoints
+    /// produces two or three of these, because a Bifrost provider carries exactly one base URL
+    /// and one wire format.
     struct RoutedProvider: Equatable {
         let provider: Provider
         let bifrostName: String
+        let wireProtocol: Provider.WireProtocol
+        let upstreamURL: String
     }
 
     enum BuildError: LocalizedError, Equatable {
@@ -356,17 +362,36 @@ enum BifrostConfigBuilder {
     /// same rule in one place so configuration generation and the Swift request rewriter cannot
     /// disagree about provider identities.
     static func routedProviders(from config: AppConfig) -> [RoutedProvider] {
-        let providers = config.gatewayProviders
-        guard providers.count > 1 else {
-            return providers.map { .init(provider: $0, bifrostName: providerName) }
+        // Queue order across providers, primary protocol first within each, so the head of the
+        // result stays the upstream that takes every caller nothing else matches.
+        typealias Upstream = (provider: Provider, wireProtocol: Provider.WireProtocol, url: String)
+        var upstreams: [Upstream] = []
+        for provider in config.gatewayProviders {
+            for wireProtocol in provider.configuredProtocols {
+                guard let url = provider.upstreamURL(for: wireProtocol) else { continue }
+                upstreams.append((provider: provider, wireProtocol: wireProtocol, url: url))
+            }
         }
-        return providers.enumerated().map { index, provider in
-            let digest = SHA256.hash(data: Data(provider.id.utf8)).prefix(5).map {
+        guard upstreams.count > 1 else {
+            return upstreams.map {
+                .init(
+                    provider: $0.provider, bifrostName: providerName,
+                    wireProtocol: $0.wireProtocol, upstreamURL: $0.url
+                )
+            }
+        }
+        return upstreams.enumerated().map { index, upstream in
+            // The digest names the address, not just the provider: one provider's Anthropic and
+            // Chat entries are separate Bifrost providers and must not collide.
+            let identity = "\(upstream.provider.id)\u{0}\(upstream.wireProtocol.rawValue)"
+            let digest = SHA256.hash(data: Data(identity.utf8)).prefix(5).map {
                 String(format: "%02x", $0)
             }.joined()
             return .init(
-                provider: provider,
-                bifrostName: "ccbud-\(index + 1)-\(digest)"
+                provider: upstream.provider,
+                bifrostName: "ccbud-\(index + 1)-\(digest)",
+                wireProtocol: upstream.wireProtocol,
+                upstreamURL: upstream.url
             )
         }
     }
@@ -380,7 +405,7 @@ enum BifrostConfigBuilder {
         var document: [String: ModelParametersEntry] = [:]
         for route in routedProviders {
             let provider = route.provider
-            let entry = modelParametersEntry(for: provider.protocol)
+            let entry = modelParametersEntry(for: route.wireProtocol)
             for model in modelCatalogModels(for: provider) {
                 // Bifrost normally resolves the provider prefix before consulting its model
                 // catalog. Retaining both forms also keeps this file useful to the compatibility
@@ -500,16 +525,22 @@ enum BifrostConfigBuilder {
     }
 
     private static func providerConfiguration(
-        for provider: Provider,
+        for route: RoutedProvider,
         config: AppConfig,
         retryCount: Int,
         retryInitial: Int,
         retryBackoffMax: Int
     ) throws -> BifrostConfiguration.ProviderConfig {
-        guard !provider.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw BifrostError.invalidBaseURL
-        }
-        let baseType = provider.protocol == .anthropic ? "anthropic" : "openai"
+        // Bifrost owns the whole upstream path and inserts its own `/v1` segment. Every provider
+        // preset, and every address a provider's own documentation gives, already ends where its
+        // version segment begins, so handing one over untouched produced `…/v1/v1/messages` and a
+        // 404 from every upstream. `GatewayUpstreamURL` reconciles the two.
+        let upstream = GatewayUpstreamURL.upstream(
+            for: route.wireProtocol, url: route.upstreamURL
+        )
+        guard !upstream.baseURL.isEmpty else { throw BifrostError.invalidBaseURL }
+        let provider = route.provider
+        let baseType = route.wireProtocol == .anthropic ? "anthropic" : "openai"
         let key = BifrostConfiguration.Key(
             name: "CC Buddy \(provider.name)",
             value: provider.authToken.isEmpty ? nil : provider.authToken,
@@ -517,17 +548,10 @@ enum BifrostConfigBuilder {
             models: ["*"],
             aliases: aliases(for: provider)
         )
-        // Bifrost owns the whole upstream path and inserts its own `/v1` segment. Every provider
-        // preset, and every base URL a provider's own documentation gives, already ends where its
-        // version segment begins, so handing one over untouched produced `…/v1/v1/messages` and a
-        // 404 from every upstream. `GatewayUpstreamURL` reconciles the two.
-        let overrides = GatewayUpstreamURL.requestPathOverrides(
-            for: provider.protocol, baseURL: provider.baseUrl
-        )
         return .init(
             keys: [key],
             networkConfig: .init(
-                baseURL: GatewayUpstreamURL.bifrostBaseURL(for: provider.baseUrl),
+                baseURL: upstream.baseURL,
                 insecureSkipVerify: config.insecureSkipVerify,
                 maxRetries: retryCount,
                 retryBackoffInitial: retryInitial,
@@ -535,8 +559,9 @@ enum BifrostConfigBuilder {
             ),
             customProviderConfig: .init(
                 baseProviderType: baseType,
-                allowedRequests: allowedRequests(for: provider.protocol),
-                requestPathOverrides: overrides.isEmpty ? nil : overrides
+                allowedRequests: allowedRequests(for: route.wireProtocol),
+                requestPathOverrides: upstream.requestPathOverrides.isEmpty
+                    ? nil : upstream.requestPathOverrides
             ),
             // Raw bodies stay local and power the native monitor inspector.
             storeRawRequestResponse: true
@@ -560,7 +585,7 @@ enum BifrostConfigBuilder {
         var providerConfigs: [String: BifrostConfiguration.ProviderConfig] = [:]
         for route in routedProviders {
             providerConfigs[route.bifrostName] = try providerConfiguration(
-                for: route.provider,
+                for: route,
                 config: config,
                 retryCount: retryCount,
                 retryInitial: retryInitial,
@@ -608,7 +633,7 @@ enum BifrostConfigBuilder {
                 // conversion for any provider whose models were not enumerated in advance.
                 compat: .init(
                     convertChatToResponses: routedProviders.contains {
-                        $0.provider.protocol == .openAIResponses
+                        $0.wireProtocol == .openAIResponses
                     }
                 )
             ),

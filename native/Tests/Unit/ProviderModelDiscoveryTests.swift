@@ -32,6 +32,44 @@ final class ProviderModelDiscoveryTests: XCTestCase {
         }
     }
 
+    /// The catalog lives with the API whose models are being bound, not necessarily at the
+    /// provider root: `https://api.kimi.com/coding/v1` lists models `https://api.kimi.com` does
+    /// not. Both are tried, most specific first.
+    func testListingLooksAtTheProtocolAddressBeforeTheProviderRoot() {
+        let provider = Provider(
+            baseUrl: "https://api.kimi.com",
+            protocolUrls: ["anthropic": "https://api.kimi.com/coding/v1"],
+            protocol: .anthropic
+        )
+        XCTAssertEqual(
+            ProviderModelDiscoveryService.listingRoots(for: provider, wireProtocol: .anthropic),
+            ["https://api.kimi.com/coding", "https://api.kimi.com"]
+        )
+
+        // An endpoint spelling resolves to the root that serves it, which is where /models lives.
+        let deepSeek = Provider(
+            baseUrl: "https://api.deepseek.com",
+            protocolUrls: ["openai-chat": "https://api.deepseek.com/chat/completions"],
+            protocol: .openAIChat
+        )
+        XCTAssertEqual(
+            ProviderModelDiscoveryService.listingRoots(for: deepSeek, wireProtocol: .openAIChat),
+            ["https://api.deepseek.com"],
+            "the protocol address and the provider root collapse to one probe, not two"
+        )
+
+        // A provider saved before per-protocol addresses still has exactly its base URL.
+        let legacy = Provider(baseUrl: "https://api.example.com/v1", protocol: .anthropic)
+        XCTAssertEqual(
+            ProviderModelDiscoveryService.listingRoots(for: legacy, wireProtocol: .anthropic),
+            ["https://api.example.com/v1"]
+        )
+        XCTAssertTrue(
+            ProviderModelDiscoveryService.listingRoots(for: Provider(), wireProtocol: .anthropic)
+                .isEmpty
+        )
+    }
+
     func testEveryCatalogShapeTheseEndpointsAreServedInIsParsed() {
         let openAI = #"{"object":"list","data":[{"id":"gpt-5.4"},{"id":"gpt-5.4-mini"}]}"#
         XCTAssertEqual(

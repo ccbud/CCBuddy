@@ -78,6 +78,52 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.providers[0].baseUrl, "https://open.bigmodel.cn/api/anthropic/v1")
     }
 
+    /// Per-protocol addresses decide what the gateway converts, so a blank one has to mean "this
+    /// provider does not speak that protocol" rather than "this provider has an upstream with no
+    /// host". And `protocol` — the address unmatched callers fall to — has to survive naming one
+    /// that was cleared.
+    func testNormalizationDropsBlankProtocolAddressesAndKeepsThePrimaryOnABoundOne() throws {
+        let data = Data(#"""
+        {"providers":[{"id":"p","name":"DeepSeek","baseUrl":"https://api.deepseek.com",
+        "protocol":"openai-responses","protocolUrls":{
+        "anthropic":" https://api.deepseek.com/anthropic/ ","openai-chat":"   ",
+        "openai-responses":"","grpc":"https://nope.example.com"}}]}
+        """#.utf8)
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+        let provider = try XCTUnwrap(config.providers.first)
+
+        XCTAssertEqual(
+            provider.protocolUrls, ["anthropic": "https://api.deepseek.com/anthropic"]
+        )
+        XCTAssertEqual(provider.configuredProtocols, [.anthropic])
+        XCTAssertEqual(
+            provider.protocol, .anthropic,
+            "the Responses address was cleared, so it cannot go on collecting unmatched callers"
+        )
+        XCTAssertFalse(provider.servesEveryProtocolDirectly)
+    }
+
+    /// A provider written before per-protocol addresses existed keeps exactly the one upstream it
+    /// had, and an upgrade must not silently invent two more.
+    func testAProviderWithNoProtocolAddressesFallsBackToItsBaseURL() throws {
+        let data = Data(
+            #"{"providers":[{"id":"p","name":"GLM","baseUrl":"https://open.bigmodel.cn/api/anthropic/v1","protocol":"anthropic"}]}"#.utf8
+        )
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+        let provider = try XCTUnwrap(config.providers.first)
+
+        XCTAssertTrue(provider.protocolUrls.isEmpty)
+        XCTAssertEqual(
+            provider.configuredUpstreamURLs,
+            [.anthropic: "https://open.bigmodel.cn/api/anthropic/v1"]
+        )
+        XCTAssertEqual(provider.primaryProtocol, .anthropic)
+        XCTAssertEqual(
+            provider.primaryUpstreamURL, "https://open.bigmodel.cn/api/anthropic/v1"
+        )
+        XCTAssertNil(provider.upstreamURL(for: .openAIChat))
+    }
+
     func testRealisticLegacyConfigDecodesPartialObjectsAndRoundTripsWithoutFieldLoss() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ccbud-config-migration-\(UUID().uuidString)", isDirectory: true)

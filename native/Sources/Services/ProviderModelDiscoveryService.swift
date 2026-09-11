@@ -45,13 +45,15 @@ struct ProviderModelDiscoveryService: Sendable {
 
     func discover(
         _ provider: Provider,
+        wireProtocol: Provider.WireProtocol? = nil,
         insecureSkipVerify: Bool = false
     ) async -> ProviderModelCatalog {
-        let baseURL = provider.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !baseURL.isEmpty else {
+        let wire = wireProtocol ?? provider.primaryProtocol
+        let roots = Self.listingRoots(for: provider, wireProtocol: wire)
+        guard !roots.isEmpty else {
             return .init(availability: .unknown, message: "服务地址为空")
         }
-        let candidates = Self.candidateURLs(baseURL: baseURL)
+        let candidates = roots.flatMap { Self.candidateURLs(baseURL: $0) }
         guard !candidates.isEmpty else {
             return .init(availability: .unknown, message: "服务地址无效")
         }
@@ -61,9 +63,12 @@ struct ProviderModelDiscoveryService: Sendable {
         var lastStatus: Int?
         var lastMessage: String?
 
-        for url in candidates {
+        var visited = Set<String>()
+        for url in candidates where visited.insert(url.absoluteString).inserted {
             do {
-                let response = try await send(to: url, provider: provider, session: session)
+                let response = try await send(
+                    to: url, provider: provider, wireProtocol: wire, session: session
+                )
                 lastStatus = response.statusCode
                 if (200..<300).contains(response.statusCode) {
                     let models = Self.parseModels(from: response.data)
@@ -133,6 +138,7 @@ struct ProviderModelDiscoveryService: Sendable {
     private func send(
         to url: URL,
         provider: Provider,
+        wireProtocol: Provider.WireProtocol,
         session: URLSession
     ) async throws -> (statusCode: Int, data: Data) {
         var request = URLRequest(url: url, timeoutInterval: 20)
@@ -144,11 +150,11 @@ struct ProviderModelDiscoveryService: Sendable {
         let token = provider.authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            if provider.protocol == .anthropic {
+            if wireProtocol == .anthropic {
                 request.setValue(token, forHTTPHeaderField: "x-api-key")
             }
         }
-        if provider.protocol == .anthropic {
+        if wireProtocol == .anthropic {
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         }
         let (data, response) = try await session.data(for: request)
@@ -156,6 +162,26 @@ struct ProviderModelDiscoveryService: Sendable {
             throw URLError(.badServerResponse)
         }
         return (response.statusCode, data)
+    }
+
+    /// Where to look for a catalog, most specific first.
+    ///
+    /// The protocol's own address is asked first because that is the API whose models the user is
+    /// binding — `https://api.kimi.com/coding/v1` publishes a catalog that `https://api.kimi.com`
+    /// does not. The provider's base URL follows, which is the one a vendor publishing a single
+    /// root catalog answers on.
+    static func listingRoots(
+        for provider: Provider,
+        wireProtocol: Provider.WireProtocol
+    ) -> [String] {
+        let addresses: [String?] = [
+            provider.upstreamURL(for: wireProtocol).map {
+                GatewayUpstreamURL.upstream(for: wireProtocol, url: $0).baseURL
+            },
+            provider.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+        ]
+        var seen = Set<String>()
+        return addresses.compactMap { $0 }.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     /// The conventional listing paths, ordered so the likelier one for this base URL goes first.

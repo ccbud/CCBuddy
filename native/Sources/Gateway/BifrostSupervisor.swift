@@ -1173,13 +1173,19 @@ struct LegacyModelRoutingCompatibility: Sendable {
     /// the queue still takes over when it fails. Each fallback is mapped through *its own*
     /// provider's aliases and default models, because a model name that means something on one
     /// upstream frequently means nothing on the next.
+    ///
+    /// Failover is between *providers*. A provider that binds two or three addresses contributes
+    /// that many routes, and retrying the same provider on a second protocol after it failed on
+    /// the first buys nothing — so only its first remaining route stands in for it here.
     private func fallbackModels(
         for requestedModel: String,
         excluding pinned: GatewayUpstreamRoute
     ) -> [String] {
         guard router.pinsProviderName else { return [] }
+        var covered: Set<String> = [pinned.provider.id]
         return router.routes.compactMap { route in
-            guard route.bifrostName != pinned.bifrostName else { return nil }
+            guard route.bifrostName != pinned.bifrostName,
+                  covered.insert(route.provider.id).inserted else { return nil }
             let mapped = map(requestedModel, for: route.provider)
             let bare = mapped.usesNativeAlias ? requestedModel : mapped.model
             guard !bare.isEmpty else { return nil }

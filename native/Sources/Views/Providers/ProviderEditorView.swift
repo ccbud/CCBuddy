@@ -7,6 +7,12 @@ struct ProviderEditorView: View {
     @Environment(\.appLanguage) private var appLanguage
     @EnvironmentObject private var model: AppModel
     @State private var draft: Provider
+    /// Which protocol's address the field under the segmented control is editing. The control
+    /// picks what you are looking at, not what the provider "is" — a provider binds up to three.
+    @State private var editingProtocol: Provider.WireProtocol
+    /// The base URL the addresses currently offered were derived from, so correcting a typo in
+    /// the base updates the addresses that came from it and leaves everything typed by hand.
+    @State private var derivationBase: String
     @State private var selectedPreset: String?
     @State private var presetQuery = ""
     @State private var showsToken = false
@@ -26,7 +32,16 @@ struct ProviderEditorView: View {
     init(provider: Provider?, onSave: @escaping (Provider) -> Void) {
         var value = provider ?? Provider()
         if value.models.isEmpty { value.models = [.init(alias: "", upstream: "")] }
+        // A provider saved before per-protocol addresses has exactly one upstream, implied by its
+        // base URL. Writing it out means the field shows the address actually in use rather than
+        // looking empty under a segment that reads as bound.
+        let base = value.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.protocolUrls.isEmpty, !base.isEmpty {
+            value.protocolUrls[value.protocol.rawValue] = base
+        }
         _draft = State(initialValue: value)
+        _editingProtocol = State(initialValue: value.primaryProtocol)
+        _derivationBase = State(initialValue: value.baseUrl)
         self.onSave = onSave
     }
 
@@ -74,8 +89,14 @@ struct ProviderEditorView: View {
         // A listing endpoint belongs to one address; pointing the provider somewhere else makes
         // the previous "this host has no /v1/models" answer meaningless, so the control comes
         // back enabled rather than staying greyed out against a host never probed.
-        .onChange(of: draft.baseUrl) { _ in modelCatalog = .unknown }
-        .onChange(of: draft.protocol) { _ in modelCatalog = .unknown }
+        .onChange(of: draft.baseUrl) { newValue in
+            modelCatalog = .unknown
+            rederiveOfferedAddresses(to: newValue)
+        }
+        .onChange(of: editingProtocol) { _ in
+            modelCatalog = .unknown
+            testMessage = nil
+        }
         .overlay(alignment: .topLeading) {
             Rectangle()
                 .fill(Color.clear)
@@ -111,9 +132,9 @@ struct ProviderEditorView: View {
 
     /// A searchable, grouped picker rather than a wall of chips.
     ///
-    /// The catalog grew from ten entries to seventy when it was ported from cc-switch, and seventy
-    /// capsules would fill the sheet before the fields it is meant to prefill. Typing narrows by
-    /// name, host or model id, which is how people actually look for a provider.
+    /// Even at two dozen vendors, capsules for all of them would fill the sheet before the fields
+    /// they are meant to prefill. Typing narrows by name, host, endpoint or model id, which is how
+    /// people actually look for a provider.
     private var presets: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: Space.sm) {
@@ -177,6 +198,8 @@ struct ProviderEditorView: View {
             : preset.name) {
             selectedPreset = preset.id
             preset.apply(to: &draft)
+            editingProtocol = draft.primaryProtocol
+            derivationBase = draft.baseUrl
             testMessage = nil
             // Availability was measured against the previous address.
             modelCatalog = .unknown
@@ -236,33 +259,154 @@ struct ProviderEditorView: View {
     }
 
     private var identityFields: some View {
-        HStack(alignment: .top, spacing: 11) {
-            editorField("名称") { TextField("GLM", text: $draft.name) }
-            editorField("API 地址") {
-                TextField(ProviderEditorLayout.apiURLPlaceholder, text: $draft.baseUrl)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 11) {
+                editorField("名称") { TextField("GLM", text: $draft.name) }
+                editorField("API 地址") {
+                    TextField(ProviderEditorLayout.apiURLPlaceholder, text: $draft.baseUrl)
+                }
             }
+            Text("只填服务商根地址，每个协议各自的地址在下面绑定。")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.mutedForeground)
         }
     }
 
+    /// The three addresses one provider binds.
+    ///
+    /// The segmented control chooses which one the field below is editing, not what the provider
+    /// "is": a vendor publishing Anthropic Messages, Chat Completions and Responses of its own
+    /// gets all three filled in and every client reaches it untouched. Leave one blank and the
+    /// clients that speak it are converted onto the address that is filled in — which is the
+    /// whole point of doing it per address rather than per provider.
     private var protocolField: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
                 fieldLabel("上游协议")
-                Text(appLanguage.localized(draft.protocol == .anthropic ? "直通" : "自动转换"))
+                Text(appLanguage.localized(draft.servesEveryProtocolDirectly ? "全部直通" : "按需转换"))
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(draft.protocol == .anthropic ? Theme.mutedForeground : Theme.accentText)
+                    .foregroundStyle(
+                        draft.servesEveryProtocolDirectly ? Theme.mutedForeground : Theme.accentText
+                    )
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(draft.protocol == .anthropic ? Theme.foreground.opacity(0.05) : Theme.accentSoft)
+                    .background(
+                        draft.servesEveryProtocolDirectly
+                            ? Theme.foreground.opacity(0.05) : Theme.accentSoft
+                    )
                     .clipShape(Capsule())
             }
-            Picker("上游协议", selection: $draft.protocol) {
-                Text("Anthropic Messages").tag(Provider.WireProtocol.anthropic)
-                Text("OpenAI Chat").tag(Provider.WireProtocol.openAIChat)
-                Text("OpenAI Responses").tag(Provider.WireProtocol.openAIResponses)
+            Picker("上游协议", selection: $editingProtocol) {
+                ForEach(Provider.WireProtocol.allCases) { wireProtocol in
+                    Text(segmentTitle(wireProtocol)).tag(wireProtocol)
+                }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+            .accessibilityIdentifier("provider.editor.protocol")
+
+            HStack(spacing: 7) {
+                TextField(
+                    derivedAddress ?? ProviderEditorLayout.apiURLPlaceholder,
+                    text: editedProtocolURL
+                )
+                .providerEditorTextField()
+                .accessibilityIdentifier("provider.editor.protocolURL")
+                if let derivedAddress, derivedAddress != draft.upstreamURL(for: editingProtocol) {
+                    Button(appLanguage.localized("默认地址")) {
+                        draft.protocolUrls[editingProtocol.rawValue] = derivedAddress
+                        keepPrimaryOnAConfiguredProtocol()
+                    }
+                    .buttonStyle(CompactActionButtonStyle())
+                    .help(appLanguage.localized("按 API 地址填入该协议的常规地址"))
+                    .accessibilityIdentifier("provider.editor.fillProtocolURL")
+                }
+            }
+
+            Text(appLanguage.localized(routingSummary))
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// A bound protocol is marked, so the three addresses are readable without clicking through.
+    private func segmentTitle(_ wireProtocol: Provider.WireProtocol) -> String {
+        let title: String
+        switch wireProtocol {
+        case .anthropic: title = "Anthropic Messages"
+        case .openAIChat: title = "OpenAI Chat"
+        case .openAIResponses: title = "OpenAI Responses"
+        }
+        return draft.upstreamURL(for: wireProtocol) == nil ? title : "● " + title
+    }
+
+    private var derivedAddress: String? {
+        GatewayUpstreamURL.derivedURL(for: editingProtocol, base: draft.baseUrl)
+    }
+
+    /// Clearing the field unbinds the protocol, which is how a client speaking it comes to be
+    /// converted; the raw text is kept while typing so a half-written address is not swallowed.
+    private var editedProtocolURL: Binding<String> {
+        Binding(
+            get: { draft.protocolUrls[editingProtocol.rawValue] ?? "" },
+            set: { value in
+                if value.isEmpty {
+                    draft.protocolUrls.removeValue(forKey: editingProtocol.rawValue)
+                } else {
+                    draft.protocolUrls[editingProtocol.rawValue] = value
+                }
+                keepPrimaryOnAConfiguredProtocol()
+            }
+        )
+    }
+
+    private var routingSummary: String {
+        let bound = draft.configuredProtocols
+        guard let primary = bound.first else {
+            return "至少绑定一个协议的地址，网关才有上游可用。"
+        }
+        if bound.count == Provider.WireProtocol.allCases.count {
+            return "三个协议都已绑定：每个客户端都走自己的地址，不做任何转换。"
+        }
+        return "未绑定的协议会转换后发往「\(primary.title)」。"
+    }
+
+    /// `protocol` names the address that also takes callers this provider publishes nothing for,
+    /// so it has to keep naming one that is still bound.
+    private func keepPrimaryOnAConfiguredProtocol() {
+        guard let primary = draft.configuredProtocols.first else { return }
+        if draft.protocol != primary { draft.protocol = primary }
+    }
+
+    /// Follows the base URL: re-offers the addresses that came from it, fills in the one on
+    /// screen if it is still blank, and leaves everything typed by hand alone.
+    ///
+    /// Filling the selected protocol matters — without it, a provider whose address field was
+    /// never touched would fall back to the bare base URL and the gateway would ask
+    /// `https://api.deepseek.com/v1/messages`, an address DeepSeek does not serve, while the
+    /// editor showed an empty field under a segment marked as bound.
+    private func rederiveOfferedAddresses(to newBase: String) {
+        defer { derivationBase = newBase }
+        guard derivationBase != newBase else { return }
+        for wireProtocol in Provider.WireProtocol.allCases {
+            guard let previous = GatewayUpstreamURL.derivedURL(
+                for: wireProtocol, base: derivationBase
+            ), draft.protocolUrls[wireProtocol.rawValue] == previous else { continue }
+            if let replacement = GatewayUpstreamURL.derivedURL(
+                for: wireProtocol, base: newBase
+            ) {
+                draft.protocolUrls[wireProtocol.rawValue] = replacement
+            } else {
+                draft.protocolUrls.removeValue(forKey: wireProtocol.rawValue)
+            }
+        }
+        if (draft.protocolUrls[editingProtocol.rawValue] ?? "").isEmpty,
+           let offered = GatewayUpstreamURL.derivedURL(
+            for: editingProtocol, base: newBase
+           ) {
+            draft.protocolUrls[editingProtocol.rawValue] = offered
+        }
+        keepPrimaryOnAConfiguredProtocol()
     }
 
     private var tokenField: some View {
@@ -440,17 +584,33 @@ struct ProviderEditorView: View {
         )
     }
 
+    /// Every bound address has to be usable, not just the one currently on screen: saving a
+    /// provider whose second address is a typo would leave the gateway refusing to start.
     private var isValid: Bool {
-        !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && ["http", "https"].contains(URLComponents(string: draft.baseUrl)?.scheme?.lowercased() ?? "")
+        guard !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        let addresses = draft.configuredUpstreamURLs
+        guard !addresses.isEmpty else { return false }
+        return addresses.values.allSatisfy { address in
+            let components = URLComponents(
+                string: address.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            return ["http", "https"].contains(components?.scheme?.lowercased() ?? "")
+                && components?.host?.isEmpty == false
+        }
     }
 
+    /// Tests the address on screen rather than the provider as a whole: three bound addresses can
+    /// fail independently, and a single verdict would hide which one.
     private func runProbe() {
         testing = true
         testMessage = nil
+        let wireProtocol = editingProtocol
         Task {
             let result = await ProviderProbeService().test(
                 draft,
+                wireProtocol: wireProtocol,
                 insecureSkipVerify: model.config.insecureSkipVerify
             )
             await MainActor.run {
@@ -480,10 +640,12 @@ struct ProviderEditorView: View {
     private func runModelDiscovery() {
         discovering = true
         let provider = draft
+        let wireProtocol = editingProtocol
         let insecure = model.config.insecureSkipVerify
         Task {
             let catalog = await ProviderModelDiscoveryService().discover(
                 provider,
+                wireProtocol: wireProtocol,
                 insecureSkipVerify: insecure
             )
             await MainActor.run {

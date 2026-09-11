@@ -21,36 +21,46 @@ struct ProviderProbeService: Sendable {
         injectedSession = session
     }
 
-    func test(_ provider: Provider, insecureSkipVerify: Bool) async -> ProviderProbeResult {
-        let baseURL = provider.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Tests one of the provider's bound addresses. Omitting the protocol tests its primary —
+    /// the address that also serves the callers it publishes nothing for.
+    func test(
+        _ provider: Provider,
+        wireProtocol: Provider.WireProtocol? = nil,
+        insecureSkipVerify: Bool
+    ) async -> ProviderProbeResult {
+        let wire = wireProtocol ?? provider.primaryProtocol
+        let baseURL = provider.upstreamURL(for: wire) ?? ""
         guard !baseURL.isEmpty else {
             return .init(succeeded: false, reason: .baseURLEmpty)
         }
         guard let components = URLComponents(string: baseURL),
               ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
               components.host != nil,
-              let primaryURL = endpointURL(baseURL: baseURL, protocol: provider.protocol)
+              let primaryURL = GatewayUpstreamURL.upstream(
+                for: wire, url: baseURL
+              ).inferenceURL
         else {
             return .init(succeeded: false, reason: .baseURLInvalid)
         }
 
         let session = injectedSession ?? Self.makeSession(insecureSkipVerify: insecureSkipVerify)
-        let body = requestBody(for: provider)
+        let body = requestBody(for: provider, wireProtocol: wire)
         do {
-            // Exactly one request, to exactly the URL the gateway will call. The probe used to
-            // try a second spelling and quietly rewrite the user's base URL when it answered,
+            // Exactly one request, to exactly the URL the gateway will call, resolved by the
+            // same `GatewayUpstreamURL` the generated Bifrost configuration uses. The probe used
+            // to try a second spelling and quietly rewrite the user's address when it answered,
             // which is how a provider could test healthy against an address the gateway never
-            // used. `GatewayUpstreamURL` now maps each base URL to a single upstream URL, so
-            // there is no second spelling to try.
+            // used.
             let response = try await send(
                 to: primaryURL,
                 provider: provider,
+                wireProtocol: wire,
                 body: body,
                 session: session
             )
             return decode(
                 response,
-                protocol: provider.protocol,
+                protocol: wire,
                 requestedModel: selectedModel(for: provider)
             )
         } catch let error as URLError where error.code == .timedOut {
@@ -63,6 +73,7 @@ struct ProviderProbeService: Sendable {
     private func send(
         to url: URL,
         provider: Provider,
+        wireProtocol: Provider.WireProtocol,
         body: Data,
         session: URLSession
     ) async throws -> (statusCode: Int, data: Data) {
@@ -70,7 +81,7 @@ struct ProviderProbeService: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(provider.authToken)", forHTTPHeaderField: "Authorization")
-        if provider.protocol == .anthropic {
+        if wireProtocol == .anthropic {
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         }
         request.httpBody = body
@@ -81,10 +92,13 @@ struct ProviderProbeService: Sendable {
         return (response.statusCode, data)
     }
 
-    private func requestBody(for provider: Provider) -> Data {
+    private func requestBody(
+        for provider: Provider,
+        wireProtocol: Provider.WireProtocol
+    ) -> Data {
         let model = selectedModel(for: provider)
         let object: [String: Any]
-        switch provider.protocol {
+        switch wireProtocol {
         case .openAIResponses:
             object = ["model": model, "max_output_tokens": 16, "input": "ping"]
         case .openAIChat, .anthropic:
@@ -138,18 +152,6 @@ struct ProviderProbeService: Sendable {
             statusCode: response.statusCode,
             message: message
         )
-    }
-
-    /// The URL a real inference request will reach.
-    ///
-    /// Shared with the Bifrost configuration builder on purpose. When the probe computed its own
-    /// URL, it could report a healthy provider the gateway then answered with 404, because the
-    /// two disagreed about whether the base URL already carried its version segment.
-    private func endpointURL(
-        baseURL: String,
-        protocol wireProtocol: Provider.WireProtocol
-    ) -> URL? {
-        GatewayUpstreamURL.endpointURL(baseURL: baseURL, wireProtocol: wireProtocol)
     }
 
     private static func makeSession(insecureSkipVerify: Bool) -> URLSession {
