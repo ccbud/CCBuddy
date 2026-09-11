@@ -2,9 +2,11 @@ import AppKit
 import SwiftUI
 
 enum ProviderEditorLayout {
-    static let sheetSize = CGSize(width: 600, height: 690)
+    static let sheetSize = CGSize(width: 600, height: 726)
     static let presetSpacing: CGFloat = 6
-    static let apiURLPlaceholder = "https://open.bigmodel.cn/api/anthropic/v1"
+    /// A bare root, because that is what the field now takes: the per-protocol addresses are
+    /// derived from it, not typed over it.
+    static let apiURLPlaceholder = "https://api.deepseek.com"
 }
 
 struct ProviderPresetFlowLayout: Layout {

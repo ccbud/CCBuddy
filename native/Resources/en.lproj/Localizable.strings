@@ -27,6 +27,7 @@
 "{n} 个会话无法建立索引，已显示其余会话" = "{n} conversations could not be indexed; the rest are shown";
 "{n} 个失败" = "{n} failed";
 "{n} 个文件" = "{n} files";
+"{n} 个协议直通" = "{n} protocols pass through";
 "{n} 个已存在" = "{n} already imported";
 "{n} 会话" = "{n} sessions";
 "{n} 天前" = "{n} d ago";
@@ -67,7 +68,9 @@
 "安装到工具" = "Install to tools";
 "安装受支持的 coding agent 后刷新本页。" = "Install a supported coding agent, then refresh this page.";
 "按 Agent" = "By agent";
+"按 API 地址填入该协议的常规地址" = "Fill in this protocol's conventional address from the API URL";
 "按目录" = "By directory";
+"按需转换" = "Converts as needed";
 "把客户端模型名精确映射到上游模型；未命中时才使用自动映射。" = "Map client model names exactly to upstream models; automatic mapping is used only when none match.";
 "把客户端请求的模型名精确映射到上游模型，回包自动改回原名。带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游，避免被自动映射降级。未命中别名时才走「自动映射」。" = "Map the client’s requested model name exactly to an upstream model; the response is renamed back automatically. Models with [1m] (1M context) etc. MUST be mapped here explicitly to a supported upstream, to avoid being auto-downgraded. Auto-mapping only kicks in when no alias matches.";
 "版本" = "Version";
@@ -480,6 +483,7 @@
 "模型厂商" = "Model vendors";
 "模型列表为空或无法解析" = "The model list was empty or could not be read";
 "默认" = "Default";
+"默认地址" = "Default address";
 "默认位置不可移除" = "The default location can't be removed";
 "目标工具" = "Target tools";
 "目标位置已存在同名 Skill，覆盖后原内容将被替换：\n{paths}" = "A Skill with the same name already exists at the target. Replacing it will overwrite its current contents:\n{paths}";
@@ -565,6 +569,7 @@
 "全部范围" = "All scopes";
 "全部更新" = "Update all";
 "全部会话" = "All sessions";
+"全部直通" = "All pass through";
 "全部状态" = "All statuses";
 "全局" = "Global";
 "全局安装" = "Global installs";
@@ -583,6 +588,8 @@
 "软删除的会话会出现在这里" = "Soft-deleted sessions appear here";
 "若曾在终端 export ANTHROPIC_BASE_URL，请删除旧值以免覆盖。" = "If you previously exported ANTHROPIC_BASE_URL in a terminal, remove the old value so it does not override this one.";
 "若曾在终端 export ANTHROPIC_BASE_URL，请删除以免覆盖。" = "If you ran export ANTHROPIC_BASE_URL in a terminal, remove it to avoid overriding.";
+"三个协议都已绑定，全部直通" = "All three protocols are bound; everything passes through";
+"三个协议都已绑定：每个客户端都走自己的地址，不做任何转换。" = "All three protocols are bound: every client uses its own address and nothing is converted.";
 "筛选标签 {name}" = "Filter by tag {name}";
 "删除" = "Delete";
 "删除 Skill {name}" = "Delete Skill {name}";
@@ -742,6 +749,8 @@
 "未安装 ChatGPT 桌面端" = "The ChatGPT app is not installed";
 "未安装 Claude 桌面端" = "Claude Desktop is not installed";
 "未安装插件" = "No plugins installed";
+"未绑定的协议会转换后发往「{protocol}」。" = "Unbound protocols are converted and sent to “{protocol}”.";
+"未绑定的协议由 Bifrost 自动转换" = "Unbound protocols are converted by Bifrost";
 "未标注模型" = "Model not specified";
 "未登录" = "Not signed in";
 "未发现插件。把插件目录放到 ~/.ccbud/plugins// 后回到本页。" = "No plugins found. Put a plugin folder in ~/.ccbud/plugins//, then return to this page.";
@@ -1054,8 +1063,10 @@
 "直接搜索" = "Direct search";
 "直连" = "Direct";
 "直通" = "Pass-through";
+"只填服务商根地址，每个协议各自的地址在下面绑定。" = "Enter the provider's root address only; each protocol's own address is bound below.";
 "至少 {count} 处匹配" = "At least {count} matches";
 "至少 1 处匹配" = "At least 1 match";
+"至少绑定一个协议的地址，网关才有上游可用。" = "Bind at least one protocol's address so the gateway has an upstream.";
 "智能排序" = "Smart ranking";
 "置顶会话" = "Pin session";
 "中心源副本会保留。" = "The central source copy will be kept.";

@@ -171,8 +171,10 @@ struct ProviderRow: View {
         }
     }
 
+    /// What this provider does to a client's protocol, which is now a property of how many
+    /// addresses it binds rather than of which single one it had.
     private var protocolBadge: some View {
-        let translated = provider.protocol != .anthropic
+        let translated = !provider.servesEveryProtocolDirectly
         return Text(protocolLabel)
             .font(.ccLabel(.medium))
             .foregroundStyle(translated ? Theme.accentText : Theme.mutedForeground)
@@ -181,15 +183,22 @@ struct ProviderRow: View {
             .background(translated ? Theme.accentSoft : Theme.fill)
             .clipShape(RoundedRectangle(cornerRadius: Radius.badge, style: .continuous))
             .help(appLanguage.localized(
-                translated ? "由 Bifrost 自动转换协议" : "Anthropic 协议直通"
+                translated ? "未绑定的协议由 Bifrost 自动转换" : "三个协议都已绑定，全部直通"
             ))
     }
 
     private var protocolLabel: String {
-        switch provider.protocol {
-        case .anthropic: "Anthropic"
-        case .openAIChat: "OpenAI Chat"
-        case .openAIResponses: "OpenAI Responses"
+        let bound = provider.configuredProtocols
+        if bound.count >= Provider.WireProtocol.allCases.count {
+            return appLanguage.localized("全部直通")
+        }
+        if bound.count > 1 {
+            return appLanguage.localized("\(bound.count) 个协议直通")
+        }
+        switch provider.primaryProtocol {
+        case .anthropic: return "Anthropic"
+        case .openAIChat: return "OpenAI Chat"
+        case .openAIResponses: return "OpenAI Responses"
         }
     }
 
@@ -251,7 +260,7 @@ struct ProviderRow: View {
     }
 
     private var displayURL: String {
-        provider.baseUrl
+        provider.primaryUpstreamURL
             .replacingOccurrences(of: "https://", with: "")
             .replacingOccurrences(of: "http://", with: "")
     }

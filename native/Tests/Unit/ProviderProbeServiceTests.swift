@@ -163,6 +163,62 @@ final class ProviderProbeServiceTests: XCTestCase {
         XCTAssertEqual(requestCount, 0)
     }
 
+    /// A provider binds up to three addresses, and they fail independently — so the test has to
+    /// name which one it is testing rather than reporting one verdict for the provider.
+    func testEachBoundAddressIsTestedOnItsOwnEndpoint() async throws {
+        var provider = Provider(
+            name: "DeepSeek",
+            baseUrl: "https://provider.example",
+            protocolUrls: [
+                "anthropic": "https://provider.example/anthropic",
+                "openai-chat": "https://provider.example/chat/completions",
+            ],
+            authToken: "token",
+            defaultModel: "m",
+            protocol: .anthropic
+        )
+        let cases: [(Provider.WireProtocol, String)] = [
+            (.anthropic, "/anthropic/v1/messages"),
+            (.openAIChat, "/chat/completions"),
+        ]
+        for (wireProtocol, expectedPath) in cases {
+            var targets: [String] = []
+            ProviderProbeURLProtocol.handler = { request in
+                targets.append(request.url?.path ?? "")
+                return wireProtocol == .anthropic
+                    ? (200, #"{"model":"m","type":"message"}"#)
+                    : (200, #"{"model":"m","choices":[]}"#)
+            }
+
+            let result = await ProviderProbeService(session: makeSession()).test(
+                provider,
+                wireProtocol: wireProtocol,
+                insecureSkipVerify: false
+            )
+
+            XCTAssertTrue(result.succeeded, wireProtocol.rawValue)
+            XCTAssertEqual(targets, [expectedPath], wireProtocol.rawValue)
+        }
+
+        // Omitting the protocol tests the primary — the address unmatched callers fall to.
+        var targets: [String] = []
+        ProviderProbeURLProtocol.handler = { request in
+            targets.append(request.url?.path ?? "")
+            return (200, #"{"model":"m","type":"message"}"#)
+        }
+        _ = await ProviderProbeService(session: makeSession()).test(
+            provider, insecureSkipVerify: false
+        )
+        XCTAssertEqual(targets, ["/anthropic/v1/messages"])
+
+        // A protocol this provider does not bind has no address to test.
+        provider.protocolUrls.removeValue(forKey: "openai-chat")
+        let unbound = await ProviderProbeService(session: makeSession()).test(
+            provider, wireProtocol: .openAIChat, insecureSkipVerify: false
+        )
+        XCTAssertEqual(unbound.reason, .baseURLEmpty)
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ProviderProbeURLProtocol.self]

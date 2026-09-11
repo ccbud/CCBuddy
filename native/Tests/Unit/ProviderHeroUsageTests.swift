@@ -2,44 +2,63 @@ import XCTest
 @testable import CCBuddy
 
 final class ProviderHeroUsageTests: XCTestCase {
-    func testEditorPlaceholderIsARealCatalogEndpoint() throws {
-        // The placeholder is the shape people copy when filling the field by hand, so it has to be a
-        // live endpoint in the catalog rather than a URL that drifted out of date on its own.
+    func testEditorPlaceholderIsARealCatalogRoot() throws {
+        // The placeholder is the shape people copy when filling the field by hand. The field now
+        // takes a bare root, so the placeholder has to be one a real vendor answers on rather than
+        // one protocol's endpoint.
         XCTAssertTrue(
             ProviderPreset.all.contains { $0.baseURL == ProviderEditorLayout.apiURLPlaceholder },
-            "placeholder \(ProviderEditorLayout.apiURLPlaceholder) is not any preset's endpoint"
+            "placeholder \(ProviderEditorLayout.apiURLPlaceholder) is not any preset's root"
+        )
+        XCTAssertNotNil(
+            GatewayUpstreamURL.derivedURL(
+                for: .anthropic, base: ProviderEditorLayout.apiURLPlaceholder
+            ),
+            "the placeholder must be bare enough for the editor to derive addresses from"
         )
     }
 
-    /// cc-switch stores the base URL a *client* appends `/v1/messages` to; this app stores the base
-    /// the gateway appends `/messages` to. Porting the catalog verbatim would have shipped seventy
-    /// presets that each 404 until the user happened to press "test" and let the probe repair them.
-    func testAnthropicEndpointsCarryTheVersionSegmentThisAppExpects() {
-        for preset in ProviderPreset.all
-        where preset.wireProtocol == .anthropic && !preset.baseURL.isEmpty {
-            let segments = preset.baseURL.split(separator: "/").map(String.init)
-            let last = try? XCTUnwrap(segments.last)
+    /// cc-switch stores the base URL a *client* appends `/v1/messages` to; this app stores the
+    /// address the gateway is pointed at and resolves the rest. Porting the catalog verbatim would
+    /// have shipped presets that each 404 until the user happened to press "test" and let the
+    /// probe repair them.
+    func testEveryAnthropicEndpointResolvesToASingleVersionedMessagesPath() throws {
+        for preset in ProviderPreset.all {
+            guard let address = preset.resolvedEndpoints[.anthropic], !address.isEmpty else {
+                continue
+            }
+            let resolved = try XCTUnwrap(
+                GatewayUpstreamURL.upstream(for: .anthropic, url: address).inferenceURL,
+                preset.name
+            )
             XCTAssertTrue(
-                (last?.first == "v") && (last?.dropFirst().first?.isNumber == true),
-                "\(preset.name) endpoint is missing its version segment: \(preset.baseURL)"
+                resolved.path.hasSuffix("/messages"),
+                "\(preset.name) does not resolve to a Messages endpoint: \(resolved)"
+            )
+            let versions = resolved.path.split(separator: "/").filter {
+                $0.first == "v" && $0.dropFirst().first?.isNumber == true
+            }
+            XCTAssertEqual(
+                versions.count, 1,
+                "\(preset.name) resolves to \(resolved), which is not versioned exactly once"
             )
         }
     }
 
-    func testTheProvidersTheHandWrittenListCoveredSurvivedThePort() throws {
-        // Every vendor the old ten-entry table reached must still be reachable, under whichever name
-        // the upstream catalog uses for it.
+    func testTheFirstPartyVendorsPeopleReachForAreStillInTheCatalog() throws {
+        // Aggregators and resellers were dropped on purpose; the vendors running their own models
+        // must all still be reachable, under whichever name the catalog uses for them.
         let required = [
             "https://open.bigmodel.cn/api/anthropic/v1",
-            "https://api.deepseek.com/anthropic/v1",
-            "https://api.openai.com/v1",
-            "https://openrouter.ai/api/v1",
-            "https://integrate.api.nvidia.com/v1",
+            "https://api.deepseek.com/anthropic",
+            "https://api.deepseek.com/chat/completions",
+            "https://api.openai.com/v1/responses",
+            "https://api.anthropic.com/v1",
             "https://generativelanguage.googleapis.com/v1beta/openai",
         ]
-        let endpoints = Set(ProviderPreset.all.map(\.baseURL))
-        for endpoint in required {
-            XCTAssertTrue(endpoints.contains(endpoint), "lost \(endpoint) in the catalog port")
+        let addresses = Set(ProviderPreset.all.flatMap { $0.resolvedEndpoints.values })
+        for address in required {
+            XCTAssertTrue(addresses.contains(address), "lost \(address) from the catalog")
         }
         XCTAssertTrue(ProviderPreset.all.contains { $0.name.localizedCaseInsensitiveContains("kimi") })
         XCTAssertTrue(ProviderPreset.all.contains { $0.name.localizedCaseInsensitiveContains("minimax") })

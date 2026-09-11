@@ -61,21 +61,29 @@ enum GatewayClientProtocol: String, Equatable, Sendable, CaseIterable {
 struct GatewayUpstreamRoute: Equatable, Sendable {
     let bifrostName: String
     let provider: Provider
+    /// The protocol this route's address speaks. A provider binds up to three addresses and
+    /// contributes one route per bound protocol, so this is not simply `provider.protocol` —
+    /// that one names only the route which also takes the callers nothing else matches.
+    let wireProtocol: Provider.WireProtocol
 
-    var wireProtocol: Provider.WireProtocol { provider.protocol }
-
-    init(bifrostName: String, provider: Provider) {
+    init(
+        bifrostName: String,
+        provider: Provider,
+        wireProtocol: Provider.WireProtocol? = nil
+    ) {
         self.bifrostName = bifrostName
         self.provider = provider
+        self.wireProtocol = wireProtocol ?? provider.primaryProtocol
     }
 }
 
 /// Decides which configured upstream serves a caller, and whether Bifrost has to convert.
 ///
-/// The rule the gateway promises:
+/// The rule the gateway promises, over the addresses configured across every routed provider:
 ///
 /// * **Three of three.** Every caller protocol has an upstream that speaks it, so every request
-///   is handed to that upstream untouched. Nothing is converted.
+///   is handed to that upstream untouched. Nothing is converted. One provider that publishes all
+///   three of its own endpoints reaches this on its own.
 /// * **One or two of three.** A caller whose protocol *is* configured still passes through. A
 ///   caller whose protocol is not configured is routed to the primary upstream (the head of the
 ///   failover queue, or the active provider when no queue is enabled) and Bifrost performs the
@@ -95,7 +103,11 @@ struct GatewayProtocolRouter: Equatable, Sendable {
 
     init(config: AppConfig) {
         routes = BifrostConfigBuilder.routedProviders(from: config).map {
-            GatewayUpstreamRoute(bifrostName: $0.bifrostName, provider: $0.provider)
+            GatewayUpstreamRoute(
+                bifrostName: $0.bifrostName,
+                provider: $0.provider,
+                wireProtocol: $0.wireProtocol
+            )
         }
     }
 

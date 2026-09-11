@@ -48,10 +48,18 @@ The redesign follows a macOS 27 design direction using available macOS 26 APIs b
 
 As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** from clients, whichever of those three you configure as upstreams.
 
-- **Configure all three** and every client is handed to the upstream that already speaks its protocol, untouched.
-- **Configure one or two** and a client speaking a protocol you did have still passes through, while one speaking a protocol you do not is converted for you.
+A provider is one root address — `https://api.deepseek.com` — and up to three addresses bound under it, one per protocol:
 
-Either way, if an upstream fails the rest of your queue takes over in order. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Around seventy provider presets ship built in, alongside custom and plugin-backed providers, with switching and model mapping. A provider that publishes `/v1/models` or `/models` can fill in its own model bindings from the editor; one that does not leaves the control disabled rather than failing.
+| Protocol | Address |
+| --- | --- |
+| Anthropic Messages | `https://api.deepseek.com/anthropic` |
+| OpenAI Chat Completions | `https://api.deepseek.com/chat/completions` |
+| OpenAI Responses | `https://api.deepseek.com/responses` |
+
+- **Bind all three** and every client is handed to the address that already speaks its protocol, untouched. A vendor publishing all three of its own endpoints is never translated for.
+- **Bind one or two** and a client speaking a protocol you did bind still passes through, while one speaking a protocol you did not is converted for you. Conversion follows what you configured, rather than being decided in advance.
+
+Either way, if an upstream fails the rest of your queue takes over in order. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Presets ship for Anthropic, OpenAI, Google and the model vendors with a first-party coding endpoint, alongside custom and plugin-backed providers, with switching and model mapping. A provider that publishes `/v1/models` or `/models` can fill in its own model bindings from the editor; one that does not leaves the control disabled rather than failing.
 
 The gateway binds to `127.0.0.1`; inference requests still go to the provider you select.
 

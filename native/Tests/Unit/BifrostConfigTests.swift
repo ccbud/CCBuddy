@@ -347,6 +347,60 @@ final class BifrostConfigTests: XCTestCase {
         XCTAssertEqual(String(decoding: try BifrostConfigBuilder.modelParametersData(from: config), as: UTF8.self), "{}")
     }
 
+    /// A vendor publishing all three of its own endpoints becomes three Bifrost providers, one
+    /// per address, because a Bifrost provider carries exactly one base URL and one wire format.
+    func testOneProviderBindingThreeAddressesBecomesThreeBifrostProviders() throws {
+        var config = AppConfig.fixture
+        config.providers[0].baseUrl = "https://api.deepseek.com"
+        config.providers[0].protocolUrls = [
+            "anthropic": "https://api.deepseek.com/anthropic",
+            "openai-chat": "https://api.deepseek.com/chat/completions",
+            "openai-responses": "https://api.deepseek.com/responses",
+        ]
+        config.normalize()
+
+        let routes = BifrostConfigBuilder.routedProviders(from: config)
+        XCTAssertEqual(routes.map(\.wireProtocol), [.anthropic, .openAIChat, .openAIResponses])
+        XCTAssertEqual(Set(routes.map(\.bifrostName)).count, 3, "names must not collide")
+
+        let output = try BifrostConfigBuilder.build(
+            from: config,
+            logDatabaseURL: URL(fileURLWithPath: "/tmp/logs.db"),
+            managementCredentials: managementCredentials
+        )
+        XCTAssertEqual(output.providers.count, 3)
+
+        let anthropic = try XCTUnwrap(output.providers[routes[0].bifrostName])
+        XCTAssertEqual(anthropic.customProviderConfig.baseProviderType, "anthropic")
+        XCTAssertEqual(anthropic.networkConfig.baseURL, "https://api.deepseek.com/anthropic")
+        XCTAssertNil(
+            anthropic.customProviderConfig.requestPathOverrides,
+            "a base spelling lets Bifrost supply its own /v1"
+        )
+
+        let chat = try XCTUnwrap(output.providers[routes[1].bifrostName])
+        XCTAssertEqual(chat.customProviderConfig.baseProviderType, "openai")
+        XCTAssertEqual(chat.networkConfig.baseURL, "https://api.deepseek.com")
+        XCTAssertEqual(
+            chat.customProviderConfig.requestPathOverrides?["chat_completion"],
+            "/chat/completions",
+            "the address was typed as an endpoint, so its exact path is pinned"
+        )
+        XCTAssertTrue(chat.customProviderConfig.allowedRequests.chatCompletion)
+        XCTAssertFalse(chat.customProviderConfig.allowedRequests.responses)
+
+        let responses = try XCTUnwrap(output.providers[routes[2].bifrostName])
+        XCTAssertTrue(responses.customProviderConfig.allowedRequests.responses)
+        XCTAssertTrue(
+            output.client.compat.convertChatToResponses,
+            "a Responses upstream is configured, so the Chat conversion hook stays available"
+        )
+        // Every entry authenticates with the provider's one key.
+        for name in routes.map(\.bifrostName) {
+            XCTAssertEqual(output.providers[name]?.keys.first?.value, "sk-testtoken1234")
+        }
+    }
+
     func testNormalizeInferenceTokenIsPurePrefixMigrationAndRejectsEmptyInput() {
         XCTAssertNil(normalizeInferenceToken(""))
         XCTAssertNil(normalizeInferenceToken(" \n\t "))
