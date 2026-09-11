@@ -339,9 +339,23 @@ final class QoderHelperCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var byteCount = 0
+    private var memoryPressureRegistration: MemoryPressureMonitor.Registration?
 
     init(budget: Int = QoderFileReader.helperCacheBudget) {
         self.budget = max(0, budget)
+        memoryPressureRegistration = MemoryPressureMonitor.shared.register { [weak self] _ in
+            self?.releaseMemory()
+        }
+    }
+
+    /// Drops every cached file when the system is short on memory. A quarter of a gigabyte of
+    /// raw transcript bytes is worth holding while the machine has room and worth nothing at all
+    /// while it does not: each entry is one re-read of a file that is still on disk.
+    func releaseMemory() {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeAll(keepingCapacity: false)
+        byteCount = 0
     }
 
     func data(for file: URL, stamp: QoderFileStamp) -> Data? {

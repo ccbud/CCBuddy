@@ -97,7 +97,7 @@ enum MonitorProtocolDisposition: Equatable {
 }
 
 /// Converts Bifrost's detail record into the legacy inspector's two-sided/four-sided mental model.
-/// Pinned Bifrost v1.6.11 has no `translated` field: normalized and raw payloads coexist for normal
+/// Pinned Bifrost v2.1.1 has no `translated` field: normalized and raw payloads coexist for normal
 /// passthrough traffic too. Four sides are therefore shown only when the route request type and the
 /// configured upstream wire protocol prove a conversion. Ambiguous records remain generic two-sided
 /// documents rather than being labelled as translated.
@@ -226,7 +226,7 @@ struct MonitorInspectorDocument: Equatable {
 
         // `object` is populated from Bifrost's route RequestType. Chat routes are unambiguous;
         // Anthropic Messages and OpenAI Responses both intentionally normalize to `responses`, so
-        // those records cannot be distinguished without route metadata that v1.6.11 does not emit.
+        // those records cannot be distinguished without route metadata that v2.1.1 does not emit.
         let object = log.object?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()

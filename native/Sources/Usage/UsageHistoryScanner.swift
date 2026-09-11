@@ -41,17 +41,8 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
         }
         var visited = Set<String>()
         qoderReader.prefetch(claudeFiles)
-        var claudeDeduplicator = ClaudeDeduplicator()
-        for file in claudeFiles {
-            guard !Task.isCancelled else { return days }
-            for record in claudeRecords(in: file, visited: &visited) {
-                claudeDeduplicator.append(record)
-            }
-        }
-        for record in claudeDeduplicator.kept {
-            guard !Task.isCancelled else { return days }
-            bump(record.event, into: &days)
-        }
+        foldClaudeUsage(in: claudeFiles, visited: &visited, into: &days)
+        guard !Task.isCancelled else { return days }
 
         var seenCodex = Set<CodexEventKey>()
         for root in roots {
@@ -83,6 +74,33 @@ struct UsageHistoryScanner: UsageHistoryScanning, Sendable {
         guard !Task.isCancelled else { return days }
         recordCache?.commit(retaining: visited)
         return days
+    }
+
+    /// Deduplicates and folds the Claude side of a scan, then lets go of everything it used.
+    ///
+    /// Deduplication has to see the whole library before it can say which copy of an assistant
+    /// message wins, so its table really does hold one row per assistant turn — the scan's single
+    /// largest allocation. Doing that work inside its own function is what makes the table's
+    /// lifetime end here instead of at the end of `scan`: the Codex pass that follows can take a
+    /// while on a large library, and it used to run with all of this still resident while the UI
+    /// was live.
+    private func foldClaudeUsage(
+        in files: [URL],
+        visited: inout Set<String>,
+        into days: inout [String: UsageHistoryDay]
+    ) {
+        var deduplicator = ClaudeDeduplicator()
+        for file in files {
+            guard !Task.isCancelled else { return }
+            for record in claudeRecords(in: file, visited: &visited) {
+                deduplicator.append(record)
+            }
+        }
+        // Releases the two lookup tables before the fold allocates day buckets.
+        for record in deduplicator.finish() {
+            guard !Task.isCancelled else { return }
+            bump(record.event, into: &days)
+        }
     }
 
     private func bump(_ event: UsageHistoryEvent, into days: inout [String: UsageHistoryDay]) {
@@ -531,6 +549,18 @@ private extension UsageHistoryScanner {
                 if byID[id] == nil { byID[id] = index }
                 kept.append(candidate)
             }
+        }
+
+        /// Hands back the deduplicated records and drops the lookup tables that produced them.
+        ///
+        /// Both tables are keyed by message and request ids, so on a large library they are
+        /// comparable in size to the records themselves and are dead the moment the last record
+        /// has been appended.
+        mutating func finish() -> [ClaudeRecord] {
+            byExact.removeAll(keepingCapacity: false)
+            byID.removeAll(keepingCapacity: false)
+            defer { kept = [] }
+            return kept
         }
     }
 

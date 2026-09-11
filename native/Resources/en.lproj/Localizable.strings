@@ -162,6 +162,7 @@
 "从 Git 仓库添加 Skill 后可在此检查更新。" = "Add a Skill from a Git repository to check for updates here.";
 "从 Git 添加" = "Add from Git";
 "从仓库读取 SKILL.md，可一次导入一个或多个 Skills。" = "Read SKILL.md files from a repository and import one or more Skills at once.";
+"从接口获取模型" = "Fetch models from API";
 "错误" = "Error";
 "错误，真实上游 HTTP 状态码 {code}" = "Error, actual upstream HTTP status {code}";
 "错误结果" = "Error result";
@@ -212,6 +213,7 @@
 "点击查看完整请求 / 响应" = "Click to view the full request / response";
 "点击自定义图标" = "Click to customize";
 "点选切换 · 拖动排序" = "Click to switch · drag to reorder";
+"调用 /v1/models 或 /models 并自动创建模型绑定" = "Call /v1/models or /models and create model bindings automatically";
 "调整故障转移顺序失败" = "Could not reorder the failover queue";
 "调整会话页消息正文的字体大小。" = "Adjust the message text size on the Sessions page.";
 "调整面板宽度" = "Resize panel";
@@ -242,6 +244,8 @@
 "分支" = "Branch";
 "峰值" = "Peak";
 "服务" = "Services";
+"服务地址为空" = "The service address is empty";
+"服务地址无效" = "The service address is not valid";
 "服务商" = "Services";
 "服务商配置已更新" = "Provider configuration updated";
 "符号链接" = "Symbolic link";
@@ -265,6 +269,8 @@
 "覆盖现有 Skill？" = "Replace the existing Skill?";
 "该对话将被隐藏并移入回收站，之后可以在回收站中恢复。" = "This conversation will be hidden and moved to the recycle bin. You can restore it later.";
 "该服务的 API 协议；非 Anthropic 请求会被自动转换。" = "The provider's wire protocol; non-Anthropic requests are auto-translated.";
+"该服务未提供 /v1/models 接口" = "This service has no /v1/models endpoint";
+"该服务未提供模型列表接口" = "This service has no model listing endpoint";
 "该请求的详情已不可用（仅保留最近 100 条转发的完整报文）。" = "This request’s detail is no longer available (only the last 100 forwards keep full payloads).";
 "概览" = "Overview";
 "刚刚" = "just now";
@@ -421,6 +427,7 @@
 "开发插件" = "Build a plugin";
 "开关会立即、原子地写入或恢复各 CLI 的配置文件。" = "Each switch immediately and atomically writes or restores the CLI configuration file.";
 "开机自启动" = "Launch at login";
+"开启后队列即是网关的上游集合：客户端请求的协议如果队列里有，就直接透传给那个供应商；没有就转换协议后交给队首。任一上游失败时按队列顺序自动改用下一个。关闭时只使用当前启用的供应商。" = "With this on, the queue is the gateway's set of upstreams: a client speaking a protocol the queue already offers is passed straight through to that provider, and one speaking a protocol none of them offers is converted and sent to the head of the queue. If an upstream fails, the next one in the queue takes over. With it off, only the enabled provider is used.";
 "开启后网关按队列顺序发送请求，上游失败时自动改用下一个供应商；关闭时只使用当前启用的供应商。" = "With this on, the gateway sends requests down the queue in order and moves to the next provider when one fails. With it off, only the active provider is used.";
 "开始时间" = "Started";
 "开始于 {date}" = "Started {date}";
@@ -471,6 +478,7 @@
 "模式" = "Mode";
 "模型" = "Model";
 "模型厂商" = "Model vendors";
+"模型列表为空或无法解析" = "The model list was empty or could not be read";
 "默认" = "Default";
 "默认位置不可移除" = "The default location can't be removed";
 "目标工具" = "Target tools";
@@ -865,6 +873,7 @@
 "已导入 {n} 个" = "Imported {n}";
 "已登录" = "Signed in";
 "已登录 · {account}" = "Signed in · {account}";
+"已发现模型" = "Models found";
 "已复制" = "Copied";
 "已复制 ✓" = "Copied ✓";
 "已复制会话路径" = "Conversation path copied";

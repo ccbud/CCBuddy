@@ -12,7 +12,6 @@ struct ProviderProbeResult: Equatable, Sendable {
     var model: String?
     var message: String?
     var reason: FailureReason?
-    var migratedBaseURL: String?
 }
 
 struct ProviderProbeService: Sendable {
@@ -38,31 +37,21 @@ struct ProviderProbeService: Sendable {
         let session = injectedSession ?? Self.makeSession(insecureSkipVerify: insecureSkipVerify)
         let body = requestBody(for: provider)
         do {
-            var response = try await send(
+            // Exactly one request, to exactly the URL the gateway will call. The probe used to
+            // try a second spelling and quietly rewrite the user's base URL when it answered,
+            // which is how a provider could test healthy against an address the gateway never
+            // used. `GatewayUpstreamURL` now maps each base URL to a single upstream URL, so
+            // there is no second spelling to try.
+            let response = try await send(
                 to: primaryURL,
                 provider: provider,
                 body: body,
                 session: session
             )
-            var migratedBaseURL: String?
-            if [400, 404, 405].contains(response.statusCode),
-               let fallbackURL = fallbackEndpointURL(baseURL: baseURL, protocol: provider.protocol),
-               let fallback = try? await send(
-                   to: fallbackURL,
-                   provider: provider,
-                   body: body,
-                   session: session
-               ),
-               (200..<300).contains(fallback.statusCode) {
-                response = fallback
-                migratedBaseURL = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                    + "/v1"
-            }
             return decode(
                 response,
                 protocol: provider.protocol,
-                requestedModel: selectedModel(for: provider),
-                migratedBaseURL: migratedBaseURL
+                requestedModel: selectedModel(for: provider)
             )
         } catch let error as URLError where error.code == .timedOut {
             return .init(succeeded: false, message: error.localizedDescription, reason: .timeout)
@@ -119,8 +108,7 @@ struct ProviderProbeService: Sendable {
     private func decode(
         _ response: (statusCode: Int, data: Data),
         protocol wireProtocol: Provider.WireProtocol,
-        requestedModel: String,
-        migratedBaseURL: String?
+        requestedModel: String
     ) -> ProviderProbeResult {
         let object = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any]
         let shapeIsValid: Bool
@@ -136,8 +124,7 @@ struct ProviderProbeService: Sendable {
             return .init(
                 succeeded: true,
                 statusCode: response.statusCode,
-                model: object?["model"] as? String ?? requestedModel,
-                migratedBaseURL: migratedBaseURL
+                model: object?["model"] as? String ?? requestedModel
             )
         }
 
@@ -149,43 +136,20 @@ struct ProviderProbeService: Sendable {
         return .init(
             succeeded: false,
             statusCode: response.statusCode,
-            message: message,
-            migratedBaseURL: migratedBaseURL
+            message: message
         )
     }
 
+    /// The URL a real inference request will reach.
+    ///
+    /// Shared with the Bifrost configuration builder on purpose. When the probe computed its own
+    /// URL, it could report a healthy provider the gateway then answered with 404, because the
+    /// two disagreed about whether the base URL already carried its version segment.
     private func endpointURL(
         baseURL: String,
         protocol wireProtocol: Provider.WireProtocol
     ) -> URL? {
-        URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + endpointPath(wireProtocol))
-    }
-
-    private func fallbackEndpointURL(
-        baseURL: String,
-        protocol wireProtocol: Provider.WireProtocol
-    ) -> URL? {
-        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !hasVersionSuffix(base),
-              !(wireProtocol == .openAIChat && base.lowercased().hasSuffix("/openai"))
-        else { return nil }
-        return URL(string: base + "/v1" + endpointPath(wireProtocol))
-    }
-
-    private func endpointPath(_ wireProtocol: Provider.WireProtocol) -> String {
-        switch wireProtocol {
-        case .anthropic: "/messages"
-        case .openAIChat: "/chat/completions"
-        case .openAIResponses: "/responses"
-        }
-    }
-
-    private func hasVersionSuffix(_ baseURL: String) -> Bool {
-        guard let components = URLComponents(string: baseURL) else { return false }
-        guard let segment = components.path.split(separator: "/").last else { return false }
-        let lower = segment.lowercased()
-        guard lower.first == "v" else { return false }
-        return lower.dropFirst().first?.isNumber == true
+        GatewayUpstreamURL.endpointURL(baseURL: baseURL, wireProtocol: wireProtocol)
     }
 
     private static func makeSession(insecureSkipVerify: Bool) -> URLSession {

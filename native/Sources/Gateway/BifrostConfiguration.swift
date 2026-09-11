@@ -3,7 +3,7 @@ import Foundation
 
 struct BifrostConfiguration: Codable, Equatable {
     /// Bifrost accepts SecretVar values as either a scalar string or its management-API
-    /// object form. Config schema v1.6.11 documents the scalar form, so generated config
+    /// object form. Config schema v2.1.1 documents the scalar form, so generated config
     /// uses it while decoding both representations for round-trip compatibility.
     struct SecretVar: Codable, Equatable {
         var value: String
@@ -44,7 +44,7 @@ struct BifrostConfiguration: Codable, Equatable {
             case virtualKeys = "virtual_keys"
         }
     }
-    /// Only fields deliberately owned by CC Buddy are encoded. Bifrost v1.6.11 fills all other
+    /// Only fields deliberately owned by CC Buddy are encoded. Bifrost v2.1.1 fills all other
     /// ClientConfig defaults after decoding this partial object, including its compatibility
     /// conversion defaults. An explicit empty origin list is preserved while Bifrost's built-in
     /// localhost exception continues to allow the native app and local CLIs.
@@ -140,7 +140,7 @@ struct BifrostConfiguration: Codable, Equatable {
             case retryBackoffMax = "retry_backoff_max"
         }
     }
-    /// Mirrors Bifrost v1.6.11's `AllowedRequests`. A non-nil object is an
+    /// Mirrors Bifrost v2.1.1's `AllowedRequests`. A non-nil object is an
     /// allow-list: every omitted or false operation is rejected. Encoding the
     /// complete shape makes the selected upstream wire protocol authoritative
     /// instead of silently granting newly added Bifrost operations.
@@ -269,9 +269,13 @@ struct BifrostConfiguration: Codable, Equatable {
     struct CustomProvider: Codable, Equatable {
         var baseProviderType: String
         var allowedRequests: AllowedRequests
+        /// Paths Bifrost must use verbatim instead of prefixing its own `/v1`. Empty for the
+        /// common case; see `GatewayUpstreamURL` for when a base URL needs it.
+        var requestPathOverrides: [String: String]?
         enum CodingKeys: String, CodingKey {
             case baseProviderType = "base_provider_type"
             case allowedRequests = "allowed_requests"
+            case requestPathOverrides = "request_path_overrides"
         }
     }
     struct ProviderConfig: Codable, Equatable {
@@ -312,7 +316,7 @@ enum BifrostConfigBuilder {
     static let providerName = "ccbud-active"
     static let virtualKeyID = "ccbud-gateway"
     static let virtualKeyName = "CC Buddy Gateway"
-    /// Bifrost v1.6.11's SQLite cleaner reads `client.log_retention_days`; the similarly named
+    /// Bifrost v2.1.1's SQLite cleaner reads `client.log_retention_days`; the similarly named
     /// `logs_store.retention_days` is consumed only by the ClickHouse store. Raw provider payloads
     /// exist solely for the local monitor inspector, so keep them for Bifrost's minimum interval.
     static let logRetentionDays = 1
@@ -513,10 +517,17 @@ enum BifrostConfigBuilder {
             models: ["*"],
             aliases: aliases(for: provider)
         )
+        // Bifrost owns the whole upstream path and inserts its own `/v1` segment. Every provider
+        // preset, and every base URL a provider's own documentation gives, already ends where its
+        // version segment begins, so handing one over untouched produced `…/v1/v1/messages` and a
+        // 404 from every upstream. `GatewayUpstreamURL` reconciles the two.
+        let overrides = GatewayUpstreamURL.requestPathOverrides(
+            for: provider.protocol, baseURL: provider.baseUrl
+        )
         return .init(
             keys: [key],
             networkConfig: .init(
-                baseURL: provider.baseUrl,
+                baseURL: GatewayUpstreamURL.bifrostBaseURL(for: provider.baseUrl),
                 insecureSkipVerify: config.insecureSkipVerify,
                 maxRetries: retryCount,
                 retryBackoffInitial: retryInitial,
@@ -524,7 +535,8 @@ enum BifrostConfigBuilder {
             ),
             customProviderConfig: .init(
                 baseProviderType: baseType,
-                allowedRequests: allowedRequests(for: provider.protocol)
+                allowedRequests: allowedRequests(for: provider.protocol),
+                requestPathOverrides: overrides.isEmpty ? nil : overrides
             ),
             // Raw bodies stay local and power the native monitor inspector.
             storeRawRequestResponse: true
@@ -588,15 +600,15 @@ enum BifrostConfigBuilder {
                 enforceAuthOnInference: config.requireToken,
                 allowedOrigins: [],
                 logRetentionDays: logRetentionDays,
-                // Bifrost's compat plugin converts Chat callers only when the
-                // selected model is catalogued as Responses-only. Enabling the
-                // feature is safe for mixed catalogs and lets Responses-native
-                // providers serve compatible Chat clients where Bifrost has a
-                // verified conversion path.
+                // Chat -> Responses is the one conversion Bifrost gates behind a client flag;
+                // Responses -> Chat and both Anthropic directions are chosen from the provider's
+                // own `allowed_requests`. Turn it on whenever a Responses upstream is configured,
+                // because that upstream may have to serve a Chat caller. It used to additionally
+                // require a non-empty generated model catalog, which silently disabled the
+                // conversion for any provider whose models were not enumerated in advance.
                 compat: .init(
                     convertChatToResponses: routedProviders.contains {
                         $0.provider.protocol == .openAIResponses
-                            && !modelCatalogModels(for: $0.provider).isEmpty
                     }
                 )
             ),

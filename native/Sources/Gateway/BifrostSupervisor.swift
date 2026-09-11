@@ -163,7 +163,7 @@ actor BifrostSupervisor {
         logByteLimitPerStream: Int = 32 * 1_024,
         // A first launch runs both config-store and log-store migrations before
         // the HTTP listener opens. On slower external/APFS volumes the pinned
-        // v1.6.11 helper can legitimately need more than 20 seconds, so keep a
+        // v2.1.1 helper can legitimately need more than 20 seconds, so keep a
         // one-minute startup envelope while retaining the 100 ms responsive poll.
         healthCheckAttempts: Int = 600,
         healthCheckIntervalNanoseconds: UInt64 = 100_000_000,
@@ -211,7 +211,7 @@ actor BifrostSupervisor {
             // Bifrost creates SQLite files with the process umask (commonly 0644). Keeping the
             // store directory private prevents prompts, responses, and provider configuration
             // from being readable by other local accounts even before individual files exist.
-            // v1.6.11 loads any persisted model-parameter rows before refreshing the configured
+            // v2.1.1 loads any persisted model-parameter rows before refreshing the configured
             // catalog in the background. Clear only that derived cache while the helper is
             // stopped, forcing startup to synchronously load the just-generated local catalog.
             // Provider/governance settings remain available for config.json reconciliation.
@@ -826,14 +826,56 @@ struct LegacyModelRoute: Equatable, Sendable {
     /// Explicit configured aliases are deliberately left for Bifrost's native alias resolver so
     /// they retain precedence and Bifrost records its ordinary `alias` field.
     let usesNativeAlias: Bool
+    /// The Bifrost provider this request is pinned to, or nil when the configured set is
+    /// unambiguous and the request can stay byte-identical.
+    ///
+    /// Bifrost resolves a bare model name through its model catalog, which knows nothing about
+    /// which protocol the caller spoke. With several providers configured — each advertising the
+    /// same `["*"]` model list — that resolution collapses onto whichever provider is indexed
+    /// first, so a Responses caller could be answered by an Anthropic upstream even when a
+    /// Responses upstream was configured. Naming the provider in the model string removes the
+    /// guess: Bifrost honours a `provider/model` prefix ahead of catalog resolution.
+    let pinnedProviderName: String?
+    /// The rest of the configured queue, already provider-prefixed, handed to Bifrost as the
+    /// request's `fallbacks` so pinning a provider does not also disable automatic failover.
+    let fallbackModels: [String]
+
+    init(
+        requestedModel: String?,
+        outgoingModel: String?,
+        usesNativeAlias: Bool,
+        pinnedProviderName: String? = nil,
+        fallbackModels: [String] = []
+    ) {
+        self.requestedModel = requestedModel
+        self.outgoingModel = outgoingModel
+        self.usesNativeAlias = usesNativeAlias
+        self.pinnedProviderName = pinnedProviderName
+        self.fallbackModels = fallbackModels
+    }
 
     var needsResponseRestoration: Bool {
         guard let requestedModel, let outgoingModel else { return false }
-        return requestedModel != outgoingModel
+        return requestedModel != outgoingModel || pinnedProviderName != nil
     }
 
     var needsRequestBodyRewrite: Bool {
-        needsResponseRestoration && !usesNativeAlias
+        guard requestedModel != nil, outgoingModel != nil else { return false }
+        if pinnedProviderName != nil { return true }
+        return needsResponseRestoration && !usesNativeAlias
+    }
+
+    /// The exact string written into the outgoing request body.
+    ///
+    /// A configured alias keeps its caller spelling even when pinned, so Bifrost's own alias
+    /// resolver still runs and still records the alias it applied; only the provider prefix is
+    /// added in front of it.
+    var wireModel: String? {
+        guard let outgoingModel else { return nil }
+        let bare = usesNativeAlias ? (requestedModel ?? outgoingModel) : outgoingModel
+        guard let pinnedProviderName, !pinnedProviderName.isEmpty else { return bare }
+        if bare.hasPrefix("\(pinnedProviderName)/") { return bare }
+        return "\(pinnedProviderName)/\(bare)"
     }
 }
 
@@ -873,8 +915,15 @@ struct LegacyModelListCompatibility: Equatable, Sendable {
     let aliases: [String]
     let configuredFallbacks: [String]
     let tierModels: [String]
+    /// Used only to strip CC Buddy's internal Bifrost provider names off upstream identifiers.
+    let router: GatewayProtocolRouter
 
-    init(provider: Provider?, aliases: [String]? = nil, isCodex: Bool) {
+    init(
+        provider: Provider?,
+        aliases: [String]? = nil,
+        isCodex: Bool,
+        router: GatewayProtocolRouter = GatewayProtocolRouter(routes: [])
+    ) {
         self.aliases = Self.unique(aliases ?? provider?.models.compactMap { mapping in
             mapping.alias.isEmpty ? nil : mapping.alias
         } ?? [])
@@ -883,6 +932,7 @@ struct LegacyModelListCompatibility: Equatable, Sendable {
             provider?.smallFastModel ?? "",
         ].filter { !$0.isEmpty })
         tierModels = isCodex ? Self.codexTierModels : Self.claudeTierModels
+        self.router = router
     }
 
     /// Returns a merged legacy list and the original upstream identifiers. Invalid/error model
@@ -893,7 +943,20 @@ struct LegacyModelListCompatibility: Equatable, Sendable {
     ) -> (body: Data, upstreamModels: Set<String>) {
         if upstreamSucceeded,
            var object = (try? JSONSerialization.jsonObject(with: upstreamBody)) as? [String: Any],
-           let upstreamEntries = object["data"] as? [Any] {
+           let rawEntries = object["data"] as? [Any] {
+            // Bifrost answers with `"<provider>/<model>"` whenever a request names a provider, and
+            // CC Buddy's provider names are an internal routing detail. A client that copied one
+            // of those identifiers back into a request would be pinning itself to a provider that
+            // disappears the moment the gateway is reconfigured, so strip them here.
+            let upstreamEntries: [Any] = rawEntries.map { entry in
+                guard var item = entry as? [String: Any],
+                      let identifier = item["id"] as? String else { return entry }
+                let stripped = router.strippingProviderPrefix(identifier)
+                guard stripped != identifier else { return entry }
+                item["id"] = stripped
+                if item["display_name"] as? String == identifier { item["display_name"] = stripped }
+                return item
+            }
             let upstreamModels = Set(upstreamEntries.compactMap { entry -> String? in
                 (entry as? [String: Any])?["id"] as? String
             })
@@ -1027,11 +1090,14 @@ enum LegacyCountTokensEstimator {
 }
 
 /// A literal port of `src-tauri/src/gateway/routing.rs`. Keeping this decision outside Bifrost is
-/// necessary because v1.6.11 aliases are exact-only, while CC Buddy historically accepted whole
+/// necessary because v2.1.1 aliases are exact-only, while CC Buddy historically accepted whole
 /// Claude/Codex model families and a primary-tier `-ccbud` sentinel.
 struct LegacyModelRoutingCompatibility: Sendable {
     private let provider: Provider?
     private let modelListAliases: [String]
+    /// Decides which configured upstream serves each caller protocol. See
+    /// `GatewayProtocolRouter` for the one-of-three / three-of-three contract it implements.
+    let router: GatewayProtocolRouter
     let knownModelStore: LegacyKnownModelStore
 
     init(provider: Provider?, knownModels: Set<String> = []) {
@@ -1039,11 +1105,19 @@ struct LegacyModelRoutingCompatibility: Sendable {
         modelListAliases = provider?.models.compactMap {
             $0.alias.isEmpty ? nil : $0.alias
         } ?? []
+        router = GatewayProtocolRouter(
+            routes: provider.map {
+                [GatewayUpstreamRoute(
+                    bifrostName: BifrostConfigBuilder.providerName, provider: $0
+                )]
+            } ?? []
+        )
         knownModelStore = LegacyKnownModelStore(knownModels)
     }
 
     init(config: AppConfig, knownModels: Set<String> = []) {
-        provider = config.activeProvider
+        router = GatewayProtocolRouter(config: config)
+        provider = router.primaryRoute?.provider ?? config.activeProvider
         modelListAliases = config.providers.flatMap { provider in
             provider.models.compactMap { $0.alias.isEmpty ? nil : $0.alias }
         }
@@ -1054,25 +1128,75 @@ struct LegacyModelRoutingCompatibility: Sendable {
         LegacyModelListCompatibility(
             provider: provider,
             aliases: modelListAliases,
-            isCodex: isCodex
+            isCodex: isCodex,
+            router: router
         )
     }
 
-    func resolve(_ requestedModel: String?) -> LegacyModelRoute? {
-        guard let provider else { return nil }
+    /// Resolves a caller's model against the upstream that will actually serve it.
+    ///
+    /// Model mapping is a property of the selected upstream, not of whichever provider happens to
+    /// be marked active: with several configured, a Responses caller answered by the Responses
+    /// upstream must be mapped through *that* provider's aliases and default models.
+    func resolve(
+        _ requestedModel: String?,
+        clientProtocol: GatewayClientProtocol? = nil
+    ) -> LegacyModelRoute? {
+        let fallbackRoute = provider.map {
+            GatewayUpstreamRoute(bifrostName: BifrostConfigBuilder.providerName, provider: $0)
+        }
+        guard let upstream = router.route(for: clientProtocol) ?? fallbackRoute else { return nil }
+        let pinnedProviderName = router.pinsProviderName ? upstream.bifrostName : nil
         guard let requestedModel else {
-            return .init(requestedModel: nil, outgoingModel: nil, usesNativeAlias: false)
+            return .init(
+                requestedModel: nil, outgoingModel: nil, usesNativeAlias: false,
+                pinnedProviderName: pinnedProviderName
+            )
         }
 
+        let mapped = map(requestedModel, for: upstream.provider)
+        return .init(
+            requestedModel: requestedModel,
+            outgoingModel: mapped.model,
+            usesNativeAlias: mapped.usesNativeAlias,
+            pinnedProviderName: pinnedProviderName,
+            fallbackModels: fallbackModels(for: requestedModel, excluding: upstream)
+        )
+    }
+
+    /// The remaining configured upstreams, in queue order, spelled the way Bifrost wants them in
+    /// a request's `fallbacks`.
+    ///
+    /// Pinning a provider takes the choice away from Bifrost's virtual-key load balancer, which
+    /// is also what used to provide automatic failover. Handing the rest of the queue back as
+    /// explicit fallbacks keeps that behaviour: the protocol-matched upstream is tried first, and
+    /// the queue still takes over when it fails. Each fallback is mapped through *its own*
+    /// provider's aliases and default models, because a model name that means something on one
+    /// upstream frequently means nothing on the next.
+    private func fallbackModels(
+        for requestedModel: String,
+        excluding pinned: GatewayUpstreamRoute
+    ) -> [String] {
+        guard router.pinsProviderName else { return [] }
+        return router.routes.compactMap { route in
+            guard route.bifrostName != pinned.bifrostName else { return nil }
+            let mapped = map(requestedModel, for: route.provider)
+            let bare = mapped.usesNativeAlias ? requestedModel : mapped.model
+            guard !bare.isEmpty else { return nil }
+            return "\(route.bifrostName)/\(bare)"
+        }
+    }
+
+    /// A literal port of `src-tauri/src/gateway/routing.rs`, applied to one provider.
+    private func map(
+        _ requestedModel: String,
+        for provider: Provider
+    ) -> (model: String, usesNativeAlias: Bool) {
         for mapping in provider.models
         where !mapping.alias.isEmpty
             && mapping.alias == requestedModel
             && !mapping.upstream.isEmpty {
-            return .init(
-                requestedModel: requestedModel,
-                outgoingModel: mapping.upstream,
-                usesNativeAlias: true
-            )
+            return (mapping.upstream, true)
         }
 
         let primary = provider.defaultModel
@@ -1080,31 +1204,15 @@ struct LegacyModelRoutingCompatibility: Sendable {
         if requestedModel == primary || requestedModel == fast
             || provider.models.contains(where: { $0.upstream == requestedModel })
             || knownModelStore.contains(requestedModel) {
-            return .init(
-                requestedModel: requestedModel,
-                outgoingModel: requestedModel,
-                usesNativeAlias: false
-            )
+            return (requestedModel, false)
         }
 
         if requestedModel.hasSuffix("-ccbud") {
             let target = primary.isEmpty ? fast : primary
-            if !target.isEmpty {
-                return .init(
-                    requestedModel: requestedModel,
-                    outgoingModel: target,
-                    usesNativeAlias: false
-                )
-            }
+            if !target.isEmpty { return (target, false) }
         }
 
-        guard provider.mapDefaultModels else {
-            return .init(
-                requestedModel: requestedModel,
-                outgoingModel: requestedModel,
-                usesNativeAlias: false
-            )
-        }
+        guard provider.mapDefaultModels else { return (requestedModel, false) }
 
         let big = primary.isEmpty ? fast : primary
         let small = fast.isEmpty ? primary : fast
@@ -1125,18 +1233,7 @@ struct LegacyModelRoutingCompatibility: Sendable {
             target = small
         }
 
-        guard !target.isEmpty else {
-            return .init(
-                requestedModel: requestedModel,
-                outgoingModel: requestedModel,
-                usesNativeAlias: false
-            )
-        }
-        return .init(
-            requestedModel: requestedModel,
-            outgoingModel: target,
-            usesNativeAlias: false
-        )
+        return target.isEmpty ? (requestedModel, false) : (target, false)
     }
 }
 
@@ -1153,6 +1250,9 @@ enum LegacyGatewayRouteCompatibility {
         // This route was handled specially by the legacy gateway even though wire.rs excludes
         // it from provider-endpoint rebasing.
         "/v1/messages/count_tokens": "/anthropic/v1/messages/count_tokens",
+        // Bifrost serves its management UI from the root, so an unversioned model listing would
+        // answer a client with HTML instead of a catalog. Send it to the real listing route.
+        "/models": "/v1/models",
     ]
 
     static var legacyRoutes: [String] { destinations.keys.sorted() }
@@ -1182,7 +1282,14 @@ enum LegacyGatewayRouteCompatibility {
         let normalized = path.count > 1 && path.hasSuffix("/")
             ? String(path.dropLast())
             : path
-        return normalized.hasSuffix("/v1/models")
+        return normalized.hasSuffix("/v1/models") || normalized == "/models"
+    }
+
+    /// The wire protocol the caller spoke, recovered before the request is rewritten onto a
+    /// Bifrost integration route.
+    static func clientProtocol(for requestTarget: String) -> GatewayClientProtocol? {
+        guard let path = requestPath(for: requestTarget) else { return nil }
+        return GatewayClientProtocol.classify(path: path)
     }
 
     static func isHeadRoot(method: String, requestTarget: String) -> Bool {
@@ -1409,6 +1516,10 @@ fileprivate struct LegacyHTTPRequestHeaderPlan {
     let isHeadRoot: Bool
     let isCountTokens: Bool
     let countTokensRequestIsJSON: Bool
+    /// The wire protocol this caller spoke. Derived from the request line, which by this point
+    /// has already been rewritten onto its Bifrost integration route — both spellings classify
+    /// identically, so the value is the same either way.
+    let clientProtocol: GatewayClientProtocol?
 
     init(
         header: Data,
@@ -1438,6 +1549,7 @@ fileprivate struct LegacyHTTPRequestHeaderPlan {
         self.isCountTokens = isCountTokens ?? LegacyGatewayRouteCompatibility.isCountTokens(
             method: method, requestTarget: requestTarget
         )
+        clientProtocol = LegacyGatewayRouteCompatibility.clientProtocol(for: requestTarget)
         countTokensRequestIsJSON = lines.dropFirst().contains { line in
             guard let colon = line.firstIndex(of: ":") else { return false }
             let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
@@ -2203,7 +2315,9 @@ struct LegacyHTTPRequestStreamRewriter {
             : nil
         guard var object = parsed as? [String: Any],
               let requestedModel = object["model"] as? String,
-              let route = modelRouting.resolve(requestedModel) else {
+              let route = modelRouting.resolve(
+                  requestedModel, clientProtocol: plan.clientProtocol
+              ) else {
             let header = plan.expectsContinue
                 ? LegacyHTTPHeaderEditing.rewrite(plan.header, removing: ["expect"])
                 : plan.header
@@ -2218,8 +2332,13 @@ struct LegacyHTTPRequestStreamRewriter {
         }
 
         var body = jsonBody
-        if route.needsRequestBodyRewrite, let outgoingModel = route.outgoingModel {
-            object["model"] = outgoingModel
+        if route.needsRequestBodyRewrite, let wireModel = route.wireModel {
+            object["model"] = wireModel
+            // Never overwrite a caller's own fallbacks: Bifrost treats the field as the client's
+            // instruction, and a client that sent one meant it.
+            if !route.fallbackModels.isEmpty, object["fallbacks"] == nil {
+                object["fallbacks"] = route.fallbackModels
+            }
             if let rewritten = try? JSONSerialization.data(withJSONObject: object) {
                 body = rewritten
             }

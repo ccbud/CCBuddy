@@ -133,7 +133,7 @@ struct BifrostLog: Codable, Identifiable, Equatable {
     var rawRequest: String?
     var rawResponse: String?
 
-    // Pinned Bifrost v1.6.11 large-payload and passthrough fields. A large-payload flag means the
+    // Pinned Bifrost v2.1.1 large-payload and passthrough fields. A large-payload flag means the
     // served content is only a preview; Bifrost does not report the original byte count.
     var isLargePayloadRequest: Bool
     var isLargePayloadResponse: Bool

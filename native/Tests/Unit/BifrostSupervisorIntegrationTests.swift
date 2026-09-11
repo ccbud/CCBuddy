@@ -56,9 +56,11 @@ final class BifrostSupervisorIntegrationTests: XCTestCase {
             port: config.port,
             credentials: managementCredentials
         )
+        // Bifrost appends its own "/v1/messages", so the configured base has to stop short of
+        // the version segment or every upstream is asked for "/v1/v1/messages".
         XCTAssertEqual(
             firstNetwork["base_url"] as? String,
-            "https://open.bigmodel.cn/api/anthropic/v1"
+            "https://open.bigmodel.cn/api/anthropic"
         )
         XCTAssertEqual(firstNetwork["max_retries"] as? Int, 3)
         let storeDirectory = root.appendingPathComponent("bifrost", isDirectory: true)

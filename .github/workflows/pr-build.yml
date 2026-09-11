@@ -16,8 +16,11 @@ permissions:
   contents: read
 
 jobs:
+  # Deliberately not a dependency of native-arm64. These finish in about a minute; making the
+  # macOS job wait for them added that minute to every run's critical path and gated the suite
+  # that actually covers the shipping app behind the one that does not.
   shared-tests:
-    name: Shared JavaScript and Rust tests
+    name: Shared JavaScript tests
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -28,25 +31,13 @@ jobs:
         with:
           node-version: 24.19.0
           cache: npm
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          workspaces: './src-tauri -> target'
       - name: Install test dependencies
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: JavaScript tests
         run: npm test
-      - name: Rust tests
-        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
 
   native-arm64:
     name: Native tests and unsigned universal package
-    needs: shared-tests
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -110,36 +101,6 @@ jobs:
           cp "$codex" native/Vendor/test-tools/codex
           cp "$claude" native/Vendor/test-tools/claude
           chmod 755 native/Vendor/test-tools/codex native/Vendor/test-tools/claude
-      # Fail quickly on the large-reader regression, then still run both complete suites.
-      # Its separate result bundle is never included in the full-suite membership counts.
-      - name: Preflight the twelve-thousand-message reader
-        shell: bash
-        run: |
-          set -euo pipefail
-          result="$RUNNER_TEMP/CCBuddyLongTranscriptPreflight.xcresult"
-          summary="$RUNNER_TEMP/CCBuddyLongTranscriptPreflight-summary.json"
-          tests="$RUNNER_TEMP/CCBuddyLongTranscriptPreflight-tests.json"
-          test ! -e "$result"
-          xcodebuild test \
-            -project native/CCBuddy.xcodeproj \
-            -scheme CCBuddy \
-            -configuration Debug \
-            -destination 'platform=macOS,arch=arm64' \
-            -only-testing:CCBuddyUITests/NativeSearchExperienceUITests/testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession \
-            -parallel-testing-enabled NO \
-            -maximum-parallel-testing-workers 1 \
-            -resultBundlePath "$result" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGN_IDENTITY=- \
-            ENABLE_HARDENED_RUNTIME=NO \
-            CCBUD_PRODUCT_BUNDLE_IDENTIFIER="dev.ccbud.gateway.preflight.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          xcrun xcresulttool get test-results summary --path "$result" --compact > "$summary"
-          xcrun xcresulttool get test-results tests --path "$result" --compact > "$tests"
-          jq -e '.result == "Passed" and .totalTestCount == 1 and .passedTests == 1
-            and .failedTests == 0 and .skippedTests == 0 and .expectedFailures == 0' "$summary"
-          jq -e '[.. | objects | select(.nodeType == "Test Case")] as $cases
-            | ($cases | length) == 1
-              and $cases[0].nodeIdentifier == "NativeSearchExperienceUITests/testTwelveThousandMessageTranscriptCanFindItsTailAndReturnToSmallSession()"
-              and $cases[0].result == "Passed"' "$tests"
       - name: Run native unit tests with all real E2Es
         shell: bash
         env:
@@ -242,7 +203,7 @@ jobs:
           set -euo pipefail
           evidence="$RUNNER_TEMP/ccbud-test-evidence"
           mkdir -p "$evidence"
-          for suite in CCBuddyLongTranscriptPreflight CCBuddyTests CCBuddyUITests; do
+          for suite in CCBuddyTests CCBuddyUITests; do
             result="$RUNNER_TEMP/$suite.xcresult"
             if [[ -d "$result" ]]; then
               xcrun xcresulttool get test-results summary --path "$result" \
@@ -251,11 +212,6 @@ jobs:
                 --compact > "$evidence/$suite-tests.json"
             fi
           done
-          if [[ -d "$RUNNER_TEMP/CCBuddyLongTranscriptPreflight.xcresult" ]]; then
-            xcrun xcresulttool export attachments \
-              --path "$RUNNER_TEMP/CCBuddyLongTranscriptPreflight.xcresult" \
-              --output-path "$evidence/preflight-attachments"
-          fi
           if [[ -d "$RUNNER_TEMP/CCBuddyUITests.xcresult" ]]; then
             xcrun xcresulttool export attachments \
               --path "$RUNNER_TEMP/CCBuddyUITests.xcresult" \

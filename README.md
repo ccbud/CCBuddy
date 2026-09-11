@@ -46,7 +46,12 @@ The redesign follows a macOS 27 design direction using available macOS 26 APIs b
 
 ## Included: local API gateway
 
-As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** on both client and provider sides, passing through matching protocols or translating between them. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Around seventy provider presets ship built in, alongside custom and plugin-backed providers, with switching and model mapping.
+As a companion feature, the gateway accepts **Anthropic Messages**, **OpenAI Chat Completions**, and **OpenAI Responses** from clients, whichever of those three you configure as upstreams.
+
+- **Configure all three** and every client is handed to the upstream that already speaks its protocol, untouched.
+- **Configure one or two** and a client speaking a protocol you did have still passes through, while one speaking a protocol you do not is converted for you.
+
+Either way, if an upstream fails the rest of your queue takes over in order. It configures **Claude Code and Codex** with one click; other compatible clients can use the local endpoint manually. Around seventy provider presets ship built in, alongside custom and plugin-backed providers, with switching and model mapping. A provider that publishes `/v1/models` or `/models` can fill in its own model bindings from the editor; one that does not leaves the control disabled rather than failing.
 
 The gateway binds to `127.0.0.1`; inference requests still go to the provider you select.
 

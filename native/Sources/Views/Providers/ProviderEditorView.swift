@@ -15,6 +15,11 @@ struct ProviderEditorView: View {
     @State private var testing = false
     @State private var testMessage: String?
     @State private var testSucceeded = false
+    @State private var discovering = false
+    /// What the last probe of `/v1/models` found. `.unsupported` is what greys the refresh
+    /// control out: the provider answered and said it has no listing endpoint, so offering to
+    /// refresh again would only produce the same answer.
+    @State private var modelCatalog = ProviderModelCatalog.unknown
 
     let onSave: (Provider) -> Void
 
@@ -66,6 +71,11 @@ struct ProviderEditorView: View {
             height: ProviderEditorLayout.sheetSize.height
         )
         .background(Theme.surface)
+        // A listing endpoint belongs to one address; pointing the provider somewhere else makes
+        // the previous "this host has no /v1/models" answer meaningless, so the control comes
+        // back enabled rather than staying greyed out against a host never probed.
+        .onChange(of: draft.baseUrl) { _ in modelCatalog = .unknown }
+        .onChange(of: draft.protocol) { _ in modelCatalog = .unknown }
         .overlay(alignment: .topLeading) {
             Rectangle()
                 .fill(Color.clear)
@@ -168,6 +178,8 @@ struct ProviderEditorView: View {
             selectedPreset = preset.id
             preset.apply(to: &draft)
             testMessage = nil
+            // Availability was measured against the previous address.
+            modelCatalog = .unknown
         }
         .buttonStyle(ProviderPresetButtonStyle(selected: selectedPreset == preset.id))
         .help(preset.baseURL.isEmpty ? preset.name : preset.baseURL)
@@ -274,12 +286,69 @@ struct ProviderEditorView: View {
         }
     }
 
+    /// Refreshes the mapping list from the provider's own `/v1/models`.
+    ///
+    /// The button is disabled while a probe is in flight, while the address is unusable, and —
+    /// the point of tracking availability at all — once a probe has established that this
+    /// provider has no listing endpoint, so the control reads as unavailable rather than broken.
+    private var discoverModelsControl: some View {
+        HStack(spacing: 7) {
+            Button {
+                runModelDiscovery()
+            } label: {
+                HStack(spacing: 5) {
+                    if discovering {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    Text(appLanguage.localized("从接口获取模型"))
+                }
+            }
+            .buttonStyle(CompactActionButtonStyle())
+            .disabled(discovering || !isValid || modelCatalog.availability == .unsupported)
+            .accessibilityIdentifier("provider.editor.discoverModels")
+            .help(appLanguage.localized(
+                modelCatalog.availability == .unsupported
+                    ? "该服务未提供 /v1/models 接口"
+                    : "调用 /v1/models 或 /models 并自动创建模型绑定"
+            ))
+            if let message = discoveryMessage {
+                Text(appLanguage.localized(message) + discoveryCountSuffix)
+                    .font(.system(size: 11))
+                    .foregroundStyle(
+                        modelCatalog.availability == .available
+                            ? Theme.mutedForeground : Theme.danger
+                    )
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var discoveryMessage: String? {
+        switch modelCatalog.availability {
+        case .unknown: return modelCatalog.message
+        case .available: return "已发现模型"
+        case .unsupported: return modelCatalog.message ?? "该服务未提供模型列表接口"
+        }
+    }
+
+    /// The model count is a number, so it is appended rather than interpolated into a phrase
+    /// that would then have to be translated once per locale.
+    private var discoveryCountSuffix: String {
+        modelCatalog.availability == .available ? " · \(modelCatalog.models.count)" : ""
+    }
+
     private var mappings: some View {
         DisclosureGroup(isExpanded: $mappingsExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("把客户端模型名精确映射到上游模型；未命中时才使用自动映射。")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Theme.mutedForeground)
+                discoverModelsControl
                 ForEach(Array(draft.models.indices), id: \.self) { index in
                     HStack(spacing: 7) {
                         TextField("客户端别名", text: mappingBinding(index, \.alias))
@@ -388,7 +457,6 @@ struct ProviderEditorView: View {
                 testing = false
                 testSucceeded = result.succeeded
                 if result.succeeded {
-                    if let migrated = result.migratedBaseURL { draft.baseUrl = migrated }
                     testMessage = "连接成功 · \(result.model ?? draft.defaultModel)"
                 } else {
                     switch result.reason {
@@ -400,6 +468,37 @@ struct ProviderEditorView: View {
                             ?? "连接测试失败"
                     }
                 }
+            }
+        }
+    }
+
+    /// Probes the provider's model listing and folds whatever it returns into the bindings.
+    ///
+    /// Discovered models are added as identity mappings — the caller-facing name and the upstream
+    /// name are the same — because that is what a provider advertising its own catalog means.
+    /// Rows the user wrote are never touched.
+    private func runModelDiscovery() {
+        discovering = true
+        let provider = draft
+        let insecure = model.config.insecureSkipVerify
+        Task {
+            let catalog = await ProviderModelDiscoveryService().discover(
+                provider,
+                insecureSkipVerify: insecure
+            )
+            await MainActor.run {
+                discovering = false
+                modelCatalog = catalog
+                guard catalog.availability == .available else { return }
+                draft.models = ProviderModelDiscoveryService.merging(
+                    discovered: catalog.models,
+                    into: draft.models
+                )
+                if draft.defaultModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let first = catalog.models.first {
+                    draft.defaultModel = first
+                }
+                mappingsExpanded = true
             }
         }
     }

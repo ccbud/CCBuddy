@@ -35,7 +35,14 @@ final class BifrostConfigTests: XCTestCase {
         XCTAssertTrue(provider.customProviderConfig.allowedRequests.responsesStream)
         XCTAssertTrue(provider.customProviderConfig.allowedRequests.countTokens)
         XCTAssertFalse(output.client.compat.convertChatToResponses)
-        XCTAssertEqual(provider.networkConfig.baseURL, "https://open.bigmodel.cn/api/anthropic/v1")
+        // Bifrost appends its own "/v1/messages", so the trailing segment of the configured
+        // base URL has to come off. Leaving it on asked every upstream for "/v1/v1/messages",
+        // which is a 404 from all of them.
+        XCTAssertEqual(provider.networkConfig.baseURL, "https://open.bigmodel.cn/api/anthropic")
+        XCTAssertNil(
+            provider.customProviderConfig.requestPathOverrides,
+            "shortening the base is the complete fix for a trailing /v1; overrides are for the rest"
+        )
         XCTAssertEqual(provider.networkConfig.maxRetries, 3)
         XCTAssertEqual(provider.networkConfig.retryBackoffInitial, 500)
         XCTAssertEqual(provider.networkConfig.retryBackoffMax, 4_000)
@@ -65,7 +72,7 @@ final class BifrostConfigTests: XCTestCase {
         let logsStore = try XCTUnwrap(object["logs_store"] as? [String: Any])
         XCTAssertNil(
             logsStore["retention_days"],
-            "SQLite retention is controlled by client.log_retention_days in Bifrost v1.6.11"
+            "SQLite retention is controlled by client.log_retention_days in Bifrost v2.1.1"
         )
     }
 
@@ -317,7 +324,14 @@ final class BifrostConfigTests: XCTestCase {
         XCTAssertNil(document[" upstream-primary "])
     }
 
-    func testResponsesChatConversionIsDisabledWhenNoConfiguredModelCanBeCatalogued() throws {
+    /// Chat -> Responses conversion follows the configured *protocol*, not the generated model
+    /// catalog.
+    ///
+    /// It used to additionally require a non-empty catalog, which meant a Responses provider whose
+    /// models the user had not enumerated in advance silently lost the ability to serve a Chat
+    /// client at all — a gateway that accepts three caller shapes has to keep accepting them
+    /// whether or not it happens to know the upstream's model names.
+    func testResponsesChatConversionSurvivesAnUncataloguedResponsesProvider() throws {
         var config = AppConfig.fixture
         config.providers[0].protocol = .openAIResponses
         config.providers[0].defaultModel = ""
@@ -329,7 +343,7 @@ final class BifrostConfigTests: XCTestCase {
             logDatabaseURL: URL(fileURLWithPath: "/tmp/logs.db"),
             managementCredentials: managementCredentials
         )
-        XCTAssertFalse(output.client.compat.convertChatToResponses)
+        XCTAssertTrue(output.client.compat.convertChatToResponses)
         XCTAssertEqual(String(decoding: try BifrostConfigBuilder.modelParametersData(from: config), as: UTF8.self), "{}")
     }
 

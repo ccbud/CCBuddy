@@ -109,6 +109,7 @@ final class UsageHistoryRecordCache: @unchecked Sendable {
     private var loaded = false
     private var dirty = false
     private var lastPersistedAt: Date?
+    private var memoryPressureRegistration: MemoryPressureMonitor.Registration?
 
     init(
         file: URL,
@@ -118,6 +119,28 @@ final class UsageHistoryRecordCache: @unchecked Sendable {
         self.file = file
         self.fileManager = fileManager
         self.minimumPersistInterval = max(0, minimumPersistInterval)
+        memoryPressureRegistration = MemoryPressureMonitor.shared.register { [weak self] _ in
+            self?.releaseMemory()
+        }
+    }
+
+    /// Writes the cache out and drops the in-memory copy when the system is short on memory.
+    ///
+    /// This map holds every assistant turn's usage record for every transcript in the library —
+    /// a few hundred bytes each, and nothing ever removed it while the app ran. Because the same
+    /// data is already on disk, handing it back costs one reload on the next scan and loses
+    /// nothing: `loadIfNeededLocked` reads the file again the first time anything asks.
+    private func releaseMemory() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard loaded else { return }
+        if dirty {
+            persistLocked()
+            dirty = false
+            lastPersistedAt = Date()
+        }
+        files.removeAll(keepingCapacity: false)
+        loaded = false
     }
 
     convenience init?(applicationDataRoot: URL?, fileManager: FileManager = .default) {
