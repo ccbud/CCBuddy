@@ -667,13 +667,10 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
-          unset tap_token authorization
+          unset tap_token
           tap_token="$HOMEBREW_TAP_TOKEN"
           unset HOMEBREW_TAP_TOKEN
           [[ -n "$tap_token" ]] || { echo 'missing HOMEBREW_TAP_TOKEN' >&2; exit 1; }
-          authorization="$(printf 'x-access-token:%s' "$tap_token" | base64 | tr -d '\r\n')"
           cd tap
-          GIT_CONFIG_COUNT=1 \
-          GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
-          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization" \
-            git push origin HEAD:main
+          git remote set-url origin "https://x-access-token:${tap_token}@github.com/${HOMEBREW_TAP_REPO}.git"
+          git push origin HEAD:main
