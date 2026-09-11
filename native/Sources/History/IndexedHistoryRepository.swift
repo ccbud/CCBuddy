@@ -775,19 +775,26 @@ struct IndexedHistoryRepository: ConversationIndexedHistoryProviding, Conversati
 
     func conversationScopeSnapshot() -> ConversationScopeSnapshot? {
         do {
+            // One walk over the catalog, split afterwards, rather than two full walks that each
+            // build and discard a library-sized metadata array. This runs on every list refresh,
+            // so on a library with tens of thousands of sessions the second walk was pure churn.
+            var liveMetadata: [HistorySessionMetadata] = []
+            var trashMetadata: [HistorySessionMetadata] = []
+            for entry in try database.listEntries(deleted: nil, limit: .max) {
+                let metadata = entry.metadata
+                guard allowedScopeIDs.contains(metadata.dirID) else { continue }
+                if metadata.deleted { trashMetadata.append(metadata) }
+                else { liveMetadata.append(metadata) }
+            }
             let live = HistoryCatalogProjection.nestingSubagentRollouts(
                 HistoryCatalogProjection.canonicalizedCodexSessions(
-                    try database.listEntries(deleted: false, limit: .max)
-                        .map(\.metadata)
-                        .filter { allowedScopeIDs.contains($0.dirID) },
+                    liveMetadata,
                     homeDirectory: configuration.homeDirectory
                 )
             )
             let trash = HistoryCatalogProjection.nestingSubagentRollouts(
                 HistoryCatalogProjection.canonicalizedCodexSessions(
-                    try database.listEntries(deleted: true, limit: .max)
-                        .map(\.metadata)
-                        .filter { allowedScopeIDs.contains($0.dirID) },
+                    trashMetadata,
                     homeDirectory: configuration.homeDirectory
                 )
             )

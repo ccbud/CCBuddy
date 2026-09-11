@@ -65,7 +65,7 @@ final class BifrostConfigTests: XCTestCase {
         let logsStore = try XCTUnwrap(object["logs_store"] as? [String: Any])
         XCTAssertNil(
             logsStore["retention_days"],
-            "SQLite retention is controlled by client.log_retention_days in Bifrost v1.6.11"
+            "SQLite retention is controlled by client.log_retention_days in Bifrost v2.1.1"
         )
     }
 
@@ -317,7 +317,14 @@ final class BifrostConfigTests: XCTestCase {
         XCTAssertNil(document[" upstream-primary "])
     }
 
-    func testResponsesChatConversionIsDisabledWhenNoConfiguredModelCanBeCatalogued() throws {
+    /// Chat -> Responses conversion follows the configured *protocol*, not the generated model
+    /// catalog.
+    ///
+    /// It used to additionally require a non-empty catalog, which meant a Responses provider whose
+    /// models the user had not enumerated in advance silently lost the ability to serve a Chat
+    /// client at all — a gateway that accepts three caller shapes has to keep accepting them
+    /// whether or not it happens to know the upstream's model names.
+    func testResponsesChatConversionSurvivesAnUncataloguedResponsesProvider() throws {
         var config = AppConfig.fixture
         config.providers[0].protocol = .openAIResponses
         config.providers[0].defaultModel = ""
@@ -329,7 +336,7 @@ final class BifrostConfigTests: XCTestCase {
             logDatabaseURL: URL(fileURLWithPath: "/tmp/logs.db"),
             managementCredentials: managementCredentials
         )
-        XCTAssertFalse(output.client.compat.convertChatToResponses)
+        XCTAssertTrue(output.client.compat.convertChatToResponses)
         XCTAssertEqual(String(decoding: try BifrostConfigBuilder.modelParametersData(from: config), as: UTF8.self), "{}")
     }
 

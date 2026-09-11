@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct AboutVersionPresentation: Equatable {
-    static let bifrostVersion = "v1.6.11"
+    static let bifrostVersion = "v2.1.1"
 
     let current: String
     let latest: String

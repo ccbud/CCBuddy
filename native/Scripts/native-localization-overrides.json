@@ -4765,5 +4765,68 @@
     "ko": "동기화 실패",
     "zh-Hans": "同步失败",
     "zh-Hant": "同步失敗"
+  },
+  "从接口获取模型": {
+    "en": "Fetch models from API",
+    "ja": "APIからモデルを取得",
+    "ko": "API에서 모델 가져오기",
+    "zh-Hans": "从接口获取模型",
+    "zh-Hant": "從介面取得模型"
+  },
+  "调用 /v1/models 或 /models 并自动创建模型绑定": {
+    "en": "Call /v1/models or /models and create model bindings automatically",
+    "ja": "/v1/models または /models を呼び出してモデル割り当てを自動作成",
+    "ko": "/v1/models 또는 /models를 호출해 모델 바인딩을 자동 생성",
+    "zh-Hans": "调用 /v1/models 或 /models 并自动创建模型绑定",
+    "zh-Hant": "呼叫 /v1/models 或 /models 並自動建立模型繫結"
+  },
+  "该服务未提供 /v1/models 接口": {
+    "en": "This service has no /v1/models endpoint",
+    "ja": "このサービスに /v1/models エンドポイントはありません",
+    "ko": "이 서비스에는 /v1/models 엔드포인트가 없습니다",
+    "zh-Hans": "该服务未提供 /v1/models 接口",
+    "zh-Hant": "此服務未提供 /v1/models 介面"
+  },
+  "该服务未提供模型列表接口": {
+    "en": "This service has no model listing endpoint",
+    "ja": "このサービスにモデル一覧のエンドポイントはありません",
+    "ko": "이 서비스에는 모델 목록 엔드포인트가 없습니다",
+    "zh-Hans": "该服务未提供模型列表接口",
+    "zh-Hant": "此服務未提供模型清單介面"
+  },
+  "模型列表为空或无法解析": {
+    "en": "The model list was empty or could not be read",
+    "ja": "モデル一覧が空か、解析できませんでした",
+    "ko": "모델 목록이 비어 있거나 읽을 수 없습니다",
+    "zh-Hans": "模型列表为空或无法解析",
+    "zh-Hant": "模型清單為空或無法解析"
+  },
+  "服务地址为空": {
+    "en": "The service address is empty",
+    "ja": "サービスアドレスが空です",
+    "ko": "서비스 주소가 비어 있습니다",
+    "zh-Hans": "服务地址为空",
+    "zh-Hant": "服務位址為空"
+  },
+  "服务地址无效": {
+    "en": "The service address is not valid",
+    "ja": "サービスアドレスが無効です",
+    "ko": "서비스 주소가 올바르지 않습니다",
+    "zh-Hans": "服务地址无效",
+    "zh-Hant": "服務位址無效"
+  },
+  "已发现模型": {
+    "en": "Models found",
+    "ja": "モデルを検出",
+    "ko": "모델 발견",
+    "zh-Hans": "已发现模型",
+    "zh-Hant": "已發現模型"
+  },
+  "开启后队列即是网关的上游集合：客户端请求的协议如果队列里有，就直接透传给那个供应商；没有就转换协议后交给队首。任一上游失败时按队列顺序自动改用下一个。关闭时只使用当前启用的供应商。": {
+    "en": "With this on, the queue is the gateway's set of upstreams: a client speaking a protocol the queue already offers is passed straight through to that provider, and one speaking a protocol none of them offers is converted and sent to the head of the queue. If an upstream fails, the next one in the queue takes over. With it off, only the enabled provider is used.",
+    "ja": "オンにすると、キューがゲートウェイの上流集合になります。クライアントのプロトコルがキューにあればそのプロバイダーへそのまま渡し、なければ変換して先頭へ送ります。上流が失敗した場合はキュー順に次へ切り替わります。オフの場合は有効なプロバイダーのみを使用します。",
+    "ko": "켜면 큐가 게이트웨이의 업스트림 집합이 됩니다. 클라이언트가 사용하는 프로토콜이 큐에 있으면 해당 공급자로 그대로 전달하고, 없으면 변환해 큐의 첫 번째로 보냅니다. 업스트림이 실패하면 큐 순서대로 다음으로 전환합니다. 끄면 활성화된 공급자만 사용합니다.",
+    "zh-Hans": "开启后队列即是网关的上游集合：客户端请求的协议如果队列里有，就直接透传给那个供应商；没有就转换协议后交给队首。任一上游失败时按队列顺序自动改用下一个。关闭时只使用当前启用的供应商。",
+    "zh-Hant": "開啟後佇列即是閘道的上游集合：用戶端請求的協定如果佇列裡有，就直接透傳給該供應商；沒有就轉換協定後交給佇列首位。任一上游失敗時按佇列順序自動改用下一個。關閉時只使用目前啟用的供應商。"
   }
 }

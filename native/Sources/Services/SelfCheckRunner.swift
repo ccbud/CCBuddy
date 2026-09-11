@@ -443,8 +443,8 @@ struct SelfCheckRunner {
     /// The pinned digest of each shipped slice, matching `native/Scripts/verify-bifrost.sh`.
     /// Intel is the deterministic, notarization-compatible normalization of the upstream binary.
     nonisolated static let expectedBifrostSliceSHA256: [String: String] = [
-        "arm64": "422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263",
-        "x86_64": "cff62f56fc2bb8274f0b5eb97e663d6d1db953fcd710bb9ef9add1b7d27f75b3",
+        "arm64": "9a5dc7f02c28e2ec23207bfd6c54a3ee91c7a930b68ff6d2abddd738239ea971",
+        "x86_64": "76dc2cced55cef20485124d6a253d4753b614b1a6317c0fdd8d169e33137bc60",
     ]
 
     var dependencies: SelfCheckDependencies

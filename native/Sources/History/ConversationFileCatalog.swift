@@ -88,6 +88,30 @@ final class ConversationFileCatalog: @unchecked Sendable {
         var documents: [Document]
     }
 
+    /// A cached record with its documents left out. Everything here is needed by the listing
+    /// paths that run on every refresh.
+    private struct CachedHeader {
+        var checksum: String
+        var entry: ConversationIndexEntry
+        var pack: String?
+    }
+
+    /// Roughly sixty-four bytes per span plus per-chunk bookkeeping; an estimate, used only to
+    /// keep the cache's shape sane rather than to account for memory exactly.
+    private static let documentCacheCostLimit = 24 * 1_024 * 1_024
+    private static let documentCacheCountLimit = 4_096
+
+    private static func documentsCost(_ documents: [Document]) -> Int {
+        var cost = 0
+        for document in documents {
+            cost += 128
+            for chunk in document.chunks {
+                cost += 160 + chunk.spans.count * 64
+            }
+        }
+        return cost
+    }
+
     private struct Prepared {
         var temporaryPack: String
         var finalPack: String
@@ -129,7 +153,22 @@ final class ConversationFileCatalog: @unchecked Sendable {
     private let stateLock = NSLock()
     private var cachedManifest: Manifest?
     private var cachedManifestIdentity: FileIdentity?
-    private var cachedRecords: [String: (checksum: String, record: Record)] = [:]
+    /// The light half of a record, one row per catalog object.
+    ///
+    /// Listing, scope queries and fingerprint comparison all want only this, and the app walks
+    /// every object on each refresh, so these stay resident: a few hundred bytes per session.
+    private var cachedHeaders: [String: CachedHeader] = [:]
+    /// The heavy half: per-message spans for every block of every document in a session.
+    ///
+    /// This is where a large library's memory actually went. Spans are roughly sixty bytes each,
+    /// one per message per thirty-two-kilobyte block, and the old single cache kept them for
+    /// every session the process had ever touched — hundreds of megabytes across a library with
+    /// tens of thousands of sessions, never returned. Only search reads them, a miss costs one
+    /// small header re-read, so they are bounded and evicted least-recently-used.
+    private var cachedDocuments = BoundedMemoryCache<String, [Document]>(
+        costLimit: documentCacheCostLimit, countLimit: documentCacheCountLimit
+    )
+    private var memoryPressureRegistration: MemoryPressureMonitor.Registration?
     private var corruptRecordNames = Set<String>()
     private var corruptPackNames = Set<String>()
     private let maintenanceLock = NSLock()
@@ -170,8 +209,29 @@ final class ConversationFileCatalog: @unchecked Sendable {
         } catch { close(root); throw error }
         // All stored properties are now initialized. Swift runs deinit if this throws;
         // manually closing here would double-close FDs another concurrent opener can reuse.
+        memoryPressureRegistration = MemoryPressureMonitor.shared.register { [weak self] level in
+            self?.releaseMemory(for: level)
+        }
         try withAccess(exclusive: true) { manifest in
             if manifest == nil { try publish(Manifest()) }
+        }
+    }
+
+    /// Hands memory back when the system asks for it.
+    ///
+    /// Everything dropped here is rebuilt by re-reading a small header, so the app stays correct
+    /// and the machine stops paying for a cache it needs more than we do. Under critical pressure
+    /// the light header rows go too: they are the larger of the two once a library is big enough
+    /// for the system to be complaining in the first place.
+    private func releaseMemory(for level: MemoryPressureLevel) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        switch level {
+        case .warning:
+            cachedDocuments.shrink(toFraction: 0.25)
+        case .critical:
+            cachedDocuments.removeAll()
+            cachedHeaders.removeAll(keepingCapacity: false)
         }
     }
 
@@ -302,7 +362,8 @@ final class ConversationFileCatalog: @unchecked Sendable {
                         throw Self.posixError()
                     }
                     manifest.objects[header.path] = header.reference
-                    cachedRecords[header.reference.name] = (header.reference.checksum, header.record)
+                    cache(header.record, name: header.reference.name,
+                          checksum: header.reference.checksum)
                 }
                 guard fsync(objectsDescriptor) == 0 else { throw Self.posixError() }
                 return generation
@@ -337,7 +398,7 @@ final class ConversationFileCatalog: @unchecked Sendable {
         return try mutate { manifest in
             var removed: [String] = []
             for (path, object) in manifest.objects where !seen.contains(path) {
-                if try usableRecord(object, expectedPath: path)?.entry.scope == scope { removed.append(path) }
+                if try usableEntry(object, expectedPath: path)?.scope == scope { removed.append(path) }
             }
             for path in removed { manifest.objects.removeValue(forKey: path) }
             if !removed.isEmpty { _ = try advance(&manifest) }
@@ -349,7 +410,7 @@ final class ConversationFileCatalog: @unchecked Sendable {
         try withManifest { manifest in
             var result: [String: ConversationIndexFingerprint] = [:]
             for (path, object) in manifest.objects {
-                guard let entry = try usableRecord(object, expectedPath: path)?.entry else { continue }
+                guard let entry = try usableEntry(object, expectedPath: path) else { continue }
                 if scope == nil || entry.scope == scope { result[path] = entry.fingerprint }
             }
             return result
@@ -361,7 +422,7 @@ final class ConversationFileCatalog: @unchecked Sendable {
     func entry(forPath path: String) throws -> ConversationIndexEntry? {
         let normalized = Self.normalizedPath(path)
         return try withManifest { manifest in
-            try manifest.objects[normalized].flatMap { try usableRecord($0, expectedPath: normalized)?.entry }
+            try manifest.objects[normalized].flatMap { try usableEntry($0, expectedPath: normalized) }
         }
     }
 
@@ -378,7 +439,7 @@ final class ConversationFileCatalog: @unchecked Sendable {
         guard limit > 0, offset >= 0 else { return [] }
         let entries = try withManifest { manifest in
             try manifest.objects.compactMap { path, object -> ConversationIndexEntry? in
-                guard let entry = try usableRecord(object, expectedPath: path)?.entry else { return nil }
+                guard let entry = try usableEntry(object, expectedPath: path) else { return nil }
                 return matches(entry, scope: scope, source: source, deleted: deleted) ? entry : nil
             }
         }.sorted {
@@ -975,7 +1036,8 @@ final class ConversationFileCatalog: @unchecked Sendable {
             throw Failure.corrupt("manifest identities")
         }
         let retained = Set(manifest.objects.values.map(\.name))
-        cachedRecords = cachedRecords.filter { retained.contains($0.key) }
+        cachedHeaders = cachedHeaders.filter { retained.contains($0.key) }
+        cachedDocuments.removeAll { !retained.contains($0) }
         corruptRecordNames.formIntersection(retained)
         cachedManifest = manifest
         cachedManifestIdentity = identity
@@ -1007,17 +1069,59 @@ final class ConversationFileCatalog: @unchecked Sendable {
         let bytes = try encoder.encode(record)
         try Self.atomicWrite(bytes, name: name, parent: objectsDescriptor)
         let checksum = Self.checksum(bytes)
-        cachedRecords[name] = (checksum, record)
+        cache(record, name: name, checksum: checksum)
         return ObjectReference(name: name, checksum: checksum)
+    }
+
+    private func cache(_ record: Record, name: String, checksum: String) {
+        cachedHeaders[name] = CachedHeader(
+            checksum: checksum, entry: record.entry, pack: record.pack
+        )
+        cachedDocuments.setValue(
+            record.documents, forKey: name, cost: Self.documentsCost(record.documents)
+        )
+    }
+
+    /// The cheap read: everything except the per-message spans.
+    ///
+    /// Kept separate from `readRecord` so the listing walks — which run over every session in the
+    /// library every few seconds — never fault a session's spans into memory just to read its
+    /// title and timestamps.
+    private func readEntry(
+        _ object: ObjectReference,
+        expectedPath: String
+    ) throws -> ConversationIndexEntry {
+        guard Self.isObjectName(object.name, suffix: ".header") else { throw Failure.unsafeFile }
+        if let cached = cachedHeaders[object.name], cached.checksum == object.checksum {
+            guard cached.entry.sourcePath == expectedPath else {
+                throw Failure.corrupt("session identity")
+            }
+            if let pack = cached.pack, corruptPackNames.contains(pack) {
+                throw Failure.corrupt("damaged pack")
+            }
+            return cached.entry
+        }
+        return try readRecord(object, expectedPath: expectedPath).entry
+    }
+
+    private func usableEntry(
+        _ object: ObjectReference,
+        expectedPath: String
+    ) throws -> ConversationIndexEntry? {
+        do { return try readEntry(object, expectedPath: expectedPath) }
+        catch Failure.corrupt {
+            corruptRecordNames.insert(object.name)
+            return nil
+        }
     }
 
     private func readRecord(_ object: ObjectReference, expectedPath: String) throws -> Record {
         guard Self.isObjectName(object.name, suffix: ".header") else { throw Failure.unsafeFile }
-        if let cached = cachedRecords[object.name], cached.checksum == object.checksum {
-            let record = cached.record
-            guard record.entry.sourcePath == expectedPath else { throw Failure.corrupt("session identity") }
-            if let pack = record.pack, corruptPackNames.contains(pack) { throw Failure.corrupt("damaged pack") }
-            return record
+        if let cached = cachedHeaders[object.name], cached.checksum == object.checksum,
+           let documents = cachedDocuments.value(forKey: object.name) {
+            guard cached.entry.sourcePath == expectedPath else { throw Failure.corrupt("session identity") }
+            if let pack = cached.pack, corruptPackNames.contains(pack) { throw Failure.corrupt("damaged pack") }
+            return Record(entry: cached.entry, pack: cached.pack, documents: documents)
         }
         let descriptor = try openObject(object.name)
         defer { close(descriptor) }
@@ -1053,7 +1157,7 @@ final class ConversationFileCatalog: @unchecked Sendable {
                 location += chunk.utf16Length
             }
         }
-        cachedRecords[object.name] = (object.checksum, record)
+        cache(record, name: object.name, checksum: object.checksum)
         return record
     }
 
@@ -1235,7 +1339,8 @@ final class ConversationFileCatalog: @unchecked Sendable {
                     // this exclusive lock. Unlink cannot invalidate those FDs; subsequent
                     // reads must validate the new generation before opening another pack.
                     guard unlinkat(objectsDescriptor, name, 0) == 0 else { throw Self.posixError() }
-                    cachedRecords.removeValue(forKey: name)
+                    cachedHeaders.removeValue(forKey: name)
+                    cachedDocuments.removeValue(forKey: name)
                 }
                 guard fsync(objectsDescriptor) == 0 else { throw Self.posixError() }
             }

@@ -118,14 +118,18 @@ struct GatewaySettingsPane: View {
     }
 
     /// cc-switch's failover queue, which the config and the Bifrost route builder already model:
-    /// while it is on, the queue *is* the route set, tried strictly in order. The queue therefore
-    /// owns its own order here rather than borrowing the provider list's, because the order is the
-    /// only thing it expresses.
+    /// while it is on, the queue *is* the route set. It owns its own order here rather than
+    /// borrowing the provider list's, because the order is what it expresses.
+    ///
+    /// The queue is also the gateway's protocol set. A client speaking a protocol one of these
+    /// providers already speaks is handed to that provider untouched; one speaking a protocol
+    /// none of them offers is converted and sent to the head of the queue. Failure still falls
+    /// through the queue in order either way.
     private var failoverCard: some View {
         SettingsCard("故障转移") {
             SettingsToggleRow(
                 "自动故障转移",
-                detail: "开启后网关按队列顺序发送请求，上游失败时自动改用下一个供应商；关闭时只使用当前启用的供应商。",
+                detail: "开启后队列即是网关的上游集合：客户端请求的协议如果队列里有，就直接透传给那个供应商；没有就转换协议后交给队首。任一上游失败时按队列顺序自动改用下一个。关闭时只使用当前启用的供应商。",
                 isOn: Binding(
                     get: { model.config.gatewayFailover.enabled },
                     set: { enabled in Task { await model.setGatewayFailoverEnabled(enabled) } }

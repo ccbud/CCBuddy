@@ -44,7 +44,23 @@ final class BifrostSupervisorTests: XCTestCase {
             "/responses/compact": "/openai/v1/responses/compact",
             "/v1/responses/compact": "/openai/v1/responses/compact",
             "/v1/messages/count_tokens": "/anthropic/v1/messages/count_tokens",
+            "/models": "/v1/models",
         ])
+    }
+
+    /// Bifrost serves its management UI from the root, so an unversioned model listing used to
+    /// answer a client with a page of HTML.
+    func testUnversionedModelListingReachesTheCatalogRouteAndIsStillIntercepted() {
+        XCTAssertEqual(LegacyGatewayRouteCompatibility.destination(for: "/models"), "/v1/models")
+        XCTAssertTrue(LegacyGatewayRouteCompatibility.capturesKnownModels(
+            method: "GET", requestTarget: "/models"
+        ))
+        XCTAssertTrue(LegacyGatewayRouteCompatibility.capturesKnownModels(
+            method: "GET", requestTarget: "/v1/models"
+        ))
+        XCTAssertFalse(LegacyGatewayRouteCompatibility.capturesKnownModels(
+            method: "POST", requestTarget: "/models"
+        ))
     }
 
     func testLegacyGatewayRouteRewritePreservesQueryAndLegacyTrailingSlashMatching() {

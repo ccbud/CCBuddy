@@ -3,8 +3,8 @@ set -euo pipefail
 
 readonly BINARY_PATH="${1:-}"
 readonly REQUESTED_ARCHS="${2:-}"
-readonly SHA256_ARM64="422eea68b860dd069d1b9989ff494a7bc566b7e11920632624cb6e85ca2c5263"
-readonly SHA256_X86_64="cff62f56fc2bb8274f0b5eb97e663d6d1db953fcd710bb9ef9add1b7d27f75b3"
+readonly SHA256_ARM64="9a5dc7f02c28e2ec23207bfd6c54a3ee91c7a930b68ff6d2abddd738239ea971"
+readonly SHA256_X86_64="76dc2cced55cef20485124d6a253d4753b614b1a6317c0fdd8d169e33137bc60"
 
 fail() { echo "$*" >&2; exit 1; }
 
