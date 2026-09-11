@@ -89,8 +89,17 @@ struct BoundedMemoryCache<Key: Hashable, Value> {
         evict(untilCostAtMost: target, countAtMost: max(1, countLimit / 4))
     }
 
+    /// Eviction orders entries by recency, so shedding exactly one entry per insert would pay
+    /// for that ordering on every insert once the cache is full — which is precisely what a walk
+    /// over a whole library does. Shedding down to a low water mark instead amortises the cost
+    /// across many inserts. A cache small enough that a tenth rounds to nothing sheds only what
+    /// it must, so the bound stays exact for small limits.
+    private var costLowWaterMark: Int { costLimit - costLimit / 10 }
+    private var countLowWaterMark: Int { countLimit - countLimit / 10 }
+
     private mutating func evictIfNeeded() {
-        evict(untilCostAtMost: costLimit, countAtMost: countLimit)
+        guard totalCost > costLimit || entries.count > countLimit else { return }
+        evict(untilCostAtMost: costLowWaterMark, countAtMost: countLowWaterMark)
     }
 
     private mutating func evict(untilCostAtMost cost: Int, countAtMost count: Int) {

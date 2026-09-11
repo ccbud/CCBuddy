@@ -87,4 +87,25 @@ final class BoundedMemoryCacheTests: XCTestCase {
         XCTAssertTrue(cache.isEmpty)
         XCTAssertEqual(cache.totalCost, 0)
     }
+
+    /// Eviction is amortised: a full cache sheds a batch rather than one entry per insert, so a
+    /// walk over a whole library does not pay for recency ordering on every single insert.
+    func testAFullCacheShedsABatchRatherThanOneEntryPerInsert() {
+        var cache = BoundedMemoryCache<Int, Int>(costLimit: 1_000)
+        for value in 0..<100 { cache.setValue(value, forKey: value, cost: 10) }
+        XCTAssertEqual(cache.totalCost, 1_000)
+
+        cache.setValue(100, forKey: 100, cost: 10)
+
+        XCTAssertLessThanOrEqual(cache.totalCost, 900, "one insert must shed down to the mark")
+        XCTAssertNotNil(cache.peek(forKey: 100))
+        XCTAssertNil(cache.peek(forKey: 0), "the oldest entries go first")
+    }
+
+    /// A cache small enough that a tenth rounds to nothing must still hold exactly its limit.
+    func testASmallCountLimitIsStillExact() {
+        var cache = BoundedMemoryCache<Int, Int>(costLimit: 1_000_000, countLimit: 3)
+        for value in 0..<10 { cache.setValue(value, forKey: value, cost: 1) }
+        XCTAssertEqual(cache.count, 3)
+    }
 }
