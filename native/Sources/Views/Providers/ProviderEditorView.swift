@@ -93,6 +93,10 @@ struct ProviderEditorView: View {
             modelCatalog = .unknown
             rederiveOfferedAddresses(to: newValue)
         }
+        // Discovery reads the bound address, not the root, so editing that address is what makes
+        // the previous answer meaningless — without this an `.unsupported` verdict from one host
+        // would go on greying out the control against the next one.
+        .onChange(of: draft.protocolUrls) { _ in modelCatalog = .unknown }
         .onChange(of: editingProtocol) { _ in
             modelCatalog = .unknown
             testMessage = nil
