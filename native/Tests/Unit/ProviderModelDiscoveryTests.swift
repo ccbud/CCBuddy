@@ -58,12 +58,23 @@ final class ProviderModelDiscoveryTests: XCTestCase {
             "the protocol address and the provider root collapse to one probe, not two"
         )
 
-        // A provider saved before per-protocol addresses still has exactly its base URL.
+        // A provider saved before per-protocol addresses names one API through its base URL, and
+        // the pair has to collapse: probed as two roots, the second contributes the
+        // `…/v1/v1/models` spelling the candidate ordering exists to keep off the list.
         let legacy = Provider(baseUrl: "https://api.example.com/v1", protocol: .anthropic)
-        XCTAssertEqual(
-            ProviderModelDiscoveryService.listingRoots(for: legacy, wireProtocol: .anthropic),
-            ["https://api.example.com/v1"]
+        let roots = ProviderModelDiscoveryService.listingRoots(
+            for: legacy, wireProtocol: .anthropic
         )
+        XCTAssertEqual(roots, ["https://api.example.com"])
+        let probes = roots
+            .flatMap { ProviderModelDiscoveryService.candidateURLs(baseURL: $0) }
+            .map(\.absoluteString)
+        XCTAssertEqual(
+            probes,
+            ["https://api.example.com/v1/models", "https://api.example.com/models"],
+            "the address this provider has always used stays the first thing asked"
+        )
+        XCTAssertFalse(probes.contains { $0.contains("/v1/v1/") })
         XCTAssertTrue(
             ProviderModelDiscoveryService.listingRoots(for: Provider(), wireProtocol: .anthropic)
                 .isEmpty

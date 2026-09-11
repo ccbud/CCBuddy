@@ -178,7 +178,11 @@ struct ProviderModelDiscoveryService: Sendable {
             provider.upstreamURL(for: wireProtocol).map {
                 GatewayUpstreamURL.upstream(for: wireProtocol, url: $0).baseURL
             },
-            provider.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+            // Reconciled the same way the bound address is, so a provider whose root and bound
+            // address name the same API contributes one root instead of two. Compared raw,
+            // `https://host/v1` and the `https://host` it resolves to read as different roots,
+            // and the second one's candidates put `…/v1/v1/models` back on the probe list.
+            GatewayUpstreamURL.bifrostBaseURL(for: provider.baseUrl),
         ]
         var seen = Set<String>()
         return addresses.compactMap { $0 }.filter { !$0.isEmpty && seen.insert($0).inserted }
