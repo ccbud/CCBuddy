@@ -457,7 +457,6 @@ struct ProviderEditorView: View {
                 testing = false
                 testSucceeded = result.succeeded
                 if result.succeeded {
-                    if let migrated = result.migratedBaseURL { draft.baseUrl = migrated }
                     testMessage = "连接成功 · \(result.model ?? draft.defaultModel)"
                 } else {
                     switch result.reason {

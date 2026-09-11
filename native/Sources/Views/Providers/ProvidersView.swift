@@ -208,11 +208,6 @@ struct ProvidersView: View {
                 provider,
                 insecureSkipVerify: model.config.insecureSkipVerify
             )
-            if result.succeeded, let migrated = result.migratedBaseURL {
-                var updated = provider
-                updated.baseUrl = migrated
-                await model.upsertProvider(updated)
-            }
             probeStates[provider.id] = result.succeeded ? .succeeded : .failed
             probeMessageSucceeded = result.succeeded
             if result.succeeded {

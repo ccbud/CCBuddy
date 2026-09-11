@@ -12,7 +12,6 @@ struct ProviderProbeResult: Equatable, Sendable {
     var model: String?
     var message: String?
     var reason: FailureReason?
-    var migratedBaseURL: String?
 }
 
 struct ProviderProbeService: Sendable {
@@ -38,32 +37,21 @@ struct ProviderProbeService: Sendable {
         let session = injectedSession ?? Self.makeSession(insecureSkipVerify: insecureSkipVerify)
         let body = requestBody(for: provider)
         do {
-            var response = try await send(
+            // Exactly one request, to exactly the URL the gateway will call. The probe used to
+            // try a second spelling and quietly rewrite the user's base URL when it answered,
+            // which is how a provider could test healthy against an address the gateway never
+            // used. `GatewayUpstreamURL` now maps each base URL to a single upstream URL, so
+            // there is no second spelling to try.
+            let response = try await send(
                 to: primaryURL,
                 provider: provider,
                 body: body,
                 session: session
             )
-            var migratedBaseURL: String?
-            if [400, 404, 405].contains(response.statusCode),
-               let fallbackURL = fallbackEndpointURL(baseURL: baseURL, protocol: provider.protocol),
-               let fallback = try? await send(
-                   to: fallbackURL,
-                   provider: provider,
-                   body: body,
-                   session: session
-               ),
-               (200..<300).contains(fallback.statusCode) {
-                response = fallback
-                // The alternate spelling answered, so offer the user the base URL that matches
-                // it. Which direction that is depends on how the one they typed was versioned.
-                migratedBaseURL = GatewayUpstreamURL.alternateBaseURL(for: baseURL)
-            }
             return decode(
                 response,
                 protocol: provider.protocol,
-                requestedModel: selectedModel(for: provider),
-                migratedBaseURL: migratedBaseURL
+                requestedModel: selectedModel(for: provider)
             )
         } catch let error as URLError where error.code == .timedOut {
             return .init(succeeded: false, message: error.localizedDescription, reason: .timeout)
@@ -120,8 +108,7 @@ struct ProviderProbeService: Sendable {
     private func decode(
         _ response: (statusCode: Int, data: Data),
         protocol wireProtocol: Provider.WireProtocol,
-        requestedModel: String,
-        migratedBaseURL: String?
+        requestedModel: String
     ) -> ProviderProbeResult {
         let object = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any]
         let shapeIsValid: Bool
@@ -137,8 +124,7 @@ struct ProviderProbeService: Sendable {
             return .init(
                 succeeded: true,
                 statusCode: response.statusCode,
-                model: object?["model"] as? String ?? requestedModel,
-                migratedBaseURL: migratedBaseURL
+                model: object?["model"] as? String ?? requestedModel
             )
         }
 
@@ -150,8 +136,7 @@ struct ProviderProbeService: Sendable {
         return .init(
             succeeded: false,
             statusCode: response.statusCode,
-            message: message,
-            migratedBaseURL: migratedBaseURL
+            message: message
         )
     }
 
@@ -165,15 +150,6 @@ struct ProviderProbeService: Sendable {
         protocol wireProtocol: Provider.WireProtocol
     ) -> URL? {
         GatewayUpstreamURL.endpointURL(baseURL: baseURL, wireProtocol: wireProtocol)
-    }
-
-    /// The other spelling, tried when the first is refused, so the editor accepts a base URL
-    /// written either with or without its version segment.
-    private func fallbackEndpointURL(
-        baseURL: String,
-        protocol wireProtocol: Provider.WireProtocol
-    ) -> URL? {
-        GatewayUpstreamURL.alternateEndpointURL(baseURL: baseURL, wireProtocol: wireProtocol)
     }
 
     private static func makeSession(insecureSkipVerify: Bool) -> URLSession {

@@ -152,29 +152,6 @@ final class GatewayUpstreamURLTests: XCTestCase {
         }
     }
 
-    func testTheAlternateSpellingPointsBackAtTheOtherForm() {
-        XCTAssertEqual(
-            GatewayUpstreamURL.alternateBaseURL(for: "https://api.anthropic.com/v1"),
-            "https://api.anthropic.com"
-        )
-        XCTAssertEqual(
-            GatewayUpstreamURL.alternateBaseURL(for: "https://api.anthropic.com"),
-            "https://api.anthropic.com/v1"
-        )
-        XCTAssertEqual(
-            GatewayUpstreamURL.alternateEndpointURL(
-                baseURL: "https://api.anthropic.com", wireProtocol: .anthropic
-            )?.absoluteString,
-            "https://api.anthropic.com/messages"
-        )
-        XCTAssertNil(
-            GatewayUpstreamURL.alternateEndpointURL(
-                baseURL: "https://open.bigmodel.cn/api/paas/v4", wireProtocol: .anthropic
-            ),
-            "a foreign version has only one sensible spelling"
-        )
-    }
-
     func testAnEmptyOrSchemeOnlyBaseIsNotMangled() {
         XCTAssertNil(GatewayUpstreamURL.endpointURL(baseURL: "", wireProtocol: .anthropic))
         XCTAssertNil(GatewayUpstreamURL.endpointURL(baseURL: "   ", wireProtocol: .anthropic))

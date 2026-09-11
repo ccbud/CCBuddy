@@ -118,38 +118,6 @@ enum GatewayUpstreamURL {
         }
     }
 
-    /// The alternative spelling to try when the first probe is refused, or nil when there is none.
-    ///
-    /// Providers disagree about whether their documented base URL includes the version segment,
-    /// and users paste either form. Trying both is what lets the editor accept each.
-    static func alternateEndpointURL(
-        baseURL: String,
-        wireProtocol: Provider.WireProtocol
-    ) -> URL? {
-        let base = trimmedBase(baseURL)
-        guard !base.isEmpty else { return nil }
-        let path = inferencePath(for: wireProtocol)
-        switch versioning(of: base) {
-        case .none:
-            return URL(string: base + path)
-        case .trailingV1:
-            return URL(string: base + "/v1" + path)
-        case .foreign:
-            return nil
-        }
-    }
-
-    /// The base URL that corresponds to `alternateEndpointURL`, so a provider probed at the
-    /// other spelling can be stored the way it actually answers.
-    static func alternateBaseURL(for baseURL: String) -> String {
-        let base = trimmedBase(baseURL)
-        switch versioning(of: base) {
-        case .none: return base + "/v1"
-        case .trailingV1: return bifrostBaseURL(for: base)
-        case .foreign: return base
-        }
-    }
-
     private static func trimmedBase(_ baseURL: String) -> String {
         var value = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while value.count > 1 && value.hasSuffix("/") { value.removeLast() }

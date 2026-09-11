@@ -165,7 +165,11 @@ struct ProviderModelDiscoveryService: Sendable {
         guard let components = URLComponents(string: base),
               ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
               components.host != nil else { return [] }
-        let paths = hasVersionSuffix(base) ? ["/models", "/v1/models"] : ["/v1/models", "/models"]
+        // One shared definition of "does this base already carry its version segment". A second,
+        // slightly different copy of that question living here is exactly how the gateway and the
+        // connection test came to disagree about it.
+        let carriesVersion = GatewayUpstreamURL.versioning(of: base) != .none
+        let paths = carriesVersion ? ["/models", "/v1/models"] : ["/v1/models", "/models"]
         var seen = Set<String>()
         return paths.compactMap { path in
             guard let url = URL(string: base + path), seen.insert(url.absoluteString).inserted
@@ -226,14 +230,6 @@ struct ProviderModelDiscoveryService: Sendable {
         let text = String(decoding: data.prefix(200), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "HTTP \(status)" : text
-    }
-
-    private static func hasVersionSuffix(_ baseURL: String) -> Bool {
-        guard let components = URLComponents(string: baseURL) else { return false }
-        guard let segment = components.path.split(separator: "/").last else { return false }
-        let lower = segment.lowercased()
-        guard lower.first == "v" else { return false }
-        return lower.dropFirst().first?.isNumber == true
     }
 
     private static func makeSession(insecureSkipVerify: Bool) -> URLSession {

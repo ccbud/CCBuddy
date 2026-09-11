@@ -8,10 +8,14 @@ final class ProviderProbeServiceTests: XCTestCase {
     }
 
     func testUsesDeclaredWireEndpointHeadersAndBody() async throws {
+        // The base URL carries no version segment, so Bifrost supplies its own and the probe
+        // has to ask for the same address. Testing "/api/messages" while the gateway called
+        // "/api/v1/messages" is what let a provider pass its connection test and then answer
+        // every real request with 404.
         let cases: [(Provider.WireProtocol, String, String, String)] = [
-            (.anthropic, "/api/messages", "type", "message"),
-            (.openAIChat, "/api/chat/completions", "choices", "[]"),
-            (.openAIResponses, "/api/responses", "output", "[]"),
+            (.anthropic, "/api/v1/messages", "type", "message"),
+            (.openAIChat, "/api/v1/chat/completions", "choices", "[]"),
+            (.openAIResponses, "/api/v1/responses", "output", "[]"),
         ]
         for (wireProtocol, expectedPath, responseKey, responseValue) in cases {
             var captured: URLRequest?
@@ -55,14 +59,52 @@ final class ProviderProbeServiceTests: XCTestCase {
         }
     }
 
-    func testRetriesOnlyEligibleUnversionedEndpointAndReportsMigration() async throws {
+    /// One request, to one address, whatever shape the base URL has.
+    ///
+    /// The probe used to try a second spelling and, when it answered, silently rewrite the
+    /// user's base URL. That is what allowed the probe and the gateway to disagree about
+    /// whether a base already carried its version segment, which is the disagreement that made
+    /// every preset 404. Each base URL now maps to exactly one upstream URL.
+    func testProbesExactlyTheAddressTheGatewayWillCall() async throws {
+        let cases: [(String, Provider.WireProtocol, [String])] = [
+            ("https://provider.example", .openAIChat, ["/v1/chat/completions"]),
+            ("https://provider.example/v1", .openAIChat, ["/v1/chat/completions"]),
+            ("https://provider.example/api/paas/v4", .openAIChat, ["/api/paas/v4/chat/completions"]),
+            ("https://provider.example/v1", .anthropic, ["/v1/messages"]),
+            ("https://provider.example", .anthropic, ["/v1/messages"]),
+        ]
+        for (baseURL, wireProtocol, expected) in cases {
+            var targets: [String] = []
+            ProviderProbeURLProtocol.handler = { request in
+                targets.append(request.url?.path ?? "")
+                return wireProtocol == .anthropic
+                    ? (200, #"{"model":"m","type":"message"}"#)
+                    : (200, #"{"model":"m","choices":[]}"#)
+            }
+            let provider = Provider(
+                name: "Probe",
+                baseUrl: baseURL,
+                authToken: "token",
+                defaultModel: "m",
+                protocol: wireProtocol
+            )
+
+            let result = await ProviderProbeService(session: makeSession()).test(
+                provider,
+                insecureSkipVerify: false
+            )
+
+            XCTAssertTrue(result.succeeded, baseURL)
+            XCTAssertEqual(targets, expected, baseURL)
+        }
+    }
+
+    /// A refused endpoint is reported as a failure rather than retried somewhere else.
+    func testARefusedEndpointIsNotRetriedAtAnotherAddress() async throws {
         var targets: [String] = []
         ProviderProbeURLProtocol.handler = { request in
             targets.append(request.url?.path ?? "")
-            if request.url?.path == "/chat/completions" {
-                return (404, #"{"error":{"message":"missing"}}"#)
-            }
-            return (200, #"{"model":"chat-model","choices":[]}"#)
+            return (404, #"{"error":{"message":"missing"}}"#)
         }
         let provider = Provider(
             name: "Chat",
@@ -77,9 +119,9 @@ final class ProviderProbeServiceTests: XCTestCase {
             insecureSkipVerify: false
         )
 
-        XCTAssertTrue(result.succeeded)
-        XCTAssertEqual(result.migratedBaseURL, "https://provider.example/v1")
-        XCTAssertEqual(targets, ["/chat/completions", "/v1/chat/completions"])
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.statusCode, 404)
+        XCTAssertEqual(targets, ["/v1/chat/completions"])
     }
 
     func testSuccessfulHTTPWithWrongProtocolShapeIsRejected() async {
