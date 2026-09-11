@@ -35,7 +35,14 @@ final class BifrostConfigTests: XCTestCase {
         XCTAssertTrue(provider.customProviderConfig.allowedRequests.responsesStream)
         XCTAssertTrue(provider.customProviderConfig.allowedRequests.countTokens)
         XCTAssertFalse(output.client.compat.convertChatToResponses)
-        XCTAssertEqual(provider.networkConfig.baseURL, "https://open.bigmodel.cn/api/anthropic/v1")
+        // Bifrost appends its own "/v1/messages", so the trailing segment of the configured
+        // base URL has to come off. Leaving it on asked every upstream for "/v1/v1/messages",
+        // which is a 404 from all of them.
+        XCTAssertEqual(provider.networkConfig.baseURL, "https://open.bigmodel.cn/api/anthropic")
+        XCTAssertNil(
+            provider.customProviderConfig.requestPathOverrides,
+            "shortening the base is the complete fix for a trailing /v1; overrides are for the rest"
+        )
         XCTAssertEqual(provider.networkConfig.maxRetries, 3)
         XCTAssertEqual(provider.networkConfig.retryBackoffInitial, 500)
         XCTAssertEqual(provider.networkConfig.retryBackoffMax, 4_000)

@@ -269,9 +269,13 @@ struct BifrostConfiguration: Codable, Equatable {
     struct CustomProvider: Codable, Equatable {
         var baseProviderType: String
         var allowedRequests: AllowedRequests
+        /// Paths Bifrost must use verbatim instead of prefixing its own `/v1`. Empty for the
+        /// common case; see `GatewayUpstreamURL` for when a base URL needs it.
+        var requestPathOverrides: [String: String]?
         enum CodingKeys: String, CodingKey {
             case baseProviderType = "base_provider_type"
             case allowedRequests = "allowed_requests"
+            case requestPathOverrides = "request_path_overrides"
         }
     }
     struct ProviderConfig: Codable, Equatable {
@@ -513,10 +517,17 @@ enum BifrostConfigBuilder {
             models: ["*"],
             aliases: aliases(for: provider)
         )
+        // Bifrost owns the whole upstream path and inserts its own `/v1` segment. Every provider
+        // preset, and every base URL a provider's own documentation gives, already ends where its
+        // version segment begins, so handing one over untouched produced `…/v1/v1/messages` and a
+        // 404 from every upstream. `GatewayUpstreamURL` reconciles the two.
+        let overrides = GatewayUpstreamURL.requestPathOverrides(
+            for: provider.protocol, baseURL: provider.baseUrl
+        )
         return .init(
             keys: [key],
             networkConfig: .init(
-                baseURL: provider.baseUrl,
+                baseURL: GatewayUpstreamURL.bifrostBaseURL(for: provider.baseUrl),
                 insecureSkipVerify: config.insecureSkipVerify,
                 maxRetries: retryCount,
                 retryBackoffInitial: retryInitial,
@@ -524,7 +535,8 @@ enum BifrostConfigBuilder {
             ),
             customProviderConfig: .init(
                 baseProviderType: baseType,
-                allowedRequests: allowedRequests(for: provider.protocol)
+                allowedRequests: allowedRequests(for: provider.protocol),
+                requestPathOverrides: overrides.isEmpty ? nil : overrides
             ),
             // Raw bodies stay local and power the native monitor inspector.
             storeRawRequestResponse: true

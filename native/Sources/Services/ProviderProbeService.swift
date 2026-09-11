@@ -55,8 +55,9 @@ struct ProviderProbeService: Sendable {
                ),
                (200..<300).contains(fallback.statusCode) {
                 response = fallback
-                migratedBaseURL = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                    + "/v1"
+                // The alternate spelling answered, so offer the user the base URL that matches
+                // it. Which direction that is depends on how the one they typed was versioned.
+                migratedBaseURL = GatewayUpstreamURL.alternateBaseURL(for: baseURL)
             }
             return decode(
                 response,
@@ -154,38 +155,25 @@ struct ProviderProbeService: Sendable {
         )
     }
 
+    /// The URL a real inference request will reach.
+    ///
+    /// Shared with the Bifrost configuration builder on purpose. When the probe computed its own
+    /// URL, it could report a healthy provider the gateway then answered with 404, because the
+    /// two disagreed about whether the base URL already carried its version segment.
     private func endpointURL(
         baseURL: String,
         protocol wireProtocol: Provider.WireProtocol
     ) -> URL? {
-        URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + endpointPath(wireProtocol))
+        GatewayUpstreamURL.endpointURL(baseURL: baseURL, wireProtocol: wireProtocol)
     }
 
+    /// The other spelling, tried when the first is refused, so the editor accepts a base URL
+    /// written either with or without its version segment.
     private func fallbackEndpointURL(
         baseURL: String,
         protocol wireProtocol: Provider.WireProtocol
     ) -> URL? {
-        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !hasVersionSuffix(base),
-              !(wireProtocol == .openAIChat && base.lowercased().hasSuffix("/openai"))
-        else { return nil }
-        return URL(string: base + "/v1" + endpointPath(wireProtocol))
-    }
-
-    private func endpointPath(_ wireProtocol: Provider.WireProtocol) -> String {
-        switch wireProtocol {
-        case .anthropic: "/messages"
-        case .openAIChat: "/chat/completions"
-        case .openAIResponses: "/responses"
-        }
-    }
-
-    private func hasVersionSuffix(_ baseURL: String) -> Bool {
-        guard let components = URLComponents(string: baseURL) else { return false }
-        guard let segment = components.path.split(separator: "/").last else { return false }
-        let lower = segment.lowercased()
-        guard lower.first == "v" else { return false }
-        return lower.dropFirst().first?.isNumber == true
+        GatewayUpstreamURL.alternateEndpointURL(baseURL: baseURL, wireProtocol: wireProtocol)
     }
 
     private static func makeSession(insecureSkipVerify: Bool) -> URLSession {
