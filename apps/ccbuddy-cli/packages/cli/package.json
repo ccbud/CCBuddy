@@ -1,0 +1,40 @@
+{
+  "name": "@ccbuddy/cli",
+  "version": "2.0.12",
+  "private": true,
+  "description": "CCbuddy Agent CLI",
+  "bin": {
+    "ccbuddy": "./dist/ccbuddy.cjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "./dist/ccbuddy.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:desktop-agent": "node scripts/build.mjs --desktop-agent",
+    "build:sea": "pnpm --dir ../../../.. exec turbo --skip-infer --cwd apps/ccbuddy-cli run build --filter=!@ccbuddy/cli --force && pnpm build && node scripts/build-sea.mjs --all",
+    "sea": "node scripts/build-sea.mjs",
+    "upload:sea": "node scripts/upload-sea-smb.mjs",
+    "clean": "node ../../scripts/clean-dist.mjs",
+    "dev": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src",
+    "lint:fix": "oxlint --write src"
+  },
+  "dependencies": {
+    "@ccbuddy/adapters": "workspace:*",
+    "@ccbuddy/bootstrap": "workspace:*",
+    "@ccbuddy/contracts": "workspace:*",
+    "@ccbuddy/core": "workspace:*",
+    "@ccbuddy/dynamic-workflow-runtime": "workspace:*",
+    "@ccbuddy/i18n": "workspace:*",
+    "@ccbuddy/provider-node": "workspace:*",
+    "@ccbuddy/shared": "workspace:*",
+    "@ccbuddy/shared-types": "workspace:*",
+    "@ccbuddy/tui": "workspace:*",
+    "dotenv": "^17.4.2",
+    "playwright-core": "1.59.1"
+  }
+}
