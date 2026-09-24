@@ -35,11 +35,12 @@ jobs:
           pnpm lint
           pnpm fmt:check
           pnpm architecture:check --changed
-      - name: Test desktop update and release manifest policy
+      - name: Test desktop update, release manifest, and main release allocation policy
         run: >-
           pnpm exec tsx --test
           packages/desktop/test/ccbuddy-update-policy.test.mjs
           packages/desktop/test/finalize-macos-release.test.mjs
+          packages/desktop/test/prepare-main-release.test.mjs
 
   macos-package:
     name: Build unsigned macOS arm64 package

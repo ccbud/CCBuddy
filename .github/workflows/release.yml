@@ -2,10 +2,13 @@ name: CCbuddy macOS Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
 concurrency:
+  # Keep every queued main push and serialize version allocation and publication.
   group: ccbuddy-macos-release
   cancel-in-progress: false
   queue: max
@@ -15,44 +18,46 @@ permissions:
 
 jobs:
   verify:
-    name: Verify annotated tag, main ancestry, and version
+    name: Allocate or verify the release tag, main ancestry, and version
     runs-on: ubuntu-24.04
+    permissions:
+      # Pushes only the immutable annotated version tag; main never moves.
+      contents: write
     outputs:
+      should_release: ${{ steps.existing.outputs.published != 'true' }}
       version: ${{ steps.version.outputs.version }}
       commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
-          persist-credentials: false
+          # This isolated job pushes only the version tag. Checkout removes the token afterwards.
+          persist-credentials: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 24.14.0
-      - name: Verify release source
+      - name: Allocate a version for the main push or verify the supplied tag
         id: version
+        run: node packages/desktop/scripts/prepare-main-release.mjs
+      - name: Do not rebuild an already public release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
-          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          test "$(git cat-file -t "refs/tags/$tag")" = tag
-          commit="$(git rev-parse "refs/tags/$tag^{commit}")"
-          git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
-          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
-          version="${tag#v}"
-          RELEASE_VERSION="$version" node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            for (const path of ["package.json", "apps/ccbuddy-cli/package.json", "apps/ccbuddy-cli/packages/cli/package.json"]) {
-              const actual = JSON.parse(readFileSync(path, "utf8")).version;
-              if (actual !== process.env.RELEASE_VERSION) throw new Error(`${path}: expected ${process.env.RELEASE_VERSION}, found ${actual}`);
-            }
-          '
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          if draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq .isDraft 2>/dev/null)" && [ "$draft" = false ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already public; keeping its immutable assets."
+          fi
 
   build:
     name: Sign, notarize, and verify arm64 release
     needs: verify
+    if: needs.verify.outputs.should_release == 'true'
     runs-on: macos-26
     timeout-minutes: 180
     environment: release
@@ -193,6 +198,7 @@ jobs:
   publish:
     name: Publish one complete GitHub Release
     needs: [verify, build]
+    if: needs.verify.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -218,7 +224,8 @@ jobs:
           git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
           git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "${{ needs.verify.outputs.commit }}"
-          git merge-base --is-ancestor "${{ needs.verify.outputs.commit }}" refs/remotes/origin/main
+          node packages/desktop/scripts/prepare-main-release.mjs --verify \
+            "${{ needs.verify.outputs.commit }}" "$VERSION"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft \
             --jq .isDraft > "$RUNNER_TEMP/existing-release" 2>/dev/null; then
             test "$(cat "$RUNNER_TEMP/existing-release")" = true
