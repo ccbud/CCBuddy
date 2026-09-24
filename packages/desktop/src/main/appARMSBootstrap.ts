@@ -6,9 +6,9 @@ import { CCBUDDY_AGENT_LIFECYCLE_LOG_MARKER } from "@ccbuddy/shared/process-diag
 import {
   CCBUDDY_ARMS_RUM_ENDPOINT,
   CCBUDDY_VERSION,
-  CCBUDDY_TELEMETRY_ENABLED,
   mapCCbuddyEnvToArmsRumEnv,
 } from "@ccbuddy/shared";
+import { armsRumEnabled } from "./armsRumAvailability.js";
 import { ARMS_BROWSER_COLLECTORS, parseArmsViewName } from "../shared/armsRumShared.js";
 import { redactArmsEventBatch } from "./armsEventRedaction.js";
 import { ensureDesktopDeviceMidSync } from "./desktopDeviceMid.js";
@@ -264,5 +264,4 @@ function startArmsRum(): Promise<void> {
 }
 
 // 总开关关闭或端点未配置时不初始化 SDK。
-export const armsInitPromise: Promise<void> =
-  CCBUDDY_TELEMETRY_ENABLED && CCBUDDY_ARMS_RUM_ENDPOINT ? startArmsRum() : Promise.resolve();
+export const armsInitPromise: Promise<void> = armsRumEnabled ? startArmsRum() : Promise.resolve();
