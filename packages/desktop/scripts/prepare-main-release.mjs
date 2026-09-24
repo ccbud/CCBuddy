@@ -67,8 +67,7 @@ export function bumpVersionText(text, previous, next) {
   return text.replace(VERSION_FIELD_RE, (_, prefix, _value, suffix) => `${prefix}${next}${suffix}`);
 }
 
-const snapshotMessage = (version, source) =>
-  `release: v${version}\n\n${SOURCE_TRAILER}: ${source}`;
+const snapshotMessage = (version, source) => `release: v${version}\n\n${SOURCE_TRAILER}: ${source}`;
 
 function gitClient(cwd) {
   return async (args, { allowFailure = false } = {}) => {
