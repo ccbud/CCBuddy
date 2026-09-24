@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#161616" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <title>CCbuddy</title>
+    <script>
+      (() => {
+        // JS bundle 执行前先按本地主题偏好决定首屏底色，避免 dark 用户在这一帧看到白底闪烁。
+        const STORAGE_KEY = "ccbuddy-theme";
+        const DEFAULT_THEME = "zai-dark";
+        const BROWSER_THEME_COLORS = {
+          dark: "#161616",
+          light: "#f8f8f8",
+        };
+
+        const normalizeResolvedTheme = (theme) => {
+          if (theme === "dark") return "dark";
+          if (theme === "light") return "light";
+          if (theme === "zai-dark") return "dark";
+          if (theme === "zai-light") return "light";
+          return theme;
+        };
+
+        const syncBrowserThemeSurface = (theme) => {
+          document.documentElement.setAttribute("data-ccbuddy-browser-theme-surface", theme);
+          document.documentElement.style.colorScheme = theme;
+          document
+            .querySelector('meta[name="theme-color"]')
+            ?.setAttribute("content", BROWSER_THEME_COLORS[theme]);
+          document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", theme);
+        };
+
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY) || DEFAULT_THEME;
+          const resolved =
+            saved === "system"
+              ? window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : normalizeResolvedTheme(saved);
+          const finalTheme = resolved === "dark" ? "dark" : "light";
+          document.documentElement.setAttribute("data-ccbuddy-bootstrap-theme", finalTheme);
+          syncBrowserThemeSurface(finalTheme);
+          if (finalTheme === "dark") {
+            document.documentElement.classList.add("dark");
+          }
+        } catch {
+          document.documentElement.setAttribute("data-ccbuddy-bootstrap-theme", "dark");
+          syncBrowserThemeSurface("dark");
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
+    <style>
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: var(--ccbuddy-bootstrap-bg, var(--color-background, #0f172a));
+        color: var(--ccbuddy-bootstrap-fg, var(--color-foreground, #e2e8f0));
+        font-family:
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      html[data-ccbuddy-bootstrap-theme="light"] body {
+        background: var(--ccbuddy-bootstrap-bg, var(--color-background, #f8fafc));
+        color: var(--ccbuddy-bootstrap-fg, var(--color-foreground, #334155));
+      }
+
+      html[data-ccbuddy-browser-theme-surface],
+      html[data-ccbuddy-browser-theme-surface] body,
+      html[data-ccbuddy-browser-theme-surface] #root {
+        /* 共享 UI 样式为 Electron vibrancy 强制透明根背景；浏览器入口必须用语义背景
+           覆盖该桌面专属行为，否则浏览器工具栏、overscroll 和页面画布会回退为系统白色。 */
+        background: var(--color-background, var(--ccbuddy-bootstrap-bg, #161616)) !important;
+      }
+
+      html[data-ccbuddy-browser-theme-surface="light"],
+      html[data-ccbuddy-browser-theme-surface="light"] body,
+      html[data-ccbuddy-browser-theme-surface="light"] #root {
+        background: var(--color-background, var(--ccbuddy-bootstrap-bg, #f8f8f8)) !important;
+      }
+
+      .ccbuddy-boot-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        /* UI 全局样式会把 body/#root 置为透明，预渲染壳必须自己承接主题背景，否则深色主题会露出浏览器白底。*/
+        background: var(--ccbuddy-bootstrap-bg, var(--color-background, #0f172a));
+        color: var(--ccbuddy-bootstrap-fg, var(--color-foreground, #e2e8f0));
+      }
+
+      html[data-ccbuddy-bootstrap-theme="light"] .ccbuddy-boot-loading {
+        background: var(--ccbuddy-bootstrap-bg, var(--color-background, #f8fafc));
+        color: var(--ccbuddy-bootstrap-fg, var(--color-foreground, #334155));
+      }
+
+      .ccbuddy-boot-loading__logo-shell {
+        position: relative;
+        display: flex;
+        width: 96px;
+        height: 96px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 24px;
+        background: transparent;
+        box-shadow:
+          0 20px 25px -5px rgb(0 0 0 / 0.2),
+          0 8px 10px -6px rgb(0 0 0 / 0.2);
+      }
+
+      .ccbuddy-boot-loading__logo {
+        width: 96px;
+        height: 96px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <!-- 远程控制跨 workspace 时会整页跳转；在 JS 入口执行前先给出 loading 壳，避免出现白屏空档。-->
+      <div
+        class="ccbuddy-boot-loading"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        aria-label="Loading..."
+      >
+        <div class="ccbuddy-boot-loading__logo-shell">
+          <img
+            src="/ccbuddy-icon.png"
+            class="ccbuddy-boot-loading__logo"
+            alt=""
+            aria-hidden="true"
+          />
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

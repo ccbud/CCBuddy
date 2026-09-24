@@ -1,15 +1,12 @@
-name: Native macOS Release
+name: CCbuddy macOS Release
 
 on:
   push:
-    branches:
-      - main
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
 
 concurrency:
-  # Keep every queued main push and serialize version allocation/publication.
-  group: native-release
+  group: ccbuddy-macos-release
   cancel-in-progress: false
   queue: max
 
@@ -17,304 +14,60 @@ permissions:
   contents: read
 
 jobs:
-  prepare:
-    name: Prepare the main push or explicit version tag
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    outputs:
-      should_release: ${{ steps.version.outputs.should_release == 'true' && steps.existing.outputs.published != 'true' }}
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
-      commit: ${{ steps.version.outputs.commit }}
-      source_sha: ${{ steps.version.outputs.source_sha }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          # This isolated job pushes only the immutable annotated version tag.
-          # Checkout removes its temporary GITHUB_TOKEN credentials afterwards.
-          persist-credentials: true
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24.19.0
-      - name: Prepare an immutable version snapshot or resolve the supplied tag
-        id: version
-        run: node scripts/prepare-main-release.js
-      - name: Do not republish an already public immutable release
-        if: steps.version.outputs.should_release == 'true'
-        id: existing
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json isDraft 2>/dev/null)"; then
-            if [[ "$(jq -r '.isDraft' <<< "$release")" == false ]]; then
-              echo 'published=true' >> "$GITHUB_OUTPUT"
-              echo "$RELEASE_TAG is already public; keeping its immutable assets."
-            fi
-          fi
-
   verify:
-    name: Verify tag, ancestry, version, and shared tests
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    runs-on: ubuntu-22.04
+    name: Verify annotated tag, main ancestry, and version
+    runs-on: ubuntu-24.04
     outputs:
-      version: ${{ steps.tag.outputs.version }}
-      tag: ${{ needs.prepare.outputs.tag }}
-      commit: ${{ needs.prepare.outputs.commit }}
-      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify the release tag without release credentials
-        id: tag
-        env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
-          RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.14.0
+      - name: Verify release source
+        id: version
         shell: bash
         run: |
           set -euo pipefail
-          fail() { echo "release tag verification failed: $*" >&2; exit 1; }
-
-          tag="$RELEASE_TAG"
-          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
-            || fail "tag must be an exact vX.Y.Z version"
+          tag="${GITHUB_REF#refs/tags/}"
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git cat-file -t "refs/tags/$tag")" = tag
+          commit="$(git rev-parse "refs/tags/$tag^{commit}")"
+          git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
           version="${tag#v}"
-          major="${version%%.*}"
-          [[ "$major" != 0 && "$major" != 1 ]] \
-            || fail "native releases must have major version 2 or newer"
-          git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
-          [[ "$(git cat-file -t "refs/tags/$tag")" == tag ]] \
-            || fail "release tags must be annotated"
-          tag_commit="$(git rev-parse "refs/tags/$tag^{commit}")"
-          [[ "$tag_commit" == "$RELEASE_COMMIT" ]] \
-            || fail "tag does not peel to the prepared release commit"
-          [[ "$(git rev-parse HEAD)" == "$RELEASE_COMMIT" ]] \
-            || fail "checkout does not match the prepared release commit"
-
-          git fetch --force --no-tags origin \
-            '+refs/heads/main:refs/remotes/origin/main'
-          git merge-base --is-ancestor "$RELEASE_SOURCE_SHA" refs/remotes/origin/main \
-            || fail "release source is not an ancestor of origin/main"
-          git fetch --force --tags origin
-
-          exact_tags="$(git tag --list | \
-            grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true)"
-          [[ -n "$exact_tags" ]] || fail "release tag is missing after fetching tags"
+          RELEASE_VERSION="$version" node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            for (const path of ["package.json", "apps/ccbuddy-cli/package.json", "apps/ccbuddy-cli/packages/cli/package.json"]) {
+              const actual = JSON.parse(readFileSync(path, "utf8")).version;
+              if (actual !== process.env.RELEASE_VERSION) throw new Error(`${path}: expected ${process.env.RELEASE_VERSION}, found ${actual}`);
+            }
+          '
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24.19.0
-          cache: npm
-      - name: Verify source ancestry and exact version-only snapshot contents
-        env:
-          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
-          RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
-        run: node scripts/prepare-main-release.js --verify "$RELEASE_COMMIT"
-      - name: Verify synchronized release version
-        run: node scripts/release-version.js check "${{ steps.tag.outputs.version }}"
-      - name: Validate the published updater manifest
-        shell: bash
-        run: node --test native/Scripts/tests/generate-latest-json.test.js
-      - name: Install shared test dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: JavaScript tests
-        run: npm test
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
-  native-test:
-    name: Native tests and unsigned packaged checks
+  build:
+    name: Sign, notarize, and verify arm64 release
     needs: verify
     runs-on: macos-26
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ needs.verify.outputs.commit }}
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24.19.0
-      - name: Require the pinned Apple toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(uname -m)" = arm64
-          test "$(xcodebuild -version | sed -n '1p')" = 'Xcode 26.6'
-      - name: Install pinned XcodeGen
-        shell: bash
-        run: |
-          set -euo pipefail
-          native/Scripts/install-xcodegen.sh "$RUNNER_TEMP/xcodegen-2.46.0"
-          echo "$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin" >> "$GITHUB_PATH"
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.98.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - name: Prepare pinned helper and generated project
-        shell: bash
-        run: |
-          set -euo pipefail
-          CCBUD_TGREP_ARCH=universal bash native/Scripts/build-tgrep.sh
-          CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
-          xcodegen generate --spec native/project.yml --project native
-          git diff --exit-code -- native/CCBuddy.xcodeproj
-          node scripts/release-version.js check "${{ needs.verify.outputs.version }}"
-      - name: Verify embedded tgrep bridge
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked --manifest-path native/TgrepBridge/Cargo.toml
-          node native/Scripts/generate-tgrep-notices.js --check
-          python3 native/Scripts/verify-semantic-model.py
-      - name: Install pinned loopback E2E CLIs
-        shell: bash
-        run: |
-          set -euo pipefail
-          cli_root="$RUNNER_TEMP/ccbud-cli-e2e"
-          npm install --prefix "$cli_root" --no-save --no-package-lock \
-            --ignore-scripts --no-audit --no-fund \
-            '@openai/codex@0.149.0-darwin-arm64' \
-            '@anthropic-ai/claude-code-darwin-arm64@2.1.237'
-          codex="$cli_root/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex"
-          claude="$cli_root/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude"
-          test -x "$codex" && test "$(lipo -archs "$codex")" = arm64
-          test -x "$claude" && test "$(lipo -archs "$claude")" = arm64
-          test "$("$codex" --version)" = 'codex-cli 0.149.0'
-          test "$("$claude" --version)" = '2.1.237 (Claude Code)'
-          mkdir -p native/Vendor/test-tools
-          cp "$codex" native/Vendor/test-tools/codex
-          cp "$claude" native/Vendor/test-tools/claude
-          chmod 755 native/Vendor/test-tools/codex native/Vendor/test-tools/claude
-          cmp -s "$codex" native/Vendor/test-tools/codex
-          cmp -s "$claude" native/Vendor/test-tools/claude
-      - name: Run native unit tests with all real E2Es
-        shell: bash
-        env:
-          CCBUD_BIFROST_BINARY: ${{ github.workspace }}/native/Vendor/bifrost-http
-          CCBUD_CODEX_BINARY: ${{ runner.temp }}/ccbud-cli-e2e/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex
-          CCBUD_CLAUDE_BINARY: ${{ runner.temp }}/ccbud-cli-e2e/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
-          CCBUD_HOME: ${{ runner.temp }}/ccbud-native-unit/ccbud
-          CCBUD_CLAUDE_SETTINGS: ${{ runner.temp }}/ccbud-native-unit/claude/settings.json
-          CCBUD_CODEX_CONFIG: ${{ runner.temp }}/ccbud-native-unit/codex/config.toml
-        run: |
-          set -euo pipefail
-          mkdir -p "$CCBUD_HOME" "$(dirname "$CCBUD_CLAUDE_SETTINGS")" \
-            "$(dirname "$CCBUD_CODEX_CONFIG")"
-          result="$RUNNER_TEMP/CCBuddyTests.xcresult"
-          summary="$RUNNER_TEMP/CCBuddyTests-summary.json"
-          tests="$RUNNER_TEMP/CCBuddyTests-tests.json"
-          test ! -e "$result"
-          xcodebuild test \
-            -project native/CCBuddy.xcodeproj \
-            -scheme CCBuddy \
-            -configuration Debug \
-            -destination 'platform=macOS,arch=arm64' \
-            -only-testing:CCBuddyTests \
-            -parallel-testing-enabled NO \
-            -maximum-parallel-testing-workers 1 \
-            -resultBundlePath "$result" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGN_IDENTITY=-
-          xcrun xcresulttool get test-results summary \
-            --path "$result" --compact > "$summary"
-          xcrun xcresulttool get test-results tests \
-            --path "$result" --compact > "$tests"
-          jq -e '.result == "Passed" and .totalTestCount > 0
-            and .passedTests == .totalTestCount and .failedTests == 0
-            and .skippedTests == 0 and .expectedFailures == 0' "$summary"
-          jq -e '[.. | objects | select(.nodeType == "Test Case")
-            | select((.nodeIdentifier // "")
-              | test("^(BifrostSupervisorIntegrationTests|BifrostResponsesProtocolIntegrationTests|ClaudeCLIBifrostE2ETests)/"))] as $e2e
-            | (($e2e | length) >= 11 and all($e2e[]; .result == "Passed"))' "$tests"
-          jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
-            "$summary"
-      - name: Run native UI tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          result="$RUNNER_TEMP/CCBuddyUITests.xcresult"
-          summary="$RUNNER_TEMP/CCBuddyUITests-summary.json"
-          tests="$RUNNER_TEMP/CCBuddyUITests-tests.json"
-          ui_bundle_id="dev.ccbud.gateway.ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$result"
-          xcodebuild test \
-            -project native/CCBuddy.xcodeproj \
-            -scheme CCBuddy \
-            -configuration Debug \
-            -destination 'platform=macOS,arch=arm64' \
-            -only-testing:CCBuddyUITests \
-            -parallel-testing-enabled NO \
-            -maximum-parallel-testing-workers 1 \
-            -resultBundlePath "$result" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGN_IDENTITY=- \
-            ENABLE_HARDENED_RUNTIME=NO \
-            CCBUD_PRODUCT_BUNDLE_IDENTIFIER="$ui_bundle_id"
-          xcrun xcresulttool get test-results summary \
-            --path "$result" --compact > "$summary"
-          xcrun xcresulttool get test-results tests \
-            --path "$result" --compact > "$tests"
-          # Allow additions, but never a green run that discovered only the older UI suite.
-          jq -e '.result == "Passed" and .totalTestCount >= 22
-            and .passedTests == .totalTestCount and .failedTests == 0
-            and .skippedTests == 0 and .expectedFailures == 0' "$summary"
-          jq -e '[.. | objects | select(.nodeType == "Test Case")
-            | select((.nodeIdentifier // "") | startswith("NativeSearchExperienceUITests/"))
-            | {name: ((.nodeIdentifier // "") | split("/") | last | rtrimstr("()")), result}] as $experience
-            | ["testFullTextSearchReportsTgrepAndKeyboardOpensSelectedResult",
-               "testLocalSemanticRankingPreservesResultsAndExplainsComputePolicy",
-               "testSearchCanReachEveryMatchInALargeResultSet",
-               "testFocusReadingRestoresCustomLayoutAndFindsWithinTranscript",
-               "testDestinationShortcutsAndSearchRoundTrip",
-               "testCommandKClaimsTypingFromDetailSearchAndEscapeRestoresInsertionPoint",
-               "testModalSearchOwnsFindShortcutAndTabCannotEditTheCoveredReader",
-               "testLiveSearchAnchorSurvivesAppendsUntilLatestResumesFollowing",
-               "testLightDarkAndCompactSearchScreenshots"] as $required
-            | all($required[]; . as $name
-                | any($experience[]; .name == $name and .result == "Passed"))' "$tests"
-          jq '{result,totalTestCount,passedTests,failedTests,skippedTests,expectedFailures}' \
-            "$summary"
-      - name: Run the Bifrost helper validator suite
-        shell: bash
-        run: bash native/Scripts/tests/verify-bifrost.test.sh
-      - name: Build, exercise, and package the unsigned Release app
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.verify.outputs.version }}"
-          native/Scripts/build-native-release.sh unsigned "$version" \
-            "${{ github.run_number }}" "$RUNNER_TEMP/ccbud-native/app"
-          native/Scripts/run-packaged-selfcheck.sh \
-            "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" 150 raw
-          native/Scripts/test-single-instance-handoff.sh \
-            "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" 20
-          native/Scripts/package-native-release.sh unsigned \
-            "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" "$version" \
-            "$RUNNER_TEMP/ccbud-native/artifacts"
-      - name: Upload unsigned validation artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: unsigned-native-validation-${{ needs.verify.outputs.version }}
-          path: ${{ runner.temp }}/ccbud-native/artifacts/*
-          if-no-files-found: error
-          retention-days: 7
-
-  build-native:
-    name: Sign, notarize, and package the native universal build
-    needs: [verify, native-test]
-    runs-on: macos-26
+    timeout-minutes: 180
     environment: release
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      CCBUDDY_ENV: production
+      CCBUDDY_PREVIEW_IDENTITY: "0"
+      CCBUDDY_SKIP_REMOTE_ASSETS: "1"
+      CCBUDDY_TARGET_OS: mac
+      CCBUDDY_TARGET_ARCH: arm64
+      CCBUDDY_ENABLE_MAC_SIGN: "1"
+      CCBUDDY_UPDATE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/latest-mac.yml
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      HUSKY: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -322,331 +75,201 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          node-version: 24.19.0
-          cache: npm
-      - name: Require the pinned Apple toolchain
-        shell: bash
+          node-version: 24.14.0
+      - name: Require arm64 runner and install locked workspace
         run: |
-          set -euo pipefail
           test "$(uname -m)" = arm64
-          test "$(xcodebuild -version | sed -n '1p')" = 'Xcode 26.6'
-      - name: Install build dependencies
-        shell: bash
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.98.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - name: Install pinned XcodeGen
-        shell: bash
-        run: |
-          set -euo pipefail
-          native/Scripts/install-xcodegen.sh "$RUNNER_TEMP/xcodegen-2.46.0"
-          echo "$RUNNER_TEMP/xcodegen-2.46.0/xcodegen/bin" >> "$GITHUB_PATH"
-      - name: Prepare pinned helper and generated project
-        shell: bash
-        run: |
-          set -euo pipefail
-          CCBUD_TGREP_ARCH=universal bash native/Scripts/build-tgrep.sh
-          node native/Scripts/generate-tgrep-notices.js --check
-          CCBUD_BIFROST_ARCH=universal native/Scripts/fetch-bifrost.sh
-          xcodegen generate --spec native/project.yml --project native
-          git diff --exit-code -- native/CCBuddy.xcodeproj
-          node scripts/release-version.js check "${{ needs.verify.outputs.version }}"
-      - name: Verify updater signing key
+          npm install --global pnpm@10.33.2
+          pnpm install --frozen-lockfile
+      - name: Import Developer ID certificate into a temporary keychain
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           umask 077
-          unset updater_key updater_password
-          updater_key="$TAURI_SIGNING_PRIVATE_KEY"
-          # Unencrypted Tauri keys legitimately use an empty password.
-          updater_password="$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-          unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-          [[ -n "$updater_key" ]] || { echo 'missing TAURI_SIGNING_PRIVATE_KEY' >&2; exit 1; }
-
-          preflight_root="$(mktemp -d "$RUNNER_TEMP/ccbud-updater-preflight.XXXXXX")"
-          trap 'rm -rf -- "$preflight_root"' EXIT INT TERM HUP
-          printf '%s\n' 'CC Buddy updater signing key preflight' > "$preflight_root/input"
-          TAURI_SIGNING_PRIVATE_KEY="$updater_key" \
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$updater_password" \
-            npx --no-install tauri signer sign "$preflight_root/input"
-          test -s "$preflight_root/input.sig"
-      - name: Import credentials, sign, notarize, package, and destroy credentials
+          test -n "$MAC_CSC_LINK"
+          test -n "$MAC_CSC_KEY_PASSWORD"
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test -n "$APPLE_TEAM_ID"
+          [[ "$APPLE_SIGNING_IDENTITY" == Developer\ ID\ Application:* ]]
+          cert="$RUNNER_TEMP/ccbuddy-developer-id.p12"
+          keychain="$RUNNER_TEMP/ccbuddy-signing.keychain-db"
+          password="$(openssl rand -hex 32)"
+          printf '%s' "${MAC_CSC_LINK#*base64,}" | openssl base64 -d -A -out "$cert"
+          test -s "$cert"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$MAC_CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -t agg -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain" \
+            | grep -F "\"$APPLE_SIGNING_IDENTITY\"" >/dev/null
+          rm -f "$cert"
+          echo "CSC_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "CSC_NAME=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: Prepare runtime and build production desktop
+        run: |
+          pnpm --filter @ccbuddy/desktop run prepare:runtime-assets
+          pnpm build:bootstrap
+      - name: Sign embedded macOS command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' candidate; do
+            if file -b "$candidate" | grep -q '^Mach-O'; then
+              codesign --force --options runtime --timestamp \
+                --sign "$APPLE_SIGNING_IDENTITY" --keychain "$CSC_KEYCHAIN" "$candidate"
+              codesign --verify --strict "$candidate"
+            fi
+          done < <(find packages/desktop/bundled-tools/darwin-arm64 \
+            packages/desktop/resources/macos-window-bounds -type f -print0)
+      - name: Package signed app, ZIP, and DMG
+        run: |
+          pnpm --filter @ccbuddy/desktop run bundle -- --os mac --arch arm64 --skip-prepare --skip-build
+          app=packages/desktop/dist/mac-arm64/CCbuddy.app
+          version="${{ needs.verify.outputs.version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = app.ccbuddy.desktop
+          codesign --verify --deep --strict "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -F "TeamIdentifier=$APPLE_TEAM_ID"
+          LC_ALL=C grep -aFq "$CCBUDDY_UPDATE_MANIFEST_URL" "$app/Contents/Resources/app.asar"
+          test -s "packages/desktop/dist/CCbuddy-${version}-mac-arm64.zip"
+          test -s "packages/desktop/dist/CCbuddy-${version}-mac-arm64.dmg"
+      - name: Notarize ZIP and DMG, then staple DMG
         shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.MAC_CSC_LINK }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           umask 077
-
-          unset apple_certificate apple_certificate_password apple_signing_identity
-          unset apple_team_id apple_api_key_p8 apple_api_key_id apple_api_issuer
-          unset updater_key updater_password keychain_password
-          apple_certificate="$APPLE_CERTIFICATE"
-          apple_certificate_password="$APPLE_CERTIFICATE_PASSWORD"
-          apple_signing_identity="$APPLE_SIGNING_IDENTITY"
-          apple_team_id="$APPLE_TEAM_ID"
-          apple_api_key_p8="$APPLE_API_KEY_P8"
-          apple_api_key_id="$APPLE_API_KEY_ID"
-          apple_api_issuer="$APPLE_API_ISSUER"
-          updater_key="$TAURI_SIGNING_PRIVATE_KEY"
-          # Preserve an empty password for an unencrypted updater key.
-          updater_password="$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-          unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
-          unset APPLE_TEAM_ID APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER
-          unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-
-          [[ -n "$apple_certificate" ]] || { echo 'missing MAC_CSC_LINK' >&2; exit 1; }
-          [[ -n "$apple_certificate_password" ]] \
-            || { echo 'missing MAC_CSC_KEY_PASSWORD' >&2; exit 1; }
-          [[ "$apple_signing_identity" == Developer\ ID\ Application:* ]] \
-            || { echo 'invalid APPLE_SIGNING_IDENTITY' >&2; exit 1; }
-          [[ "$apple_team_id" == 2CGR266XD2 ]] || { echo 'invalid APPLE_TEAM_ID' >&2; exit 1; }
-          [[ -n "$apple_api_key_p8" ]] || { echo 'missing APPLE_API_KEY_P8' >&2; exit 1; }
-          [[ "$apple_api_key_id" =~ ^[A-Za-z0-9]+$ ]] \
-            || { echo 'invalid APPLE_API_KEY_ID' >&2; exit 1; }
-          [[ "$apple_api_issuer" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-            || { echo 'invalid APPLE_API_ISSUER' >&2; exit 1; }
-          [[ -n "$updater_key" ]] || { echo 'missing TAURI_SIGNING_PRIVATE_KEY' >&2; exit 1; }
-
-          keychain_path="$RUNNER_TEMP/ccbud-signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keychain-db"
-          api_key_path="$RUNNER_TEMP/AuthKey_${apple_api_key_id}.p8"
-          [[ ! -e "$keychain_path" ]] || { echo 'temporary keychain already exists' >&2; exit 1; }
-          [[ ! -e "$api_key_path" ]] || { echo 'temporary API key already exists' >&2; exit 1; }
-
-          original_keychains=()
-          while IFS= read -r keychain; do
-            keychain="${keychain//\"/}"
-            keychain="${keychain#"${keychain%%[![:space:]]*}"}"
-            keychain="${keychain%"${keychain##*[![:space:]]}"}"
-            [[ -z "$keychain" ]] || original_keychains+=("$keychain")
-          done < <(security list-keychains -d user)
-
-          cleanup_credentials() {
-            set +e
-            security lock-keychain "$keychain_path" >/dev/null 2>&1
-            security delete-keychain "$keychain_path" >/dev/null 2>&1
-            if (( ${#original_keychains[@]} > 0 )); then
-              security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1
-            fi
-            rm -f -- "$api_key_path" "$RUNNER_TEMP/ccbud-developer-id.p12"
-            return 0
-          }
-          trap cleanup_credentials EXIT INT TERM HUP
-
-          keychain_password="$(openssl rand -hex 24)"
-          imported_path="$(
-            APPLE_CERTIFICATE="$apple_certificate" \
-            APPLE_CERTIFICATE_PASSWORD="$apple_certificate_password" \
-            APPLE_SIGNING_IDENTITY="$apple_signing_identity" \
-            CCBUD_KEYCHAIN_PASSWORD="$keychain_password" \
-            CCBUD_KEYCHAIN_PATH="$keychain_path" \
-              native/Scripts/import-signing-certificate.sh | tail -n 1
-          )"
-          [[ "$imported_path" == "$keychain_path" ]] \
-            || { echo 'signing certificate import returned an unexpected keychain' >&2; exit 1; }
-          unset apple_certificate apple_certificate_password keychain_password
-
-          APPLE_TEAM_ID="$apple_team_id" \
-          APPLE_SIGNING_IDENTITY="$apple_signing_identity" \
-          CCBUD_KEYCHAIN="$keychain_path" \
-            native/Scripts/build-native-release.sh signed \
-              "${{ needs.verify.outputs.version }}" "${{ github.run_number }}" \
-              "$RUNNER_TEMP/ccbud-native/app"
-
-          printf '%s' "$apple_api_key_p8" | openssl base64 -d -A -out "$api_key_path"
-          test -s "$api_key_path"
-          unset apple_api_key_p8
-
-          APPLE_API_KEY_PATH="$api_key_path" \
-          APPLE_API_KEY_ID="$apple_api_key_id" \
-          APPLE_API_ISSUER="$apple_api_issuer" \
-          APPLE_SIGNING_IDENTITY="$apple_signing_identity" \
-          TAURI_SIGNING_PRIVATE_KEY="$updater_key" \
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$updater_password" \
-            native/Scripts/package-native-release.sh signed \
-              "$RUNNER_TEMP/ccbud-native/app/CC Buddy.app" \
-              "${{ needs.verify.outputs.version }}" \
-              "$RUNNER_TEMP/ccbud-native/artifacts" "${{ github.repository }}"
-
-          cleanup_credentials
-          trap - EXIT INT TERM HUP
-      - name: Upload immutable release inputs
+          test -n "$APPLE_API_KEY_P8"
+          test -n "$APPLE_API_KEY_ID"
+          test -n "$APPLE_API_ISSUER"
+          key="$RUNNER_TEMP/ccbuddy-notary.p8"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$APPLE_API_KEY_P8" | openssl base64 -d -A -out "$key"
+          test -s "$key"
+          version="${{ needs.verify.outputs.version }}"
+          zip="packages/desktop/dist/CCbuddy-${version}-mac-arm64.zip"
+          dmg="packages/desktop/dist/CCbuddy-${version}-mac-arm64.dmg"
+          xcrun notarytool submit "$zip" --key "$key" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" --wait
+          xcrun notarytool submit "$dmg" --key "$key" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv -t exec packages/desktop/dist/mac-arm64/CCbuddy.app
+      - name: Finalize and validate the updater manifest
+        run: |
+          node packages/desktop/scripts/finalize-macos-release.mjs packages/desktop/dist
+          version="${{ needs.verify.outputs.version }}"
+          unzip -t "packages/desktop/dist/CCbuddy-${version}-mac-arm64.zip"
+      - name: Upload complete release inputs
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: native-release-${{ needs.verify.outputs.version }}
-          path: ${{ runner.temp }}/ccbud-native/artifacts/*
+          name: ccbuddy-macos-${{ needs.verify.outputs.version }}
+          path: |
+            packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-mac-arm64.zip
+            packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-mac-arm64.zip.blockmap
+            packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-mac-arm64.dmg
+            packages/desktop/dist/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/ccbuddy-developer-id.p12" "$RUNNER_TEMP/ccbuddy-notary.p8"
+          if [ -f "$RUNNER_TEMP/ccbuddy-signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/ccbuddy-signing.keychain-db"
+          fi
 
   publish:
     name: Publish one complete GitHub Release
-    needs: [verify, build-native]
-    runs-on: ubuntu-22.04
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: write
-    outputs:
-      is_latest: ${{ steps.channel.outputs.is_latest }}
     env:
+      GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.verify.outputs.version }}
-      TAG: ${{ needs.verify.outputs.tag }}
-      RELEASE_SOURCE_SHA: ${{ needs.verify.outputs.source_sha }}
+      TAG: v${{ needs.verify.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: ${{ needs.verify.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24.19.0
-      - name: Keep the update channel monotonic in both source history and version
-        id: channel
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/release-publish-policy.js
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
-          name: native-release-${{ needs.verify.outputs.version }}
+          name: ccbuddy-macos-${{ needs.verify.outputs.version }}
           path: dist
-      - name: Validate exact release inventory
+      - name: Verify immutable tag, monotonic latest, and downloaded assets
         shell: bash
         run: |
           set -euo pipefail
-          expected="$(printf '%s\n' \
-            "CC.Buddy_${VERSION}_universal.dmg" \
-            'CC.Buddy_universal.app.tar.gz' \
-            'CC.Buddy_universal.app.tar.gz.sig' \
-            'latest.json' | sort)"
+          git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "${{ needs.verify.outputs.commit }}"
+          git merge-base --is-ancestor "${{ needs.verify.outputs.commit }}" refs/remotes/origin/main
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft \
+            --jq .isDraft > "$RUNNER_TEMP/existing-release" 2>/dev/null; then
+            test "$(cat "$RUNNER_TEMP/existing-release")" = true
+          fi
+          latest="$(gh release view --repo "$GITHUB_REPOSITORY" \
+            --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "$latest" ]; then
+            LATEST_TAG="$latest" node --input-type=module -e '
+              const parse = (tag) => {
+                if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`Invalid release tag: ${tag}`);
+                return tag.slice(1).split(".").map(Number);
+              };
+              const next = parse(process.env.TAG);
+              const current = parse(process.env.LATEST_TAG);
+              for (let i = 0; i < 3; i++) {
+                if (next[i] > current[i]) process.exit(0);
+                if (next[i] < current[i]) throw new Error("Release would move latest backwards");
+              }
+              throw new Error("Release is already the latest version");
+            '
+          fi
+          zip="CCbuddy-${VERSION}-mac-arm64.zip"
+          dmg="CCbuddy-${VERSION}-mac-arm64.dmg"
+          expected="$(printf '%s\n' "$zip" "$zip.blockmap" "$dmg" latest-mac.yml | sort)"
           actual="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
-          [[ "$actual" == "$expected" ]]
-          [[ "$TAG" == "v$VERSION" ]]
-          jq -e --arg version "$VERSION" '.version == $version' dist/latest.json
-          # Every macOS key must resolve to the one universal archive. A 1.3.9 updater on an Intel
-          # Mac reads darwin-x86_64 and nothing else, so a key going missing here strands it.
-          jq -e '
-            [.platforms["darwin-aarch64-app"], .platforms["darwin-aarch64"],
-             .platforms["darwin-x86_64-app"], .platforms["darwin-x86_64"]]
-            | length == 4 and (unique | length) == 1
-          ' dist/latest.json
-          archive_sha="$(sha256sum dist/CC.Buddy_universal.app.tar.gz | awk '{print $1}')"
-          [[ "$(jq -r '.platforms["darwin-aarch64-app"].sha256' dist/latest.json)" \
-            == "$archive_sha" ]]
-          signature="$(tr -d '\r\n' < dist/CC.Buddy_universal.app.tar.gz.sig)"
-          [[ "$(jq -r '.platforms["darwin-aarch64-app"].signature' dist/latest.json)" \
-            == "$signature" ]]
-      - name: Create draft and upload all assets
+          test "$actual" = "$expected"
+          sha="$(openssl dgst -sha512 -binary "dist/$zip" | openssl base64 -A)"
+          grep -Fx "version: $VERSION" dist/latest-mac.yml
+          grep -Fx "  - url: $zip" dist/latest-mac.yml
+          grep -Fx "path: $zip" dist/latest-mac.yml
+          grep -Fx "sha512: $sha" dist/latest-mac.yml
+          test "$(grep -c '^  - url:' dist/latest-mac.yml)" = 1
+      - name: Create or reuse draft and upload all assets
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --json isDraft --jq '.isDraft')" == true ]]
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
-              --title "CC Buddy $TAG" --generate-notes
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --draft --title "CCbuddy $TAG" --generate-notes
           fi
           gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
-      - name: Verify uploaded inventory and publish
+      - name: Verify inventory and publish as latest
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          IS_LATEST: ${{ steps.channel.outputs.is_latest }}
         run: |
           set -euo pipefail
           expected="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
           actual="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | sort)"
-          [[ "$actual" == "$expected" ]]
+          test "$actual" = "$expected"
           mkdir "$RUNNER_TEMP/release-check"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern latest.json --dir "$RUNNER_TEMP/release-check"
-          cmp dist/latest.json "$RUNNER_TEMP/release-check/latest.json"
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$IS_LATEST"
-
-  homebrew:
-    name: Publish universal macOS Homebrew cask
-    needs: [verify, publish]
-    if: needs.publish.outputs.is_latest == 'true'
-    runs-on: ubuntu-22.04
-    environment: release
-    env:
-      HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ccbud/homebrew-tap' }}
-      VERSION: ${{ needs.verify.outputs.version }}
-      TAG: ${{ needs.verify.outputs.tag }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ needs.verify.outputs.commit }}
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24.19.0
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
-        with:
-          name: native-release-${{ needs.verify.outputs.version }}
-          path: dist
-      - name: Require the public release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json isDraft --jq '.isDraft')" == false ]]
-      - name: Generate pinned universal macOS cask
-        run: |
-          node scripts/update-cask.js dist homebrew/Casks/ccbud.rb
-          ruby -c homebrew/Casks/ccbud.rb
-          grep -F 'releases/download/v#{version}/CC.Buddy_#{version}_universal.dmg' \
-            homebrew/Casks/ccbud.rb
-          if grep -Fq 'depends_on arch:' homebrew/Casks/ccbud.rb; then
-            echo 'universal cask must not be architecture-restricted' >&2
-            exit 1
-          fi
-          if grep -Fq ':no_check' homebrew/Casks/ccbud.rb; then
-            echo 'cask checksum must not use :no_check' >&2
-            exit 1
-          fi
-      - name: Prepare the tap commit without credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone "https://github.com/${HOMEBREW_TAP_REPO}.git" tap
-          mkdir -p tap/Casks
-          cp homebrew/Casks/ccbud.rb tap/Casks/ccbud.rb
-          cd tap
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add Casks/ccbud.rb
-          if ! git diff --cached --quiet; then
-            git commit -m "ccbud ${VERSION}"
-          fi
-      - name: Push cask to tap
-        shell: bash
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          unset tap_token
-          tap_token="$HOMEBREW_TAP_TOKEN"
-          unset HOMEBREW_TAP_TOKEN
-          [[ -n "$tap_token" ]] || { echo 'missing HOMEBREW_TAP_TOKEN' >&2; exit 1; }
-          cd tap
-          git remote set-url origin "https://x-access-token:${tap_token}@github.com/${HOMEBREW_TAP_REPO}.git"
-          git push origin HEAD:main
+            --pattern latest-mac.yml --dir "$RUNNER_TEMP/release-check"
+          cmp dist/latest-mac.yml "$RUNNER_TEMP/release-check/latest-mac.yml"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=true

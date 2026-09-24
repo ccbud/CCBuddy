@@ -1,0 +1,75 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CCbuddy Desktop: Main",
+      "type": "pwa-node",
+      "request": "attach",
+      "port": 9231,
+      "preLaunchTask": "ccbuddy: start electron (debug)",
+      "restart": true,
+      "timeout": 30000,
+      "outFiles": ["${workspaceFolder}/packages/desktop/out/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/desktop/out/**/*.js",
+        "!**/node_modules/**"
+      ],
+      "skipFiles": ["<node_internals>/**"],
+      "autoAttachChildProcesses": true,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "CCbuddy Desktop: Main (with host inspect)",
+      "type": "pwa-node",
+      "request": "attach",
+      "port": 9231,
+      "preLaunchTask": "ccbuddy: start electron (debug with host inspect)",
+      "restart": true,
+      "timeout": 30000,
+      "outFiles": ["${workspaceFolder}/packages/desktop/out/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/desktop/out/**/*.js",
+        "!**/node_modules/**"
+      ],
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "CCbuddy Desktop: Renderer",
+      "type": "pwa-chrome",
+      "request": "attach",
+      "port": 9229,
+      "webRoot": "${workspaceFolder}/packages/desktop/src/renderer",
+      "timeout": 30000
+    },
+    {
+      "name": "CCbuddy Desktop: Host",
+      "type": "pwa-node",
+      "request": "attach",
+      "port": 9230,
+      "restart": true,
+      "timeout": 30000,
+      "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/packages/desktop/out/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/desktop/out/**/*.js",
+        "!**/node_modules/**"
+      ]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "CCbuddy Desktop: F5",
+      "configurations": ["CCbuddy Desktop: Main", "CCbuddy Desktop: Renderer"],
+      "stopAll": true
+    },
+    {
+      "name": "CCbuddy Desktop: F5 (with host inspect)",
+      "configurations": [
+        "CCbuddy Desktop: Main (with host inspect)",
+        "CCbuddy Desktop: Renderer",
+        "CCbuddy Desktop: Host"
+      ],
+      "stopAll": true
+    }
+  ]
+}

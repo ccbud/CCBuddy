@@ -1,0 +1,21 @@
+{
+  "name": "@ccbuddy/client",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./globals": "./src/globals.d.ts"
+  },
+  "scripts": {
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix"
+  },
+  "dependencies": {
+    "@ccbuddy/rpc": "workspace:*",
+    "@ccbuddy/services": "workspace:*",
+    "@ccbuddy/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
+  }
+}
