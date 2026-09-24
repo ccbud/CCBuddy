@@ -176,6 +176,28 @@ jobs:
           node packages/desktop/scripts/finalize-macos-release.mjs packages/desktop/dist
           version="${{ needs.verify.outputs.version }}"
           unzip -t "packages/desktop/dist/CCbuddy-${version}-mac-arm64.zip"
+      - name: Package, notarize, and sign the legacy native update bridge
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # An unencrypted Tauri key legitimately has an empty password.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$APPLE_API_KEY_P8"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          key="$RUNNER_TEMP/ccbuddy-legacy-notary.p8"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$APPLE_API_KEY_P8" | openssl base64 -d -A -out "$key"
+          unset APPLE_API_KEY_P8
+          test -s "$key"
+          APPLE_API_KEY_PATH="$key" packages/desktop/scripts/package-legacy-native-bridge.sh \
+            packages/desktop/dist/mac-arm64/CCbuddy.app "${{ needs.verify.outputs.version }}" \
+            packages/desktop/dist "$GITHUB_REPOSITORY"
       - name: Upload complete release inputs
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
@@ -185,12 +207,16 @@ jobs:
             packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-mac-arm64.zip.blockmap
             packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-mac-arm64.dmg
             packages/desktop/dist/latest-mac.yml
+            packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-legacy-mac-arm64.app.tar.gz
+            packages/desktop/dist/CCbuddy-${{ needs.verify.outputs.version }}-legacy-mac-arm64.app.tar.gz.sig
+            packages/desktop/dist/latest.json
           if-no-files-found: error
           retention-days: 14
       - name: Remove temporary signing keychain
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/ccbuddy-developer-id.p12" "$RUNNER_TEMP/ccbuddy-notary.p8"
+          rm -f "$RUNNER_TEMP/ccbuddy-developer-id.p12" "$RUNNER_TEMP/ccbuddy-notary.p8" \
+            "$RUNNER_TEMP/ccbuddy-legacy-notary.p8"
           if [ -f "$RUNNER_TEMP/ccbuddy-signing.keychain-db" ]; then
             security delete-keychain "$RUNNER_TEMP/ccbuddy-signing.keychain-db"
           fi
@@ -249,7 +275,9 @@ jobs:
           fi
           zip="CCbuddy-${VERSION}-mac-arm64.zip"
           dmg="CCbuddy-${VERSION}-mac-arm64.dmg"
-          expected="$(printf '%s\n' "$zip" "$zip.blockmap" "$dmg" latest-mac.yml | sort)"
+          legacy="CCbuddy-${VERSION}-legacy-mac-arm64.app.tar.gz"
+          expected="$(printf '%s\n' "$zip" "$zip.blockmap" "$dmg" latest-mac.yml \
+            "$legacy" "$legacy.sig" latest.json | sort)"
           actual="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
           test "$actual" = "$expected"
           sha="$(openssl dgst -sha512 -binary "dist/$zip" | openssl base64 -A)"
@@ -258,6 +286,12 @@ jobs:
           grep -Fx "path: $zip" dist/latest-mac.yml
           grep -Fx "sha512: $sha" dist/latest-mac.yml
           test "$(grep -c '^  - url:' dist/latest-mac.yml)" = 1
+          if grep -Fq legacy dist/latest-mac.yml; then
+            echo "latest-mac.yml must not reference the legacy bridge" >&2
+            exit 1
+          fi
+          # Old native/Tauri clients read latest.json; re-verify it against the downloaded bytes.
+          node packages/desktop/scripts/legacy-native-update.mjs verify dist "$VERSION" "$GITHUB_REPOSITORY"
       - name: Create or reuse draft and upload all assets
         shell: bash
         run: |
@@ -277,6 +311,7 @@ jobs:
           test "$actual" = "$expected"
           mkdir "$RUNNER_TEMP/release-check"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern latest-mac.yml --dir "$RUNNER_TEMP/release-check"
+            --pattern latest-mac.yml --pattern latest.json --dir "$RUNNER_TEMP/release-check"
           cmp dist/latest-mac.yml "$RUNNER_TEMP/release-check/latest-mac.yml"
+          cmp dist/latest.json "$RUNNER_TEMP/release-check/latest.json"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=true

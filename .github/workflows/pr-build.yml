@@ -40,6 +40,7 @@ jobs:
           pnpm exec tsx --test
           packages/desktop/test/ccbuddy-update-policy.test.mjs
           packages/desktop/test/finalize-macos-release.test.mjs
+          packages/desktop/test/legacy-native-update.test.mjs
           packages/desktop/test/prepare-main-release.test.mjs
 
   macos-package:
@@ -79,3 +80,6 @@ jobs:
           test -s packages/desktop/dist/latest-mac.yml
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' packages/desktop/dist/mac-arm64/CCbuddy.app/Contents/Info.plist)" = "$version"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' packages/desktop/dist/mac-arm64/CCbuddy.app/Contents/Info.plist)" = app.ccbuddy.desktop
+          # The legacy native updater rejects any symlink that resolves outside the app.
+          node packages/desktop/scripts/legacy-native-update.mjs check-symlinks \
+            packages/desktop/dist/mac-arm64/CCbuddy.app

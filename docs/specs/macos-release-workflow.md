@@ -38,6 +38,12 @@ public only after the complete asset inventory is verified. Existing public
 releases are immutable; reruns cannot replace their assets or move `latest`
 backwards to an older version.
 
+Each release also carries the legacy native update bridge
+(`docs/specs/legacy-native-update-bridge.md`): `latest.json`, a minisign-signed
+`CCbuddy-<version>-legacy-mac-arm64.app.tar.gz` and its `.sig`. These let the
+frozen native 2.0.3–2.0.9 and Tauri 1.3.9 updaters install the Electron app.
+`latest-mac.yml` never references them.
+
 ## Flow and failure semantics
 
 ```text
@@ -45,17 +51,20 @@ PR → pnpm checks + unsigned arm64 package → review and merge
 main push → allocate annotated tag (main commit or version snapshot)
 annotated tag → version/ancestry check → signed arm64 build
   → notarize ZIP and DMG → staple DMG → finalize YAML and verify assets
+  → re-sign, notarize, staple, and sign the legacy bridge → latest.json
   → draft GitHub Release → upload and compare inventory → publish as latest
 ```
 
 The GitHub `release` environment owns access to the Developer ID certificate and
 Apple notary API key. Its required secrets are `MAC_CSC_LINK`,
 `MAC_CSC_KEY_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_TEAM_ID`,
-`APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`. Missing or invalid
+`APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, and
+`TAURI_SIGNING_PRIVATE_KEY` (with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, empty for
+an unencrypted key) for the legacy bridge signature. Missing or invalid
 credentials fail before publication. A temporary keychain and API key file live
 only on the release runner and are removed afterward. The workflow never
-generates a signing identity, publishes an ad hoc signed package, or uses the
-removed native/Tauri release path.
+generates a signing identity, publishes an ad hoc signed package, or builds the
+removed native/Tauri app; it only reuses the legacy `latest.json` update contract.
 
 If any signing, notarization, manifest, archive, or upload check fails, no public
 release is created. A draft can be retried for the same tag. Publication uses the
@@ -74,5 +83,7 @@ and no release credentials.
 3. A valid tagged build embeds the CCbuddy latest manifest URL and emits signed,
    notarized artifacts whose ZIP hash matches the published YAML. The manifest
    contains no DMG or foreign update source.
+   The same release carries a `latest.json` that meets the legacy bridge
+   acceptance criteria.
 4. Failed publication leaves only a draft. An existing public release and a
    newer latest version are never overwritten by a rerun or older tag.
