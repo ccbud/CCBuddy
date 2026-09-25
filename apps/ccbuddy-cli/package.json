@@ -1,6 +1,6 @@
 {
   "name": "ccbuddy-cli",
-  "version": "2.0.12",
+  "version": "2.0.13",
   "private": true,
   "description": "A cross-platform TypeScript Node.js CLI with a small TUI and optional SEA packaging.",
   "type": "module",
