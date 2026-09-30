@@ -16,6 +16,6 @@ pnpm dev:desktop:test
 
 Open the read-only history window from the desktop application menu. The original CCbuddy Agent workspace remains available. For web development run `pnpm dev:web`. After `pnpm bootstrap`, run `pnpm ccbuddy --version` at the repository root; the CLI package in [apps/ccbuddy-cli](apps/ccbuddy-cli) also declares a `ccbuddy` executable alias.
 
-Validation: `pnpm typecheck`, `pnpm lint`, and `pnpm architecture:check --changed`. See the [history spec](docs/specs/history-review.md) for behavior and ownership.
+Validation: `pnpm typecheck`, `pnpm lint`, and `pnpm architecture:check --changed`. See the [history spec](docs/specs/history-review.md) for behavior and ownership, and the [plugin UI / Gen UI spec](docs/specs/plugin-ui-and-gen-ui.md) (developer guide: [docs/ui-plugin.md](docs/ui-plugin.md), Chinese).
 
 This derivative retains CCbuddy's Apache-2.0 [license](LICENSE), [notices](NOTICE.md), and [third-party notices](THIRD-PARTY-NOTICES.md). The prior CCbuddy Swift implementation was not copied into this application. Codex and Grok Build source code was not copied.

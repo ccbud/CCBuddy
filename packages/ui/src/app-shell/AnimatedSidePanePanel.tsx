@@ -48,6 +48,7 @@ import { SubagentDirectorySidePane } from "@/app-shell/SubagentDirectorySidePane
 import { SelectionSideChatPane } from "@/app-shell/SelectionSideChatPane.js";
 import { BackgroundBashOutputSidePane } from "@/app-shell/BackgroundBashOutputSidePane.js";
 import { PlanDetailSidePane } from "@/app-shell/PlanDetailSidePane.js";
+import { PluginUiLauncherItems, PluginUiSidePane, useOpenPluginUi } from "@/plugin-ui/index.js";
 import { WorkflowRunSidePane } from "@/app-shell/WorkflowRunSidePane.js";
 import { WorkflowRunDirectorySidePane } from "@/app-shell/WorkflowRunDirectorySidePane.js";
 import { WorkflowActorSessionSidePane } from "@/app-shell/WorkflowActorSessionSidePane.js";
@@ -108,6 +109,9 @@ type TabsScrollMaskEdges = {
   left: boolean;
   right: boolean;
 };
+const OPEN_TAB_LAUNCHER_BUTTON_CLASS =
+  "side-pane-open-tab-button flex h-12 min-w-0 items-center gap-3 rounded-xl bg-surface px-3 text-ui-base font-medium text-foreground transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 type OpenTabLauncherItem = {
   id: OpenTabLauncherItemId;
   label: string;
@@ -373,6 +377,7 @@ export function AnimatedSidePanePanel({
   onCloseCodeViewer: () => void;
   onCloseGit: () => void;
   onActivateTab: (tabId: string) => void;
+  /** "插件"分组打开面板 tab；缺省不渲染分组（web / 无宿主）。 */
   onReorderTab: (activeTabId: string, overTabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCloseOtherTabs: (tabId: string) => void;
@@ -404,6 +409,7 @@ export function AnimatedSidePanePanel({
   onBrowserPageMetadataChange: (tabId: string, metadata: BrowserSidePaneMetadata) => void;
   onSelectGitSource: (value: GitChangeSourceId) => void;
 }) {
+  const onOpenPluginUi = useOpenPluginUi();
   const { intl } = useCCbuddyIntl();
   const isOfficeMode = useIsOfficeMode();
   const developerToolsEnabled = useDeveloperToolsVisibility();
@@ -845,7 +851,7 @@ export function AnimatedSidePanePanel({
                   key={item.id}
                   type="button"
                   data-side-pane-open-tab-item={item.id}
-                  className="side-pane-open-tab-button flex h-12 min-w-0 items-center gap-3 rounded-xl bg-surface px-3 text-ui-base font-medium text-foreground transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className={OPEN_TAB_LAUNCHER_BUTTON_CLASS}
                   onClick={item.onOpen}
                 >
                   <Icon className="size-4 text-foreground-subtle" />
@@ -855,6 +861,16 @@ export function AnimatedSidePanePanel({
                 </button>
               );
             })}
+            {onOpenPluginUi ? (
+              <PluginUiLauncherItems
+                workspacePath={workspaceAbsPath}
+                workspaceIdentity={workspaceIdentity}
+                remoteSessionId={workspaceRemoteSessionId}
+                sessionId={activeTaskId}
+                onOpenPluginUi={onOpenPluginUi}
+                itemClassName={OPEN_TAB_LAUNCHER_BUTTON_CLASS}
+              />
+            ) : null}
           </div>
         </div>
       </div>
@@ -1130,6 +1146,12 @@ export function AnimatedSidePanePanel({
                             onOpenCodeViewer={onOpenCodeViewer}
                             onOpenFileLink={onOpenFileLink}
                             onUnavailable={onCloseTab}
+                          />
+                        ) : tab.type === "plugin-ui" ? (
+                          <PluginUiSidePane
+                            tab={tab}
+                            onOpenBrowserUrl={onOpenBrowserUrl}
+                            onCloseTab={onCloseTab}
                           />
                         ) : tab.type === "plan-detail" ? (
                           <PlanDetailSidePane

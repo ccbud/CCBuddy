@@ -1,9 +1,7 @@
 /* eslint-disable max-lines -- 桌面命令分发需要共享窗口与平台上下文，集中维护更便于一致性 */
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { app, BrowserWindow, dialog, session, shell } from "electron";
-import type { MessageBoxOptions } from "electron";
+import { readCCbuddyStdioTapDevState, setCCbuddyStdioTapDevEnabled } from "@ccbuddy/services/node";
 import {
+  buildCCbuddyEndpointUrls,
   DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
   DesktopCommandIds,
   PlatformChannels,
@@ -14,14 +12,17 @@ import {
   CCBUDDY_ENV,
   getCommunityUrlFromConfigs,
   getFeedbackUrlFromConfig,
-  resolveHelpAppConfig,
   normalizeCCbuddyEndpointOrigin,
 } from "@ccbuddy/shared";
-import { readCCbuddyStdioTapDevState, setCCbuddyStdioTapDevEnabled } from "@ccbuddy/services/node";
+import type { MessageBoxOptions } from "electron";
+import { app, BrowserWindow, dialog, session, shell } from "electron";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { showAboutDialog } from "./about.js";
 import { checkForUpdateMenuClick } from "./autoUpdater.js";
 import { desktopUpdatePolicy } from "./desktopUpdatePolicy.js";
 import { exportLogs } from "./exportLogs.js";
+import { getPluginSandboxHost } from "./pluginSandbox/index.js";
 import { openResourceManager } from "./resourceManagerWindow.js";
 import { resolveCuaOsSupport } from "./cuaOsSupport.js";
 import { syncWindowControlsOverlayForZoomLevel } from "./desktopWindowButtonPosition.js";
@@ -96,6 +97,7 @@ async function clearAllDataAndRelaunch(options: {
     return;
   }
 
+  await getPluginSandboxHost()?.clearBrowserData();
   const { rm } = await import("node:fs/promises");
   try {
     await rm(options.credentialsDir, { recursive: true, force: true });

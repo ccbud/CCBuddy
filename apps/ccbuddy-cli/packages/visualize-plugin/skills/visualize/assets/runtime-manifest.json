@@ -1,0 +1,16 @@
+{
+  "files": {
+    "visualize.css": {
+      "sha256": "67aea8a8ab5c4b98dd39b949d8cb895f45af3994de17357376cb824ef280d39c"
+    },
+    "visualize.html": {
+      "sha256": "da90ea651e1d94857a7de66eda8d692336e0bb4684e36a5fc53e187c96570b5f"
+    },
+    "tweak.js": {
+      "sha256": "6c681a4d012fe19f2ef333a85de21f1ed3622b5adbc6b7b78f30d206d2ba0b34"
+    },
+    "calendar.js": {
+      "sha256": "19f40e0a15ae7a9b9a4e17bc53c5bb47c5b21e6d32317d80cf030f9e012c221b"
+    }
+  }
+}

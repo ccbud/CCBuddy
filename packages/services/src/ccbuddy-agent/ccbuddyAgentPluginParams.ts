@@ -1,9 +1,10 @@
 import type {
+  ModelSelection,
   CCbuddyAgentMcpServer,
   CCbuddyAutomationScheduleRule,
   CCbuddyMcpListMode,
-  ModelSelection,
 } from "@ccbuddy/shared";
+import type { McpAppsAppToolCallResult, McpAppsAppToolDescriptor } from "@ccbuddy/shared/mcp-apps";
 
 export interface CCbuddyAgentWorkspaceTarget {
   workspacePath: string;
@@ -106,6 +107,73 @@ export interface CCbuddyAgentPluginReferenceCatalogParams extends CCbuddyAgentWo
 // resident Session runtime 快照；不参与 Settings 管理目录。
 export interface CCbuddyAgentSkillReferenceCatalogParams extends CCbuddyAgentWorkspaceTarget {
   sessionId?: string;
+}
+
+/** 插件 UI：UI 发起的 `ui://` 资源读取。 */
+export interface CCbuddyAgentReadMcpResourceParams extends CCbuddyAgentWorkspaceTarget {
+  instance: import("@ccbuddy/shared/mcp-apps").McpAppInstance;
+  sessionId: string;
+  pluginId: string;
+  serverName: string;
+  uri: string;
+}
+
+/** 插件 UI 页面发起的 `resources/read`；参数与 readMcpResource 同形，结果受 8 MiB 与 mimeType 白名单约束。 */
+export type CCbuddyAgentReadMcpResourceForUiParams = CCbuddyAgentReadMcpResourceParams;
+
+/** 插件 UI：UI 回调本插件工具；不进审批流，归属由 agent 侧 catalog fail closed。 */
+export interface CCbuddyAgentCallMcpToolForUiParams extends CCbuddyAgentWorkspaceTarget {
+  instance: import("@ccbuddy/shared/mcp-apps").McpAppInstance;
+  sessionId: string;
+  pluginId: string;
+  serverName: string;
+  toolName: string;
+  arguments?: Record<string, unknown>;
+  /** 宿主生成的调用 id，配合 cancelMcpToolCallForUi。 */
+  callId: string;
+}
+/** 插件 UI 页面发起的 resources/list、resources/templates/list、subscribe、unsubscribe。 */
+export interface CCbuddyAgentListMcpResourcesForUiParams extends CCbuddyAgentWorkspaceTarget {
+  instance: import("@ccbuddy/shared/mcp-apps").McpAppInstance;
+  sessionId: string;
+  pluginId: string;
+  serverName: string;
+  cursor?: string;
+}
+/** App-Provided Tools：实例身份 = 会话 + 沙箱作用域 + 代际。 */
+export interface CCbuddyAgentAppToolInstanceForUiParams extends CCbuddyAgentWorkspaceTarget {
+  instance: import("@ccbuddy/shared/mcp-apps").McpAppInstance;
+  sessionId: string;
+  pluginId: string;
+  serverName: string;
+  scopeId: string;
+  generation: number;
+}
+export interface CCbuddyAgentRegisterAppToolsForUiParams extends CCbuddyAgentAppToolInstanceForUiParams {
+  tools: McpAppsAppToolDescriptor[];
+}
+export interface CCbuddyAgentAppToolCallForUiParams extends CCbuddyAgentAppToolInstanceForUiParams {
+  callId: string;
+}
+export interface CCbuddyAgentResolveAppToolCallForUiParams extends CCbuddyAgentAppToolCallForUiParams {
+  result?: McpAppsAppToolCallResult;
+  error?: { message: string };
+}
+export interface CCbuddyAgentMcpResourceSubscriptionForUiParams extends CCbuddyAgentWorkspaceTarget {
+  instance: import("@ccbuddy/shared/mcp-apps").McpAppInstance;
+  sessionId: string;
+  pluginId: string;
+  serverName: string;
+  scopeId: string;
+  generation: number;
+  uri: string;
+}
+export interface CCbuddyAgentCancelMcpToolCallForUiParams extends CCbuddyAgentWorkspaceTarget {
+  instance: import("@ccbuddy/shared/mcp-apps").McpAppInstance;
+  sessionId: string;
+  pluginId: string;
+  serverName: string;
+  callId: string;
 }
 export interface CCbuddyAgentResolveSuggestedPluginReferenceParams extends CCbuddyAgentWorkspaceTarget {
   stableId: string;

@@ -196,6 +196,8 @@ export const resolveBuildAliases = ({
     rootDirectory,
     "../../packages/shared/src/ccbuddyEndpoint.ts",
   ),
+  // 插件 UI（MCP Apps）协议子路径：adapters/core/contracts 的 dist 引用它，同样要先于通用入口声明。
+  "@ccbuddy/shared/mcp-apps": resolve(rootDirectory, "../../packages/shared/src/mcp-apps/index.ts"),
   "@ccbuddy/shared/node": resolve(rootDirectory, "../../packages/shared/src/node.ts"),
   "@ccbuddy/shared": resolve(rootDirectory, "../../packages/shared/src/index.ts"),
   "@ccbuddy/core": resolve(cliDirectory, "../core/dist/index.js"),
