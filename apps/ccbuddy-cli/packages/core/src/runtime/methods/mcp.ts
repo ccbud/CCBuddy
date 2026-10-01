@@ -189,8 +189,20 @@ function buildPluginIdByServerName(
 }
 
 function mcpToolsSignature(descriptors: readonly McpToolDescriptor[]): string {
+  // 原因：只比较名称/描述会吞掉 schema、权限提示、可见性和 UI 等更新，revision
+  // 却已被消费，导致 registry/provider 一直使用旧契约。完整比较 descriptor；排序对象键
+  // 和工具列表以忽略传输顺序差异，但保留 schema 数组顺序（如 prefixItems 的位置语义）。
   return descriptors
-    .map((tool) => `${tool.serverName}\u0001${tool.toolName}\u0001${tool.description ?? ""}`)
+    .map((tool) =>
+      JSON.stringify(tool, (_key, value: unknown) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+        return Object.fromEntries(
+          Object.entries(value).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+          ),
+        );
+      }),
+    )
     .sort()
     .join("\n");
 }
