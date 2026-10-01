@@ -6,6 +6,15 @@ import { PluginUiPageManager } from "../../../ui/src/plugin-ui/app/pluginUiPageM
 import { createPluginUiMessagePortTransport } from "../../../ui/src/plugin-ui/adapters/messagePortTransport.js";
 import { createPluginUiPagePlane } from "../../../ui/src/plugin-ui/adapters/pluginUiPagePlane.js";
 import type { PluginSandboxHandle, PluginSandboxPortsEvent } from "@ccbuddy/shared/mcp-apps";
+import { buildPluginUiSessionKey } from "../../../ui/src/plugin-ui/contract.js";
+import {
+  clearPluginUiSessionViewState,
+  getPluginUiManualPin,
+  getPluginUiRowDisposition,
+  retainPluginUiSessionViewState,
+  setPluginUiInstanceDerivation,
+  setPluginUiManualPin,
+} from "../../../ui/src/plugin-ui/app/pluginUiInstanceStore.js";
 const harness = (window as any).harness;
 const ports = new Set<(event: PluginSandboxPortsEvent) => void>();
 window.addEventListener("message", (event) => {
@@ -33,6 +42,7 @@ const owner = new PluginUiPageManager<Page>(
     };
   },
   (task) => {
+    clearPluginUiSessionViewState(task);
     for (const key of snapshots.keys()) if (key.startsWith(task + "/")) snapshots.delete(key);
   },
 );
@@ -48,7 +58,11 @@ type Page = {
   handle?: PluginSandboxHandle;
 };
 const pages = new Map<string, Page>();
-async function addPage(key: string, task: string, visible = true) {
+const viewLeases = new Map<string, () => void>();
+const viewKey = (task: string) =>
+  buildPluginUiSessionKey({ workspacePath: "/retention", sessionId: task });
+async function addPage(key: string, task: string, visible = true, sidebar = false) {
+  const sessionKey = viewKey(task);
   let busy = false;
   let running = false;
   let controller: PluginUiHostController;
@@ -62,10 +76,10 @@ async function addPage(key: string, task: string, visible = true) {
       throw Error("retention guest crashed");
     },
   });
-  const off = plane.bind({ node: anchor, kind: "inline" });
+  const off = plane.bind({ node: anchor, kind: sidebar ? "sidebar" : "inline" });
   const page: Page = {
     key,
-    task,
+    task: sessionKey,
     visible,
     busy: () => busy,
     running: () => running,
@@ -138,7 +152,7 @@ async function addPage(key: string, task: string, visible = true) {
     initialHostContext: { displayMode: "inline" },
     hostVersion: "fixture",
     getToolFeed: () => ({}),
-    getWidgetState: () => snapshots.get(task + "/" + key),
+    getWidgetState: () => snapshots.get(sessionKey + "/" + key),
     getHostCapabilities: () => ({}),
     onPhase(phase, detail) {
       if (phase === "mounted") {
@@ -158,7 +172,7 @@ async function addPage(key: string, task: string, visible = true) {
   });
   controller.start();
   await ready.promise;
-  snapshots.set(task + "/" + key, { saved: key });
+  snapshots.set(sessionKey + "/" + key, { saved: key });
   return { sandboxId: handle!.sandboxId };
 }
 async function drain() {
@@ -166,6 +180,30 @@ async function drain() {
 }
 (window as any).retention = {
   addPage,
+  mountView(task: string) {
+    const key = viewKey(task);
+    viewLeases.get(task)?.();
+    viewLeases.set(task, retainPluginUiSessionViewState(key));
+    setPluginUiInstanceDerivation(key, {
+      instances: [],
+      byToolCallId: {
+        tool: { key: "view", superseded: false, autoExpand: true, forcedInline: false },
+      },
+    });
+  },
+  unmountView(task: string) {
+    viewLeases.get(task)?.();
+    viewLeases.delete(task);
+  },
+  pinView: (task: string) => setPluginUiManualPin(viewKey(task), "tool", false),
+  viewState: (task: string) => ({
+    disposition: getPluginUiRowDisposition(viewKey(task), "tool") ?? null,
+    pinned: getPluginUiManualPin(viewKey(task), "tool") ?? null,
+  }),
+  async removeTask(task: string) {
+    owner.removeTask(viewKey(task));
+    await drain();
+  },
   counts: () => ({
     pages: pages.size,
     views: document.querySelectorAll("webview").length,

@@ -19,7 +19,7 @@ import {
   getPluginUiSurface,
   subscribePluginUiSurfaces,
 } from "@/plugin-ui/app/pluginUiSurfaceStore.js";
-import { buildPluginUiSurfaceKey } from "@/plugin-ui/contract.js";
+import { buildPluginUiSessionKey, buildPluginUiSurfaceKey } from "@/plugin-ui/contract.js";
 import { appAllowsDisplayMode } from "@/plugin-ui/domain/buildPluginUiHostContext.js";
 import {
   buildPluginUiToolResult,
@@ -61,6 +61,7 @@ export function usePluginUiToolCallModel(
   // 资源级 showInline 只随句柄到达；经 ref 读避免把 host 结果卷进渲染期的派生。
   const hostHandleRef = useRef<PluginSandboxHandle | null>(null);
   const sessionId = scope?.sessionId ?? "";
+  const sessionKey = scope ? buildPluginUiSessionKey(scope) : "";
   const toolScope = useMemo<PluginUiScopeRef>(
     () =>
       presentation?.surface
@@ -100,12 +101,12 @@ export function usePluginUiToolCallModel(
   // 4b-1：时间线推导的展示裁决（被替代 / 强制常驻）与用户手动固定状态。
   const disposition = useSyncExternalStore(
     subscribePluginUiInstances,
-    () => getPluginUiRowDisposition(sessionId, toolCall.toolId),
+    () => getPluginUiRowDisposition(sessionKey, toolCall.toolId),
     () => undefined,
   );
   const manualPin = useSyncExternalStore(
     subscribePluginUiDisclosure,
-    () => getPluginUiManualPin(sessionId, toolCall.toolId),
+    () => getPluginUiManualPin(sessionKey, toolCall.toolId),
     () => undefined,
   );
   const superseded = disposition?.superseded === true;
@@ -113,8 +114,8 @@ export function usePluginUiToolCallModel(
     disposition?.forcedInline === true || host_resourceShowInline(hostHandleRef.current);
   const pinned = manualPin ?? (forcedInline || disposition?.autoExpand === true);
   const togglePin = useCallback(() => {
-    setPluginUiManualPin(sessionId, toolCall.toolId, !pinned);
-  }, [pinned, sessionId, toolCall.toolId]);
+    setPluginUiManualPin(sessionKey, toolCall.toolId, !pinned);
+  }, [pinned, sessionKey, toolCall.toolId]);
 
   const openInSidePane = useCallback(() => {
     if (!presentation) return;
@@ -211,10 +212,10 @@ export function usePluginUiToolCallModel(
   // 资源级 showInline（随句柄到达）：没有手动记录时写成固定，之后折叠边界据此重算。
   useEffect(() => {
     if (!supportedScope || host.handle?.resourceMeta?.showInline !== true || !sessionId) return;
-    if (getPluginUiManualPin(sessionId, toolCall.toolId) === undefined) {
-      setPluginUiManualPin(sessionId, toolCall.toolId, true);
+    if (getPluginUiManualPin(sessionKey, toolCall.toolId) === undefined) {
+      setPluginUiManualPin(sessionKey, toolCall.toolId, true);
     }
-  }, [host.handle, sessionId, supportedScope, toolCall.toolId]);
+  }, [host.handle, sessionId, sessionKey, supportedScope, toolCall.toolId]);
 
   useEffect(() => {
     if (!inlineActive || !host.supported) return;

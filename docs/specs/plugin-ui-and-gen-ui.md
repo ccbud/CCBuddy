@@ -73,6 +73,37 @@ Module boundaries are owned by `architecture-policy.yaml` (`mcp-apps-protocol`,
 Gen UI service derives its output and state roots from it and the desktop
 passes the output root to the Agent through `CCBUDDY_GEN_UI_OUTPUT_ROOT`.
 
+The renderer's plugin row derivations and manual disclosure pins have one
+session cache owner (`pluginUiInstanceStore`). Both use
+`buildPluginUiSessionKey` (workspace identity, with local path fallback, plus
+session ID). Mounted timelines hold reference-counted leases; their entries
+cannot be evicted. The owner retains at most 30 additional inactive sessions,
+ordered by the latest write, mount or last release. Eviction removes the
+derivation and pins together and notifies subscribers. Reads are pure.
+Returning to a retained session keeps its pins; returning after eviction
+rederives the row policy and uses default disclosure. No state is persisted.
+Task removal by the page owner requests clearing the cached derivation and
+pins. With mounted timelines, the owner marks the entry for clearing and
+preserves its current data until the last lease releases; unchanged rows must
+not lose their published policy. The last release removes the entry directly
+instead of retaining it in the LRU. With no leases, clearing is immediate.
+Repeated clear requests and lease releases are idempotent. Timeline release and
+cache eviction never dispose a sandbox, cancel a page call or release a page
+lease; live pages and side panes keep their existing owner and limits.
+
+```text
+timeline mount -> scoped view-cache lease -> derive rows / change pins
+timeline unmount -> release matching lease -> last release enters inactive LRU
+page task removed -> mark pending clear -> last release removes derivation + pins -> notify
+inactive capacity exceeded / clear without leases -> remove derivation + pins -> notify
+sandbox page owner -> independently retain inline / side-pane guest and calls
+```
+
+Duplicate mounts each own a lease. Release is idempotent; a release captured
+before explicit removal cannot alter a later entry for the same session.
+This is renderer-local cache retention and does not change desktop continuous
+or mobile replayable delivery.
+
 ## Acceptance
 
 1. `pnpm typecheck`, the CLI workspace typecheck, `pnpm lint`,
@@ -91,3 +122,8 @@ passes the output root to the Agent through `CCBUDDY_GEN_UI_OUTPUT_ROOT`.
 5. No string, protocol key, DOM global or file name introduced by this
    feature carries the upstream product name, and the plugin sandbox storage
    is removed by Clear All Data.
+6. View-cache tests cover 30 inactive sessions plus mounted sessions, dual
+   mounts and repeated/stale releases, workspace isolation, paired pin eviction
+   and subscriber notifications. The existing Electron retention fixture checks
+   that switching through more than 30 timelines releases cached view state
+   without destroying a retained guest, and revisiting restores row policy.

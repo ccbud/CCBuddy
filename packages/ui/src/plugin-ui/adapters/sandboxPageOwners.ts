@@ -1,4 +1,5 @@
 import { PluginUiPageManager, type ManagedPluginPage } from "../app/pluginUiPageManager.js";
+import { clearPluginUiSessionViewState } from "../app/pluginUiInstanceStore.js";
 
 export interface SandboxPageOwner extends ManagedPluginPage {
   readonly kind: "mcp" | "gen-ui";
@@ -9,7 +10,7 @@ export const sandboxPages = new PluginUiPageManager<SandboxPageOwner>(
     const timer = setTimeout(run, ms);
     return () => clearTimeout(timer);
   },
-  () => {},
+  clearPluginUiSessionViewState,
   (key) => {
     for (const listener of listeners.get(key) ?? []) listener();
   },

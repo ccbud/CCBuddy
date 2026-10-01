@@ -16,7 +16,10 @@ import {
   pluginUiPages,
   subscribePage,
 } from "../../../ui/src/plugin-ui/adapters/pluginUiPageRegistry.js";
-import { buildPluginUiSurfaceKey } from "../../../ui/src/plugin-ui/contract.js";
+import {
+  buildPluginUiSessionKey,
+  buildPluginUiSurfaceKey,
+} from "../../../ui/src/plugin-ui/contract.js";
 
 export interface RowCase {
   id: number;
@@ -86,7 +89,8 @@ export function RowsFixture({ config, ready }: { config: any; ready: () => void 
   useEffect(() => {
     (window as any).setRows = async (next: RowCase[], pin = false) => {
       if (pin)
-        for (const c of next) setPluginUiManualPin(config.scope.sessionId, `row-${c.id}`, true);
+        for (const c of next)
+          setPluginUiManualPin(buildPluginUiSessionKey(config.scope), `row-${c.id}`, true);
       flushSync(() => setCases(next));
       await layout();
     };

@@ -37,8 +37,10 @@ import {
   deriveLogicalUiInstances,
   getPluginUiDisclosureVersion,
   getPluginUiManualPin,
+  retainPluginUiSessionViewState,
   setPluginUiInstanceDerivation,
   subscribePluginUiDisclosure,
+  usePluginUiSessionKey,
   type PluginUiRowPinResolver,
 } from "@/plugin-ui/index.js";
 import { ConversationPendingGuideList } from "@/v4/ConversationPendingGuideList.js";
@@ -425,9 +427,15 @@ function ConversationTimelineImpl({
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   // 插件卡片展示模型——同资源替代 + 最近三回合自动展开 + 手动固定；推导结果发布给卡片自己读。
   const pluginUiDerivation = useMemo(() => deriveLogicalUiInstances(rows), [rows]);
+  const pluginUiSessionKey = usePluginUiSessionKey();
   useEffect(() => {
-    setPluginUiInstanceDerivation(sessionKey, pluginUiDerivation);
-  }, [pluginUiDerivation, sessionKey]);
+    if (pluginUiSessionKey === null) return;
+    return retainPluginUiSessionViewState(pluginUiSessionKey);
+  }, [pluginUiSessionKey]);
+  useEffect(() => {
+    if (pluginUiSessionKey !== null)
+      setPluginUiInstanceDerivation(pluginUiSessionKey, pluginUiDerivation);
+  }, [pluginUiDerivation, pluginUiSessionKey]);
   const pluginUiDisclosureVersion = useSyncExternalStore(
     subscribePluginUiDisclosure,
     getPluginUiDisclosureVersion,
@@ -438,9 +446,12 @@ function ConversationTimelineImpl({
     void pluginUiDisclosureVersion;
     return (toolCallId) => ({
       disposition: pluginUiDerivation.byToolCallId[toolCallId],
-      manualPinned: getPluginUiManualPin(sessionKey, toolCallId),
+      manualPinned:
+        pluginUiSessionKey === null
+          ? undefined
+          : getPluginUiManualPin(pluginUiSessionKey, toolCallId),
     });
-  }, [pluginUiDerivation, sessionKey, pluginUiDisclosureVersion]);
+  }, [pluginUiDerivation, pluginUiSessionKey, pluginUiDisclosureVersion]);
   const renderUnits = useMemo(
     () =>
       buildConversationTurnRenderUnits(rows, {

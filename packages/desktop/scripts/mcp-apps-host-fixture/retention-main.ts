@@ -69,6 +69,32 @@ app
       webContents.getAllWebContents().filter((contents) => contents.getType() === "webview").length;
     const started = performance.now();
     const counts: any[] = [];
+    await run("addPage('view-cache','view-cache',true,true)");
+    await run("mountView('view-cache')");
+    await run("pinView('view-cache')");
+    await run("unmountView('view-cache')");
+    assert.equal(guestCount(), 1);
+    for (let n = 0; n < 31; n++) {
+      await run(`mountView('visit-${n}')`);
+      await run(`unmountView('visit-${n}')`);
+    }
+    assert.deepEqual(await run("viewState('view-cache')"), { disposition: null, pinned: null });
+    assert.equal(guestCount(), 1, "view eviction must retain the side-pane guest");
+    await run("mountView('view-cache')");
+    assert.equal((await run("viewState('view-cache')")).disposition.autoExpand, true);
+    await run("pinView('view-cache')");
+    await run("removeTask('view-cache')");
+    const mountedAfterPageRemoval = await run("viewState('view-cache')");
+    assert.equal(mountedAfterPageRemoval.disposition.autoExpand, true);
+    assert.equal(mountedAfterPageRemoval.pinned, false);
+    await run("unmountView('view-cache')");
+    assert.deepEqual(await run("viewState('view-cache')"), { disposition: null, pinned: null });
+    assert.equal(guestCount(), 0);
+    counts.push({
+      phase: "view-cache-retention",
+      guests: guestCount(),
+      ...(await run("counts()")),
+    });
     for (let n = 0; n < 64; n++) assert.ok((await run(`addPage('cap-${n}','capacity')`)).sandboxId);
     assert.equal(guestCount(), 64);
     counts.push({ phase: "capacity-full", guests: guestCount(), ...(await run("counts()")) });

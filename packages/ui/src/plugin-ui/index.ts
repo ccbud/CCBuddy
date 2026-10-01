@@ -19,7 +19,10 @@ export {
   getPluginUiDisclosureVersion,
   subscribePluginUiDisclosure,
 } from "./app/pluginUiDisclosureStore.js";
-export { setPluginUiInstanceDerivation } from "./app/pluginUiInstanceStore.js";
+export {
+  setPluginUiInstanceDerivation,
+  retainPluginUiSessionViewState,
+} from "./app/pluginUiInstanceStore.js";
 export {
   buildPromptWithPluginUiContexts,
   parsePromptPluginUiContexts,
@@ -28,6 +31,7 @@ export {
 export {
   PluginUiWorkspaceProvider,
   PluginUiSessionProvider,
+  usePluginUiSessionKey,
   useOpenPluginUi,
   usePluginUiToolBinding,
 } from "./adapters/PluginUiProviders.js";

@@ -8,12 +8,19 @@ import type {
 import { createPluginUiSessionActions } from "@/plugin-ui/adapters/pluginUiSessionBinding.js";
 import { registerPluginUiSessionActions } from "@/plugin-ui/adapters/pluginUiSessionActions.js";
 import { usePluginUiResourceDeltaFeed } from "@/plugin-ui/adapters/pluginUiResourceDeltaFeed.js";
+import { buildPluginUiSessionKey } from "@/plugin-ui/contract.js";
 import type { ConversationProjectionStore } from "@/v4/conversationProjectionStore.js";
 
 const WorkspaceActions = createContext<((request: OpenPluginUiSideTabRequest) => void) | undefined>(
   undefined,
 );
 const SessionScope = createContext<PluginUiSessionScope | null>(null);
+
+/** 时间线与卡片从同一 provider 取身份，不能按裸 sessionId 跨工作区共享视图缓存。 */
+export function usePluginUiSessionKey(): string | null {
+  const scope = useContext(SessionScope);
+  return scope ? buildPluginUiSessionKey(scope) : null;
+}
 
 /** Shell 只在边界提供面板动作，中间布局组件不感知插件请求。 */
 export function PluginUiWorkspaceProvider({

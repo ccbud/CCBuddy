@@ -15,6 +15,7 @@ Renderer 模块，层序 `domain → app → adapters → components`；公开�
 - `sendFollowUpMessage` 仍走既有会话动作和手势/可编辑确认；确认完成后验证实例。只读会话不登记动作。`updateModelContext` 只投递到该 workspace/session 的 composer，不是数据库状态。
 - `display.ui` 无效、Web/手机/远程、不支持平台或初始化失败继续普通 MCP 卡回退。工具行替代与折叠策略仍由投影派生；不会另建 accepted-input queue 或改变 continuous/replayable 语义。
 - 工具失败、取消或 `display.ui.isError` 只保留普通工具记录，不占用 inline/侧栏区域、不自动开侧栏，手动固定/showInline/最近回合不能越过此门禁；失败不替代已有成功页面。原始错误结果及页面通知语义保持不变。
+- 工具行裁决与手动固定由 `pluginUiInstanceStore` 的同一会话条目持有，统一使用 `buildPluginUiSessionKey`。时间线挂载持独立 lease，最后一次幂等释放后才进入闲置 LRU；最多保留 30 个闲置会话，挂载中的会话不淘汰。写入、挂载、最后释放更新活跃顺序，读取无副作用。页面 owner 移除任务时请求清理：有 lease 则标记待清理并保留现有裁决和 pins，直到最后一次释放后直接删除，不进入 LRU；没有 lease 则立即删除。实际清理时同时释放裁决与 pins 并通知订阅；重复请求/释放幂等，旧 lease 不得清理同 key 的新条目。返回未淘汰会话保留手动偏好，淘汰后重新派生并恢复默认折叠。此缓存不持有沙箱，卸载/淘汰不得销毁离屏或侧栏活页面。
 
 组件只经 hooks/服务端口访问外部能力；controller 不导入适配器，domain 只做纯计算。侧栏 tab、composer 上下文仍由既有 UI owner 持有，不与页面状态重复写入。
 
