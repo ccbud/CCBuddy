@@ -971,10 +971,36 @@ export const ccbuddySessionImportMessageSchema = z
   .strict();
 export type CCbuddySessionImportMessage = z.infer<typeof ccbuddySessionImportMessageSchema>;
 
+/** 历史查看里可被"在 CCbuddy 继续"的外部生产者；与 @ccbuddy/history 的 HistorySource 一致（不含 ccbuddy 自身）。 */
+export const ccbuddySessionImportHistoryProducerSchema = z.enum([
+  "claude",
+  "codex",
+  "qoder",
+  "grok",
+  "copilot",
+  "antigravity",
+]);
+export type CCbuddySessionImportHistoryProducer = z.infer<
+  typeof ccbuddySessionImportHistoryProducerSchema
+>;
+
 export const ccbuddySessionImportHistorySchema = z.discriminatedUnion("source", [
   z
     .object({
       source: z.literal("claudeCode"),
+      title: z.string().optional(),
+      createdAt: timestampMsSchema.optional(),
+      updatedAt: timestampMsSchema.optional(),
+      messages: z.array(ccbuddySessionImportMessageSchema).min(1),
+    })
+    .strict(),
+  // 任意外部 agent 工具的只读历史 → 新 CCbuddy 会话：正文已由历史阅读器归一化成 user/assistant 文本。
+  z
+    .object({
+      source: z.literal("externalHistory"),
+      producer: ccbuddySessionImportHistoryProducerSchema,
+      producerSessionId: nonEmptyString,
+      sourcePath: z.string().optional(),
       title: z.string().optional(),
       createdAt: timestampMsSchema.optional(),
       updatedAt: timestampMsSchema.optional(),

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { HistoryLibrary } from "@ccbuddy/history";
+import { HistoryLibrary, type HistoryRoot } from "@ccbuddy/history";
 import { HistoryReviewChannels } from "@ccbuddy/shared";
 import {
   parseHistoryRefreshEvent,
@@ -62,8 +62,15 @@ function parseCatalogSessionId(args: readonly unknown[], library: HistoryLibrary
   return id;
 }
 
+export interface HistoryReviewIpcOptions {
+  /** 用户在设置里补充的扫描目录；每次刷新重新读取，改完设置无需重启。 */
+  resolveExtraRoots: () => Promise<readonly { source: HistoryRoot["source"]; path: string }[]>;
+  /** CCbuddy 自己的 Agent 会话库所在目录（随 dataBaseDir 变化）。 */
+  ccbuddySessionDatabaseDirectory: string;
+}
+
 /** Main owns the disposable catalog; the renderer receives only typed read DTOs. */
-export function registerHistoryReviewIpc(): void {
+export function registerHistoryReviewIpc(options: HistoryReviewIpcOptions): void {
   const states = new WeakMap<
     BrowserWindow,
     { library: HistoryLibrary; refreshes: Set<AbortController> }
@@ -71,7 +78,13 @@ export function registerHistoryReviewIpc(): void {
   const stateFor = (window: BrowserWindow) => {
     let state = states.get(window);
     if (!state) {
-      state = { library: new HistoryLibrary(), refreshes: new Set() };
+      state = {
+        library: new HistoryLibrary({
+          extraRoots: options.resolveExtraRoots,
+          ccbuddySessionDatabaseDirectory: options.ccbuddySessionDatabaseDirectory,
+        }),
+        refreshes: new Set(),
+      };
       states.set(window, state);
       // 导航或 renderer 崩溃后旧扫描不能继续向新页面发布进度。
       const abortRefreshes = () => {

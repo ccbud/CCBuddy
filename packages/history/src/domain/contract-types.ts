@@ -1,4 +1,6 @@
-/** Read-only renderer contract. These types are structural and have no Node dependency. */
+/** The renderer-facing, versioned read contract. No filesystem operation is exposed. */
+export const HISTORY_PROTOCOL_VERSION = 1 as const;
+
 export type HistorySource =
   | "ccbuddy"
   | "claude"
@@ -18,8 +20,16 @@ export const HISTORY_SOURCES: readonly HistorySource[] = [
   "antigravity",
 ];
 
+/** Where a scanned root came from: shipped defaults, an environment variable, a detected profile directory, or user configuration. */
 export type HistoryRootOrigin = "default" | "environment" | "profile" | "custom";
 
+export interface HistoryRoot {
+  source: HistorySource;
+  path: string;
+  origin?: HistoryRootOrigin;
+}
+
+/** The roots a refresh actually looked at; `available` is false when the directory does not exist or cannot be read. */
 export interface HistoryRootStatus {
   source: HistorySource;
   path: string;
@@ -38,7 +48,7 @@ export interface HistorySessionSummary {
   lastActivity: string;
   messageCount: number;
   model: string | null;
-  usage?: HistoryTokenUsage | null;
+  usage: HistoryTokenUsage | null;
   parentSessionId: string | null;
   isSubagent: boolean;
   fingerprint: string;
@@ -64,7 +74,7 @@ export interface HistoryMessage {
   timestamp: string | null;
   model: string | null;
   usage?: HistoryTokenUsage | null;
-  blocks: readonly HistoryContentBlock[];
+  blocks: HistoryContentBlock[];
 }
 
 export interface HistoryDiagnostic {
@@ -83,16 +93,16 @@ export interface HistoryDiagnostic {
 
 export interface HistorySessionDetail {
   summary: HistorySessionSummary;
-  messages: readonly HistoryMessage[];
-  diagnostics: readonly HistoryDiagnostic[];
+  messages: HistoryMessage[];
+  diagnostics: HistoryDiagnostic[];
 }
 
 export interface HistorySnapshot {
-  protocolVersion: 1;
+  protocolVersion: typeof HISTORY_PROTOCOL_VERSION;
   version: number;
-  sessions: readonly HistorySessionSummary[];
-  diagnostics: readonly HistoryDiagnostic[];
-  roots: readonly HistoryRootStatus[];
+  sessions: HistorySessionSummary[];
+  diagnostics: HistoryDiagnostic[];
+  roots: HistoryRootStatus[];
   complete: boolean;
 }
 
@@ -113,12 +123,25 @@ export interface HistoryRefreshTerminal {
 
 export type HistoryRefreshEvent = HistoryRefreshProgress | HistoryRefreshTerminal;
 
-export type HistoryLocale = "zh-CN" | "en-US";
+export interface HistoryRefreshOptions {
+  signal?: AbortSignal;
+  onEvent?: (event: HistoryRefreshEvent) => void;
+}
 
-/** What the reader can do with the selected session beyond reading it. */
-export interface HistorySessionActions {
-  /** Import an external session into a new CCbuddy session, or open CCbuddy's own task. */
-  continueSession?: (detail: HistorySessionDetail) => Promise<void>;
-  /** Open CCbuddy's own session directly (no import). */
-  openOwnSession?: (summary: HistorySessionSummary) => Promise<void>;
+export interface HistoryLibraryOptions {
+  homeDirectory?: string;
+  /** Replaces default discovery entirely; missing explicit roots are reported instead of skipped. */
+  roots?: readonly HistoryRoot[];
+  /** User-configured roots merged into default discovery; resolved again on every refresh. */
+  extraRoots?: () => Promise<readonly HistoryRoot[]> | readonly HistoryRoot[];
+  /** Environment used for `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and similar overrides. */
+  environment?: NodeJS.ProcessEnv;
+  /** Directory holding CCbuddy's own agent session database (`db.sqlite`). */
+  ccbuddySessionDatabaseDirectory?: string;
+}
+
+export interface HistoryLibraryPort {
+  list(): HistorySnapshot;
+  load(id: string): Promise<HistorySessionDetail>;
+  refresh(options?: HistoryRefreshOptions): Promise<HistoryRefreshTerminal>;
 }

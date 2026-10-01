@@ -576,7 +576,7 @@ export const hostLogResponseSchema = z.object({
 
 export { ccbuddyProviderSchema };
 
-export const ccbuddyTaskMigrationSourceSchema = z.enum(["claudeCode"]);
+export const ccbuddyTaskMigrationSourceSchema = z.enum(["claudeCode", "externalHistory"]);
 
 export const hostAgentProcessSpawnedResponseSchema = z.object({
   type: z.literal("agent-process-spawned"),

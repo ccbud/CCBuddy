@@ -1843,6 +1843,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                             <HistoryMainView
                               view={workspaceMainView === "history-list" ? "list" : "timeline"}
                               onViewChange={showHistoryMainView}
+                              onOpenTask={handleSelectTaskInChat}
                             />
                           </div>
                         </ScopedErrorBoundary>

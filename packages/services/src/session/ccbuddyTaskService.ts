@@ -4,6 +4,8 @@ import { ServiceChannels } from "@ccbuddy/shared";
 import type { CommandPayloadMap } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { createServiceDescriptor } from "#src/descriptors.js";
 import type {
+  CCbuddyHistoryImportParams,
+  CCbuddyHistoryImportResult,
   CCbuddyImportSessionsResult,
   CCbuddyImportableSessionCandidate,
   CCbuddySessionCompactResult,
@@ -556,6 +558,9 @@ export interface ICCbuddyTaskService {
     workspaceIdentity?: string;
     sessionIds: string[];
   }): Promise<CCbuddyImportSessionsResult>;
+
+  /** 历史阅读器"在 CCbuddy 继续"：把外部会话导入为新的 CCbuddy 会话；重复导入同一来源会话时复用已有任务。 */
+  importHistorySession(params: CCbuddyHistoryImportParams): Promise<CCbuddyHistoryImportResult>;
 
   /** 切换 task 模式 */
   setMode(params: { taskId: string; mode: CCbuddyTaskMode }): Promise<void>;

@@ -56,6 +56,8 @@ import {
   type CCbuddyEnqueueTaskCommandResult,
   type CCbuddyError,
   type CCbuddyGoalVerificationTimelineMeta,
+  type CCbuddyHistoryImportParams,
+  type CCbuddyHistoryImportResult,
   type CCbuddyImportSessionsResult,
   type CCbuddyImportableSessionCandidate,
   type CCbuddyUsage,
@@ -151,6 +153,7 @@ import {
   sendHostCasCommandV4,
 } from "./ccbuddyV4HostCommand.js";
 import { claudeNativeSessionImportRepo } from "#src/session/claude-native/claudeNativeSessionImportRepo.js";
+import { buildImportedHistoryTaskId } from "#src/session/history-import/historyImportTaskId.js";
 import { importClaudeNativeSessions } from "#src/session/claude-native/claudeNativeSessionImportService.js";
 import { buildImportedClaudeTaskId } from "#src/session/claude-native/buildImportedClaudeTaskFile.js";
 import {
@@ -2705,6 +2708,69 @@ export function createCCbuddyTaskServiceAdapter(
           );
         },
       });
+    },
+
+    async importHistorySession(
+      params: CCbuddyHistoryImportParams,
+    ): Promise<CCbuddyHistoryImportResult> {
+      const workspaceIdentity = params.workspaceIdentity?.trim() || undefined;
+      const taskId = buildImportedHistoryTaskId(params);
+      // 同一来源会话再次"继续"直接回到已导入的任务，不能覆盖用户在导入会话里的后续对话。
+      const existing = (
+        await taskIndexRepo.listTaskMetas({
+          workspacePath: params.workspacePath,
+          workspaceIdentity,
+        })
+      ).find((meta) => meta.taskId === taskId);
+      if (existing) {
+        rememberIndexedTaskMeta(existing);
+        return {
+          taskId,
+          workspacePath: existing.workspacePath,
+          workspaceIdentity: existing.workspaceIdentity,
+          reused: true,
+        };
+      }
+      const snapshot = await options.ccbuddyAgentService.createSession({
+        workspacePath: params.workspacePath,
+        workspaceIdentity,
+        sessionId: taskId,
+        sessionTraceId: createSessionTraceId(),
+        persistence: "immediate",
+        importedHistory: {
+          source: "externalHistory",
+          producer: params.producer,
+          producerSessionId: params.producerSessionId,
+          sourcePath: params.sourcePath,
+          title: params.title,
+          createdAt: params.createdAt,
+          updatedAt: params.updatedAt,
+          messages: params.messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+            timestamp: message.timestamp,
+          })),
+        },
+      });
+      const meta = await syncTaskIndexSnapshot(snapshot);
+      // 导入后的任务是真实 CCbuddy session，setModel/sendPrompt 直接命中 runtime；
+      // migrationSource 让任务列表与会话提及知道它是外部历史而不是本地新会话。
+      const indexed = await syncTaskIndexMeta({ ...meta, migrationSource: "externalHistory" });
+      emitWorkspaceTaskListChanged(
+        {
+          workspacePath: indexed.workspacePath,
+          workspaceIdentity: indexed.workspaceIdentity,
+          taskId: indexed.taskId,
+        },
+        indexed,
+        "task_meta_changed",
+      );
+      return {
+        taskId: indexed.taskId,
+        workspacePath: indexed.workspacePath,
+        workspaceIdentity: indexed.workspaceIdentity,
+        reused: false,
+      };
     },
 
     async setMode(params): Promise<void> {

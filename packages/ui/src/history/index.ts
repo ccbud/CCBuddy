@@ -6,6 +6,16 @@ export { HistoryTimeline } from "./HistoryTimeline.js";
 export type { HistoryTimelineProps } from "./HistoryTimeline.js";
 export { HistoryReader } from "./HistoryReader.js";
 export type { HistoryReaderProps } from "./HistoryReader.js";
+export { HistoryRootsDialog } from "./HistoryRootsDialog.js";
+export type { HistoryRootsManagement } from "./HistoryRootsDialog.js";
+export { buildHistoryImportMessages } from "./history-import.js";
+export type { HistoryImportMessage, HistoryImportPlan } from "./history-import.js";
+export {
+  distinctHistoryProjects,
+  formatHistoryDuration,
+  groupHistorySessions,
+  relativeHistoryTime,
+} from "./history-grouping.js";
 export {
   buildTimelineGroups,
   createTimelineWindow,
@@ -30,6 +40,8 @@ export type {
   HistoryDiagnostic,
   HistoryLocale,
   HistoryMessage,
+  HistoryRootStatus,
+  HistorySessionActions,
   HistorySessionDetail,
   HistorySessionSummary,
   HistorySnapshot,

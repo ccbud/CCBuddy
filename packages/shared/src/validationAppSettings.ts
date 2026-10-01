@@ -417,6 +417,20 @@ function migrateLegacyWorkspaceSession(value: unknown): unknown {
   return migrated;
 }
 
+// 历史查看的额外扫描目录；来源枚举与 @ccbuddy/history 的 HistorySource 保持一致（shared 不反向依赖 history）。
+const historyExtraRootSourceSchema = z.enum([
+  "ccbuddy",
+  "claude",
+  "codex",
+  "qoder",
+  "grok",
+  "copilot",
+  "antigravity",
+]);
+const historyExtraRootSchema = z
+  .object({ source: historyExtraRootSourceSchema, path: z.string().trim().min(1) })
+  .strict();
+
 const appSettingsObjectSchema = z.object({
   recentProjects: z.array(z.string()).default([]),
   locale: localeSchema.default("zh-CN"),
@@ -466,6 +480,7 @@ const appSettingsObjectSchema = z.object({
   lastActiveTabIndex: z.number().int().nonnegative().default(0),
   lastActiveTaskByWorkspace: z.record(z.string(), z.string()).optional(),
   dataBaseDir: z.string().trim().min(1).optional(),
+  historyExtraRoots: z.array(historyExtraRootSchema).default([]),
   pendingPostUpdateReleaseNotes: postUpdateReleaseNotesPayloadSchema.optional(),
   ccbuddyPendingPostUpdateReleaseNotes: postUpdateReleaseNotesPayloadSchema.optional(),
   receivePreviewUpdates: z.boolean().default(false),
@@ -552,6 +567,7 @@ export const appSettingsPatchSchema = z.object({
   lastActiveTabIndex: z.number().int().nonnegative().optional(),
   lastActiveTaskByWorkspace: z.record(z.string(), z.string()).optional(),
   dataBaseDir: z.string().trim().min(1).optional(),
+  historyExtraRoots: z.array(historyExtraRootSchema).optional(),
   pendingPostUpdateReleaseNotes: postUpdateReleaseNotesPayloadSchema.optional(),
   ccbuddyPendingPostUpdateReleaseNotes: postUpdateReleaseNotesPayloadSchema.optional(),
   receivePreviewUpdates: z.boolean().optional(),

@@ -1956,7 +1956,10 @@ app.on("second-instance", (_event, argv, _workingDirectory, additionalData) => {
 
 app.whenReady().then(async () => {
   markMainLaunchAppReady();
-  registerHistoryReviewIpc();
+  registerHistoryReviewIpc({
+    resolveExtraRoots: async () => (await mainSettingService.get()).historyExtraRoots ?? [],
+    ccbuddySessionDatabaseDirectory: join(getCCbuddyDataRootDir(), "cli", "db"),
+  });
   installLocalMediaPreviewProtocol(session.defaultSession.protocol, {
     isPathAuthorized: localMediaPreviewPathRegistry.isAuthorized,
   });

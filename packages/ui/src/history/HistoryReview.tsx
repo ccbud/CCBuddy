@@ -1,7 +1,12 @@
 import { useMemo } from "react";
-import { CalendarDays, List, RefreshCw } from "lucide-react";
+import { CalendarDays, FolderSearch, List, RefreshCw } from "lucide-react";
 import { Button } from "../components/ui/button.js";
-import type { HistoryLocale, HistorySessionDetail, HistorySnapshot } from "./contract.js";
+import type {
+  HistoryLocale,
+  HistorySessionActions,
+  HistorySessionDetail,
+  HistorySnapshot,
+} from "./contract.js";
 import { HistoryReader } from "./HistoryReader.js";
 import { HistorySessionList } from "./HistorySessionList.js";
 import { HistoryTimeline } from "./HistoryTimeline.js";
@@ -17,9 +22,15 @@ export interface HistoryReviewProps {
   detailError?: string | null;
   isRefreshing?: boolean;
   refreshError?: string | null;
+  /** warning: the catalog loaded but some records or folders could not be read. */
+  refreshSeverity?: "error" | "warning";
   onSelectSession: (sessionId: string) => void;
   onRefresh?: () => void;
   locale?: HistoryLocale;
+  actions?: HistorySessionActions;
+  continuing?: boolean;
+  continueError?: string | null;
+  onManageRoots?: () => void;
 }
 
 /** The caller owns source data, refresh generation, and detail selection. This view owns only presentation state. */
@@ -33,9 +44,14 @@ export function HistoryReview({
   detailError = null,
   isRefreshing = false,
   refreshError = null,
+  refreshSeverity = "error",
   onSelectSession,
   onRefresh,
   locale = "zh-CN",
+  actions,
+  continuing = false,
+  continueError = null,
+  onManageRoots,
 }: HistoryReviewProps) {
   const labels = historyLabels(locale);
   const sessions = snapshot?.sessions ?? [];
@@ -50,7 +66,14 @@ export function HistoryReview({
       aria-label={labels.review}
     >
       <header className="flex flex-wrap items-center gap-2 border-b border-border bg-header px-3 py-2">
-        <h1 className="mr-auto text-ui-lg font-semibold">{labels.review}</h1>
+        <h1 className="text-ui-lg font-semibold">{labels.review}</h1>
+        {snapshot ? (
+          <span className="mr-auto text-ui-xs text-foreground-subtle">
+            {sessions.length} {labels.sessionOf}
+          </span>
+        ) : (
+          <span className="mr-auto" />
+        )}
         <div className="flex items-center gap-1" role="group" aria-label={labels.review}>
           <Button
             variant={view === "list" ? "secondary" : "ghost"}
@@ -71,6 +94,17 @@ export function HistoryReview({
             {labels.timeline}
           </Button>
         </div>
+        {onManageRoots ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onManageRoots}
+            data-testid="history-manage-roots"
+          >
+            <FolderSearch className="size-4" />
+            {labels.manageRoots}
+          </Button>
+        ) : null}
         {onRefresh ? (
           <Button
             variant="outline"
@@ -86,13 +120,17 @@ export function HistoryReview({
       </header>
       {refreshError ? (
         <p
-          role="alert"
-          className="border-b border-destructive px-3 py-2 text-ui-sm text-destructive"
+          role={refreshSeverity === "warning" ? "status" : "alert"}
+          className={
+            refreshSeverity === "warning"
+              ? "border-b border-border bg-surface px-3 py-2 text-ui-sm text-foreground-subtle"
+              : "border-b border-destructive px-3 py-2 text-ui-sm text-destructive"
+          }
         >
           {refreshError}
         </p>
       ) : null}
-      {snapshot && !snapshot.complete ? (
+      {snapshot && !snapshot.complete && !refreshError ? (
         <p
           role="status"
           className="border-b border-border bg-surface px-3 py-2 text-ui-sm text-foreground-subtle"
@@ -151,6 +189,9 @@ export function HistoryReview({
               error={detailError}
               onSelectSession={onSelectSession}
               locale={locale}
+              actions={actions}
+              continuing={continuing}
+              continueError={continueError}
             />
           </div>
         </div>

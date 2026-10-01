@@ -2,11 +2,26 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { HistoryDiagnostic, HistoryRoot, HistorySource } from "../contract.js";
+import type {
+  HistoryDiagnostic,
+  HistoryRoot,
+  HistoryRootStatus,
+  HistorySource,
+} from "../contract.js";
 import type { Candidate, SourceStamp } from "../domain/candidate.js";
 export type { Candidate, SourceStamp } from "../domain/candidate.js";
 
+export const CCBUDDY_SESSION_DATABASE_FILE = "db.sqlite";
+
+const SQLITE_SOURCES: ReadonlySet<HistorySource> = new Set(["antigravity", "ccbuddy"]);
+
+/** SQLite-backed producers need the composite database / WAL / shared-memory stamp. */
+export function isSqliteSource(source: HistorySource): boolean {
+  return SQLITE_SOURCES.has(source);
+}
+
 const DEPTH: Record<HistorySource, number> = {
+  ccbuddy: 1,
   claude: 4,
   codex: 7,
   qoder: 4,
@@ -18,6 +33,8 @@ const DEPTH: Record<HistorySource, number> = {
 function eligible(source: HistorySource, parts: string[]): boolean {
   const name = parts.at(-1) ?? "";
   switch (source) {
+    case "ccbuddy":
+      return parts.length === 1 && name === CCBUDDY_SESSION_DATABASE_FILE;
     case "claude":
     case "qoder":
       return (
@@ -115,40 +132,130 @@ function configuredRoot(environment: NodeJS.ProcessEnv, name: string, fallback: 
   return environment[name]?.trim() || fallback;
 }
 
+/** First occurrence wins, so defaults keep their origin over later profile or custom duplicates. */
+export function dedupeRoots(roots: readonly HistoryRoot[]): HistoryRoot[] {
+  const seen = new Set<string>();
+  const result: HistoryRoot[] = [];
+  for (const root of roots) {
+    const key = `${root.source}\0${resolve(root.path)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(root);
+  }
+  return result;
+}
+
+export interface DefaultRootOptions {
+  /** Directory holding CCbuddy's own `db.sqlite`; defaults to `~/.ccbuddy/cli/db`. */
+  ccbuddySessionDatabaseDirectory?: string;
+}
+
 export function defaultRoots(
   homeDirectory: string,
   environment: NodeJS.ProcessEnv = process.env,
+  options: DefaultRootOptions = {},
 ): HistoryRoot[] {
   const codexHome = configuredRoot(environment, "CODEX_HOME", join(homeDirectory, ".codex"));
   const grokHome = configuredRoot(environment, "GROK_HOME", join(homeDirectory, ".grok"));
   const xdgHome = configuredRoot(environment, "XDG_CONFIG_HOME", join(homeDirectory, ".config"));
-  return [
-    { source: "claude", path: join(homeDirectory, ".claude", "projects") },
-    { source: "claude", path: join(xdgHome, "claude", "projects") },
-    { source: "codex", path: join(codexHome, "sessions") },
-    { source: "codex", path: join(codexHome, "archived_sessions") },
-    { source: "qoder", path: join(homeDirectory, ".qoder", "projects") },
-    { source: "qoder", path: join(homeDirectory, ".qoderwork", "projects") },
-    { source: "grok", path: join(grokHome, "sessions") },
-    { source: "copilot", path: join(homeDirectory, ".copilot", "session-state") },
+  const claudeConfigDirectory = environment["CLAUDE_CONFIG_DIR"]?.trim();
+  const roots: HistoryRoot[] = [
+    {
+      source: "ccbuddy",
+      path: options.ccbuddySessionDatabaseDirectory ?? join(homeDirectory, ".ccbuddy", "cli", "db"),
+      origin: "default",
+    },
+    { source: "claude", path: join(homeDirectory, ".claude", "projects"), origin: "default" },
+    { source: "claude", path: join(xdgHome, "claude", "projects"), origin: "default" },
+    // Claude Code 的 CLAUDE_CONFIG_DIR 会把整套配置和 projects 搬到别处；只认 ~/.claude 会漏掉这台机器上真正在用的会话。
+    ...(claudeConfigDirectory
+      ? [
+          {
+            source: "claude" as const,
+            path: join(claudeConfigDirectory, "projects"),
+            origin: "environment" as const,
+          },
+        ]
+      : []),
+    { source: "codex", path: join(codexHome, "sessions"), origin: "default" },
+    { source: "codex", path: join(codexHome, "archived_sessions"), origin: "default" },
+    { source: "qoder", path: join(homeDirectory, ".qoder", "projects"), origin: "default" },
+    { source: "qoder", path: join(homeDirectory, ".qoderwork", "projects"), origin: "default" },
+    { source: "grok", path: join(grokHome, "sessions"), origin: "default" },
+    {
+      source: "copilot",
+      path: join(homeDirectory, ".copilot", "session-state"),
+      origin: "default",
+    },
     {
       source: "antigravity",
       path: join(homeDirectory, ".gemini", "antigravity-cli", "conversations"),
+      origin: "default",
     },
   ];
+  return dedupeRoots(roots);
 }
+
+/**
+ * Claude Code profiles created with CLAUDE_CONFIG_DIR usually sit beside `~/.claude`
+ * (`~/.claude-work`, `~/.claude-config/<profile>`). A GUI launch does not inherit the shell's
+ * CLAUDE_CONFIG_DIR, so any sibling that already has a `projects` directory is offered as a root.
+ */
+export async function detectClaudeProfileRoots(homeDirectory: string): Promise<HistoryRoot[]> {
+  const found: HistoryRoot[] = [];
+  const probe = async (directory: string): Promise<void> => {
+    const projects = join(directory, "projects");
+    try {
+      if ((await stat(projects)).isDirectory()) {
+        found.push({ source: "claude", path: projects, origin: "profile" });
+      }
+    } catch {
+      /* not a Claude profile */
+    }
+  };
+  const subdirectories = async (directory: string): Promise<string[]> => {
+    try {
+      const entries = await readdir(directory, { withFileTypes: true });
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch {
+      return [];
+    }
+  };
+  for (const name of await subdirectories(homeDirectory)) {
+    if (/^\.claude[-_.].+/.test(name)) await probe(join(homeDirectory, name));
+  }
+  const container = join(homeDirectory, ".claude-config");
+  for (const name of await subdirectories(container)) await probe(join(container, name));
+  return found;
+}
+
+/** Lets a producer whose file holds many sessions split one file into several catalog candidates. */
+export type CandidateExpander = (candidate: Candidate) => Promise<Candidate[]>;
 
 export async function discover(
   roots: readonly HistoryRoot[],
   explicitRoots: boolean,
   signal?: AbortSignal,
-): Promise<{ candidates: Candidate[]; diagnostics: HistoryDiagnostic[] }> {
+  expand?: CandidateExpander,
+): Promise<{
+  candidates: Candidate[];
+  diagnostics: HistoryDiagnostic[];
+  roots: HistoryRootStatus[];
+}> {
   const candidates: Candidate[] = [];
   const diagnostics: HistoryDiagnostic[] = [];
+  const statuses: HistoryRootStatus[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
     if (signal?.aborted) break;
     const requested = resolve(root.path);
+    const status: HistoryRootStatus = {
+      source: root.source,
+      path: requested,
+      origin: root.origin ?? "custom",
+      available: false,
+    };
+    statuses.push(status);
     let canonical: string;
     try {
       canonical = await realpath(requested);
@@ -164,6 +271,7 @@ export async function discover(
       });
       continue;
     }
+    status.available = true;
     const walk = async (directory: string, parts: string[]): Promise<void> => {
       if (signal?.aborted || parts.length >= DEPTH[root.source]) return;
       let entries;
@@ -196,14 +304,10 @@ export async function discover(
           await walk(path, childParts);
         } else if (entry.isFile() && eligible(root.source, childParts)) {
           try {
-            const sourceStamp =
-              root.source === "antigravity"
-                ? await stampSqlite(path, canonical)
-                : await stamp(path, canonical);
-            const key = `${root.source}\0${sourceStamp.path}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            candidates.push({
+            const sourceStamp = isSqliteSource(root.source)
+              ? await stampSqlite(path, canonical)
+              : await stamp(path, canonical);
+            const base: Candidate = {
               source: root.source,
               path: sourceStamp.path,
               root: canonical,
@@ -213,7 +317,13 @@ export async function discover(
                 .digest("hex")
                 .slice(0, 24)}`,
               stamp: sourceStamp,
-            });
+            };
+            for (const item of expand ? await expand(base) : [base]) {
+              const key = `${item.source}\0${item.path}\0${item.sessionId ?? ""}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              candidates.push(item);
+            }
           } catch (error) {
             diagnostics.push({
               code: "unsafe_path",
@@ -238,6 +348,11 @@ export async function discover(
       item.path.endsWith(`${sep}chat_history.jsonl`) ||
       !grokWithChat.has(item.id),
   );
-  selected.sort((a, b) => a.source.localeCompare(b.source) || a.path.localeCompare(b.path));
-  return { candidates: selected, diagnostics };
+  selected.sort(
+    (a, b) =>
+      a.source.localeCompare(b.source) ||
+      a.path.localeCompare(b.path) ||
+      (a.sessionId ?? "").localeCompare(b.sessionId ?? ""),
+  );
+  return { candidates: selected, diagnostics, roots: statuses };
 }

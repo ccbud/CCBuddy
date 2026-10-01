@@ -57,8 +57,8 @@ export interface CCbuddyGlmAgentModelStateUpdatePayload {
     tokens: number;
   };
 }
-/** 外部历史迁移来源。当前只落 Claude Code，后续其它来源继续在这里扩展。 */
-export type CCbuddyTaskMigrationSource = "claudeCode";
+/** 外部历史迁移来源：Claude 原生迁移向导，或历史阅读器里任意外部 agent 会话的"在 CCbuddy 继续"。 */
+export type CCbuddyTaskMigrationSource = "claudeCode" | "externalHistory";
 export type CCbuddyTaskGoalStatus = "active" | "paused" | "budget_limited" | "complete";
 export type CCbuddyTaskTargetChangedAction =
   | "set"

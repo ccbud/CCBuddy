@@ -24,6 +24,7 @@ const ccbuddyTaskModeRealtimeValues = [
 ] as const satisfies readonly CCbuddyTaskMode[];
 const ccbuddyTaskMigrationSourceRealtimeValues = [
   "claudeCode",
+  "externalHistory",
 ] as const satisfies readonly CCbuddyTaskMigrationSource[];
 const ccbuddyTaskChangeSummaryRealtimeSchema = z
   .object({

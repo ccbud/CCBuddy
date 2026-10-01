@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, ChevronDown, ChevronRight, Image as ImageIcon, Wrench } from "lucide-react";
+import {
+  AlertCircle,
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  Image as ImageIcon,
+  Info,
+  User,
+  Wrench,
+} from "lucide-react";
 import { MessageResponse } from "../components/ai-elements/message.js";
 import { Button } from "../components/ui/button.js";
 import type {
@@ -182,6 +191,15 @@ function ToolBlock({
   const title = isCall ? `${labels.toolCall} · ${block.toolName}` : labels.toolResult;
   const payload = isCall ? block.input : block.output;
   const text = useMemo(() => formatHistoryPayload(payload), [payload]);
+  // 折叠时露出第一行，扫一眼就知道这次调用在做什么，不必逐个展开。
+  const preview = useMemo(
+    () =>
+      text
+        .split("\n")
+        .find((line) => line.trim())
+        ?.trim() ?? "",
+    [text],
+  );
   const visibleExpanded = expanded || (active && containsHistoryQuery(text, query, locale));
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card">
@@ -194,7 +212,14 @@ function ToolBlock({
       >
         {visibleExpanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         <Wrench className="size-4" />
-        <span className="min-w-0 flex-1 truncate">{title}</span>
+        <span className="shrink-0">{title}</span>
+        {!visibleExpanded && preview ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-ui-xs text-foreground-subtlest">
+            {preview}
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
         {!isCall && block.isError ? (
           <span className="flex items-center gap-1 text-ui-xs text-destructive">
             <AlertCircle className="size-3" />
@@ -303,14 +328,32 @@ export function HistoryMessageRow({
   const labels = historyLabels(locale);
   const role = labels[message.role];
   const time = formatHistoryTime(message.timestamp, locale);
+  const RoleIcon =
+    message.role === "user"
+      ? User
+      : message.role === "assistant"
+        ? Bot
+        : message.role === "tool"
+          ? Wrench
+          : Info;
+  const accent =
+    message.role === "user"
+      ? "var(--color-brand)"
+      : message.role === "tool"
+        ? "#d97706"
+        : "var(--color-border)";
   return (
     <article
-      className={`rounded-xl border bg-card p-4 ${active ? "border-brand ring-1 ring-brand" : "border-card-border"}`}
+      className={`rounded-xl border bg-card p-4 ${active ? "border-brand ring-1 ring-brand" : "border-card-border"} ${message.role === "system" ? "opacity-80" : ""}`}
+      style={{ borderLeftWidth: 3, borderLeftColor: accent }}
       aria-label={`${role} ${message.sequence + 1}`}
       aria-current={active ? "true" : undefined}
     >
       <header className="mb-3 flex flex-wrap items-center gap-2 text-ui-xs text-foreground-subtle">
-        <span className="font-semibold text-foreground">{role}</span>
+        <span className="flex items-center gap-1 font-semibold text-foreground">
+          <RoleIcon className="size-3.5" aria-hidden="true" />
+          {role}
+        </span>
         <span>#{message.sequence + 1}</span>
         {time ? <time dateTime={message.timestamp ?? undefined}>{time}</time> : null}
         {message.model ? <span className="font-mono">{message.model}</span> : null}

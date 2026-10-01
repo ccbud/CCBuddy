@@ -126,6 +126,42 @@ export interface CCbuddyImportSessionsResult {
   failed: CCbuddyImportedSessionSkippedItem[];
 }
 
+/** 历史阅读器可"在 CCbuddy 继续"的外部生产者；与 @ccbuddy/history 的 HistorySource 一致（不含 ccbuddy 自身）。 */
+export type CCbuddyHistoryImportProducer =
+  | "claude"
+  | "codex"
+  | "qoder"
+  | "grok"
+  | "copilot"
+  | "antigravity";
+
+export interface CCbuddyHistoryImportMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp?: number;
+}
+
+/** 把一条外部只读历史导入为新的 CCbuddy 会话；正文已由阅读器归一化成 user/assistant 文本。 */
+export interface CCbuddyHistoryImportParams {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  producer: CCbuddyHistoryImportProducer;
+  producerSessionId: string;
+  sourcePath?: string;
+  title?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  messages: CCbuddyHistoryImportMessage[];
+}
+
+export interface CCbuddyHistoryImportResult {
+  taskId: string;
+  workspacePath: string;
+  workspaceIdentity?: string;
+  /** 同一来源会话之前已导入过：直接回到那条任务，不重复写历史。 */
+  reused: boolean;
+}
+
 // ---- CCbuddy 配置与命令类型 ----
 // ---- CCbuddy 流式事件（Host → Renderer） ----
 // ---- 新增流式事件类型 ----
