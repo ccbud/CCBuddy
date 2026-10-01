@@ -1102,6 +1102,7 @@ export function ModelProviderSection({
           providerSettingsView={providerSettingsView}
           selectedNavItem={selectedNavItem}
           navigationItems={navigationItems}
+          onAddProvider={() => setTemplatePickerOpen(true)}
           connectionSettingsFailed={familyConnectionSettingsFailed}
           startPlanSubscriptionCount={(() => {
             const providerId =

@@ -2792,8 +2792,6 @@ const enUS: Record<string, string> = {
   "settings.modelProvider.catalogProviderEmpty": "No providers found",
   "settings.modelProvider.addProviderAction": "Add provider",
   "settings.modelProvider.templatePickerTitle": "Add provider",
-  "settings.modelProvider.templateGroup.zhipu": "Zhipu",
-  "settings.modelProvider.templateGroup.other": "Other",
   "settings.modelProvider.templatePickerBack": "Back to provider details",
   "settings.modelProvider.addProviderModelReminder":
     "Add at least one model before adding the provider.",
@@ -3724,6 +3722,8 @@ const enUS: Record<string, string> = {
   "settings.modelProvider.reorderProvider": "Drag to reorder provider",
   "settings.modelProvider.reorderModel": "Drag to reorder model",
   "settings.modelProvider.empty": "No custom model providers yet",
+  "settings.modelProvider.emptyDescription":
+    "No model provider is configured yet. Add a provider with your own API key to use it in chat.",
   "settings.modelProvider.deleteConfirm": 'Delete "{name}"?',
   "settings.modelProvider.deleteConfirmTitle": 'Delete provider "{name}"?',
   "settings.modelProvider.deleteConfirmDescription":

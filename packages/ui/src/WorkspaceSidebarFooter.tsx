@@ -70,7 +70,7 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
   const profileBadge = "CCbuddy";
   const profileContent = (
     <>
-      <CCbuddyAboutLogo className="size-7 shrink-0" />
+      <CCbuddyAboutLogo className="size-7 shrink-0 rounded-lg" />
       <span className="min-w-0 flex-1 truncate text-left text-ui-base font-semibold text-foreground">
         CCbuddy
       </span>
@@ -126,12 +126,13 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
           <DropdownMenuTrigger asChild>
             {/* 头像和 Login 之前直接绑定到登录动作，导致用户无法从这里打开偏好设置。
               现在把这一块改成统一的设置菜单入口，登录/退出留在菜单项里，交互职责更清晰。
-              按钮左侧需留出内边距，避免圆角边缘裁掉原版 CCbuddy 图标；文本自身负责截断。 */}
+              按钮左侧需留出内边距，避免圆角边缘裁掉原版 CCbuddy 图标；文本自身负责截断。
+              四角统一用按钮默认圆角：左侧 2xl 圆角是给圆形头像准备的，换成方形 logo 后会和右侧不一致。 */}
             <Button
               type="button"
               variant="ghost"
               size={"lg"}
-              className="min-w-0 flex-1 justify-start gap-2 rounded-tl-2xl rounded-bl-2xl border-0 pl-2"
+              className="min-w-0 flex-1 justify-start gap-2 border-0 pl-2"
               data-testid={TID_LOGIN_TRIGGER}
               aria-label={profileBadge}
             >
