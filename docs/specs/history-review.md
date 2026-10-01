@@ -77,6 +77,22 @@ session's recorded working directory, else the active workspace; without either
 the action reports an error. For CCbuddy's own sessions the action opens the task
 directly. Producer files are never modified.
 
+The task service owns the import identity: producer, producer session ID, and
+the canonical workspace key (`workspaceIdentity?.trim() || workspacePath`)
+determine the task/session ID. Distinct workspace identities must produce
+distinct task IDs even when their file-operation paths match. Whitespace around
+an identity does not create a second import; without an identity the existing
+path-based local IDs remain unchanged. The adapter routes later task commands
+by task ID, and the Agent persists sessions under that same ID, so workspace
+isolation must be established before either owner receives the imported task.
+
+```text
+reader -> task service: producer session + workspace identity/path
+       -> canonical workspace key -> stable task/session ID
+       -> existing workspace task: reopen without rewriting history
+       -> new workspace task: Agent persists session -> index -> task routing
+```
+
 The list groups sessions by day (today, yesterday, this week, this month, then
 by month), filters by source, project, and text, sorts by last activity or
 creation time, and shows source, project, message count, duration, and model per
@@ -217,3 +233,7 @@ producer records or config files.
 12. Continuing an external session creates one CCbuddy task per producer session
     and workspace, with the transcript folded as specified above; repeating the
     action reopens that task. The import never writes into the producer root.
+    Two workspace identities sharing one path receive separate task IDs, and
+    loading either task cannot redirect the other task's model changes.
+    Repeating an import with the same trimmed identity reuses its task; local
+    imports without an identity retain their previous IDs.
