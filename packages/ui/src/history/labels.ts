@@ -1,4 +1,4 @@
-import type { HistoryLocale, HistorySource } from "./contract.js";
+import type { HistoryLocale, HistoryRootOrigin, HistorySource } from "./contract.js";
 
 const translations = {
   "zh-CN": {
@@ -10,6 +10,7 @@ const translations = {
     incomplete: "扫描未完成，部分会话可能不可用",
     diagnostics: "读取提示",
     noSessions: "尚无可查看的会话",
+    noSessionsHint: "检查「来源目录」里是否包含你的会话记录目录",
     chooseSession: "选择一个会话以查看内容",
     loading: "正在读取原始会话…",
     failed: "会话读取失败",
@@ -27,6 +28,9 @@ const translations = {
     cacheReadTokens: "缓存读",
     cacheWriteTokens: "缓存写",
     allAgents: "所有 Agent",
+    allProjects: "所有项目",
+    sortRecent: "最近活动",
+    sortCreated: "创建时间",
     noMatches: "没有匹配的会话",
     messages: "条消息",
     unknownTitle: "无标题会话",
@@ -34,6 +38,10 @@ const translations = {
     unknownDate: "时间未知",
     groupDirectory: "按目录",
     groupAgent: "按 Agent",
+    groupToday: "今天",
+    groupYesterday: "昨天",
+    groupThisWeek: "本周",
+    groupThisMonth: "本月",
     week: "周",
     month: "月",
     quarter: "季",
@@ -59,6 +67,32 @@ const translations = {
     childAgents: "子代理",
     readOnly: "只读",
     sessionOf: "个会话",
+    duration: "时长",
+    continueInCCbuddy: "在 CCbuddy 继续",
+    openTask: "打开任务",
+    continuing: "正在导入会话…",
+    continueFailed: "无法在 CCbuddy 继续此会话",
+    continueNoWorkspace: "此会话没有记录工作目录，无法继续",
+    continueEmpty: "此会话没有可导入的对话内容",
+    continueHint: "把这段对话导入为新的 CCbuddy 会话，用你配置的模型接着聊；原文件不会被修改",
+    manageRoots: "来源目录",
+    rootsTitle: "会话来源目录",
+    rootsDescription: "CCbuddy 只读取这些目录里的会话记录，不会修改它们。改动后会重新扫描。",
+    rootsDetected: "自动发现",
+    rootsCustom: "自定义目录",
+    rootsCustomEmpty: "还没有自定义目录",
+    rootOriginDefault: "默认位置",
+    rootOriginEnvironment: "环境变量",
+    rootOriginProfile: "Claude 配置目录",
+    rootOriginCustom: "自定义",
+    rootAvailable: "已找到",
+    rootMissing: "不存在",
+    addRoot: "添加目录",
+    removeRoot: "移除",
+    rootSourceLabel: "来源类型",
+    close: "关闭",
+    sources: "来源",
+    sessionMeta: "会话信息",
   },
   "en-US": {
     review: "Session review",
@@ -69,6 +103,7 @@ const translations = {
     incomplete: "Scan incomplete; some sessions may be unavailable",
     diagnostics: "Read diagnostics",
     noSessions: "No sessions to review",
+    noSessionsHint: "Check “Source folders” to make sure your session folders are included",
     chooseSession: "Select a session to read it",
     loading: "Reading the source transcript…",
     failed: "Could not read this session",
@@ -86,6 +121,9 @@ const translations = {
     cacheReadTokens: "Cache read",
     cacheWriteTokens: "Cache write",
     allAgents: "All agents",
+    allProjects: "All projects",
+    sortRecent: "Recent activity",
+    sortCreated: "Created",
     noMatches: "No matching sessions",
     messages: "messages",
     unknownTitle: "Untitled session",
@@ -93,6 +131,10 @@ const translations = {
     unknownDate: "Unknown time",
     groupDirectory: "By directory",
     groupAgent: "By agent",
+    groupToday: "Today",
+    groupYesterday: "Yesterday",
+    groupThisWeek: "This week",
+    groupThisMonth: "This month",
     week: "Week",
     month: "Month",
     quarter: "Quarter",
@@ -119,6 +161,34 @@ const translations = {
     childAgents: "Subagents",
     readOnly: "Read only",
     sessionOf: "sessions",
+    duration: "Duration",
+    continueInCCbuddy: "Continue in CCbuddy",
+    openTask: "Open task",
+    continuing: "Importing session…",
+    continueFailed: "Could not continue this session in CCbuddy",
+    continueNoWorkspace: "This session has no recorded working directory",
+    continueEmpty: "This session has no conversation content to import",
+    continueHint:
+      "Import this conversation into a new CCbuddy session and keep going with your configured model; the original file stays untouched",
+    manageRoots: "Source folders",
+    rootsTitle: "Session source folders",
+    rootsDescription:
+      "CCbuddy only reads session records from these folders and never modifies them. Changes trigger a new scan.",
+    rootsDetected: "Detected",
+    rootsCustom: "Custom folders",
+    rootsCustomEmpty: "No custom folders yet",
+    rootOriginDefault: "Default location",
+    rootOriginEnvironment: "Environment variable",
+    rootOriginProfile: "Claude profile",
+    rootOriginCustom: "Custom",
+    rootAvailable: "Found",
+    rootMissing: "Missing",
+    addRoot: "Add folder",
+    removeRoot: "Remove",
+    rootSourceLabel: "Source",
+    close: "Close",
+    sources: "Sources",
+    sessionMeta: "Session details",
   },
 } as const;
 
@@ -130,6 +200,8 @@ export function historyLabels(locale: HistoryLocale): HistoryLabels {
 
 export function sourceLabel(source: HistorySource): string {
   switch (source) {
+    case "ccbuddy":
+      return "CCbuddy";
     case "claude":
       return "Claude Code";
     case "codex":
@@ -142,6 +214,40 @@ export function sourceLabel(source: HistorySource): string {
       return "GitHub Copilot";
     case "antigravity":
       return "Antigravity";
+  }
+}
+
+/** Stable per-producer accent colors; chosen to stay legible on both light and dark surfaces. */
+export function sourceColor(source: HistorySource): string {
+  switch (source) {
+    case "ccbuddy":
+      return "#c2703d";
+    case "claude":
+      return "#d97757";
+    case "codex":
+      return "#10a37f";
+    case "qoder":
+      return "#7c5cff";
+    case "grok":
+      return "#0ea5e9";
+    case "copilot":
+      return "#8b5cf6";
+    case "antigravity":
+      return "#ec4899";
+  }
+}
+
+export function rootOriginLabel(origin: HistoryRootOrigin, locale: HistoryLocale): string {
+  const labels = historyLabels(locale);
+  switch (origin) {
+    case "default":
+      return labels.rootOriginDefault;
+    case "environment":
+      return labels.rootOriginEnvironment;
+    case "profile":
+      return labels.rootOriginProfile;
+    case "custom":
+      return labels.rootOriginCustom;
   }
 }
 

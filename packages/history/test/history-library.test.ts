@@ -442,7 +442,7 @@ test("a missing root preserves the last visible snapshot and returns an error te
 });
 
 test("superseded refresh cannot publish its older generation", async () => {
-  let releaseFirst: ((value: { candidates: []; diagnostics: [] }) => void) | undefined;
+  let releaseFirst: ((value: { candidates: []; diagnostics: []; roots: [] }) => void) | undefined;
   let calls = 0;
   const port: HistorySourcePort = {
     discover: () => {
@@ -451,7 +451,7 @@ test("superseded refresh cannot publish its older generation", async () => {
         ? new Promise((resolve) => {
             releaseFirst = resolve;
           })
-        : Promise.resolve({ candidates: [], diagnostics: [] });
+        : Promise.resolve({ candidates: [], diagnostics: [], roots: [] });
     },
     parse: async () => {
       throw new Error("Older generation parsed after supersession");
@@ -464,7 +464,7 @@ test("superseded refresh cannot publish its older generation", async () => {
   const firstEvents: string[] = [];
   const first = library.refresh({ onEvent: (event) => firstEvents.push(event.type) });
   const second = await library.refresh();
-  releaseFirst?.({ candidates: [], diagnostics: [] });
+  releaseFirst?.({ candidates: [], diagnostics: [], roots: [] });
   const old = await first;
   assert.equal(second.status, "success");
   assert.equal(old.status, "cancelled");

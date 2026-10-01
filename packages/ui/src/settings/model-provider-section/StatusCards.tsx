@@ -114,6 +114,24 @@ export function ModelProviderLoadingCard({ loadingLabel }: { loadingLabel: strin
   );
 }
 
+/** 没有任何供应商时的空状态：之前这里复用 loading 卡片，用户会误以为页面一直在加载。 */
+export function ModelProviderEmptyCard({ onAddProvider }: { onAddProvider?: () => void }) {
+  const { intl } = useCCbuddyIntl();
+
+  return (
+    <div className="flex flex-col items-start gap-3 rounded-xl border border-border bg-surface p-4">
+      <div className="text-ui-base text-foreground-subtle">
+        {intl.formatMessage({ id: "settings.modelProvider.emptyDescription" })}
+      </div>
+      {onAddProvider ? (
+        <Button type="button" variant="outline" size="sm" onClick={onAddProvider}>
+          {intl.formatMessage({ id: "settings.modelProvider.addProviderAction" })}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 export function PresetProviderPlaceholderCard({
   displayName,
   messageId = "settings.modelProvider.presetEmpty",

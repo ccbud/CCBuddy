@@ -20,6 +20,27 @@ type CCbuddyProtocolMessageHandler = (
 ) => Promise<CCbuddyProtocolOutgoingMessage | undefined>;
 
 const PROTOCOL_EOF_DRAIN_MS = 100;
+// MCP App 的请求由实例凭证和 callId 隔离；若与普通命令一起等待完成，
+// uiCallTool 会挡住自己的 cancel/close，真实 stdio 链路将死锁。
+const MCP_APP_CONCURRENT_METHODS = new Set<string>([
+  ccbuddyProtocolMethods.mcpReadResource,
+  ccbuddyProtocolMethods.mcpUiOpenInstance,
+  ccbuddyProtocolMethods.mcpUiCloseInstance,
+  ccbuddyProtocolMethods.mcpUiValidateInstance,
+  ccbuddyProtocolMethods.mcpUiCallTool,
+  ccbuddyProtocolMethods.mcpUiSampling,
+  ccbuddyProtocolMethods.mcpUiCancelSampling,
+  ccbuddyProtocolMethods.mcpUiCancelCall,
+  ccbuddyProtocolMethods.mcpUiReadResource,
+  ccbuddyProtocolMethods.mcpUiListResources,
+  ccbuddyProtocolMethods.mcpUiListResourceTemplates,
+  ccbuddyProtocolMethods.mcpUiSubscribeResource,
+  ccbuddyProtocolMethods.mcpUiUnsubscribeResource,
+  ccbuddyProtocolMethods.mcpUiRegisterAppTools,
+  ccbuddyProtocolMethods.mcpUiUnregisterAppTools,
+  ccbuddyProtocolMethods.mcpUiClaimAppToolCall,
+  ccbuddyProtocolMethods.mcpUiResolveAppToolCall,
+]);
 
 interface CCbuddyProtocolNdjsonConnectionOptions {
   signal?: AbortSignal;
@@ -228,7 +249,8 @@ export class CCbuddyProtocolNdjsonConnection {
       "id" in message &&
       "method" in message &&
       (message.method === ccbuddyProtocolMethods.sessionStop ||
-        message.method === ccbuddyProtocolMethods.workspaceCancelGenerateText)
+        message.method === ccbuddyProtocolMethods.workspaceCancelGenerateText ||
+        MCP_APP_CONCURRENT_METHODS.has(message.method))
     );
   }
 

@@ -1,8 +1,17 @@
 import {
+  databaseMigrationFactsSchema,
   databaseStartupErrorCodeSchema,
   databaseStartupErrorDetailsSchema,
-  databaseMigrationFactsSchema,
 } from "../database-startup.js";
+import {
+  MCP_APPS_APP_TOOLS_MAX_PER_INSTANCE,
+  MCP_APPS_APP_TOOL_CALL_ID_MAX_CHARS,
+  MCP_APPS_APP_TOOL_ERROR_MESSAGE_MAX_CHARS,
+  mcpAppsAppToolCallResultSchema,
+  mcpAppsAppToolDescriptorSchema,
+} from "../mcp-apps/appTools.js";
+import { mcpAppsSamplingParamsSchema, mcpAppsSamplingResultSchema } from "../mcp-apps/sampling.js";
+import { mcpAppInstanceSchema } from "../mcp-apps/instance.js";
 /* oxlint-disable eslint(max-lines) -- CCbuddy Protocol schema 需要单文件导出，方便 app 与 agent 共享同一份协议契约。 */
 // ── 旧协议删除边界──────────────────────
 // 剩余 ~257 个导出：旧 CCbuddy Protocol 方法契约、请求/响应/事件 schema、
@@ -16,53 +25,54 @@ import {
 // UI 旧投影（ccbuddySessionProjection 等读路径）。
 // 上述旧协议 client/server 组删除时，本文件整体删除。
 // 注：外部零消费 schema 多为存活 schema 联合的内部依赖，随宿主文件一起处理，勿单删。
+import { z } from "zod";
+import { accountProviderUnavailableReasonSchema } from "../account-provider-state.js";
 import { bashOutputDisplaySchema } from "../bash-output-display.js";
+import { ccbuddyAutomationBotDeliveryTargetSchema } from "../bots.js";
+import { executionOutputPreviewSchema } from "../execution-output-preview.js";
+import { completeModelPropertiesDataSchema } from "../model-config.js";
+import { modelExecutionSchema } from "../model-execution.js";
+import { modelSelectionSchema } from "../model-selection.js";
+import { APP_USAGE_RANGES, appUsageSnapshotSchema } from "../usage-stats.js";
+import { errorAttributionSchema } from "../ccbuddy-protocol-v4/snapshot.js";
 // 后台详情共享精简的只读响应 schema，不携带命令或计时元数据。
 export * from "../background-bash-output.js";
-import { executionOutputPreviewSchema } from "../execution-output-preview.js";
-import { z } from "zod";
 export * from "../process-diagnostic.js";
-import { errorAttributionSchema } from "../ccbuddy-protocol-v4/snapshot.js";
-import { modelSelectionSchema } from "../model-selection.js";
-import { completeModelPropertiesDataSchema } from "../model-config.js";
-import { accountProviderUnavailableReasonSchema } from "../account-provider-state.js";
-import { modelExecutionSchema } from "../model-execution.js";
-import { APP_USAGE_RANGES, appUsageSnapshotSchema } from "../usage-stats.js";
-import { ccbuddyAutomationBotDeliveryTargetSchema } from "../bots.js";
 // browser-use 命令/结果契约单一来源：agent 构造、协议校验和 main executor 共用同一 schema。
-import { browserClientModeSchema, browserCommandSchema } from "../browser-use/commands.js";
 import {
   browserBackendListResultSchema,
   browserSessionContextKindSchema,
 } from "../browser-use/backend.js";
+import { browserClientModeSchema, browserCommandSchema } from "../browser-use/commands.js";
 import { browserCommandResultSchema } from "../browser-use/result.js";
-import { integratedTerminalShellSelectionSchema } from "../validationAppSettings.js";
-import { ccbuddyTaskModeSchema } from "../ccbuddy-task-mode-schema.js";
 import { OFFICIAL_MCP_AUTH_PORT_FAILURE_REASONS } from "../official-mcp-auth.js";
+import { integratedTerminalShellSelectionSchema } from "../validationAppSettings.js";
 import {
-  ccbuddyDeliveryKindSchema,
-  ccbuddyMessageVisibilitySchema,
   ccbuddySyntheticUserMessageSourceSchema as legacyCCbuddySyntheticUserMessageSourceSchema,
-  ccbuddyWorkspaceRefSchema,
+  ccbuddyDeliveryKindSchema,
+  ccbuddyInteractionRequestOriginSchema,
+  ccbuddyMessagePartSchema,
+  ccbuddyMessageVisibilitySchema,
+  ccbuddyMessageWithPartsSchema,
   ccbuddyPermissionDecisionSchema,
   ccbuddyPermissionResponseSchema,
   ccbuddyPermissionUpdateSchema,
-  ccbuddySessionModeSchema,
-  ccbuddySessionStatusSchema,
-  ccbuddySessionKindSchema,
+  ccbuddySessionApiRetryStatusSchema,
+  ccbuddySessionContextUsageSchema,
   ccbuddySessionGoalSchema,
   ccbuddySessionGoalVerificationSchema,
   ccbuddySessionGoalVerificationTimelineSchema,
-  ccbuddyInteractionRequestOriginSchema,
-  ccbuddyToolStateSchema,
-  ccbuddySessionApiRetryStatusSchema,
-  ccbuddySessionContextUsageSchema,
   ccbuddySessionInfoSchema,
+  ccbuddySessionKindSchema,
+  ccbuddySessionModeSchema,
   ccbuddySessionRuntimeStateSchema,
-  ccbuddyMessageWithPartsSchema,
-  ccbuddyMessagePartSchema,
+  ccbuddySessionStatusSchema,
+  ccbuddyToolStateSchema,
+  ccbuddyWorkspaceRefSchema,
 } from "../ccbuddy-protocol-legacy-types.js";
+import { ccbuddyTaskModeSchema } from "../ccbuddy-task-mode-schema.js";
 
+export * from "../localTtft.js";
 export {
   hookExecutionProjectionSchema,
   hookInvocationRowSchema,
@@ -723,6 +733,235 @@ export const ccbuddyMcpListResultSchema = z
   .strict();
 export type CCbuddyMcpListResult = z.infer<typeof ccbuddyMcpListResultSchema>;
 
+// 插件 UI：UI 发起的 MCP 资源读取与工具调用，
+// 按 pluginId 限定 server 归属，agent 侧 fail closed。
+export const ccbuddyMcpUiOpenInstanceParamsSchema = z
+  .object({
+    accountContext: z.string().max(256).optional(),
+    workspace: ccbuddyWorkspaceRefSchema,
+    sessionId: nonEmptyString,
+    pluginId: nonEmptyString,
+    serverName: nonEmptyString,
+    scopeId: nonEmptyString.max(4096),
+    resourceUri: nonEmptyString.max(2048),
+    ownerWebContentsId: z.number().int().positive(),
+  })
+  .strict();
+export const ccbuddyMcpUiOpenInstanceResultSchema = mcpAppInstanceSchema;
+export type CCbuddyMcpUiOpenInstanceParams = z.infer<typeof ccbuddyMcpUiOpenInstanceParamsSchema>;
+const ccbuddyMcpUiPluginScopeShape = {
+  instance: mcpAppInstanceSchema,
+
+  workspace: ccbuddyWorkspaceRefSchema,
+  sessionId: nonEmptyString,
+  pluginId: nonEmptyString,
+  serverName: nonEmptyString,
+};
+export const ccbuddyMcpUiCloseInstanceParamsSchema = z
+  .object({ ...ccbuddyMcpUiPluginScopeShape, onlyIfIdle: z.boolean().optional() })
+  .strict();
+export const ccbuddyMcpUiCloseInstanceResultSchema = z.object({ closed: z.boolean() }).strict();
+export const ccbuddyMcpReadResourceParamsSchema = z
+  .object({ ...ccbuddyMcpUiPluginScopeShape, uri: nonEmptyString.max(2048) })
+  .strict();
+export type CCbuddyMcpReadResourceParams = z.infer<typeof ccbuddyMcpReadResourceParamsSchema>;
+export const ccbuddyMcpResourceContentSchema = z
+  .object({
+    uri: z.string(),
+    mimeType: z.string().optional(),
+    text: z.string().optional(),
+    blob: z.string().optional(),
+    _meta: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export const ccbuddyMcpReadResourceResultSchema = z
+  .object({ contents: z.array(ccbuddyMcpResourceContentSchema) })
+  .strict();
+export type CCbuddyMcpReadResourceResult = z.infer<typeof ccbuddyMcpReadResourceResultSchema>;
+
+/**
+ * 插件页面发起的 `resources/read` 代理。
+ * 与 `mcp/readResource`（宿主取 ui:// HTML）参数同形，但结果去掉 `_meta`、受 8 MiB 与 mimeType 白名单约束。
+ */
+export const ccbuddyMcpUiReadResourceParamsSchema = ccbuddyMcpReadResourceParamsSchema;
+export type CCbuddyMcpUiReadResourceParams = z.infer<typeof ccbuddyMcpUiReadResourceParamsSchema>;
+export const ccbuddyMcpUiResourceContentSchema = z
+  .object({
+    uri: z.string(),
+    mimeType: z.string().optional(),
+    text: z.string().optional(),
+    blob: z.string().optional(),
+  })
+  .strict();
+export const ccbuddyMcpUiReadResourceResultSchema = z
+  .object({ contents: z.array(ccbuddyMcpUiResourceContentSchema) })
+  .strict();
+export type CCbuddyMcpUiReadResourceResult = z.infer<typeof ccbuddyMcpUiReadResourceResultSchema>;
+
+export const ccbuddyMcpUiSamplingParamsSchema = z
+  .object({
+    ...ccbuddyMcpUiPluginScopeShape,
+    operationId: nonEmptyString.max(128),
+    request: mcpAppsSamplingParamsSchema,
+  })
+  .strict();
+export const ccbuddyMcpUiCancelSamplingParamsSchema = z
+  .object({ ...ccbuddyMcpUiPluginScopeShape, operationId: nonEmptyString.max(128) })
+  .strict();
+export const ccbuddyMcpUiSamplingResultSchema = mcpAppsSamplingResultSchema;
+export type CCbuddyMcpUiSamplingParams = z.infer<typeof ccbuddyMcpUiSamplingParamsSchema>;
+export type CCbuddyMcpUiCancelSamplingParams = z.infer<
+  typeof ccbuddyMcpUiCancelSamplingParamsSchema
+>;
+
+export const ccbuddyMcpUiCallToolParamsSchema = z
+  .object({
+    ...ccbuddyMcpUiPluginScopeShape,
+    toolName: nonEmptyString,
+    arguments: z.record(z.string(), z.unknown()).optional(),
+    /** 宿主生成的调用 id，配合 `mcp/uiCancelCall` 取消进行中的调用。 */
+    callId: nonEmptyString.max(128),
+  })
+  .strict();
+export type CCbuddyMcpUiCallToolParams = z.infer<typeof ccbuddyMcpUiCallToolParamsSchema>;
+/** 取消页面发起的工具调用（卡片卸载、会话切换）；agent 侧 abort 到 MCP client。 */
+export const ccbuddyMcpUiCancelCallParamsSchema = z
+  .object({ ...ccbuddyMcpUiPluginScopeShape, callId: nonEmptyString.max(128) })
+  .strict();
+export type CCbuddyMcpUiCancelCallParams = z.infer<typeof ccbuddyMcpUiCancelCallParamsSchema>;
+export const ccbuddyMcpUiCancelCallResultSchema = z.object({ cancelled: z.boolean() }).strict();
+export type CCbuddyMcpUiCancelCallResult = z.infer<typeof ccbuddyMcpUiCancelCallResultSchema>;
+/** 页面发起的 resources/list、resources/templates/list、subscribe、unsubscribe 代理。 */
+export const ccbuddyMcpUiListResourcesParamsSchema = z
+  .object({ ...ccbuddyMcpUiPluginScopeShape, cursor: nonEmptyString.max(2048).optional() })
+  .strict();
+export type CCbuddyMcpUiListResourcesParams = z.infer<typeof ccbuddyMcpUiListResourcesParamsSchema>;
+const ccbuddyMcpUiResourceDescriptorSchema = z
+  .object({
+    uri: z.string(),
+    name: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    mimeType: z.string().optional(),
+    // MCP Resource 的标准字段；规范把资源级 csp / prefersBorder 放在这里，宿主读 HTML 项缺 _meta 时回退用。
+    _meta: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export const ccbuddyMcpUiListResourcesResultSchema = z
+  .object({
+    resources: z.array(ccbuddyMcpUiResourceDescriptorSchema),
+    nextCursor: z.string().optional(),
+  })
+  .strict();
+export type CCbuddyMcpUiListResourcesResult = z.infer<typeof ccbuddyMcpUiListResourcesResultSchema>;
+export const ccbuddyMcpUiListResourceTemplatesResultSchema = z
+  .object({
+    resourceTemplates: z.array(
+      z
+        .object({
+          uriTemplate: z.string(),
+          name: z.string().optional(),
+          title: z.string().optional(),
+          description: z.string().optional(),
+          mimeType: z.string().optional(),
+        })
+        .strict(),
+    ),
+    nextCursor: z.string().optional(),
+  })
+  .strict();
+export type CCbuddyMcpUiListResourceTemplatesResult = z.infer<
+  typeof ccbuddyMcpUiListResourceTemplatesResultSchema
+>;
+/** 订阅者身份 = 会话 + 沙箱作用域 + 实例代际（initId）；dispose 只退订本代际，新实例不受影响。 */
+export const ccbuddyMcpUiResourceSubscriptionParamsSchema = z
+  .object({
+    ...ccbuddyMcpUiPluginScopeShape,
+    scopeId: nonEmptyString.max(256),
+    generation: z.number().int().nonnegative(),
+    uri: nonEmptyString.max(2048),
+  })
+  .strict();
+export type CCbuddyMcpUiResourceSubscriptionParams = z.infer<
+  typeof ccbuddyMcpUiResourceSubscriptionParamsSchema
+>;
+export const ccbuddyMcpUiResourceSubscriptionResultSchema = z.object({}).strict();
+/**
+ * App-Provided Tools：实例身份 = 会话 + 沙箱作用域 + 代际（与资源订阅同一三元组）。
+ * 登记按实例整体替换；调用认领 / 回传按 callId 幂等。
+ */
+const ccbuddyMcpUiAppToolInstanceShape = {
+  ...ccbuddyMcpUiPluginScopeShape,
+  scopeId: nonEmptyString.max(256),
+  generation: z.number().int().nonnegative(),
+};
+export const ccbuddyMcpUiRegisterAppToolsParamsSchema = z
+  .object({
+    ...ccbuddyMcpUiAppToolInstanceShape,
+    tools: z.array(mcpAppsAppToolDescriptorSchema).max(MCP_APPS_APP_TOOLS_MAX_PER_INSTANCE),
+  })
+  .strict();
+export type CCbuddyMcpUiRegisterAppToolsParams = z.infer<
+  typeof ccbuddyMcpUiRegisterAppToolsParamsSchema
+>;
+export const ccbuddyMcpUiRegisterAppToolsResultSchema = z
+  .object({ tools: z.array(z.object({ name: z.string(), modelName: z.string() }).strict()) })
+  .strict();
+export type CCbuddyMcpUiRegisterAppToolsResult = z.infer<
+  typeof ccbuddyMcpUiRegisterAppToolsResultSchema
+>;
+export const ccbuddyMcpUiUnregisterAppToolsParamsSchema = z
+  .object(ccbuddyMcpUiAppToolInstanceShape)
+  .strict();
+export type CCbuddyMcpUiUnregisterAppToolsParams = z.infer<
+  typeof ccbuddyMcpUiUnregisterAppToolsParamsSchema
+>;
+export const ccbuddyMcpUiUnregisterAppToolsResultSchema = z
+  .object({ removed: z.number().int().nonnegative() })
+  .strict();
+export type CCbuddyMcpUiUnregisterAppToolsResult = z.infer<
+  typeof ccbuddyMcpUiUnregisterAppToolsResultSchema
+>;
+export const ccbuddyMcpUiClaimAppToolCallParamsSchema = z
+  .object({
+    ...ccbuddyMcpUiAppToolInstanceShape,
+    callId: nonEmptyString.max(MCP_APPS_APP_TOOL_CALL_ID_MAX_CHARS),
+  })
+  .strict();
+export type CCbuddyMcpUiClaimAppToolCallParams = z.infer<
+  typeof ccbuddyMcpUiClaimAppToolCallParamsSchema
+>;
+export const ccbuddyMcpUiAppToolAcceptedResultSchema = z.object({ accepted: z.boolean() }).strict();
+export type CCbuddyMcpUiAppToolAcceptedResult = z.infer<
+  typeof ccbuddyMcpUiAppToolAcceptedResultSchema
+>;
+export const ccbuddyMcpUiResolveAppToolCallParamsSchema = z
+  .object({
+    ...ccbuddyMcpUiAppToolInstanceShape,
+    callId: nonEmptyString.max(MCP_APPS_APP_TOOL_CALL_ID_MAX_CHARS),
+    result: mcpAppsAppToolCallResultSchema.optional(),
+    error: z
+      .object({ message: z.string().max(MCP_APPS_APP_TOOL_ERROR_MESSAGE_MAX_CHARS) })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((value) => (value.result === undefined) !== (value.error === undefined), {
+    message: "exactly one of result or error is required",
+  });
+export type CCbuddyMcpUiResolveAppToolCallParams = z.infer<
+  typeof ccbuddyMcpUiResolveAppToolCallParamsSchema
+>;
+export const ccbuddyMcpUiCallToolResultSchema = z
+  .object({
+    content: z.array(z.record(z.string(), z.unknown())),
+    structuredContent: z.unknown().optional(),
+    isError: z.boolean().optional(),
+    _meta: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export type CCbuddyMcpUiCallToolResult = z.infer<typeof ccbuddyMcpUiCallToolResultSchema>;
+
 export const ccbuddySessionImportMessageSchema = z
   .object({
     role: z.enum(["user", "assistant"]),
@@ -732,10 +971,36 @@ export const ccbuddySessionImportMessageSchema = z
   .strict();
 export type CCbuddySessionImportMessage = z.infer<typeof ccbuddySessionImportMessageSchema>;
 
+/** 历史查看里可被"在 CCbuddy 继续"的外部生产者；与 @ccbuddy/history 的 HistorySource 一致（不含 ccbuddy 自身）。 */
+export const ccbuddySessionImportHistoryProducerSchema = z.enum([
+  "claude",
+  "codex",
+  "qoder",
+  "grok",
+  "copilot",
+  "antigravity",
+]);
+export type CCbuddySessionImportHistoryProducer = z.infer<
+  typeof ccbuddySessionImportHistoryProducerSchema
+>;
+
 export const ccbuddySessionImportHistorySchema = z.discriminatedUnion("source", [
   z
     .object({
       source: z.literal("claudeCode"),
+      title: z.string().optional(),
+      createdAt: timestampMsSchema.optional(),
+      updatedAt: timestampMsSchema.optional(),
+      messages: z.array(ccbuddySessionImportMessageSchema).min(1),
+    })
+    .strict(),
+  // 任意外部 agent 工具的只读历史 → 新 CCbuddy 会话：正文已由历史阅读器归一化成 user/assistant 文本。
+  z
+    .object({
+      source: z.literal("externalHistory"),
+      producer: ccbuddySessionImportHistoryProducerSchema,
+      producerSessionId: nonEmptyString,
+      sourcePath: z.string().optional(),
       title: z.string().optional(),
       createdAt: timestampMsSchema.optional(),
       updatedAt: timestampMsSchema.optional(),
@@ -2616,7 +2881,36 @@ export const ccbuddyPluginsListResultSchema = z
   .strict();
 export type CCbuddyPluginsListResult = z.infer<typeof ccbuddyPluginsListResultSchema>;
 
-// ── Plugin 对话引用 catalog──
+// ── 插件 UI 面板入口──
+// 工作区级只读投影：已启用插件清单 `ui.surfaces[]` 的合法条目；插件启停后 host 重新拉取。
+export const ccbuddyPluginUiSurfaceSchema = z
+  .object({
+    pluginId: nonEmptyString,
+    pluginName: nonEmptyString,
+    id: nonEmptyString.max(128),
+    title: z.union([nonEmptyString, z.record(z.string(), z.string())]),
+    icon: z.string().optional(),
+    // 运行时 namespaced server 名（plugin:<name>:<server>），可直接用于 mcp/uiReadResource。
+    server: nonEmptyString,
+    resourceUri: nonEmptyString.max(2048),
+    availability: z.literal("session"),
+  })
+  .strict();
+export type CCbuddyPluginUiSurface = z.infer<typeof ccbuddyPluginUiSurfaceSchema>;
+export const ccbuddyPluginsListUiSurfacesParamsSchema = z
+  .object({ workspace: ccbuddyWorkspaceRefSchema })
+  .strict();
+export type CCbuddyPluginsListUiSurfacesParams = z.infer<
+  typeof ccbuddyPluginsListUiSurfacesParamsSchema
+>;
+export const ccbuddyPluginsListUiSurfacesResultSchema = z
+  .object({ surfaces: z.array(ccbuddyPluginUiSurfaceSchema) })
+  .strict();
+export type CCbuddyPluginsListUiSurfacesResult = z.infer<
+  typeof ccbuddyPluginsListUiSurfacesResultSchema
+>;
+
+// ── Plugin 对话引用 catalog（docs/plugin-reference-mention.md）──
 // Session-scoped 只读投影：带 sessionId → 该 Session 创建时冻结的身份 catalog；
 // 不带 → workspace 当前 catalog（新建草稿 Picker）。身份与能力字段保持
 // identifiers-only，不携带 rootPath/配置等；可选 icon/displayName(I18n)/description(I18n)
@@ -3665,8 +3959,27 @@ export const ccbuddyProtocolMethods = {
   workspaceCancelGenerateText: "workspace/cancelGenerateText",
   providerTestModelConnectivity: "provider/testModelConnectivity",
   mcpList: "mcp/list",
+  mcpReadResource: "mcp/readResource",
+  mcpUiOpenInstance: "mcp/uiOpenInstance",
+  mcpUiCloseInstance: "mcp/uiCloseInstance",
+  mcpUiValidateInstance: "mcp/uiValidateInstance",
+  mcpUiSampling: "mcp/uiSampling",
+  mcpUiCancelSampling: "mcp/uiCancelSampling",
+  mcpUiCallTool: "mcp/uiCallTool",
+  mcpUiCancelCall: "mcp/uiCancelCall",
+  mcpUiReadResource: "mcp/uiReadResource",
+  mcpUiListResources: "mcp/uiListResources",
+  mcpUiListResourceTemplates: "mcp/uiListResourceTemplates",
+  mcpUiSubscribeResource: "mcp/uiSubscribeResource",
+  mcpUiUnsubscribeResource: "mcp/uiUnsubscribeResource",
+  // App-Provided Tools：页面工具登记 / 注销，与模型调用的认领 / 回传（信箱投递走 v4 live 增量）。
+  mcpUiRegisterAppTools: "mcp/uiRegisterAppTools",
+  mcpUiUnregisterAppTools: "mcp/uiUnregisterAppTools",
+  mcpUiClaimAppToolCall: "mcp/uiClaimAppToolCall",
+  mcpUiResolveAppToolCall: "mcp/uiResolveAppToolCall",
   pluginsList: "plugins/list",
   pluginsReferenceCatalog: "plugins/referenceCatalog",
+  pluginsListUiSurfaces: "plugins/listUiSurfaces",
   pluginsReferenceCatalogWithCategory: "plugins/referenceCatalogWithCategory",
   skillsReferenceCatalog: "skills/referenceCatalog",
   // 已保存工作流的 GUI 中枢：workspace 级、无会话。
@@ -3725,6 +4038,18 @@ export const ccbuddyProtocolEmptyResultSchema = z.object({}).strict();
 // 最新 V4 主链已不再依赖旧版全量方法表；这里仅保留仍被兼容测试和 browser broker
 // 消费的最小契约集合，避免重新引入已移除的 legacy 方法。
 export const ccbuddyProtocolSessionMethodContracts = {
+  [ccbuddyProtocolMethods.mcpUiOpenInstance]: {
+    params: ccbuddyMcpUiOpenInstanceParamsSchema,
+    result: ccbuddyMcpUiOpenInstanceResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiCloseInstance]: {
+    params: ccbuddyMcpUiCloseInstanceParamsSchema,
+    result: ccbuddyMcpUiCloseInstanceResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiValidateInstance]: {
+    params: ccbuddyMcpUiCloseInstanceParamsSchema,
+    result: ccbuddyMcpUiResourceSubscriptionResultSchema,
+  },
   [ccbuddyProtocolMethods.workspaceHookTrustGrant]: {
     params: ccbuddyWorkspaceHookTrustGrantParamsSchema,
     result: ccbuddyWorkspaceHookTrustGrantResultSchema,
@@ -3732,6 +4057,62 @@ export const ccbuddyProtocolSessionMethodContracts = {
   [ccbuddyProtocolMethods.mcpList]: {
     params: ccbuddyMcpListParamsSchema,
     result: ccbuddyMcpListResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpReadResource]: {
+    params: ccbuddyMcpReadResourceParamsSchema,
+    result: ccbuddyMcpReadResourceResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiSampling]: {
+    params: ccbuddyMcpUiSamplingParamsSchema,
+    result: ccbuddyMcpUiSamplingResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiCancelSampling]: {
+    params: ccbuddyMcpUiCancelSamplingParamsSchema,
+    result: ccbuddyMcpUiCancelCallResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiCallTool]: {
+    params: ccbuddyMcpUiCallToolParamsSchema,
+    result: ccbuddyMcpUiCallToolResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiCancelCall]: {
+    params: ccbuddyMcpUiCancelCallParamsSchema,
+    result: ccbuddyMcpUiCancelCallResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiReadResource]: {
+    params: ccbuddyMcpUiReadResourceParamsSchema,
+    result: ccbuddyMcpUiReadResourceResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiListResources]: {
+    params: ccbuddyMcpUiListResourcesParamsSchema,
+    result: ccbuddyMcpUiListResourcesResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiListResourceTemplates]: {
+    params: ccbuddyMcpUiListResourcesParamsSchema,
+    result: ccbuddyMcpUiListResourceTemplatesResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiSubscribeResource]: {
+    params: ccbuddyMcpUiResourceSubscriptionParamsSchema,
+    result: ccbuddyMcpUiResourceSubscriptionResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiUnsubscribeResource]: {
+    params: ccbuddyMcpUiResourceSubscriptionParamsSchema,
+    result: ccbuddyMcpUiResourceSubscriptionResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiRegisterAppTools]: {
+    params: ccbuddyMcpUiRegisterAppToolsParamsSchema,
+    result: ccbuddyMcpUiRegisterAppToolsResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiUnregisterAppTools]: {
+    params: ccbuddyMcpUiUnregisterAppToolsParamsSchema,
+    result: ccbuddyMcpUiUnregisterAppToolsResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiClaimAppToolCall]: {
+    params: ccbuddyMcpUiClaimAppToolCallParamsSchema,
+    result: ccbuddyMcpUiAppToolAcceptedResultSchema,
+  },
+  [ccbuddyProtocolMethods.mcpUiResolveAppToolCall]: {
+    params: ccbuddyMcpUiResolveAppToolCallParamsSchema,
+    result: ccbuddyMcpUiAppToolAcceptedResultSchema,
   },
   [ccbuddyProtocolMethods.interactionBrowserList]: {
     params: ccbuddyBrowserListParamsSchema,
@@ -3766,7 +4147,6 @@ export const ccbuddyStoragePreparationFrameSchema = z.discriminatedUnion("method
 export const ccbuddyStoragePathReadySchema = z
   .object({ method: z.literal("startup/storagePathReady"), reuse: z.boolean().optional() })
   .strict();
-export * from "../localTtft.js";
 
 // 桌面本地 TTFT 的严格事实合同；检查点不能替代实际内容帧。
 export { localTtftFactsSchema } from "../localTtft.js";

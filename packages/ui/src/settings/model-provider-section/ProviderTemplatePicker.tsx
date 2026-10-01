@@ -14,6 +14,7 @@ import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { logger } from "@/logger.js";
 import { ProviderLogo } from "./ProviderLogo.js";
 import { useProviderDetailFeedback } from "./ProviderDetailFeedback.js";
+import { sortProviderTemplatesForPicker } from "./providerTemplateOrder.js";
 
 type ProviderTemplateCreate = (templateId: string) => Promise<void>;
 type CustomProviderCreate = (label: string) => Promise<void>;
@@ -34,19 +35,7 @@ export function ProviderTemplatePicker({
   const { intl, locale } = useCCbuddyIntl();
   const { dismissFeedback, showFeedback } = useProviderDetailFeedback();
   const customLabel = intl.formatMessage({ id: "settings.modelProvider.newProviderName" });
-  const zhipuIds = ["bigmodel-api", "zai-api", "bigmodel-standard-api", "zai-standard-api"];
-  const groups = [
-    {
-      id: "zhipu",
-      templates: zhipuIds.flatMap((id) =>
-        templates.filter((template) => template.templateId === id),
-      ),
-    },
-    {
-      id: "other",
-      templates: templates.filter((template) => !zhipuIds.includes(template.templateId)),
-    },
-  ] as const;
+  const orderedTemplates = sortProviderTemplatesForPicker(templates);
   const createWithFeedback = async (create: () => Promise<void>) => {
     const feedbackKey = "provider-template-create";
     dismissFeedback(feedbackKey);
@@ -86,48 +75,38 @@ export function ProviderTemplatePicker({
         </h2>
       </div>
 
-      <div className="space-y-6">
-        {groups.map((group) => (
-          <section key={group.id} data-provider-template-group={group.id} className="space-y-3">
-            <h3 className="text-ui-base font-medium text-foreground-subtle">
-              {intl.formatMessage({ id: `settings.modelProvider.templateGroup.${group.id}` })}
-            </h3>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {group.id === "other" ? (
-                <ProviderTemplateCard
-                  label={intl.formatMessage({ id: "settings.modelProvider.createCustomProvider" })}
-                  disabled={creating}
-                  testId={testId(TID_MODEL_PROVIDER_TEMPLATE_ITEM, "custom")}
-                  icon={
-                    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-hover">
-                      <PlusIcon className="size-4" aria-hidden="true" />
-                    </span>
-                  }
-                  onClick={() => void createWithFeedback(() => onCreateCustom(customLabel))}
-                />
-              ) : null}
-              {group.templates.map((template) => {
-                const label = resolveProviderTemplateName(template.templateId, template, locale);
-                return (
-                  <ProviderTemplateCard
-                    key={template.templateId}
-                    label={label}
-                    disabled={creating}
-                    testId={testId(TID_MODEL_PROVIDER_TEMPLATE_ITEM, template.templateId)}
-                    icon={
-                      <span className="flex size-9 shrink-0 items-center justify-center">
-                        <ProviderLogo logo={template.config.logo} className="size-8" />
-                      </span>
-                    }
-                    onClick={() =>
-                      void createWithFeedback(() => onCreateFromTemplate(template.templateId))
-                    }
-                  />
-                );
-              })}
-            </div>
-          </section>
-        ))}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {orderedTemplates.map((template) => {
+          const label = resolveProviderTemplateName(template.templateId, template, locale);
+          return (
+            <ProviderTemplateCard
+              key={template.templateId}
+              label={label}
+              disabled={creating}
+              testId={testId(TID_MODEL_PROVIDER_TEMPLATE_ITEM, template.templateId)}
+              icon={
+                <span className="flex size-9 shrink-0 items-center justify-center">
+                  <ProviderLogo logo={template.config.logo} className="size-8" />
+                </span>
+              }
+              onClick={() =>
+                void createWithFeedback(() => onCreateFromTemplate(template.templateId))
+              }
+            />
+          );
+        })}
+        {/* 自定义入口不是某个厂商，固定放在模板列表末尾。 */}
+        <ProviderTemplateCard
+          label={intl.formatMessage({ id: "settings.modelProvider.createCustomProvider" })}
+          disabled={creating}
+          testId={testId(TID_MODEL_PROVIDER_TEMPLATE_ITEM, "custom")}
+          icon={
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-hover">
+              <PlusIcon className="size-4" aria-hidden="true" />
+            </span>
+          }
+          onClick={() => void createWithFeedback(() => onCreateCustom(customLabel))}
+        />
       </div>
     </section>
   );

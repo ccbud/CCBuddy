@@ -101,11 +101,25 @@ export function message(
   };
 }
 
+/** Claude Code records slash commands and IDE context as tagged blocks inside user text; they are not the user's words. */
+const CONTROL_BLOCK =
+  /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|ide_opened_file|system-reminder)>[\s\S]*?<\/\1>/g;
+
+export function visibleUserText(text: string): string {
+  return text
+    .replace(CONTROL_BLOCK, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
 export function firstUserTitle(messages: readonly HistoryMessage[]): string {
   for (const item of messages) {
     if (item.role !== "user") continue;
-    const text = item.blocks.find((block) => block.type === "text");
-    if (text?.type === "text") return text.text.trim().slice(0, 90);
+    for (const block of item.blocks) {
+      if (block.type !== "text") continue;
+      const text = visibleUserText(block.text);
+      if (text) return text.slice(0, 90);
+    }
   }
   return "";
 }

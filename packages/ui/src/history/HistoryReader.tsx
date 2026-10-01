@@ -1,9 +1,16 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronUp, Search } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, Loader2, Play, Search } from "lucide-react";
 import { Button } from "../components/ui/button.js";
-import type { HistoryLocale, HistorySessionDetail, HistorySessionSummary } from "./contract.js";
+import type {
+  HistoryLocale,
+  HistorySessionActions,
+  HistorySessionDetail,
+  HistorySessionSummary,
+} from "./contract.js";
 import { HistoryMessageRow, HistoryUsageStats } from "./HistoryContent.js";
+import { SourceDot } from "./HistorySessionList.js";
+import { formatHistoryDuration } from "./history-grouping.js";
 import { formatHistoryDate, historyLabels, sourceLabel } from "./labels.js";
 import { findMatchingMessages } from "./reader-utils.js";
 
@@ -15,6 +22,9 @@ export interface HistoryReaderProps {
   error?: string | null;
   onSelectSession?: (sessionId: string) => void;
   locale?: HistoryLocale;
+  actions?: HistorySessionActions;
+  continuing?: boolean;
+  continueError?: string | null;
 }
 
 export function HistoryReader({
@@ -25,6 +35,9 @@ export function HistoryReader({
   error = null,
   onSelectSession,
   locale = "zh-CN",
+  actions,
+  continuing = false,
+  continueError = null,
 }: HistoryReaderProps) {
   const labels = historyLabels(locale);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -91,35 +104,90 @@ export function HistoryReader({
     );
   }
 
+  const isOwnSession = displayedSummary.source === "ccbuddy";
+  const duration = formatHistoryDuration(
+    displayedSummary.createdAt,
+    displayedSummary.lastActivity,
+    locale,
+  );
+  const continueSession = actions?.continueSession;
+  // 自家会话直接打开任务，不需要正文；外部会话要先拿到完整正文才能导入。
+  const canContinue =
+    Boolean(continueSession) && !continuing && (isOwnSession || Boolean(currentDetail));
+
   return (
     <section
       className="flex h-full min-h-0 min-w-0 flex-col bg-background"
       aria-label={`${displayedSummary.title || labels.unknownTitle} ${labels.readOnly}`}
     >
       <header className="border-b border-border px-4 py-3">
-        <div className="mb-1 flex min-w-0 items-center gap-2">
-          <h2
-            className="min-w-0 flex-1 truncate text-ui-base font-semibold"
-            title={displayedSummary.title}
-          >
-            {displayedSummary.title || labels.unknownTitle}
-          </h2>
-          <span className="shrink-0 text-ui-xs text-foreground-subtle">{labels.readOnly}</span>
-        </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-1 text-ui-xs text-foreground-subtle">
-          <span>{sourceLabel(displayedSummary.source)}</span>
-          <span title={displayedSummary.cwd ?? undefined} className="max-w-full truncate font-mono">
-            {displayedSummary.cwd || displayedSummary.project || labels.unknownProject}
-          </span>
-          <span>
-            {displayedSummary.messageCount} {labels.messages}
-          </span>
-          {displayedSummary.model ? (
-            <span className="font-mono">{displayedSummary.model}</span>
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <SourceDot source={displayedSummary.source} />
+              <h2
+                className="min-w-0 flex-1 truncate text-ui-lg font-semibold"
+                title={displayedSummary.title}
+              >
+                {displayedSummary.title || labels.unknownTitle}
+              </h2>
+              <span className="shrink-0 rounded-full border border-border px-1.5 text-ui-xs text-foreground-subtle">
+                {labels.readOnly}
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-ui-xs text-foreground-subtle">
+              <span>{sourceLabel(displayedSummary.source)}</span>
+              <span
+                title={displayedSummary.cwd ?? undefined}
+                className="max-w-full truncate font-mono"
+              >
+                {displayedSummary.cwd || displayedSummary.project || labels.unknownProject}
+              </span>
+              <time dateTime={displayedSummary.createdAt}>
+                {formatHistoryDate(displayedSummary.createdAt, locale)}
+              </time>
+              {duration ? (
+                <span>
+                  {labels.duration} {duration}
+                </span>
+              ) : null}
+              <span>
+                {displayedSummary.messageCount} {labels.messages}
+              </span>
+              {displayedSummary.model ? (
+                <span className="font-mono">{displayedSummary.model}</span>
+              ) : null}
+            </div>
+          </div>
+          {continueSession ? (
+            <Button
+              type="button"
+              size="lg"
+              variant={isOwnSession ? "secondary" : "default"}
+              className="shrink-0"
+              disabled={!canContinue}
+              title={isOwnSession ? undefined : labels.continueHint}
+              data-testid="history-continue-session"
+              onClick={() =>
+                void continueSession(
+                  currentDetail ?? { summary: displayedSummary, messages: [], diagnostics: [] },
+                )
+              }
+            >
+              {continuing ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : isOwnSession ? (
+                <ExternalLink className="size-4" />
+              ) : (
+                <Play className="size-4" />
+              )}
+              {continuing
+                ? labels.continuing
+                : isOwnSession
+                  ? labels.openTask
+                  : labels.continueInCCbuddy}
+            </Button>
           ) : null}
-          <time dateTime={displayedSummary.createdAt}>
-            {formatHistoryDate(displayedSummary.createdAt, locale)}
-          </time>
         </div>
         {displayedSummary.usage ? (
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -200,6 +268,11 @@ export function HistoryReader({
             <ChevronDown />
           </Button>
         </div>
+        {continueError ? (
+          <p role="alert" className="mt-2 text-ui-xs text-destructive">
+            {continueError}
+          </p>
+        ) : null}
       </header>
 
       {error ? (

@@ -26,7 +26,7 @@ pnpm lint
 pnpm architecture:check --changed
 ```
 
-会话行为、数据所有权和验收场景见 [历史查看规范](docs/specs/history-review.md)。四仓库关系及取舍见 [项目关系](docs/project-relationship.md)。
+会话行为、数据所有权和验收场景见 [历史查看规范](docs/specs/history-review.md)。四仓库关系及取舍见 [项目关系](docs/project-relationship.md)。插件交互页面与 Gen UI 见 [UI Plugin 指南](docs/ui-plugin.md) 和 [规范](docs/specs/plugin-ui-and-gen-ui.md)。
 
 ## 来源与许可
 

@@ -2,6 +2,7 @@ import type {
   HistoryDiagnostic,
   HistoryMessage,
   HistoryRoot,
+  HistoryRootStatus,
   HistorySource,
   HistoryTokenUsage,
 } from "../contract.js";
@@ -56,6 +57,7 @@ export interface HistorySourcePort {
   ): Promise<{
     candidates: Candidate[];
     diagnostics: HistoryDiagnostic[];
+    roots: HistoryRootStatus[];
   }>;
   parse(
     candidate: Candidate,

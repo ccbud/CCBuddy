@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { PointerEvent } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "../components/ui/button.js";
-import type { HistoryLocale, HistorySessionSummary } from "./contract.js";
+import type { HistoryLocale, HistorySessionSummary, HistorySource } from "./contract.js";
+import { HISTORY_SOURCES } from "./contract.js";
+import { SourceDot } from "./HistorySessionList.js";
+import { HoverCard, LaneTrack, type HoverPoint } from "./HistoryTimelineLane.js";
 import { formatHistoryDate, historyLabels, sourceLabel } from "./labels.js";
 import {
   buildTimelineGroups,
   createTimelineWindow,
-  hitTestTimelineEntry,
   selectTimelineTicks,
   shiftTimelineWindow,
-  timelineBar,
   timelineTicks,
   zoomTimelineWindow,
 } from "./timeline-layout.js";
 import type {
   TimelineEntry,
   TimelineGrouping,
-  TimelineLane,
   TimelineWindow,
   TimelineZoom,
 } from "./timeline-layout.js";
@@ -30,158 +30,6 @@ export interface HistoryTimelineProps {
 }
 
 const zoomOptions: readonly TimelineZoom[] = ["week", "month", "quarter", "year"];
-const trackHeight = 32;
-
-function LaneTrack({
-  lane,
-  range,
-  width,
-  selectedSessionId,
-  themeRevision,
-  locale,
-  onOpenSession,
-  onHover,
-}: {
-  lane: TimelineLane;
-  range: TimelineWindow;
-  width: number;
-  selectedSessionId: string | null;
-  themeRevision: number;
-  locale: HistoryLocale;
-  onOpenSession: (sessionId: string) => void;
-  onHover: (entry: TimelineEntry | null) => void;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [hoveredID, setHoveredID] = useState<string | null>(null);
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
-  const labels = historyLabels(locale);
-  const focused = focusedIndex == null ? null : (lane.entries[focusedIndex] ?? null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || width <= 0) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const ratio = globalThis.devicePixelRatio || 1;
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(trackHeight * ratio);
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    context.clearRect(0, 0, width, trackHeight);
-
-    const style = getComputedStyle(canvas);
-    const foreground = style.color;
-    const brand = style.getPropertyValue("--color-brand").trim() || foreground;
-    const border = style.getPropertyValue("--color-border").trim() || foreground;
-    context.fillStyle = border;
-    context.globalAlpha = 0.45;
-    context.fillRect(0, trackHeight - 1, width, 1);
-    context.globalAlpha = 1;
-
-    for (const entry of lane.entries) {
-      const bar = timelineBar(entry.start, entry.end, range, width);
-      if (!bar) continue;
-      const selected = entry.session.id === selectedSessionId;
-      const active = entry.session.id === hoveredID || entry.session.id === focused?.session.id;
-      context.beginPath();
-      context.roundRect(bar.x, 7, bar.width, 18, Math.min(5, bar.width / 2));
-      context.fillStyle = brand;
-      context.globalAlpha = selected ? 0.78 : active ? 0.56 : 0.3;
-      context.fill();
-      context.globalAlpha = 1;
-      context.lineWidth = selected || active ? 1.5 : 0.75;
-      context.strokeStyle = brand;
-      context.stroke();
-      if (bar.width < 72) continue;
-      context.save();
-      context.beginPath();
-      context.rect(bar.x + 4, 7, Math.max(0, bar.width - 8), 18);
-      context.clip();
-      context.font = `500 ${style.fontSize} ${style.fontFamily}`;
-      context.fillStyle = foreground;
-      context.textBaseline = "middle";
-      context.fillText(entry.session.title || labels.unknownTitle, bar.x + 7, 16, bar.width - 12);
-      context.restore();
-    }
-  }, [
-    focused?.session.id,
-    hoveredID,
-    labels.unknownTitle,
-    lane.entries,
-    range,
-    selectedSessionId,
-    themeRevision,
-    width,
-  ]);
-
-  function entryAt(clientX: number): TimelineEntry | null {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const bounds = canvas.getBoundingClientRect();
-    return hitTestTimelineEntry(lane.entries, range, bounds.width, clientX - bounds.left);
-  }
-
-  function handlePointerMove(event: PointerEvent<HTMLCanvasElement>) {
-    const entry = entryAt(event.clientX);
-    setHoveredID(entry?.session.id ?? null);
-    onHover(entry);
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLCanvasElement>) {
-    if (lane.entries.length === 0) return;
-    const current = focusedIndex ?? 0;
-    let next = current;
-    if (event.key === "ArrowRight") next = Math.min(lane.entries.length - 1, current + 1);
-    else if (event.key === "ArrowLeft") next = Math.max(0, current - 1);
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = lane.entries.length - 1;
-    else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      const entry = lane.entries[current];
-      if (entry) onOpenSession(entry.session.id);
-      return;
-    } else return;
-
-    event.preventDefault();
-    setFocusedIndex(next);
-    onHover(lane.entries[next] ?? null);
-  }
-
-  const focusLabel = focused
-    ? `${focused.session.title || labels.unknownTitle}, ${sourceLabel(focused.session.source)}, ${formatHistoryDate(focused.start, locale)}`
-    : `${lane.entries.length} ${labels.sessionOf}`;
-  return (
-    <canvas
-      ref={canvasRef}
-      className="block h-8 w-full cursor-pointer text-ui-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-brand"
-      role="button"
-      tabIndex={0}
-      aria-label={`${lane.label}: ${focusLabel}. ${labels.keyboardHint}`}
-      aria-keyshortcuts="ArrowLeft ArrowRight Home End Enter Space"
-      onClick={(event) => {
-        const entry = entryAt(event.clientX);
-        if (entry) onOpenSession(entry.session.id);
-      }}
-      onFocus={() => {
-        const selectedIndex = lane.entries.findIndex(
-          (entry) => entry.session.id === selectedSessionId,
-        );
-        const index = selectedIndex >= 0 ? selectedIndex : 0;
-        setFocusedIndex(index);
-        onHover(lane.entries[index] ?? null);
-      }}
-      onBlur={() => {
-        setFocusedIndex(null);
-        onHover(null);
-      }}
-      onKeyDown={handleKeyDown}
-      onPointerMove={handlePointerMove}
-      onPointerLeave={() => {
-        setHoveredID(null);
-        onHover(null);
-      }}
-    />
-  );
-}
 
 export function HistoryTimeline({
   sessions,
@@ -195,7 +43,9 @@ export function HistoryTimeline({
   const [range, setRange] = useState<TimelineWindow>(() => createTimelineWindow("month"));
   const [trackWidth, setTrackWidth] = useState(0);
   const [themeRevision, setThemeRevision] = useState(0);
-  const [hovered, setHovered] = useState<TimelineEntry | null>(null);
+  const [hovered, setHovered] = useState<{ entry: TimelineEntry; point: HoverPoint | null } | null>(
+    null,
+  );
   const trackRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{ clientX: number; range: TimelineWindow } | null>(null);
   const groups = useMemo(
@@ -207,6 +57,10 @@ export function HistoryTimeline({
     () => selectTimelineTicks(ticks, range, trackWidth),
     [ticks, range, trackWidth],
   );
+  const presentSources = useMemo(() => {
+    const present = new Set<HistorySource>(sessions.map((session) => session.source));
+    return HISTORY_SOURCES.filter((source) => present.has(source));
+  }, [sessions]);
 
   useEffect(() => {
     const track = trackRef.current;
@@ -232,6 +86,9 @@ export function HistoryTimeline({
     if (!origin || trackWidth <= 0) return;
     setRange(shiftTimelineWindow(origin.range, -(event.clientX - origin.clientX) / trackWidth));
   }
+
+  const handleHover = (entry: TimelineEntry | null, point: HoverPoint | null) =>
+    setHovered(entry ? { entry, point } : null);
 
   return (
     <section
@@ -296,6 +153,19 @@ export function HistoryTimeline({
           </Button>
         </div>
       </div>
+      {presentSources.length > 0 ? (
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/50 px-3 py-1 text-ui-xs text-foreground-subtle"
+          aria-label={labels.sources}
+        >
+          {presentSources.map((source) => (
+            <span key={source} className="flex items-center gap-1">
+              <SourceDot source={source} />
+              {sourceLabel(source)}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto" data-testid="history-timeline-scroll">
         <div className="min-w-0">
           <div className="sticky top-0 z-10 flex h-9 border-b border-border bg-background-alt text-ui-xs text-foreground-subtle">
@@ -339,6 +209,7 @@ export function HistoryTimeline({
             groups.map((group) => (
               <div key={group.id}>
                 <div className="flex h-9 items-center gap-2 border-b border-border bg-surface px-3 text-ui-sm font-medium">
+                  {group.source ? <SourceDot source={group.source} /> : null}
                   <span className="truncate" title={group.subtitle ?? group.label}>
                     {group.source ? sourceLabel(group.source) : group.label}
                   </span>
@@ -350,6 +221,7 @@ export function HistoryTimeline({
                     className="flex h-8 border-b border-border/50"
                   >
                     <div className="flex w-28 shrink-0 items-center gap-2 px-3 text-ui-xs text-foreground-subtle sm:w-44">
+                      {lane.source ? <SourceDot source={lane.source} /> : null}
                       <span className="min-w-0 truncate" title={lane.label}>
                         {lane.source ? sourceLabel(lane.source) : lane.label}
                       </span>
@@ -364,7 +236,7 @@ export function HistoryTimeline({
                         themeRevision={themeRevision}
                         locale={locale}
                         onOpenSession={onOpenSession}
-                        onHover={setHovered}
+                        onHover={handleHover}
                       />
                     </div>
                   </div>
@@ -374,13 +246,16 @@ export function HistoryTimeline({
           )}
         </div>
       </div>
+      {hovered?.point ? (
+        <HoverCard entry={hovered.entry} point={hovered.point} locale={locale} />
+      ) : null}
       <div
         className="min-h-9 border-t border-border px-3 py-2 text-ui-xs text-foreground-subtle"
         role="status"
         aria-live="polite"
       >
         {hovered
-          ? `${hovered.session.title || labels.unknownTitle} · ${sourceLabel(hovered.session.source)} · ${hovered.session.cwd || hovered.session.project || labels.unknownProject} · ${formatHistoryDate(hovered.start, locale)}`
+          ? `${hovered.entry.session.title || labels.unknownTitle} · ${sourceLabel(hovered.entry.session.source)} · ${hovered.entry.session.cwd || hovered.entry.session.project || labels.unknownProject} · ${formatHistoryDate(hovered.entry.start, locale)}`
           : labels.keyboardHint}
       </div>
     </section>

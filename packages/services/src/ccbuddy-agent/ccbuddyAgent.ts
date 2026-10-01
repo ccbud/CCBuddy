@@ -29,6 +29,16 @@ import type {
   CCbuddyPluginsInstallResult,
   CCbuddyPluginsReferenceCatalogResult,
   CCbuddySkillsReferenceCatalogResult,
+  CCbuddyMcpReadResourceResult,
+  CCbuddyMcpUiCallToolResult,
+  CCbuddyMcpUiCancelCallResult,
+  CCbuddyMcpUiReadResourceResult,
+  CCbuddyMcpUiListResourcesResult,
+  CCbuddyMcpUiAppToolAcceptedResult,
+  CCbuddyMcpUiRegisterAppToolsResult,
+  CCbuddyMcpUiUnregisterAppToolsResult,
+  CCbuddyMcpUiListResourceTemplatesResult,
+  CCbuddyPluginsListUiSurfacesResult,
   CCbuddyWorkflowsDeleteResult,
   CCbuddyWorkflowsGetResult,
   CCbuddyWorkflowsListResult,
@@ -120,6 +130,16 @@ import type {
   CCbuddyAgentPluginViewParams,
   CCbuddyAgentPluginReferenceCatalogParams,
   CCbuddyAgentSkillReferenceCatalogParams,
+  CCbuddyAgentReadMcpResourceParams,
+  CCbuddyAgentReadMcpResourceForUiParams,
+  CCbuddyAgentListMcpResourcesForUiParams,
+  CCbuddyAgentAppToolCallForUiParams,
+  CCbuddyAgentAppToolInstanceForUiParams,
+  CCbuddyAgentRegisterAppToolsForUiParams,
+  CCbuddyAgentResolveAppToolCallForUiParams,
+  CCbuddyAgentMcpResourceSubscriptionForUiParams,
+  CCbuddyAgentCallMcpToolForUiParams,
+  CCbuddyAgentCancelMcpToolCallForUiParams,
   CCbuddyAgentResolveSuggestedPluginReferenceParams,
   CCbuddyAgentRemovePluginMarketplaceParams,
   CCbuddyAgentRestoreBuiltinPluginParams,
@@ -619,6 +639,66 @@ export interface ICCbuddyAgentService {
   getSkillReferenceCatalog(
     params: CCbuddyAgentSkillReferenceCatalogParams,
   ): Promise<CCbuddySkillsReferenceCatalogResult>;
+  /** 插件 UI：读取插件 MCP 的 `ui://` 资源；走 session 所在 workspace agent 进程。 */
+  openMcpUiInstance(
+    params: import("../plugin-ui-bridge/contract.js").PluginUiPrepareSandboxParams & {
+      accountContext?: string;
+    },
+  ): Promise<import("@ccbuddy/shared/mcp-apps").McpAppInstance>;
+  validateMcpUiInstance(
+    params: import("../plugin-ui-bridge/contract.js").PluginUiPluginScope,
+  ): Promise<void>;
+  recycleMcpUiInstance(
+    params: import("../plugin-ui-bridge/contract.js").PluginUiPluginScope,
+  ): Promise<boolean>;
+  closeMcpUiInstance(
+    params: import("../plugin-ui-bridge/contract.js").PluginUiPluginScope,
+  ): Promise<void>;
+  readMcpResource(params: CCbuddyAgentReadMcpResourceParams): Promise<CCbuddyMcpReadResourceResult>;
+  /** 插件 UI：UI 发起的工具调用；复用既有权限审批，不产生 transcript row。 */
+  sampleMcpApp(
+    params: import("../plugin-ui-bridge/samplingContract.js").PluginUiSamplingParams,
+  ): Promise<import("@ccbuddy/shared/mcp-apps").McpAppsSamplingResult>;
+  cancelMcpAppSampling(
+    params: import("../plugin-ui-bridge/samplingContract.js").PluginUiCancelSamplingParams,
+  ): Promise<{ cancelled: boolean }>;
+  callMcpToolForUi(params: CCbuddyAgentCallMcpToolForUiParams): Promise<CCbuddyMcpUiCallToolResult>;
+  /** 插件 UI 取消带 callId 的进行中 UI 工具调用；agent 侧 abort 到 MCP client。 */
+  cancelMcpToolCallForUi(
+    params: CCbuddyAgentCancelMcpToolCallForUiParams,
+  ): Promise<CCbuddyMcpUiCancelCallResult>;
+  /** 插件 UI 页面发起的 `resources/read`，agent 侧限同插件服务器、8 MiB、mimeType 白名单。 */
+  readMcpResourceForUi(
+    params: CCbuddyAgentReadMcpResourceForUiParams,
+  ): Promise<CCbuddyMcpUiReadResourceResult>;
+  /** 插件 UI 页面发起的 resources/list、resources/templates/list、subscribe、unsubscribe 代理。 */
+  listMcpResourcesForUi(
+    params: CCbuddyAgentListMcpResourcesForUiParams,
+  ): Promise<CCbuddyMcpUiListResourcesResult>;
+  listMcpResourceTemplatesForUi(
+    params: CCbuddyAgentListMcpResourcesForUiParams,
+  ): Promise<CCbuddyMcpUiListResourceTemplatesResult>;
+  subscribeMcpResourceForUi(params: CCbuddyAgentMcpResourceSubscriptionForUiParams): Promise<void>;
+  unsubscribeMcpResourceForUi(
+    params: CCbuddyAgentMcpResourceSubscriptionForUiParams,
+  ): Promise<void>;
+  /** App-Provided Tools：页面工具登记 / 注销与模型调用的认领 / 回传（信箱投递走 v4 live 增量）。 */
+  registerAppToolsForUi(
+    params: CCbuddyAgentRegisterAppToolsForUiParams,
+  ): Promise<CCbuddyMcpUiRegisterAppToolsResult>;
+  unregisterAppToolsForUi(
+    params: CCbuddyAgentAppToolInstanceForUiParams,
+  ): Promise<CCbuddyMcpUiUnregisterAppToolsResult>;
+  claimAppToolCallForUi(
+    params: CCbuddyAgentAppToolCallForUiParams,
+  ): Promise<CCbuddyMcpUiAppToolAcceptedResult>;
+  resolveAppToolCallForUi(
+    params: CCbuddyAgentResolveAppToolCallForUiParams,
+  ): Promise<CCbuddyMcpUiAppToolAcceptedResult>;
+  /** 插件 UI 工作区级面板入口（已启用插件清单 `ui.surfaces[]`）。 */
+  listPluginUiSurfaces(
+    params: CCbuddyAgentWorkspaceTarget,
+  ): Promise<CCbuddyPluginsListUiSurfacesResult>;
   // 已保存工作流的 GUI 中枢：workspace 级、无会话，每次调用扫描 CCbuddy workspace 配置目录。
   // 全局档传 `scope: "global"`：带 workspace 就用它当载体，不带则由 services 层自选本机载体运行时。
   listSavedWorkflows(

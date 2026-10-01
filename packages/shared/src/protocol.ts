@@ -234,10 +234,28 @@ export interface ResourceUsageSnapshot {
   processes: ResourceUsageProcess[];
 }
 
+/** 历史查看可扫描的会话来源；与 @ccbuddy/history 的 HistorySource 一致。 */
+export type HistoryExtraRootSource =
+  | "ccbuddy"
+  | "claude"
+  | "codex"
+  | "qoder"
+  | "grok"
+  | "copilot"
+  | "antigravity";
+
+/** 用户为历史查看额外添加的扫描目录（只读）。 */
+export interface HistoryExtraRoot {
+  source: HistoryExtraRootSource;
+  path: string;
+}
+
 export interface AppSettings {
   /** 当前 App/Host 不再显示提交前体验套餐推荐；不改变任何入口的模型选择。 */
   startPlanRecommendationDismissed?: boolean;
   recentProjects: string[]; // 最近项目列表，最多保留 10 个
+  /** 历史查看额外扫描的目录；默认目录与 Claude 多配置目录自动发现之外的补充。 */
+  historyExtraRoots?: HistoryExtraRoot[];
   locale: Locale; // 界面语言
   /**
    * 用户覆盖的快捷键绑定（命令 ID → 绑定串数组，格式见 shortcutCommands.ts）。

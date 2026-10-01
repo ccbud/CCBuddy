@@ -18,4 +18,6 @@ export interface Candidate {
   relativePath: string;
   id: string;
   stamp: SourceStamp;
+  /** Set when one producer file holds many sessions (CCbuddy's own database). */
+  sessionId?: string;
 }

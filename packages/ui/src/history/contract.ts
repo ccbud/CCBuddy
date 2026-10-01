@@ -1,5 +1,31 @@
 /** Read-only renderer contract. These types are structural and have no Node dependency. */
-export type HistorySource = "claude" | "codex" | "qoder" | "grok" | "copilot" | "antigravity";
+export type HistorySource =
+  | "ccbuddy"
+  | "claude"
+  | "codex"
+  | "qoder"
+  | "grok"
+  | "copilot"
+  | "antigravity";
+
+export const HISTORY_SOURCES: readonly HistorySource[] = [
+  "ccbuddy",
+  "claude",
+  "codex",
+  "qoder",
+  "grok",
+  "copilot",
+  "antigravity",
+];
+
+export type HistoryRootOrigin = "default" | "environment" | "profile" | "custom";
+
+export interface HistoryRootStatus {
+  source: HistorySource;
+  path: string;
+  origin: HistoryRootOrigin;
+  available: boolean;
+}
 
 export interface HistorySessionSummary {
   id: string;
@@ -66,6 +92,7 @@ export interface HistorySnapshot {
   version: number;
   sessions: readonly HistorySessionSummary[];
   diagnostics: readonly HistoryDiagnostic[];
+  roots: readonly HistoryRootStatus[];
   complete: boolean;
 }
 
@@ -87,3 +114,11 @@ export interface HistoryRefreshTerminal {
 export type HistoryRefreshEvent = HistoryRefreshProgress | HistoryRefreshTerminal;
 
 export type HistoryLocale = "zh-CN" | "en-US";
+
+/** What the reader can do with the selected session beyond reading it. */
+export interface HistorySessionActions {
+  /** Import an external session into a new CCbuddy session, or open CCbuddy's own task. */
+  continueSession?: (detail: HistorySessionDetail) => Promise<void>;
+  /** Open CCbuddy's own session directly (no import). */
+  openOwnSession?: (summary: HistorySessionSummary) => Promise<void>;
+}

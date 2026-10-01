@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -32,6 +33,16 @@ import { Button } from "@/components/ui/button.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { logger } from "@/logger.js";
 import { ConversationTurnGroup } from "@/v4/ConversationTurnGroup.js";
+import {
+  deriveLogicalUiInstances,
+  getPluginUiDisclosureVersion,
+  getPluginUiManualPin,
+  retainPluginUiSessionViewState,
+  setPluginUiInstanceDerivation,
+  subscribePluginUiDisclosure,
+  usePluginUiSessionKey,
+  type PluginUiRowPinResolver,
+} from "@/plugin-ui/index.js";
 import { ConversationPendingGuideList } from "@/v4/ConversationPendingGuideList.js";
 import type { AssistantFeedbackHandler } from "@/v4/ConversationRowView.js";
 import { ConversationTurnNavigator } from "@/v4/ConversationTurnNavigator.js";
@@ -414,13 +425,41 @@ function ConversationTimelineImpl({
     return () => observer.disconnect();
   }, [hasHeaderSlot]);
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
+  // 插件卡片展示模型——同资源替代 + 最近三回合自动展开 + 手动固定；推导结果发布给卡片自己读。
+  const pluginUiDerivation = useMemo(() => deriveLogicalUiInstances(rows), [rows]);
+  const pluginUiSessionKey = usePluginUiSessionKey();
+  useEffect(() => {
+    if (pluginUiSessionKey === null) return;
+    return retainPluginUiSessionViewState(pluginUiSessionKey);
+  }, [pluginUiSessionKey]);
+  useEffect(() => {
+    if (pluginUiSessionKey !== null)
+      setPluginUiInstanceDerivation(pluginUiSessionKey, pluginUiDerivation);
+  }, [pluginUiDerivation, pluginUiSessionKey]);
+  const pluginUiDisclosureVersion = useSyncExternalStore(
+    subscribePluginUiDisclosure,
+    getPluginUiDisclosureVersion,
+    getPluginUiDisclosureVersion,
+  );
+  const pluginUiPinResolver = useMemo<PluginUiRowPinResolver>(() => {
+    // 手动固定 / 收起变化（version 递增）时重建 resolver，折叠边界随之重算。
+    void pluginUiDisclosureVersion;
+    return (toolCallId) => ({
+      disposition: pluginUiDerivation.byToolCallId[toolCallId],
+      manualPinned:
+        pluginUiSessionKey === null
+          ? undefined
+          : getPluginUiManualPin(pluginUiSessionKey, toolCallId),
+    });
+  }, [pluginUiDerivation, pluginUiSessionKey, pluginUiDisclosureVersion]);
   const renderUnits = useMemo(
     () =>
       buildConversationTurnRenderUnits(rows, {
         nowMs: liveNowMs,
         sessionPhase,
+        pluginUiPinResolver,
       }),
-    [liveNowMs, rows, sessionPhase],
+    [liveNowMs, pluginUiPinResolver, rows, sessionPhase],
   );
   const { virtualizedUnits, liveUnit, liveUnitIndex } = useMemo(
     () => splitConversationTimelineLiveTail(renderUnits),
@@ -1789,6 +1828,7 @@ function ConversationTimelineImpl({
             <div
               ref={messageLayerRef}
               data-v4-timeline-message-layer="true"
+              data-sandbox-page-container="true"
               className="relative w-full flex-1 [mask-repeat:no-repeat] [-webkit-mask-repeat:no-repeat]"
             >
               {/*

@@ -1,95 +1,169 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Search } from "lucide-react";
+import { ArrowDownUp, Search } from "lucide-react";
 import type { HistoryLocale, HistorySessionSummary, HistorySource } from "./contract.js";
-import { formatHistoryDate, historyLabels, sourceLabel } from "./labels.js";
+import { HISTORY_SOURCES } from "./contract.js";
+import {
+  distinctHistoryProjects,
+  formatHistoryDuration,
+  groupHistorySessions,
+  relativeHistoryTime,
+  type HistorySortKey,
+} from "./history-grouping.js";
+import { historyLabels, sourceColor, sourceLabel } from "./labels.js";
 
 export interface HistorySessionListProps {
   sessions: readonly HistorySessionSummary[];
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   locale?: HistoryLocale;
+  /** Injected for deterministic tests; defaults to the current time. */
+  now?: number;
 }
 
-const sources: readonly HistorySource[] = [
-  "claude",
-  "codex",
-  "qoder",
-  "grok",
-  "copilot",
-  "antigravity",
-];
+type ListRow =
+  | { kind: "header"; key: string; label: string; count: number }
+  | { kind: "session"; key: string; session: HistorySessionSummary; index: number };
+
+const HEADER_HEIGHT = 32;
+const SESSION_HEIGHT = 72;
+
+export function SourceDot({
+  source,
+  className = "",
+}: {
+  source: HistorySource;
+  className?: string;
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-block size-2 shrink-0 rounded-full ${className}`}
+      style={{ backgroundColor: sourceColor(source) }}
+    />
+  );
+}
 
 export function HistorySessionList({
   sessions,
   selectedSessionId,
   onSelectSession,
   locale = "zh-CN",
+  now,
 }: HistorySessionListProps) {
   const labels = historyLabels(locale);
   const [query, setQuery] = useState("");
-  const [source, setSource] = useState<HistorySource | "all">("all");
+  const [sources, setSources] = useState<ReadonlySet<HistorySource>>(() => new Set());
+  const [project, setProject] = useState("");
+  const [sort, setSort] = useState<HistorySortKey>("recent");
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 每次渲染都取 Date.now() 会让分组/行列表永远是新引用，虚拟列表随之重算再触发渲染，形成死循环；
+  // 相对时间只在列表数据变化时重新取当前时刻。
+  const currentTime = useMemo(() => now ?? Date.now(), [now, sessions]);
+
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<HistorySource, number>();
+    for (const session of sessions)
+      counts.set(session.source, (counts.get(session.source) ?? 0) + 1);
+    return counts;
+  }, [sessions]);
+  const projects = useMemo(() => distinctHistoryProjects(sessions), [sessions]);
+
   const visibleSessions = useMemo(() => {
     const term = query.trim().toLocaleLowerCase(locale);
-    return sessions
-      .filter((session) => {
-        if (source !== "all" && session.source !== source) return false;
-        if (!term) return true;
-        return [
-          session.title,
-          session.project,
-          session.cwd ?? "",
-          sourceLabel(session.source),
-          session.model ?? "",
-        ].some((value) => value.toLocaleLowerCase(locale).includes(term));
-      })
-      .sort((left, right) => {
-        const a = Date.parse(left.lastActivity);
-        const b = Date.parse(right.lastActivity);
-        if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return b - a;
-        return left.id.localeCompare(right.id);
+    return sessions.filter((session) => {
+      if (sources.size > 0 && !sources.has(session.source)) return false;
+      if (project && (session.project || session.cwd || "") !== project) return false;
+      if (!term) return true;
+      return [
+        session.title,
+        session.project,
+        session.cwd ?? "",
+        sourceLabel(session.source),
+        session.model ?? "",
+      ].some((value) => value.toLocaleLowerCase(locale).includes(term));
+    });
+  }, [locale, project, query, sessions, sources]);
+
+  const rows = useMemo<ListRow[]>(() => {
+    const result: ListRow[] = [];
+    let index = 0;
+    for (const group of groupHistorySessions(visibleSessions, sort, currentTime, locale)) {
+      result.push({
+        kind: "header",
+        key: `header:${group.id}`,
+        label: group.label,
+        count: group.sessions.length,
       });
-  }, [locale, query, sessions, source]);
+      for (const session of group.sessions) {
+        result.push({ kind: "session", key: session.id, session, index });
+        index += 1;
+      }
+    }
+    return result;
+  }, [currentTime, locale, sort, visibleSessions]);
+  const sessionRows = useMemo(
+    () =>
+      rows.filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session"),
+    [rows],
+  );
+
   const virtualizer = useVirtualizer({
-    count: visibleSessions.length,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 72,
-    getItemKey: (index) => visibleSessions[index]?.id ?? index,
-    overscan: 8,
+    estimateSize: (index) => (rows[index]?.kind === "header" ? HEADER_HEIGHT : SESSION_HEIGHT),
+    getItemKey: (index) => rows[index]?.key ?? index,
+    overscan: 10,
   });
   const virtualRows = virtualizer.getVirtualItems();
 
   useEffect(() => {
-    setActiveIndex((current) => Math.min(current, Math.max(0, visibleSessions.length - 1)));
-  }, [visibleSessions.length]);
+    setActiveIndex((current) => Math.min(current, Math.max(0, sessionRows.length - 1)));
+  }, [sessionRows.length]);
+
+  function focusSession(index: number) {
+    setActiveIndex(index);
+    const rowIndex = rows.findIndex((row) => row.kind === "session" && row.index === index);
+    if (rowIndex >= 0) virtualizer.scrollToIndex(rowIndex, { align: "auto" });
+  }
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (visibleSessions.length === 0) return;
+    if (sessionRows.length === 0) return;
     let next = activeIndex;
-    if (event.key === "ArrowDown") next = Math.min(visibleSessions.length - 1, activeIndex + 1);
+    if (event.key === "ArrowDown") next = Math.min(sessionRows.length - 1, activeIndex + 1);
     else if (event.key === "ArrowUp") next = Math.max(0, activeIndex - 1);
     else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = visibleSessions.length - 1;
+    else if (event.key === "End") next = sessionRows.length - 1;
     else if (event.key === "Enter" || event.key === " ") {
       if (event.target === event.currentTarget) {
         event.preventDefault();
-        const session = visibleSessions[activeIndex];
-        if (session) onSelectSession(session.id);
+        const row = sessionRows[activeIndex];
+        if (row) onSelectSession(row.session.id);
       }
       return;
     } else return;
     event.preventDefault();
-    setActiveIndex(next);
-    virtualizer.scrollToIndex(next, { align: "auto" });
+    focusSession(next);
   }
+
+  function toggleSource(source: HistorySource) {
+    setSources((current) => {
+      const next = new Set(current);
+      if (next.has(source)) next.delete(source);
+      else next.add(source);
+      return next;
+    });
+    setActiveIndex(0);
+  }
+
+  const availableSources = HISTORY_SOURCES.filter((source) => sourceCounts.has(source));
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col bg-surface" aria-label={labels.list}>
-      <div className="border-b border-border p-3">
-        <div className="mb-2 flex items-baseline justify-between gap-2">
+      <div className="flex flex-col gap-2 border-b border-border p-3">
+        <div className="flex items-baseline justify-between gap-2">
           <h2 className="text-ui-base font-semibold">{labels.list}</h2>
           <span className="text-ui-xs text-foreground-subtle">
             {visibleSessions.length} {labels.sessionOf}
@@ -109,27 +183,70 @@ export function HistorySessionList({
             className="min-w-0 flex-1 bg-transparent text-mobile-input-safe text-foreground outline-none placeholder:text-foreground-subtlest md:text-ui-base"
           />
         </label>
-        <select
-          value={source}
-          onChange={(event) => {
-            setSource(event.target.value as HistorySource | "all");
-            setActiveIndex(0);
-          }}
-          aria-label={labels.allAgents}
-          className="mt-2 h-7 w-full rounded-lg border border-input-border bg-input px-2 text-mobile-input-safe text-foreground outline-none focus-visible:border-input-border-focused md:text-ui-sm"
-        >
-          <option value="all">{labels.allAgents}</option>
-          {sources.map((item) => (
-            <option key={item} value={item}>
-              {sourceLabel(item)}
-            </option>
-          ))}
-        </select>
+        {availableSources.length > 1 ? (
+          <div
+            className="flex flex-wrap gap-1"
+            role="group"
+            aria-label={labels.allAgents}
+            data-testid="history-source-filter"
+          >
+            {availableSources.map((source) => {
+              const active = sources.has(source);
+              return (
+                <button
+                  key={source}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => toggleSource(source)}
+                  className={`flex h-6 items-center gap-1.5 rounded-full border px-2 text-ui-xs transition-colors ${active ? "border-brand bg-selected text-foreground" : "border-border text-foreground-subtle hover:bg-hover hover:text-foreground"}`}
+                >
+                  <SourceDot source={source} />
+                  <span>{sourceLabel(source)}</span>
+                  <span className="text-foreground-subtlest">{sourceCounts.get(source)}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="flex items-center gap-2">
+          {projects.length > 1 ? (
+            <select
+              value={project}
+              onChange={(event) => {
+                setProject(event.target.value);
+                setActiveIndex(0);
+              }}
+              aria-label={labels.allProjects}
+              className="h-7 min-w-0 flex-1 rounded-lg border border-input-border bg-input px-2 text-mobile-input-safe text-foreground outline-none focus-visible:border-input-border-focused md:text-ui-sm"
+            >
+              <option value="">{labels.allProjects}</option>
+              {projects.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="flex-1" />
+          )}
+          <button
+            type="button"
+            onClick={() => setSort((current) => (current === "recent" ? "created" : "recent"))}
+            className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-ui-xs text-foreground-subtle hover:bg-hover hover:text-foreground"
+            aria-label={sort === "recent" ? labels.sortRecent : labels.sortCreated}
+          >
+            <ArrowDownUp className="size-3.5" aria-hidden="true" />
+            {sort === "recent" ? labels.sortRecent : labels.sortCreated}
+          </button>
+        </div>
       </div>
       {visibleSessions.length === 0 ? (
-        <p className="px-3 py-6 text-ui-sm text-foreground-subtle">
-          {sessions.length === 0 ? labels.noSessions : labels.noMatches}
-        </p>
+        <div className="px-3 py-6 text-ui-sm text-foreground-subtle">
+          <p>{sessions.length === 0 ? labels.noSessions : labels.noMatches}</p>
+          {sessions.length === 0 ? (
+            <p className="mt-1 text-ui-xs text-foreground-subtlest">{labels.noSessionsHint}</p>
+          ) : null}
+        </div>
       ) : (
         <div
           ref={scrollRef}
@@ -141,21 +258,43 @@ export function HistorySessionList({
           onKeyDown={handleListKeyDown}
         >
           <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-            {virtualRows.map((row) => {
-              const session = visibleSessions[row.index];
-              if (!session) return null;
+            {virtualRows.map((virtualRow) => {
+              const row = rows[virtualRow.index];
+              if (!row) return null;
+              if (row.kind === "header") {
+                return (
+                  <div
+                    key={virtualRow.key}
+                    role="presentation"
+                    className="absolute left-0 top-0 flex h-8 w-full items-center gap-2 bg-surface px-3 text-ui-xs font-medium text-foreground-subtle"
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    <span>{row.label}</span>
+                    <span className="text-foreground-subtlest">{row.count}</span>
+                  </div>
+                );
+              }
+              const { session } = row;
               const selected = session.id === selectedSessionId;
               const active = row.index === activeIndex;
+              const duration = formatHistoryDuration(
+                session.createdAt,
+                session.lastActivity,
+                locale,
+              );
               return (
                 <button
-                  key={row.key}
+                  key={virtualRow.key}
                   id={`history-session-row-${row.index}`}
                   type="button"
                   role="option"
                   aria-selected={selected}
                   tabIndex={-1}
-                  className={`absolute left-0 top-0 flex h-18 w-full flex-col justify-center gap-1 border-b border-border/50 px-3 text-left outline-none hover:bg-surface-hover ${selected ? "bg-card-selected" : active ? "bg-hover" : ""}`}
-                  style={{ transform: `translateY(${row.start}px)` }}
+                  className={`absolute left-0 top-0 flex h-18 w-full flex-col justify-center gap-1 border-l-2 px-3 text-left outline-none hover:bg-surface-hover ${selected ? "bg-card-selected" : active ? "bg-hover" : ""}`}
+                  style={{
+                    transform: `translateY(${virtualRow.start}px)`,
+                    borderLeftColor: selected ? sourceColor(session.source) : "transparent",
+                  }}
                   onClick={() => {
                     setActiveIndex(row.index);
                     onSelectSession(session.id);
@@ -165,28 +304,44 @@ export function HistorySessionList({
                     <span className="min-w-0 flex-1 truncate text-ui-base font-medium">
                       {session.title || labels.unknownTitle}
                     </span>
-                    {session.isSubagent ? (
-                      <span className="text-ui-xs text-foreground-subtle">
-                        {labels.childAgents}
-                      </span>
-                    ) : null}
+                    <time
+                      dateTime={session.lastActivity}
+                      className="shrink-0 text-ui-xs text-foreground-subtlest"
+                    >
+                      {relativeHistoryTime(
+                        sort === "created" ? session.createdAt : session.lastActivity,
+                        currentTime,
+                        locale,
+                      )}
+                    </time>
                   </span>
                   <span className="flex min-w-0 items-center gap-2 text-ui-xs text-foreground-subtle">
-                    <span className="shrink-0">{sourceLabel(session.source)}</span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      <SourceDot source={session.source} />
+                      {sourceLabel(session.source)}
+                    </span>
                     <span
                       className="min-w-0 flex-1 truncate"
                       title={session.cwd ?? session.project}
                     >
                       {session.project || session.cwd || labels.unknownProject}
                     </span>
+                    {session.isSubagent ? (
+                      <span className="shrink-0 rounded-full border border-border px-1.5 text-ui-xs">
+                        {labels.childAgents}
+                      </span>
+                    ) : null}
                   </span>
-                  <span className="flex items-center justify-between gap-2 text-ui-xs text-foreground-subtlest">
-                    <span>
+                  <span className="flex min-w-0 items-center gap-2 text-ui-xs text-foreground-subtlest">
+                    <span className="shrink-0">
                       {session.messageCount} {labels.messages}
                     </span>
-                    <time dateTime={session.lastActivity}>
-                      {formatHistoryDate(session.lastActivity, locale)}
-                    </time>
+                    {duration ? <span className="shrink-0">· {duration}</span> : null}
+                    {session.model ? (
+                      <span className="min-w-0 truncate font-mono" title={session.model}>
+                        · {session.model}
+                      </span>
+                    ) : null}
                   </span>
                 </button>
               );

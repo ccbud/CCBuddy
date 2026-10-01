@@ -7,7 +7,8 @@ import { qoderAdapter } from "./qoder.js";
 import { grokAdapter } from "./grok.js";
 import { copilotAdapter } from "./copilot.js";
 import { parseAntigravity } from "./antigravity.js";
-import { discover, stamp, stampSqlite } from "./discovery.js";
+import { CcbuddyMetadataCache, expandCcbuddyCandidates, parseCcbuddy } from "./ccbuddy.js";
+import { discover, isSqliteSource, stamp, stampSqlite } from "./discovery.js";
 import { jsonlRecords, readTextSidecar } from "./source-file.js";
 
 const adapters = {
@@ -19,12 +20,18 @@ const adapters = {
 };
 
 export class FileHistorySourceRepository implements HistorySourcePort {
+  private readonly ccbuddyCache = new CcbuddyMetadataCache();
+
   discover(roots: readonly HistoryRoot[], explicit: boolean, signal?: AbortSignal) {
-    return discover(roots, explicit, signal);
+    return discover(roots, explicit, signal, (candidate) =>
+      candidate.source === "ccbuddy"
+        ? expandCcbuddyCandidates(candidate, this.ccbuddyCache, signal)
+        : Promise.resolve([candidate]),
+    );
   }
 
   stamp(candidate: Candidate) {
-    return candidate.source === "antigravity"
+    return isSqliteSource(candidate.source)
       ? stampSqlite(candidate.path, candidate.root)
       : stamp(candidate.path, candidate.root);
   }
@@ -40,6 +47,8 @@ export class FileHistorySourceRepository implements HistorySourcePort {
     let diagnostics: HistoryDiagnostic[] = [];
     if (candidate.source === "antigravity") {
       parsed = await parseAntigravity(freshCandidate, mode, signal);
+    } else if (candidate.source === "ccbuddy") {
+      parsed = await parseCcbuddy(freshCandidate, mode, this.ccbuddyCache, signal);
     } else {
       const input: SourceInput = {
         file: candidate.path,

@@ -119,6 +119,7 @@ import {
 } from "./subagent-session-query.js";
 import { runSessionModelConfigMutation } from "../ccbuddy-protocol-v4/model-config-mutation.js";
 import { runWithSessionResidencyFinalization } from "./session-residency.js";
+import { abortMcpUiToolCallsForSession, clearMcpUiAppToolsForSession } from "./mcp-ui/index.js";
 
 const PLAN_MODE_GOAL_CONTINUATION_SKIPPED_MESSAGE = "Plan mode 下已记录 goal，但不会自动继续。";
 const SLOW_SNAPSHOT_LOG_THRESHOLD_MS = 1000;
@@ -1010,16 +1011,12 @@ async function persistImportedSessionHistory(params: {
   const workspace = params.record.workspace;
   const workspaceIdentity = workspace.workspaceIdentity?.trim();
   const now = Date.now();
-  const createdAt =
-    importedHistory.createdAt ??
-    (importedHistory.source === "claudeCode"
-      ? importedHistory.messages[0]?.timestamp
-      : undefined) ??
-    now;
-  const updatedAt =
-    importedHistory.source === "claudeCode"
-      ? (importedHistory.updatedAt ?? importedHistory.messages.at(-1)?.timestamp ?? createdAt)
-      : createdAt;
+  // sharedContext 只有一条上下文消息；其余来源（Claude 迁移、历史阅读器导入）都带完整消息数组。
+  const transcript = importedHistory.source === "sharedContext" ? null : importedHistory;
+  const createdAt = importedHistory.createdAt ?? transcript?.messages[0]?.timestamp ?? now;
+  const updatedAt = transcript
+    ? (transcript.updatedAt ?? transcript.messages.at(-1)?.timestamp ?? createdAt)
+    : createdAt;
   // 历史导入不执行模型；未绑定时保留消息内容，不能要求当前选择或伪造消息来源。
   const currentModel = optionalModelSelectionFromString(params.record.app.getModel());
   const providerId = currentModel?.providerId as ModelProviderId | undefined;
@@ -2722,6 +2719,12 @@ export async function closeSession(context: CCbuddyProtocolAgentServerContext, r
     return { closed: false };
   }
   record.unsubscribe?.();
+  // 会话关闭时 abort 仍在进行的插件 UI 工具调用，登记表不留孤儿。
+  abortMcpUiToolCallsForSession(params.sessionId);
+  // App-Provided Tools：结束本会话全部待执行的页面调用并丢弃登记。
+  clearMcpUiAppToolsForSession(context, params.sessionId);
+  // 清掉本会话全部资源订阅（refcount 归零的 uri 才真正向 server 退订）。
+  await record.app.unsubscribeMcpResourcesForUi?.(`${params.sessionId}|`).catch(() => 0);
   await record.app.close?.();
   // v4 通道：会话关闭同时清 publisher / 订阅调度；重开会话走 snapshot 冷启动。
   // dispose 必须先于注册表删除——gateway 靠 getSessionWorkspaceId

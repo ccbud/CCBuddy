@@ -5,6 +5,7 @@ import type {
   HistoryRefreshOptions,
   HistoryRefreshTerminal,
   HistoryRoot,
+  HistoryRootStatus,
   HistorySessionDetail,
   HistorySessionSummary,
   HistorySnapshot,
@@ -75,22 +76,27 @@ function detailFromParsed(candidate: Candidate, result: ParsedCandidate): Histor
   };
 }
 
+/** Roots are resolved per refresh so user configuration and detected profiles apply without recreating the library. */
+export type HistoryRootsProvider = () => Promise<readonly HistoryRoot[]> | readonly HistoryRoot[];
+
 export class HistoryLibraryCore implements HistoryLibraryPort {
-  private readonly roots: readonly HistoryRoot[];
+  private readonly roots: readonly HistoryRoot[] | HistoryRootsProvider;
   private readonly explicitRoots: boolean;
   private generation = 0;
   private version = 0;
   private entries = new Map<string, CatalogEntry>();
+  private rootStatuses: HistoryRootStatus[] = [];
   private snapshot: HistorySnapshot = {
     protocolVersion: HISTORY_PROTOCOL_VERSION,
     version: 0,
     sessions: [],
     diagnostics: [],
+    roots: [],
     complete: false,
   };
 
   constructor(
-    roots: readonly HistoryRoot[],
+    roots: readonly HistoryRoot[] | HistoryRootsProvider,
     explicitRoots: boolean,
     private readonly sources: HistorySourcePort,
   ) {
@@ -167,8 +173,11 @@ export class HistoryLibraryCore implements HistoryLibraryPort {
     };
     if (cancelled()) return finish("cancelled");
     try {
-      const found = await this.sources.discover(this.roots, this.explicitRoots, options.signal);
+      const roots = typeof this.roots === "function" ? await this.roots() : this.roots;
       if (cancelled()) return finish("cancelled");
+      const found = await this.sources.discover(roots, this.explicitRoots, options.signal);
+      if (cancelled()) return finish("cancelled");
+      this.rootStatuses = found.roots;
       const next = new Map<string, CatalogEntry>();
       const diagnostics = [...found.diagnostics];
       let completed = 0;
@@ -243,6 +252,7 @@ export class HistoryLibraryCore implements HistoryLibraryPort {
       version: this.version,
       sessions,
       diagnostics,
+      roots: this.rootStatuses,
       complete,
     };
   }

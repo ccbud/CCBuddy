@@ -27,6 +27,7 @@ import {
 } from "./constants.js";
 import { InlineEditableProviderCard } from "./InlineEditableProviderCard.js";
 import {
+  ModelProviderEmptyCard,
   ModelProviderLoadingCard,
   PresetProviderPlaceholderCard,
   CodingPlanStatusPanel,
@@ -251,9 +252,11 @@ export function ModelProviderSectionDetail({
   onOpenBigModelRegistration,
   onCodingPlanPurchaseComplete,
   onSelectNavItem,
+  onAddProvider,
   providerSettingsView: providerSettingsViewOverride,
 }: {
   selectedNavItem: ModelProviderNavItem | null;
+  onAddProvider?: () => void;
   navigationItems?: ModelProviderNavItem[];
   connectionSettingsFailed?: boolean;
   connectionSelections?: ProviderFamilyConnectionSelectionSettings;
@@ -391,6 +394,11 @@ export function ModelProviderSectionDetail({
   }, [selectedItemKey]);
 
   if (!selectedNavItem) {
+    // 全新 profile 没有任何供应商时不存在可选项，之前这里一直显示"加载中"，用户会以为页面卡住。
+    // 只有列表确实为空且没有在刷新时才展示空状态；选中项尚未解析出来的过渡态仍按加载处理。
+    if (!presetLoading && navigationItems.length === 0) {
+      return <ModelProviderEmptyCard onAddProvider={onAddProvider} />;
+    }
     return <ModelProviderLoadingCard loadingLabel={loadingLabel} />;
   }
 

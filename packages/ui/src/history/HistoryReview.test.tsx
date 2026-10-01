@@ -9,6 +9,7 @@ const snapshot: HistorySnapshot = {
   version: 1,
   sessions: [],
   diagnostics: [],
+  roots: [],
   complete: true,
 };
 

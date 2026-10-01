@@ -2,7 +2,10 @@ import { posix } from "node:path";
 
 export const REMOTE_AGENT_OFFICIAL_PLUGIN_DIR_NAME = "packages";
 
-export const REMOTE_AGENT_OFFICIAL_PLUGIN_PACKAGE_NAMES = ["browser-use-plugin"] as const;
+export const REMOTE_AGENT_OFFICIAL_PLUGIN_PACKAGE_NAMES = [
+  "browser-use-plugin",
+  "visualize-plugin",
+] as const;
 
 export const REMOTE_AGENT_OFFICIAL_PLUGIN_INCLUDED_TOP_LEVEL_PATHS = [
   ".mcp.json",
@@ -36,6 +39,30 @@ export const REMOTE_AGENT_OFFICIAL_PLUGIN_REQUIRED_RELATIVE_PATHS = [
   // 远程工作区当前不承载 Browser Use / Computer Use，因此宿主 runtime 不进这份远端合同——
   // 要支持远程 bua/cua 时，应把 node-repl-host 补进上面的 PACKAGE_NAMES 并在此声明它的
   // dist/mcp/server.js，而不是把宿主产物挂回 browser-use 名下。
+  "visualize-plugin/skills/visualize/SKILL.md",
+  "visualize-plugin/skills/visualize/references/api.md",
+  "visualize-plugin/skills/visualize/references/styles.md",
+  "visualize-plugin/skills/visualize/tweak.md",
+  "visualize-plugin/skills/visualize/LICENSE.md",
+  "visualize-plugin/skills/visualize/scripts/render.py",
+  "visualize-plugin/skills/visualize/assets/visualize.css",
+  "visualize-plugin/skills/visualize/assets/visualize.html",
+  "visualize-plugin/skills/visualize/assets/calendar.js",
+  "visualize-plugin/skills/visualize/assets/runtime-manifest.json",
+  "visualize-plugin/skills/visualize/scripts/vendor.py",
+  "visualize-plugin/skills/visualize/assets/vendor/manifest.json",
+  "visualize-plugin/skills/visualize/assets/vendor/floating-ui-core-1.7.3.min.js",
+  "visualize-plugin/skills/visualize/assets/vendor/floating-ui-core-1.7.3.min.js.LICENSE",
+  "visualize-plugin/skills/visualize/assets/vendor/floating-ui-dom-1.7.4.min.js",
+  "visualize-plugin/skills/visualize/assets/vendor/floating-ui-dom-1.7.4.min.js.LICENSE",
+  "visualize-plugin/skills/visualize/assets/vendor/lucide-1.17.0.js",
+  "visualize-plugin/skills/visualize/assets/vendor/lucide-1.17.0.js.LICENSE",
+  "visualize-plugin/skills/visualize/assets/vendor/d3-7.9.0.min.js",
+  "visualize-plugin/skills/visualize/assets/vendor/d3-7.9.0.min.js.LICENSE",
+  "visualize-plugin/skills/visualize/assets/standalone-host-bridge.js",
+  "visualize-plugin/skills/visualize/assets/standalone-shell.js",
+  "visualize-plugin/skills/visualize/widgets/calendar.md",
+  "visualize-plugin/skills/visualize/examples/calendar.html",
   "browser-use-plugin/docs/api.json",
   "browser-use-plugin/docs/documents.json",
   "browser-use-plugin/docs/overview.md",

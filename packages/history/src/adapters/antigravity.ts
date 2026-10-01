@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { mkdtemp, open, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
@@ -7,7 +6,8 @@ import type { HistoryContentBlock } from "../contract.js";
 import type { ParsedSource } from "../app/source-adapter.js";
 import { MessageCollector } from "../domain/message-collector.js";
 import { message, string } from "../domain/value.js";
-import { type Candidate, openVerified, stamp, stampSqlite } from "./discovery.js";
+import { type Candidate, stampSqlite } from "./discovery.js";
+import { copyVerified } from "./sqlite-snapshot.js";
 import { WireMessage } from "./antigravity-wire.js";
 
 // Desktop's bundler rewrites a direct node:sqlite import to a bare sqlite import.
@@ -164,35 +164,4 @@ export async function parseAntigravity(
     messageCount: collector.count,
     usage: collector.usage,
   };
-}
-
-async function copyVerified(candidate: Candidate, destination: string): Promise<void> {
-  const { handle, before } = await openVerified(candidate);
-  let target;
-  try {
-    target = await open(
-      destination,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600,
-    );
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    let position = 0;
-    while (true) {
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-      if (bytesRead === 0) break;
-      let written = 0;
-      while (written < bytesRead) {
-        const result = await target.write(buffer, written, bytesRead - written, position + written);
-        if (result.bytesWritten === 0) throw new Error("Cannot copy SQLite snapshot");
-        written += result.bytesWritten;
-      }
-      position += bytesRead;
-    }
-    const after = await stamp(candidate.path, candidate.root);
-    if (after.fingerprint !== before.fingerprint)
-      throw new Error("Source changed while making SQLite snapshot");
-  } finally {
-    await handle.close();
-    await target?.close();
-  }
 }

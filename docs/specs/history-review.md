@@ -3,10 +3,21 @@
 ## Product boundary
 
 The new CCbuddy uses the upstream base project as its application and agent foundation.
-The only behavior carried forward from the former CCbuddy application is read-only
-session review and its cross-session calendar timeline. Provider proxying, CLI
-configuration writes, plugin and Skills management, usage monitoring, session
-mutation, import, export, and resume actions are outside this feature.
+The behavior carried forward from the former CCbuddy application is read-only
+session review, its cross-session calendar timeline, and "continue in CCbuddy":
+importing an external session into a new CCbuddy session. Provider proxying, CLI
+configuration writes, plugin and Skills management, usage monitoring, editing or
+exporting producer records, and resuming a session inside its original tool are
+outside this feature.
+
+Session sources are CCbuddy's own agent sessions (`~/.ccbuddy/cli/db/db.sqlite`,
+one catalog entry per session row) plus the external producers below. Claude
+Code roots come from `~/.claude/projects`, `$XDG_CONFIG_HOME/claude/projects`,
+`$CLAUDE_CONFIG_DIR/projects`, and any detected profile directory
+(`~/.claude-*/projects`, `~/.claude-config/<profile>/projects`). The user may add
+read-only roots per source in the history header ("Source folders"); they are
+stored as `historyExtraRoots` in the app settings and re-read on every refresh.
+The snapshot reports every scanned root with its origin and availability.
 
 ## Ownership and contracts
 
@@ -22,8 +33,8 @@ For SQLite histories, the fingerprint includes the database and any active WAL
 or shared-memory siblings. A WAL-only write must change the catalog identity,
 and snapshot copying checks the composite identity before publishing results.
 
-The service scans the configured local roots for Claude Code, Codex, Qoder,
-Grok Build, GitHub Copilot CLI, and Antigravity CLI. It isolates malformed JSONL
+The service scans the configured local roots for CCbuddy, Claude Code, Codex,
+Qoder, Grok Build, GitHub Copilot CLI, and Antigravity CLI. It isolates malformed JSONL
 records so one bad row does not hide the remaining session. The source adapter
 normalizes messages, tool calls, timing, usage, and child-agent references. Each
 record has a stable identity and source order. Missing optional metadata degrades
@@ -51,6 +62,43 @@ Both modes use the same normalization rules and produce the same summary. SQLite
 sources use a private verified snapshot and a bounded row cursor, applying the
 same metadata/detail split. A cancelled or changing source aborts before its
 metadata can be published. Malformed rows remain line-numbered diagnostics.
+
+"Continue in CCbuddy" is a user-initiated write path that stays outside the
+read-only history bridge. The reader converts the loaded transcript into
+user/assistant text (tool calls and results folded into the assistant turn with
+bounded payloads, reasoning and injected context dropped, consecutive same-role
+turns merged, oldest turns dropped first under a total budget while the first
+user turn is kept) and asks the task service to create a CCbuddy session through
+the agent's `importedHistory` contract with `source: "externalHistory"`. The new
+task is indexed with `migrationSource: "externalHistory"` and opened in the
+workbench; importing the same producer session into the same workspace again
+reopens the existing task instead of writing a second copy. The workspace is the
+session's recorded working directory, else the active workspace; without either
+the action reports an error. For CCbuddy's own sessions the action opens the task
+directly. Producer files are never modified.
+
+The task service owns the import identity: producer, producer session ID, and
+the canonical workspace key (`workspaceIdentity?.trim() || workspacePath`)
+determine the task/session ID. Distinct workspace identities must produce
+distinct task IDs even when their file-operation paths match. Whitespace around
+an identity does not create a second import; without an identity the existing
+path-based local IDs remain unchanged. The adapter routes later task commands
+by task ID, and the Agent persists sessions under that same ID, so workspace
+isolation must be established before either owner receives the imported task.
+
+```text
+reader -> task service: producer session + workspace identity/path
+       -> canonical workspace key -> stable task/session ID
+       -> existing workspace task: reopen without rewriting history
+       -> new workspace task: Agent persists session -> index -> task routing
+```
+
+The list groups sessions by day (today, yesterday, this week, this month, then
+by month), filters by source, project, and text, sorts by last activity or
+creation time, and shows source, project, message count, duration, and model per
+row. The timeline colors bars by source, shows a legend and today marker, and a
+hover card with the session facts. The reader header carries the session facts
+and the continue / open action.
 
 The calendar consumes only normalized session metadata. It groups first by
 project directory or by agent, then uses the opposite dimension as lanes. It
@@ -151,8 +199,10 @@ producer records or config files.
    Refresh memory is bounded by a single JSONL record or SQLite cursor batch,
    rather than the total transcript size, apart from per-session metadata and a
    capped set of malformed-row diagnostics; detail can materialize one transcript.
-6. No old CCbuddy gateway, provider, plugin, Skills, usage-monitoring dashboard, import, export,
-   resume, or session-editing UI or service is shipped as part of this feature.
+6. No old CCbuddy gateway, provider, plugin, Skills, usage-monitoring dashboard, export,
+   in-tool resume, or session-editing UI or service is shipped as part of this feature.
+   The only write path is "continue in CCbuddy", which creates a CCbuddy session
+   from a normalized transcript and leaves the producer record untouched.
 7. Searching the selected transcript finds text in messages and tool payloads,
    navigates among matching messages, highlights the selected result, and
    reaches matches beyond the initial render window without mounting the full
@@ -175,3 +225,15 @@ producer records or config files.
     selected while task rows have no active highlight. No separate window opens
     from these buttons. Selecting a task restores chat and its active row;
     automation and plugin navigation continues to work.
+11. CCbuddy's own sessions appear in the list and timeline with their title,
+    directory, message count, model, and usage, and open their task directly.
+    A Claude Code profile under `CLAUDE_CONFIG_DIR` or `~/.claude-config/<name>` is
+    scanned without configuration; a custom root added in "Source folders" is
+    scanned on the next refresh and reported with its availability.
+12. Continuing an external session creates one CCbuddy task per producer session
+    and workspace, with the transcript folded as specified above; repeating the
+    action reopens that task. The import never writes into the producer root.
+    Two workspace identities sharing one path receive separate task IDs, and
+    loading either task cannot redirect the other task's model changes.
+    Repeating an import with the same trimmed identity reuses its task; local
+    imports without an identity retain their previous IDs.
