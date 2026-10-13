@@ -24,6 +24,20 @@ export function parseBotCommand(text: string): BotCommand {
 
   const { name, rest } = parsed;
   switch (name) {
+    case "leave":
+      return { type: "topic.leave" };
+    case "history":
+      return !rest || rest === "on" || rest === "off"
+        ? { type: "group.history", ...(rest ? { enabled: rest === "on" } : {}) }
+        : { type: "unknown", name, raw: text };
+    case "queue-cancel":
+      return rest
+        ? { type: "queue.cancel", commandId: rest }
+        : { type: "unknown", name, raw: text };
+    case "enable":
+      return { type: "group.enable" };
+    case "disable":
+      return { type: "group.disable" };
     case "bind":
       return rest ? { type: "bind", code: rest } : { type: "unknown", name, raw: text };
     case "help":

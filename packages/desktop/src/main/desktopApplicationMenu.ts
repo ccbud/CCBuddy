@@ -4,12 +4,13 @@ import {
   desktopMenuMessageIds,
   getDesktopMenuMessage,
   isValidShortcutBinding,
+  CCBUDDY_ENV,
+  CCBUDDY_PRODUCT_FLAVOR,
   type DesktopCommandId,
   type Locale,
 } from "@ccbuddy/shared";
 import { readCCbuddyStdioTapDevState } from "@ccbuddy/services/node";
 import { CHECK_FOR_UPDATE_MENU_ID, setAutoUpdaterMenuLocale } from "./autoUpdater.js";
-import { desktopUpdatePolicy } from "./desktopUpdatePolicy.js";
 import {
   DESKTOP_ZOOM_MAX_LEVEL,
   DESKTOP_ZOOM_MIN_LEVEL,
@@ -19,6 +20,9 @@ import {
   HELP_TOGGLE_CCBUDDY_STDIO_TAP_MENU_ID,
   HELP_TOGGLE_DEV_TOOLS_MENU_ID,
 } from "./desktopCommandHandlers.js";
+
+export const HELP_CCBUDDY_ENDPOINT_PRODUCTION_MENU_ID = "help.ccbuddy-endpoint.production";
+export const HELP_CCBUDDY_ENDPOINT_TEST_MENU_ID = "help.ccbuddy-endpoint.test";
 
 export function getDesktopMenuLabel(
   locale: Locale,
@@ -80,7 +84,6 @@ function resolveMenuAccelerator(
 function buildApplicationMenuTemplate(options: {
   currentApplicationLocale: Locale;
   ccbuddyEndpointSelection?: "production" | "test" | "custom";
-  openHistoryReview?: () => void;
   executeDesktopCommand: (
     command: DesktopCommandId,
     senderWindow?: BrowserWindow | null,
@@ -115,8 +118,8 @@ function buildApplicationMenuTemplate(options: {
                 label: getLabel(desktopMenuMessageIds.helpAbout),
                 click: () => void options.executeDesktopCommand(DesktopCommandIds.ShowAbout),
               },
-              // 仅配置了 CCbuddy 自有发行源的正式包显示更新入口。
-              ...(desktopUpdatePolicy.autoUpdateEnabled
+              // 更新入口跟随产品身份：Preview 禁用更新器，生产后端的 Preview 也不例外。
+              ...(CCBUDDY_PRODUCT_FLAVOR === "production"
                 ? [
                     {
                       id: CHECK_FOR_UPDATE_MENU_ID,
@@ -194,17 +197,6 @@ function buildApplicationMenuTemplate(options: {
     {
       label: getLabel(desktopMenuMessageIds.view),
       submenu: [
-        ...(options.openHistoryReview
-          ? [
-              {
-                label:
-                  options.currentApplicationLocale === "zh-CN" ? "会话历史" : "Session History",
-                accelerator: "CmdOrCtrl+Shift+H",
-                click: options.openHistoryReview,
-              },
-              { type: "separator" as const },
-            ]
-          : []),
         {
           label: getLabel(desktopMenuMessageIds.viewToggleFullScreen),
           role: "togglefullscreen" as const,
@@ -268,7 +260,7 @@ function buildApplicationMenuTemplate(options: {
                 label: getLabel(desktopMenuMessageIds.helpAbout),
                 click: () => void options.executeDesktopCommand(DesktopCommandIds.ShowAbout),
               },
-              ...(desktopUpdatePolicy.autoUpdateEnabled
+              ...(CCBUDDY_PRODUCT_FLAVOR === "production"
                 ? [
                     {
                       id: CHECK_FOR_UPDATE_MENU_ID,
@@ -294,9 +286,46 @@ function buildApplicationMenuTemplate(options: {
                 type: "checkbox" as const,
                 checked: stdioTapState.enabled,
                 click: () =>
-                  void options.executeDesktopCommand(
-                    DesktopCommandIds.ToggleCCbuddyStdioTapDevProxy,
-                  ),
+                  void options.executeDesktopCommand(DesktopCommandIds.ToggleCCbuddyStdioTapDevProxy),
+              },
+              { type: "separator" as const },
+            ]
+          : []),
+        ...(CCBUDDY_ENV === "test"
+          ? [
+              {
+                label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpoint),
+                submenu: [
+                  {
+                    id: HELP_CCBUDDY_ENDPOINT_PRODUCTION_MENU_ID,
+                    label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpointProduction),
+                    type: "radio" as const,
+                    checked: (options.ccbuddyEndpointSelection ?? "production") === "production",
+                    click: () =>
+                      void options.executeDesktopCommand(
+                        DesktopCommandIds.SetCCbuddyEndpointProduction,
+                      ),
+                  },
+                  {
+                    id: HELP_CCBUDDY_ENDPOINT_TEST_MENU_ID,
+                    label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpointTest),
+                    type: "radio" as const,
+                    checked: options.ccbuddyEndpointSelection === "test",
+                    click: () =>
+                      void options.executeDesktopCommand(DesktopCommandIds.SetCCbuddyEndpointTest),
+                  },
+                  { type: "separator" as const },
+                  {
+                    label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpointCustom),
+                    click: () =>
+                      void options.executeDesktopCommand(DesktopCommandIds.SetCCbuddyEndpointCustom),
+                  },
+                  {
+                    label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpointReset),
+                    click: () =>
+                      void options.executeDesktopCommand(DesktopCommandIds.ResetCCbuddyEndpoint),
+                  },
+                ],
               },
               { type: "separator" as const },
             ]
@@ -334,7 +363,6 @@ function buildApplicationMenuTemplate(options: {
 export function rebuildApplicationMenu(options: {
   currentApplicationLocale: Locale;
   ccbuddyEndpointSelection?: "production" | "test" | "custom";
-  openHistoryReview?: () => void;
   executeDesktopCommand: (
     command: DesktopCommandId,
     senderWindow?: BrowserWindow | null,
@@ -349,7 +377,6 @@ export function rebuildApplicationMenu(options: {
       buildApplicationMenuTemplate({
         currentApplicationLocale: options.currentApplicationLocale,
         ccbuddyEndpointSelection: options.ccbuddyEndpointSelection,
-        openHistoryReview: options.openHistoryReview,
         executeDesktopCommand: options.executeDesktopCommand,
         currentZoomLevel: options.currentZoomLevel,
         shortcutBindings: options.shortcutBindings,

@@ -2,7 +2,7 @@ import type { CCbuddyProvider } from "@ccbuddy/shared";
 
 type SkillSourceType = "glm" | "unknown";
 
-function resolveSkillSourceType(skillPath: string): SkillSourceType {
+export function resolveSkillSourceType(skillPath: string): SkillSourceType {
   const normalized = skillPath.replaceAll("\\", "/").toLowerCase();
   if (normalized.includes("/.ccbuddy/skills/")) {
     return "glm";

@@ -35,6 +35,7 @@ import {
   openWorkflowArtifactSidePane,
   activateDeveloperToolsSidePane,
   openBrowserSidePane,
+  openBrowserPermissionsSidePane,
   openOrActivateBrowserSidePaneByUrl,
   findBrowserSidePaneTabByUrl,
   applyBrowserUseSidePaneEvent,
@@ -507,6 +508,21 @@ export function useAppPanels(options: {
     supportsEmbeddedBrowser,
     workspaceAbsPath,
   ]);
+
+  const handleOpenBrowserPermissionSettings = useCallback(
+    (origin: string) => {
+      if (!supportsEmbeddedBrowser) return;
+      revealSidePaneForCurrentOwner();
+      commitOpenedSidePaneState((current) =>
+        openBrowserPermissionsSidePane(current, {
+          origin,
+          ownerTaskId: sidePaneOwnerIdRef.current,
+          workspaceKey: activeWorkspaceKeyRef.current,
+        }),
+      );
+    },
+    [commitOpenedSidePaneState, revealSidePaneForCurrentOwner, supportsEmbeddedBrowser],
+  );
 
   // 下面这组 Browser View 事件都是 main 侧的权威转发，
   // 不能用 isWorkspaceVisible（= !isSettingsTabActive）当订阅门槛。设置页是覆盖层，App 不
@@ -1601,6 +1617,7 @@ export function useAppPanels(options: {
     handleOpenBrowserUrl,
     handleToggleBrowser,
     handleOpenBrowserTab,
+    handleOpenBrowserPermissionSettings,
     handleToggleGit,
     handleOpenGit,
     handleOpenTreemapping,

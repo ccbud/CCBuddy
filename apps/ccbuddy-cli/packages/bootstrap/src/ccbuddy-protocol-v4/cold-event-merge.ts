@@ -15,7 +15,7 @@ import {
   type HydratedGoalVerificationEntry,
 } from "./transcript-hydration.js";
 
-interface ConversationMaterializationSource {
+export interface ConversationMaterializationSource {
   goalVerificationEntries: HydratedGoalVerificationEntry[];
   memoryEvents: SessionEvent[];
   messages: MessageWithParts[];
@@ -120,7 +120,7 @@ export async function loadPersistedConversationMaterialization(input: {
   };
 }
 
-interface ColdEventMergeDiagnostic {
+export interface ColdEventMergeDiagnostic {
   code:
     | "cold_merge.durable_event_suppressed"
     | "cold_merge.ambiguous_legacy_turn_preserved"
@@ -173,6 +173,7 @@ const MEMORY_ONLY_EVENT_TYPES = new Set<string>([
   SessionEventType.DynamicWorkflowRunProgress,
   SessionEventType.TargetChanged,
   SessionEventType.RewindTriggered,
+  SessionEventType.TurnExecutionModelFallback,
 ]);
 
 const TRANSCRIPT_DERIVED_EVENT_TYPES = new Set<string>([

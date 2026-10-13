@@ -10,25 +10,22 @@
 import nodePath from "node:path";
 
 import { WORKFLOW_DRAFTS_DIR } from "@ccbuddy/contracts";
-import { resolveWorkspaceStateRoot } from "@ccbuddy/contracts/workspace-state";
 
 /**
  * 判定所需的 `node:path` 子集。做成参数是为了在测试里注入 `path.win32` / `path.posix`：
  * 盘符、反斜杠和大小写这些 Windows 语义，只有用 win32 实现跑一遍才算验过。
  */
-interface WorkflowDraftPathModule {
+export interface WorkflowDraftPathModule {
   isAbsolute: (path: string) => boolean;
   relative: (from: string, to: string) => string;
   resolve: (...paths: string[]) => string;
 }
 
-interface WorkflowDraftPathInput {
+export interface WorkflowDraftPathInput {
   /** 工具输入里的写入目标，相对路径按 workingDirectory 解析，绝对路径原样保留。 */
   filePath: string;
   /** 会话工作目录；缺席（空串）即不成立，见下。 */
   workingDirectory: string;
-  /** 逻辑工作区身份，须与草稿创建使用同一隔离键。 */
-  workspaceIdentity?: string;
   /** 平台 path 实现，默认取当前平台的 `node:path`。 */
   pathModule?: WorkflowDraftPathModule;
 }
@@ -40,21 +37,20 @@ interface WorkflowDraftPathInput {
  */
 const WORKFLOW_DRAFT_PREAPPROVED_TOOL_NAMES = new Set(["Edit", "Write"]);
 
-interface WorkflowDraftWriteInput {
+export interface WorkflowDraftWriteInput {
   toolName: string;
   /** 工具输入（尚未按具体工具的 schema 解析），只从中取 `file_path`。 */
   input: unknown;
   /** 会话工作目录；调用方拿不到时可以缺席，缺席即不免确认。 */
   workingDirectory?: string;
-  workspaceIdentity?: string;
   pathModule?: WorkflowDraftPathModule;
 }
 
 /**
  * 这次工具调用是不是「往草稿目录里写」，也就是能不能免掉确认窗。
  *
- * 为什么安全：那个目录是 CCbuddy 数据树里的机器自有草稿目录，不在工作区版本库内；
- * 用户不会往里放需要保护的项目文件，改动一份草稿不影响项目里任何东西。而
+ * 为什么安全：那个目录是机器自有的——里面的文件由工具自己写下，目录自带 `*` 的 .gitignore
+ * 而不进版本库，用户不会往里放需要保护的东西，改动一份草稿不影响项目里任何东西。而
  * 「让脚本跑起来」另有一道闸：CreateWorkflow 声明 alwaysAsk，确认窗看的是提交上来的脚本，
  * 无论该文件曾被改成什么样。所以放行这里的写入并不等于放行任何执行。
  *
@@ -71,29 +67,23 @@ export function isPreapprovedWorkflowDraftWrite(input: WorkflowDraftWriteInput):
     filePath,
     pathModule: input.pathModule,
     workingDirectory: input.workingDirectory,
-    workspaceIdentity: input.workspaceIdentity,
   });
 }
 
-/** `filePath` 是否落在当前逻辑工作区的 CCbuddy 草稿目录之内。 */
-function isWorkflowDraftPath(input: WorkflowDraftPathInput): boolean {
+/** `filePath` 是否落在 `<workingDirectory>/.ccbuddy/workflow-drafts/` 之内。 */
+export function isWorkflowDraftPath(input: WorkflowDraftPathInput): boolean {
   const path = input.pathModule ?? nodePath;
   // 没有工作目录就没有"哪个项目的草稿目录"可言，宁可不放行：免确认的前提是目标可被定位。
   if (input.workingDirectory.length === 0 || input.filePath.length === 0) return false;
 
-  const draftsDir = path.resolve(
-    resolveWorkspaceStateRoot(input.workingDirectory, {
-      workspaceIdentity: input.workspaceIdentity,
-    }),
-    WORKFLOW_DRAFTS_DIR,
-  );
+  const draftsDir = path.resolve(input.workingDirectory, WORKFLOW_DRAFTS_DIR);
   const resolved = path.resolve(input.workingDirectory, input.filePath);
   const relativePath = path.relative(draftsDir, resolved);
 
   // 三个条件缺一不可：非空排除「目标就是目录本身」，非绝对排除跨盘符（Windows 上
   // `relative("C:\\a", "D:\\b")` 返回的是绝对路径而不是 `..`），不以 `..` 开头排除穿越。
-  // 只看路径字符串，不看文件系统：相邻的 `workflow-drafts-other/x.ts` 不会因为前缀相同
-  // 被误判为目录内——`relative` 给出的是 `../workflow-drafts-other/x.ts`。
+  // 只看路径字符串，不看文件系统：`.ccbuddy/workflow-drafts-other/x.ts` 因此不会因为前缀
+  // 相同被误判为目录内——`relative` 给出的是 `../workflow-drafts-other/x.ts`。
   return (
     relativePath.length > 0 && !path.isAbsolute(relativePath) && !relativePath.startsWith("..")
   );

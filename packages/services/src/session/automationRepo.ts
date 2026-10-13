@@ -106,7 +106,7 @@ interface AutomationRunRow {
   updated_at: number;
 }
 
-interface ClaimedManualAutomationRun {
+export interface ClaimedManualAutomationRun {
   automation: CCbuddyAutomation;
   run: CCbuddyAutomationRun;
 }

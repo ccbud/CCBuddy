@@ -1,4 +1,6 @@
 import { querySessionDebug } from "./session-debug.js";
+import { createNodeNetworkCapture } from "@ccbuddy/shared/node";
+import { networkCaptureControlSchema, ccbuddyProtocolNotifications } from "@ccbuddy/shared";
 import {
   ccbuddyPluginsCancelOperationParamsSchema,
   ccbuddyProtocolMethods,
@@ -87,6 +89,7 @@ import {
   moveSavedWorkflowOp,
   updateSavedWorkflowMetaOp,
 } from "./saved-workflows.js";
+import { findSavedWorkflowForRunOp, saveSavedWorkflowFromRunOp } from "./saved-workflows-run.js";
 import { listMcpServers } from "./mcp.js";
 import {
   callMcpUiTool,
@@ -129,6 +132,7 @@ import {
   isNotification,
   isRequest,
   isResponse,
+  PROTOCOL_CLIENT_REQUEST_ERROR_CODES,
   ProtocolRequestError,
   type ParamsSchema,
   parseParams,
@@ -153,7 +157,7 @@ type CCbuddyProtocolOutboundMessage = CCbuddyProtocolNotification | CCbuddyProto
  * 停留旧值。pretrust 授权成功后按 workspaceKey 通知所有匹配的活跃 session 重载。
  * 独立导出为纯调度函数（不触网、不发事件），便于回归测试直接构造 sessions Map。
  */
-async function notifyWorkspaceHookTrustGrantSessions(input: {
+export async function notifyWorkspaceHookTrustGrantSessions(input: {
   grantedWorkspaceKey?: string;
   sessions: Map<string, CCbuddyProtocolSessionRecord>;
 }): Promise<void> {
@@ -208,7 +212,7 @@ function getOperationId(params: unknown): string | undefined {
     : undefined;
 }
 
-interface CCbuddyProtocolPostResponseBatch {
+export interface CCbuddyProtocolPostResponseBatch {
   readonly messages: readonly CCbuddyProtocolOutboundMessage[];
   commit(): boolean;
 }
@@ -226,6 +230,12 @@ interface PendingClientRequest<T> {
 }
 
 export class CCbuddyProtocolAgentServer {
+  private readonly networkCapture = createNodeNetworkCapture("cli", (batch) => {
+    this.messageSink?.({
+      method: ccbuddyProtocolNotifications.processNetworkRequests,
+      params: batch,
+    });
+  });
   private readonly runtimeResources: ProtocolRuntimeResources;
   private shutdownPromise?: Promise<void>;
   readonly browserControlPort: BrowserControlPort;
@@ -382,6 +392,7 @@ export class CCbuddyProtocolAgentServer {
   }
 
   disconnectClient(error: Error): void {
+    this.networkCapture.setCaptureId(null);
     this.clientDisconnectError = error;
     // 连接关闭后反向请求已不可能收到响应，必须先结束 pending，
     // 否则正在物化 Session 的 handler 会阻塞 connection 的关闭流程。
@@ -460,6 +471,11 @@ export class CCbuddyProtocolAgentServer {
       return await this.handleRequest(message);
     }
     if (isNotification(message)) {
+      if (message.method === ccbuddyProtocolMethods.processNetworkCapture) {
+        const control = networkCaptureControlSchema.safeParse(message.params);
+        if (control.success) this.networkCapture.setCaptureId(control.data.captureId);
+        return undefined;
+      }
       this.logger?.debug("CCbuddy Protocol notification ignored", {
         event: "ccbuddy_protocol.notification.ignored",
         method: message.method,
@@ -737,6 +753,10 @@ export class CCbuddyProtocolAgentServer {
         return await listSavedWorkflowRunsOp(this.context, request.params);
       case ccbuddyProtocolMethods.workflowsMove:
         return await moveSavedWorkflowOp(this.context, request.params);
+      case ccbuddyProtocolMethods.workflowsSave:
+        return await saveSavedWorkflowFromRunOp(this.context, request.params);
+      case ccbuddyProtocolMethods.workflowsForRun:
+        return await findSavedWorkflowForRunOp(this.context, request.params);
       case ccbuddyProtocolMethods.pluginsResolveSuggestedReference:
         return await this.withPluginOperationSignal(request, (signal) =>
           resolveSuggestedPluginReference(this.context, request.params, signal),
@@ -886,7 +906,10 @@ export class CCbuddyProtocolAgentServer {
       throw this.clientDisconnectError;
     }
     if (!this.messageSink) {
-      throw new ProtocolRequestError(-32020, `No CCbuddy Protocol client is attached for ${method}`);
+      throw new ProtocolRequestError(
+        PROTOCOL_CLIENT_REQUEST_ERROR_CODES.noClientAttached,
+        `No CCbuddy Protocol client is attached for ${method}`,
+      );
     }
 
     return new Promise<T>((resolve, reject) => {
@@ -905,7 +928,12 @@ export class CCbuddyProtocolAgentServer {
       };
       pending.abortHandler = () => {
         cleanup();
-        reject(new ProtocolRequestError(-32021, `Client request cancelled: ${method}`));
+        reject(
+          new ProtocolRequestError(
+            PROTOCOL_CLIENT_REQUEST_ERROR_CODES.cancelled,
+            `Client request cancelled: ${method}`,
+          ),
+        );
       };
       if (options?.signal?.aborted) {
         pending.abortHandler();
@@ -915,9 +943,13 @@ export class CCbuddyProtocolAgentServer {
         pending.timeout = setTimeout(() => {
           cleanup();
           reject(
-            new ProtocolRequestError(-32022, `Client request timed out: ${method}`, {
-              timeoutMs: options.timeoutMs,
-            }),
+            new ProtocolRequestError(
+              PROTOCOL_CLIENT_REQUEST_ERROR_CODES.timedOut,
+              `Client request timed out: ${method}`,
+              {
+                timeoutMs: options.timeoutMs,
+              },
+            ),
           );
         }, options.timeoutMs);
       }

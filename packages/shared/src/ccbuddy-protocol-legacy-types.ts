@@ -14,11 +14,13 @@ const timestampMsSchema = z.number().int().nonnegative();
 export const ccbuddyDeliveryKindSchema = z.enum(["desktop-continuous", "web-remote-replayable"]);
 export const ccbuddyMessageVisibilitySchema = z.enum(["user-visible", "model-only"]);
 export const ccbuddySyntheticUserMessageSourceSchema = z.enum([
+  "agent_listing_delta",
   "background_task",
   "fork",
   "goal_state_change",
   "goal-continuation",
   "plugin_reference",
+  "bot_topic_context",
   "rewind",
   "selection_side_chat",
   "subagent",
@@ -71,7 +73,7 @@ export const ccbuddyPermissionResponseSchema = z
   })
   .strict();
 export type CCbuddyPermissionResponse = z.infer<typeof ccbuddyPermissionResponseSchema>;
-export const ccbuddySessionModeSchema = z.enum(["plan", "build", "edit", "yolo", "auto"]);
+export const ccbuddySessionModeSchema = z.enum(["plan", "build", "edit", "yolo", "guarded", "auto"]);
 export const ccbuddySessionStatusSchema = z.enum([
   "idle",
   "running",

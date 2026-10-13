@@ -44,7 +44,7 @@ type TrustedConnectionCarrier = {
   [TRUSTED_CONNECTION_FIELD]?: CCbuddyAgentV4ConnectionContext;
 };
 
-interface TrustedCCbuddyAgentV4UnsubscribeRoute {
+export interface TrustedCCbuddyAgentV4UnsubscribeRoute {
   topic: string;
   connectionId: string;
 }

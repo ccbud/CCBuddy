@@ -31,7 +31,7 @@ interface LocalMediaPreviewProtocol {
 const installedProtocols = new WeakSet<object>();
 const NET_ERR_INVALID_URL = -300;
 
-interface LocalMediaPreviewPathRegistry {
+export interface LocalMediaPreviewPathRegistry {
   authorize(path: string): Promise<string>;
   isAuthorized(path: string): boolean;
   clear(): void;

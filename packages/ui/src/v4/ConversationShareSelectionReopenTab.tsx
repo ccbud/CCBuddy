@@ -2,7 +2,7 @@ import { PanelLeftOpen } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 
-interface ConversationShareSelectionReopenTabProps {
+export interface ConversationShareSelectionReopenTabProps {
   onOpen: () => void;
 }
 

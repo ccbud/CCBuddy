@@ -61,9 +61,69 @@ export const officialSeaPlugins = [
     requiresRuntime: true,
     requiredRuntimePaths: ["dist/mcp/server.js"],
     rootPath: join("packages", "node-repl-host"),
-    version: "0.6.0",
+    version: "0.6.1",
   },
   {
+    marketplace: "ccbuddy-plugins-official",
+    name: "android-emulator",
+    packageName: "@ccbuddy/android-emulator-plugin",
+    requiresRuntime: true,
+    requiredRuntimePaths: ["dist/mcp/server.js"],
+    rootPath: join("packages", "android-emulator-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "documents",
+    packageName: "@ccbuddy/documents-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: ["agents/visual-judge.md", "skills/docx/SKILL.md"],
+    rootPath: join("packages", "documents-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.1.8",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "image-search",
+    packageName: "@ccbuddy/image-search-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: [".mcp.json"],
+    rootPath: join("packages", "image-search-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.1.1",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "pdf",
+    packageName: "@ccbuddy/pdf-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: ["agents/visual-judge.md", "skills/pdf/SKILL.md"],
+    rootPath: join("packages", "pdf-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.1.8",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "presentations",
+    packageName: "@ccbuddy/presentations-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: ["agents/visual-judge.md", "skills/pptx/SKILL.md"],
+    rootPath: join("packages", "presentations-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.1.8",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "spreadsheets",
+    packageName: "@ccbuddy/spreadsheets-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: ["agents/visual-judge.md", "skills/xlsx/SKILL.md"],
+    rootPath: join("packages", "spreadsheets-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.1.8",
+  },
+  {
+    // browser-use 使用真实 node_repl MCP runtime，SEA 必须校验并嵌入 server.js。
     marketplace: "ccbuddy-plugins-official",
     name: "browser-use",
     packageName: "@ccbuddy/browser-use-plugin",
@@ -76,6 +136,54 @@ export const officialSeaPlugins = [
     // 导致发布产物不 seed browser-use，进而无法装配宿主 node_repl MCP。
     version: "0.5.1",
   },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "ios-simulator",
+    packageName: "@ccbuddy/ios-simulator-plugin",
+    requiresRuntime: true,
+    requiredRuntimePaths: ["dist/mcp/server.js"],
+    rootPath: join("packages", "ios-simulator-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "restore-legacy-sessions",
+    packageName: "@ccbuddy/restore-legacy-sessions-plugin",
+    requiresRuntime: false,
+    rootPath: join("packages", "restore-legacy-sessions-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "skill-creator",
+    packageName: "@ccbuddy/skill-creator-plugin",
+    requiresRuntime: false,
+    rootPath: join("packages", "skill-creator-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "plugin-creator",
+    packageName: "@ccbuddy/plugin-creator-plugin",
+    requiresRuntime: false,
+    rootPath: join("packages", "plugin-creator-plugin"),
+    version: "0.1.1",
+  },
+  {
+    // 纯内容型（只提供 skills）：requiresRuntime:false，SEA 构建不校验 dist/mcp/server.js。
+    // 版本必须与 package.json / plugin.json / official-plugin-definitions.ts 同步 bump——
+    // runtime 按 (name, version) 精确匹配 SEA 资产，这里落后会让整个插件在 SEA 下不 seed
+    // （browser-use 0.3.1 的既有教训，build-sea.test.mjs:564 钉住四处对齐）。
+    // 0.3.0：`/workflow` 与 dynamic-workflows 技能移出本插件（见 sea-bundled-skill-assets.mjs）。
+    marketplace: "ccbuddy-plugins-official",
+    name: "ccbuddy-guide",
+    packageName: "@ccbuddy/ccbuddy-guide-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: ["skills/ccbuddy-configuration-guide/SKILL.md"],
+    rootPath: join("packages", "ccbuddy-guide-plugin"),
+    version: "0.3.0",
+  },
+  // superpowers 已从内置插件下线，改走 UI 推荐区按需安装；这里不再打入 SEA 资源清单。
 ];
 
 export const collectSeaOfficialPluginAssets = async ({

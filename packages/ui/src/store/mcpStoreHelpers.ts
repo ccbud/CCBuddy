@@ -6,12 +6,17 @@ import type {
   CCbuddyMcpServer,
 } from "@ccbuddy/shared";
 
-const MCP_CONFIG_KEY = "ccbuddy-mcp-config";
+export const MCP_CONFIG_KEY = "ccbuddy-mcp-config";
+export const MCP_ENABLED_STATES_KEY = "ccbuddy-mcp-enabled-states";
 export const MCP_DELETED_PRELOAD_KEY = "ccbuddy-mcp-deleted-preload";
 
 export const DEFAULT_MCP_CONFIG: McpConfig = {
   mcp: { mcpServers: {} },
   ccbuddyagentmcp: { mcpServers: {}, projects: {} },
+  claudeclimcp: { mcpServers: {}, projects: {} },
+  geminiclimcp: { mcpServers: {}, projects: {} },
+  codexclimcp: { mcpServers: {}, projects: {} },
+  opencodemcp: { mcpServers: {}, projects: {} },
 };
 
 export function safeReadJson<T>(key: string, fallback: T): T {
@@ -41,8 +46,7 @@ export function loadPersistedConfig(): McpConfig {
 
 export function readLegacyCommonMcpServers(): Record<string, McpServerConfig> {
   const saved = safeReadJson<Record<string, unknown>>(MCP_CONFIG_KEY, {});
-  const legacyServers = (saved.mcp as { mcpServers?: Record<string, McpServerConfig> } | undefined)
-    ?.mcpServers;
+  const legacyServers = (saved.mcp as { mcpServers?: Record<string, McpServerConfig> } | undefined)?.mcpServers;
   return legacyServers && typeof legacyServers === "object" ? legacyServers : {};
 }
 
@@ -83,16 +87,10 @@ function toIdKey(value: string): string {
   return normalized || "default";
 }
 
-export function makeServerId(
-  source: McpSource,
-  name: string,
-  projectPath?: string,
-  directorySource?: NonNullable<NativeMcpServerRecord["location"]>["source"],
-): string {
-  const sourceKey =
-    source === "ccbuddyagentmcp" && directorySource && directorySource !== "ccbuddy"
-      ? `${source}-${directorySource}`
-      : source;
+export function makeServerId(source: McpSource, name: string, projectPath?: string, directorySource?: NonNullable<NativeMcpServerRecord["location"]>["source"]): string {
+  const sourceKey = source === "ccbuddyagentmcp" && directorySource && directorySource !== "ccbuddy"
+    ? `${source}-${directorySource}`
+    : source;
   return `${sourceKey}-${toIdKey(toScopeKey(projectPath))}-${toIdKey(name)}`;
 }
 
@@ -141,12 +139,7 @@ export function buildServerList(
   const servers: CCbuddyMcpServer[] = [];
 
   for (const server of nativeServers) {
-    const serverId = makeServerId(
-      server.source,
-      server.name,
-      server.projectPath,
-      server.location?.source,
-    );
+    const serverId = makeServerId(server.source, server.name, server.projectPath, server.location?.source);
     if (!deletedPreload.has(serverId)) {
       servers.push(
         makeServer(

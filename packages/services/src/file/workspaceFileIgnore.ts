@@ -8,8 +8,8 @@ import { getWorkspaceAppConfigDir } from "../paths.js";
 /**
  * workspace 文件搜索忽略的单一真相源。
  *
- * `.ccbuddyignore`（CCbuddy 的 workspace 配置目录，gitignore 语法）是搜索索引的唯一规则文件：
- * 首次需要规则而文件不存在时自动创建，内容为 root `.gitignore` 的拷贝（无则默认模板）；
+ * `.ccbuddyignore`（workspace root，gitignore 语法）是搜索索引的唯一规则文件：
+ * 自动创建暂时停用：文件不存在时仅在内存中使用 root `.gitignore` + 默认排除规则；
  * 之后 `.gitignore` 的变化不再影响搜索，用户通过设置页编辑或「从 .gitignore 重新同步」。
  *
  * 规则解析交给 `ignore` npm 包（gitignore spec 2.22 参考实现，ESLint 同款）：
@@ -18,6 +18,8 @@ import { getWorkspaceAppConfigDir } from "../paths.js";
  */
 
 export const WORKSPACE_FILE_SEARCH_IGNORE_FILE_NAME = ".ccbuddyignore";
+// 数据隔离：.ccbuddyignore 属于应用自有 workspace 状态，存放在 ~/.ccbuddy 下的
+// workspace 配置目录，不写入用户项目根目录。
 export function resolveWorkspaceFileSearchIgnorePath(rootPath: string): string {
   return join(getWorkspaceAppConfigDir(rootPath), WORKSPACE_FILE_SEARCH_IGNORE_FILE_NAME);
 }
@@ -25,19 +27,20 @@ const GITIGNORE_FILE_NAME = ".gitignore";
 
 type WorkspaceFileIgnoreLogger = Pick<ServiceLogger, "info" | "warn">;
 
-type WorkspaceFileSearchIgnoreRulesSource =
+export type WorkspaceFileSearchIgnoreRulesSource =
   | "file"
+  | "template"
   | "created-from-gitignore"
   | "created-from-template"
   | "fallback-gitignore"
   | "fallback-builtin";
 
-interface WorkspaceFileSearchIgnoreRules {
+export interface WorkspaceFileSearchIgnoreRules {
   matcher: Ignore;
   source: WorkspaceFileSearchIgnoreRulesSource;
 }
 
-interface WorkspaceFileSearchIgnoreContent {
+export interface WorkspaceFileSearchIgnoreContent {
   content: string;
   /** file：.ccbuddyignore 已存在；template：尚未创建，content 是保存后将落盘的初始内容预览。 */
   source: "file" | "template";
@@ -93,9 +96,9 @@ const TEMPLATE_HEADER = [
  * 「恢复默认规则」只重写两个标记之间的默认排除段；
  * DEFAULTS 标记之下的自定义规则区，任何按钮都不会改动。
  */
-const WORKSPACE_FILE_SEARCH_IGNORE_SYNC_MARKER =
+export const WORKSPACE_FILE_SEARCH_IGNORE_SYNC_MARKER =
   "# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====";
-const WORKSPACE_FILE_SEARCH_IGNORE_DEFAULTS_MARKER =
+export const WORKSPACE_FILE_SEARCH_IGNORE_DEFAULTS_MARKER =
   "# ----- ↑ 以上为 CCbuddy 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----";
 
 const CUSTOM_SECTION_HINT = "# 自定义规则写在下方（本行提示可删除）";
@@ -132,7 +135,7 @@ function buildBuiltinDefaultsSection(gitignoreContent: string | null): string {
  * 交给用户编辑，删除即放开，维持"单一真相源、无代码级并集"的承诺。
  * 默认段写入前先对 gitignore 区做规则去重（见 buildBuiltinDefaultsSection）。
  */
-function buildWorkspaceFileSearchIgnoreTemplate(gitignoreContent: string | null): string {
+export function buildWorkspaceFileSearchIgnoreTemplate(gitignoreContent: string | null): string {
   const gitignoreSection =
     gitignoreContent !== null && gitignoreContent.trim().length > 0
       ? gitignoreContent.endsWith("\n")
@@ -171,14 +174,8 @@ function splitWorkspaceFileSearchIgnoreSections(
   }
   return {
     gitignoreSection: lines.slice(0, syncIndex).join("\n"),
-    defaultsSection: lines
-      .slice(syncIndex + 1, defaultsIndex)
-      .join("\n")
-      .trim(),
-    customSection: lines
-      .slice(defaultsIndex + 1)
-      .join("\n")
-      .replace(/^\n+/, ""),
+    defaultsSection: lines.slice(syncIndex + 1, defaultsIndex).join("\n").trim(),
+    customSection: lines.slice(defaultsIndex + 1).join("\n").replace(/^\n+/, ""),
   };
 }
 
@@ -187,7 +184,7 @@ function splitWorkspaceFileSearchIgnoreSections(
  * 默认排除段与自定义区原样保留（用户对默认段的删改不受影响）。
  * 标记缺失时退化为整体初始内容重建（无法结构化定位分区）。
  */
-function syncWorkspaceFileSearchIgnoreFromGitignore(
+export function syncWorkspaceFileSearchIgnoreFromGitignore(
   currentContent: string,
   gitignoreContent: string | null,
 ): string {
@@ -216,7 +213,7 @@ function syncWorkspaceFileSearchIgnoreFromGitignore(
  * 「恢复默认规则」：只重置默认排除段为内置清单，gitignore 区与自定义区原样保留。
  * 标记缺失时退化为整体初始内容重建。
  */
-function resetWorkspaceFileSearchIgnoreDefaults(
+export function resetWorkspaceFileSearchIgnoreDefaults(
   currentContent: string,
   gitignoreContent: string | null,
 ): string {
@@ -266,6 +263,7 @@ async function readOptionalFile(path: string): Promise<string | null> {
  */
 async function atomicWriteIgnoreFile(path: string, content: string): Promise<void> {
   const directory = dirname(path);
+  // 应用配置目录可能尚未创建；写入前先保证目录存在。
   await mkdir(directory, { recursive: true });
   const tempPath = resolve(
     directory,
@@ -287,9 +285,9 @@ async function atomicWriteIgnoreFile(path: string, content: string): Promise<voi
 }
 
 /**
- * 扫描前加载 `.ccbuddyignore` 规则；含自动创建与 fail-open 降级链：
- * 文件不存在 → 原子创建（.gitignore 拷贝 / 默认模板）；
- * 创建或读取失败（只读 fs、权限）→ 内存使用 .gitignore 内容 → 再失败用内置默认规则。
+ * 扫描前加载 `.ccbuddyignore` 规则；自动创建暂时注释停用：
+ * 文件不存在 → 内存使用 .gitignore + 默认排除规则，不落盘；
+ * 读取失败（权限等）→ 内存使用 .gitignore 内容 → 再失败用内置默认规则。
  * 任何降级只 warn 一次，绝不让 @ 面板因规则文件不可用而扫描失败。
  */
 export async function loadWorkspaceFileSearchIgnoreRules(
@@ -316,7 +314,11 @@ export async function loadWorkspaceFileSearchIgnoreRules(
         source: "fallback-gitignore",
       };
     }
-    logger?.warn(undefined, `[workspace-file-ignore] ${reason}，降级为内置默认忽略规则`, error);
+    logger?.warn(
+      undefined,
+      `[workspace-file-ignore] ${reason}，降级为内置默认忽略规则`,
+      error,
+    );
     const template = buildWorkspaceFileSearchIgnoreTemplate(null);
     return {
       matcher: buildIgnoreMatcher(template),
@@ -334,10 +336,13 @@ export async function loadWorkspaceFileSearchIgnoreRules(
     return { matcher: buildIgnoreMatcher(existing), source: "file" };
   }
 
-  const gitignoreContent = await readOptionalFile(resolve(rootPath, GITIGNORE_FILE_NAME)).catch(
-    () => null,
-  );
+  const gitignoreContent = await readOptionalFile(
+    resolve(rootPath, GITIGNORE_FILE_NAME),
+  ).catch(() => null);
   const initialContent = buildWorkspaceFileSearchIgnoreTemplate(gitignoreContent);
+  // 管理入口已临时隐藏，但自动创建逻辑仍会往用户项目写文件，因此先注释停用。
+  // 保留原创建和日志逻辑，后续恢复入口时可重新启用；当前只在内存中使用规则。
+  /*
   try {
     await atomicWriteIgnoreFile(ignorePath, initialContent);
   } catch (error) {
@@ -361,9 +366,11 @@ export async function loadWorkspaceFileSearchIgnoreRules(
       gitignoreContent !== null ? ".gitignore 拷贝" : "默认模板"
     }）`,
   );
+  */
   return {
     matcher: buildIgnoreMatcher(initialContent),
-    source: gitignoreContent !== null ? "created-from-gitignore" : "created-from-template",
+    // source: gitignoreContent !== null ? "created-from-gitignore" : "created-from-template",
+    source: "template",
   };
 }
 
@@ -390,16 +397,16 @@ export async function readWorkspaceFileSearchIgnore(
   if (existing !== null) {
     return { content: existing, source: "file" };
   }
-  const gitignoreContent = await readOptionalFile(resolve(rootPath, GITIGNORE_FILE_NAME)).catch(
-    () => null,
-  );
+  const gitignoreContent = await readOptionalFile(
+    resolve(rootPath, GITIGNORE_FILE_NAME),
+  ).catch(() => null);
   return {
     content: buildWorkspaceFileSearchIgnoreTemplate(gitignoreContent),
     source: "template",
   };
 }
 
-type WorkspaceFileSearchIgnoreTransform = "sync-gitignore" | "reset-defaults";
+export type WorkspaceFileSearchIgnoreTransform = "sync-gitignore" | "reset-defaults";
 
 /**
  * 设置页分区操作（返回新内容填充编辑框，保存才落盘）：
@@ -412,9 +419,9 @@ export async function transformWorkspaceFileSearchIgnore(
 ): Promise<{ content: string }> {
   const ignorePath = resolveWorkspaceFileSearchIgnorePath(rootPath);
   const existing = await readOptionalFile(ignorePath).catch(() => null);
-  const gitignoreContent = await readOptionalFile(resolve(rootPath, GITIGNORE_FILE_NAME)).catch(
-    () => null,
-  );
+  const gitignoreContent = await readOptionalFile(
+    resolve(rootPath, GITIGNORE_FILE_NAME),
+  ).catch(() => null);
   const currentContent = existing ?? buildWorkspaceFileSearchIgnoreTemplate(gitignoreContent);
   const content =
     transform === "sync-gitignore"

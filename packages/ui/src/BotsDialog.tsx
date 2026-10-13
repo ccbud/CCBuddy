@@ -46,6 +46,7 @@ import {
   BotSummaryCard,
 } from "@/BotsDialog/BotSummaryCard.js";
 import { ProviderSettingsCard } from "@/BotsDialog/ProviderSettingsCard.js";
+import { BoundGroupsCard } from "@/BotsDialog/BoundGroupsCard.js";
 import { WorkspaceAccessCard } from "@/BotsDialog/WorkspaceAccessCard.js";
 import { SettingsGroupCard } from "@/settings/SettingsPageParts.js";
 import {
@@ -1030,9 +1031,9 @@ export function BotsDialog({
         onEscapeKeyDown={handleDialogEscapeKeyDown}
       >
         <DialogHeader>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Bot className="size-5 text-foreground" />
-            <DialogTitle className="text-lg font-medium text-foreground">
+            <DialogTitle className="text-ui-lg font-medium text-foreground">
               {intl.formatMessage({ id: "bots.title" })}
             </DialogTitle>
             <DialogDescription className="ml-3">
@@ -1041,8 +1042,8 @@ export function BotsDialog({
           </div>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 gap-3">
-          <aside className="flex w-64 shrink-0 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
+          <aside className="flex max-h-40 w-full shrink-0 flex-col md:max-h-none md:w-64">
             <div className="min-h-0 flex-1 overflow-y-auto">
               <Button
                 type="button"
@@ -1244,6 +1245,13 @@ export function BotsDialog({
                     onToggleWorkspaceAccess={toggleWorkspaceAccess}
                   />
                 </SettingsGroupCard>
+
+                {isFeishuBotProvider(selectedBot.provider) && (
+                  <BoundGroupsCard
+                    key={selectedBot.id + ":" + selectedBot.providerUserId}
+                    bot={selectedBot}
+                  />
+                )}
 
                 <BotDangerCard onDelete={() => void handleDelete()} />
               </div>

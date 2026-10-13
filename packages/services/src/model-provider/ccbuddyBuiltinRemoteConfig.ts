@@ -1,7 +1,7 @@
 import { downloadCCbuddyBuiltinRelease, type CCbuddyBuiltinRelease } from "@ccbuddy/provider-node";
 import type { ApiClient } from "@ccbuddy/shared";
 
-interface FetchCCbuddyBuiltinRemoteReleaseOptions {
+export interface FetchCCbuddyBuiltinRemoteReleaseOptions {
   readonly apiClient: ApiClient;
   readonly endpointOrigin: string;
   readonly appVersion: string;

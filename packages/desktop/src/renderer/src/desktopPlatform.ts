@@ -1,18 +1,8 @@
 import { recordArmsCustomEventForE2E } from "@ccbuddy/ui";
-import {
-  DesktopCommandIds,
-  buildLocalMediaPreviewUrl,
-  type IPlatformService,
-} from "@ccbuddy/shared";
+import { DesktopCommandIds, buildLocalMediaPreviewUrl, type IPlatformService } from "@ccbuddy/shared";
 
 import { desktopBrowserPlatformBridge } from "./desktopBrowserPlatformBridge.js";
 import { createDesktopPluginSandboxPlatform } from "./plugin-sandbox/desktopPluginSandboxPlatform.js";
-
-declare global {
-  interface Window {
-    ccbuddyHistory?: NonNullable<IPlatformService["historyReview"]>;
-  }
-}
 
 export function createDesktopPlatform(options: {
   isLocalDevelopmentRuntime: boolean;
@@ -26,6 +16,8 @@ export function createDesktopPlatform(options: {
     selectFile: () => window.ccbuddy.selectFile(),
     selectFiles: () => window.ccbuddy.selectFiles?.() ?? Promise.resolve([]),
     createTempTextAttachment: (payload) => window.ccbuddy.createTempTextAttachment(payload),
+    materializeWorkflowArtifactFile: (payload) =>
+      window.ccbuddy.materializeWorkflowArtifactFile(payload),
     onRemoteConnectionLog: (handler) => window.ccbuddy.onRemoteConnectionLog(handler),
     onRemoteSessionClosed: (handler) => window.ccbuddy.onRemoteSessionClosed(handler),
     onBotRemoteWorkspaceReconnected: (handler) =>
@@ -38,6 +30,13 @@ export function createDesktopPlatform(options: {
       window.ccbuddy.cancelPendingRemoteConnection?.(requestId) ?? Promise.resolve(),
     bindRemoteWorkspaceSessionContext: (context) =>
       window.ccbuddy.bindRemoteWorkspaceSessionContext?.(context) ?? Promise.resolve(),
+    startWebRemoteControl: (context) => window.ccbuddy.startWebRemoteControl(context),
+    refreshWebRemoteControlPairing: (context) =>
+      window.ccbuddy.refreshWebRemoteControlPairing(context),
+    stopWebRemoteControl: () => window.ccbuddy.stopWebRemoteControl(),
+    getWebRemoteControlStatus: () => window.ccbuddy.getWebRemoteControlStatus(),
+    onWebRemoteControlStatusChanged: (handler) =>
+      window.ccbuddy.onWebRemoteControlStatusChanged?.(handler) ?? (() => {}),
     disposeRemoteSession: (sessionId) => window.ccbuddy.disposeRemoteSession(sessionId),
     isDockerAvailable: () => window.ccbuddy.isDockerAvailable(),
     listWSLDistros: () => window.ccbuddy.listWSLDistros(),
@@ -90,15 +89,36 @@ export function createDesktopPlatform(options: {
       : undefined,
     showTaskNotification: (payload) => window.ccbuddy.showTaskNotification(payload),
     syncWindowTabs: (paths) => window.ccbuddy.syncWindowTabs(paths),
+    syncWebRemoteControlWorkspaces: (workspaces) =>
+      window.ccbuddy.syncWebRemoteControlWorkspaces?.(workspaces),
+    syncWebRemoteControlTasks: (tasks) => window.ccbuddy.syncWebRemoteControlTasks?.(tasks),
+    onWebRemoteControlReconnectWorkspace: (handler) =>
+      window.ccbuddy.onWebRemoteControlReconnectWorkspace?.(handler) ?? (() => {}),
     syncWindowUnreadCount: (count) => window.ccbuddy.syncWindowUnreadCount(count),
     syncActiveTaskSession: (sessionId) => window.ccbuddy.syncActiveTaskSession(sessionId),
     syncAppSettings: (patch) => window.ccbuddy.syncAppSettings?.(patch),
+    // 桥缺失（旧 preload 升级窗口）时按 supported 兜底，与 Windows 现状一致，设置开关可用。
+    getCloseToTrayCapability: () =>
+      window.ccbuddy.getCloseToTrayCapability?.() ??
+      Promise.resolve({ supported: true, gnomeLikeWithoutTray: false }),
     setShortcutRecordingActive: (active) => window.ccbuddy.setShortcutRecordingActive?.(active),
     onFocusTab: (handler) => window.ccbuddy.onFocusTab(handler),
     onNewTab: (handler) => window.ccbuddy.onNewTab(handler),
     onCloseActiveContextRequest: (handler) =>
       window.ccbuddy.onCloseActiveContextRequest?.(handler) ?? (() => {}),
     onOpenBrowserUrl: (handler) => window.ccbuddy.onOpenBrowserUrl?.(handler) ?? (() => {}),
+    onEmbeddedBrowserPermissionPrompt: (handler) =>
+      window.ccbuddy.onEmbeddedBrowserPermissionPrompt?.(handler) ?? (() => {}),
+    resolveEmbeddedBrowserPermissionPrompt: (request) =>
+      window.ccbuddy.resolveEmbeddedBrowserPermissionPrompt?.(request),
+    getEmbeddedBrowserSitePermissions: () =>
+      window.ccbuddy.getEmbeddedBrowserSitePermissions?.() ?? Promise.resolve({}),
+    setEmbeddedBrowserSitePermission: (request) =>
+      window.ccbuddy.setEmbeddedBrowserSitePermission?.(request) ?? Promise.resolve({}),
+    clearEmbeddedBrowserSitePermissions: () =>
+      window.ccbuddy.clearEmbeddedBrowserSitePermissions?.() ?? Promise.resolve({}),
+    resetEmbeddedBrowserSitePermission: (request) =>
+      window.ccbuddy.resetEmbeddedBrowserSitePermission?.(request) ?? Promise.resolve({}),
     onBrowserViewScreenshotSurfacePrepare: (handler) =>
       window.ccbuddy.onBrowserViewScreenshotSurfacePrepare?.(handler) ?? (() => {}),
     onBrowserViewScreenshotSurfaceRelease: (handler) =>
@@ -123,8 +143,7 @@ export function createDesktopPlatform(options: {
     onDesktopWindowChromeStateChanged: window.ccbuddy.onDesktopWindowChromeStateChanged
       ? (handler) => window.ccbuddy.onDesktopWindowChromeStateChanged!(handler)
       : undefined,
-    getWindowControlsOverlayMetrics: () =>
-      window.ccbuddy.getWindowControlsOverlayMetrics?.() ?? null,
+    getWindowControlsOverlayMetrics: () => window.ccbuddy.getWindowControlsOverlayMetrics?.() ?? null,
     onWindowControlsOverlayChanged: (handler) =>
       window.ccbuddy.onWindowControlsOverlayChanged?.(handler) ?? (() => {}),
     getDesktopZoomLevel: () =>
@@ -137,25 +156,12 @@ export function createDesktopPlatform(options: {
       window.ccbuddy.captureWindowScreenshot?.() ?? Promise.resolve(null),
     onUpdateReady: (callback) => window.ccbuddy.onUpdateReady(callback),
     onUpdateCheckResult: (callback) => window.ccbuddy.onUpdateCheckResult(callback),
-    onUpdateStateChanged: (callback) =>
-      window.ccbuddy.onUpdateStateChanged?.(callback) ?? (() => {}),
+    onUpdateStateChanged: (callback) => window.ccbuddy.onUpdateStateChanged?.(callback) ?? (() => {}),
     getUpdateState: () =>
       window.ccbuddy.getUpdateState?.() ?? Promise.resolve({ kind: "idle", enabled: true }),
     downloadUpdate: () => window.ccbuddy.downloadUpdate?.() ?? Promise.resolve(),
     cancelUpdateDownload: () => window.ccbuddy.cancelUpdateDownload?.() ?? Promise.resolve(),
     openUpdateStatusWindow: () => window.ccbuddy.openUpdateStatusWindow?.() ?? Promise.resolve(),
-    onOpenHistoryViewRequested: (listener) =>
-      window.ccbuddy.onOpenHistoryViewRequested?.(listener) ?? (() => {}),
-    historyReview: window.ccbuddyHistory
-      ? {
-          protocolVersion: 1,
-          list: () => window.ccbuddyHistory!.list(),
-          load: (id) => window.ccbuddyHistory!.load(id),
-          refresh: () => window.ccbuddyHistory!.refresh(),
-          onRefreshEvent: (listener) =>
-            window.ccbuddyHistory!.onRefreshEvent((event) => listener(event)),
-        }
-      : undefined,
     getAutoUpdatePreferences: () =>
       window.ccbuddy.getAutoUpdatePreferences?.() ??
       Promise.resolve({ autoDownloadAndInstallUpdates: false }),
@@ -173,8 +179,7 @@ export function createDesktopPlatform(options: {
     onPostUpdateReleaseNotes: (callback) => window.ccbuddy.onPostUpdateReleaseNotes(callback),
     acknowledgePostUpdateReleaseNotes: (version) =>
       window.ccbuddy.acknowledgePostUpdateReleaseNotes(version),
-    skipUpdateVersion: (version) =>
-      window.ccbuddy.skipUpdateVersion?.(version) ?? Promise.resolve(),
+    skipUpdateVersion: (version) => window.ccbuddy.skipUpdateVersion?.(version) ?? Promise.resolve(),
     quitAndInstallUpdate: () => window.ccbuddy.quitAndInstallUpdate(),
     getInstalledEditors: () => window.ccbuddy.getInstalledEditors(),
     getApplicationIcon: (bundleId) =>

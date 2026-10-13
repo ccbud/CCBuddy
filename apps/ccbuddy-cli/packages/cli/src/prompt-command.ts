@@ -16,6 +16,7 @@ import {
   readHeadlessRuntimeFacts,
   waitForHeadlessWorkflowSettle,
 } from "./headless-workflow.js";
+import { runLoginCommand, runLogoutCommand } from "./login-command.js";
 import { resolveResumeSession } from "./resume.js";
 import { readRuntimeEventSubscriber } from "./runtime-event-subscriber.js";
 import {
@@ -24,6 +25,13 @@ import {
   runCliCleanupWithTimeout,
 } from "./shutdown.js";
 import { runSkillsCommand } from "./skills-command.js";
+import {
+  DEFAULT_CLI_WORKFLOW_MODE,
+  isWorkflowModeEnabled,
+  resolveWorkflowModeRuntimeConfig,
+  WORKFLOW_DISABLED_NOTICE,
+} from "./workflow-mode.js";
+import type { DynamicWorkflowMode } from "@ccbuddy/shared";
 import type { CommandCenterApp, SlashCommand } from "./command-center.js";
 import type {
   CliPermissionMode,
@@ -69,26 +77,48 @@ export const runPrompt = async (
   toolDisallowlist?: readonly string[],
   forceMcs = false,
   presentationSurface: PresentationSurface = "terminal",
+  workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
 ): Promise<number> => {
   if (prompt.trim().length === 0) {
     ctx.stderr.write(`${EMPTY_PROMPT_ERROR}\n`);
     return 1;
   }
 
-  if (/^\/(?:login|logout)(?:\s|$)/iu.test(prompt.trim())) {
-    ctx.stderr.write("Account login is unavailable. Configure your own model provider.\n");
-    return 1;
-  }
-
   const slashCommand = parseSlashCommand(prompt);
   if (slashCommand?.type === "known" && slashCommand.name === "help") {
     ctx.stdout.write(
-      `${formatSlashCommandHelp(slashCommand.args, await listCustomCommandsForPrompt(deps))}\n`,
+      `${formatSlashCommandHelp(slashCommand.args, await listCustomCommandsForPrompt(deps), {
+        workflowMode,
+      })}\n`,
     );
     return 0;
   }
+  // disabled 下 `/workflow` 不展开（builtin resolver 同判）；若照常建 app 提交，原文会作为普通文本
+  // 发给模型并「成功」退出，脚本察觉不到。建 app 之前就报错退出，与 TUI 的本地提示同一句。
+  if (
+    slashCommand?.type === "known" &&
+    slashCommand.name === "workflow" &&
+    !isWorkflowModeEnabled(workflowMode)
+  ) {
+    ctx.stderr.write(`Error: ${WORKFLOW_DISABLED_NOTICE}\n`);
+    return 1;
+  }
   if (slashCommand?.type === "known" && slashCommand.name === "skill" && !slashCommand.skillName) {
     return await runSkillsCommand(ctx, options, deps, []);
+  }
+  if (slashCommand?.type === "known" && slashCommand.name === "login") {
+    if (slashCommand.args.length > 0) {
+      ctx.stderr.write("Usage: /login\n");
+      return 1;
+    }
+    return await runLoginCommand(ctx, options, deps, false);
+  }
+  if (slashCommand?.type === "known" && slashCommand.name === "logout") {
+    if (slashCommand.args.length > 0) {
+      ctx.stderr.write("Usage: /logout\n");
+      return 1;
+    }
+    return await runLogoutCommand(ctx, options, deps);
   }
 
   const runtimePrompt =
@@ -187,7 +217,25 @@ export const runPrompt = async (
     if (!startProviderRegistryRuntime) {
       throw new Error("Provider Registry runtime is unavailable.");
     }
-    providerRegistryRuntime = await startProviderRegistryRuntime(appEnv);
+    providerRegistryRuntime = await startProviderRegistryRuntime(
+      appEnv,
+      deps.skipUserConfig
+        ? {}
+        : {
+            standalone: {
+              ...createCliProviderRefreshReporter(ctx.stderr),
+              ...(deps.userConfigPath ? { legacyCliUserConfigFilePath: deps.userConfigPath } : {}),
+            },
+          },
+    );
+    const createProviderEndpointRoutingPort =
+      deps.createProviderEndpointRoutingPort ??
+      bootstrapModule?.createDefaultProviderEndpointRoutingPort;
+    const providerEndpointRoutingPort = createProviderEndpointRoutingPort?.({
+      appVersion: version,
+      env,
+      workingDirectory,
+    });
     browserRuntime = createCliHeadlessBrowserRuntime(options, deps);
     app = await createApp({
       browserControlPort: browserRuntime?.browserControlPort,
@@ -197,6 +245,7 @@ export const runPrompt = async (
       // 这个最小 broker 只按工具名放行 CreateWorkflow，其余工具委托回同一个 deny
       // broker，语义逐字不变。详见 headless-workflow.ts 的注释。
       permissionBroker: createHeadlessPermissionBroker(),
+      ...(providerEndpointRoutingPort ? { providerEndpointRoutingPort } : {}),
       providerRegistry: providerRegistryRuntime.runtime.registryService,
       configuredDefaultModelSelection: providerRegistryRuntime.configuredDefaultModelSelection,
       ...(providerRegistryRuntime.providerRuntimeHeadersPort
@@ -209,8 +258,7 @@ export const runPrompt = async (
         ...(mode ? { mode } : {}),
         ...(toolDisallowlist ? { toolDisallowlist } : {}),
         ...(forceMcs ? { midConversationSystem: { mode: "force" as const } } : {}),
-        // headless 按本次调用显式开关；不改 core 缺省值，保持 TUI 与 stdio 的既有策略。
-        dynamicWorkflowEnabled: options.enableWorkflow === true,
+        ...resolveWorkflowModeRuntimeConfig(workflowMode),
         memory: { extractionEnabled: options.memoryBench === true },
         modelStreaming: "on",
         presentationSurface,
@@ -256,6 +304,7 @@ export const runPrompt = async (
         traceId,
         abortController.signal,
         deps,
+        workflowMode,
       );
     }
 
@@ -476,6 +525,7 @@ async function runPromptCommandCenterCommand(
   traceId: string | undefined,
   abortSignal: AbortSignal,
   deps: RunDependencies,
+  workflowMode: DynamicWorkflowMode,
 ): Promise<number> {
   const commandCenter = createCommandCenter({
     getApp: async () => app as unknown as CommandCenterApp,
@@ -486,6 +536,7 @@ async function runPromptCommandCenterCommand(
       await app.recordInputHistory?.(input, kind);
     },
     resumeApp: async () => app as unknown as CommandCenterApp,
+    workflowMode,
     setLocale: async (locale) => {
       if (!app.setLocale) {
         throw new Error("Locale switching is not available in this client.");
@@ -619,3 +670,4 @@ function writeHeadlessWorkspaceHookTrustDiagnostic(
     ].join("\n") + "\n",
   );
 }
+import { createCliProviderRefreshReporter } from "./provider-runtime-env.js";

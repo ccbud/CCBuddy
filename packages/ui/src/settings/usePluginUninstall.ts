@@ -1,5 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import type { CCbuddyInstalledPluginSummary, CCbuddyPluginInfo } from "@ccbuddy/shared";
+import type {
+  CCbuddyInstalledPluginSummary,
+  CCbuddyPluginInfo,
+} from "@ccbuddy/shared";
 import type { IPluginManagementService } from "@ccbuddy/services";
 import { usePluginManagementStore } from "@/store/pluginManagementStore.js";
 
@@ -12,7 +15,7 @@ interface UsePluginUninstallInput {
   onAfterUninstall: () => Promise<void>;
 }
 
-interface PluginUninstallController {
+export interface PluginUninstallController {
   pendingPlugin: CCbuddyPluginInfo | CCbuddyInstalledPluginSummary | null;
   uninstalling: boolean;
   requestUninstall: (pluginId: string) => void;

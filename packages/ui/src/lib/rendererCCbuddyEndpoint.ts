@@ -14,7 +14,7 @@ function readRendererImportMetaEnv(): RendererImportMetaEnv {
     {}) as RendererImportMetaEnv;
 }
 
-function createRendererCCbuddyEndpointEnv(
+export function createRendererCCbuddyEndpointEnv(
   env: RendererImportMetaEnv = readRendererImportMetaEnv(),
 ): RuntimeCCbuddyEndpointEnv {
   return {

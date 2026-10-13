@@ -593,8 +593,16 @@ export function createSessionFacade(deps: CreateSessionFacadeDeps): SessionFacad
     },
     setMode: async (mode: CollaborationMode) => {
       const previousMode = deps.runtime.getMode();
+      const session = await deps.sessionStore.getSession(deps.sessionId);
+      // 群模式属于任务授权；不能写入工作区默认模式，让其他群或私聊继承。
+      if (session?.permission?.scope === "session") {
+        await deps.sessionStore.updateSession({
+          id: deps.sessionId,
+          permission: { ...session.permission, mode },
+        });
+      }
       await deps.runtime.setExecutionState({ mode }, deps.traceContext);
-      if (deps.localSettingStore) {
+      if (deps.localSettingStore && session?.permission?.scope !== "session") {
         try {
           await deps.localSettingStore.saveProjectPermissionMode({
             mode: deps.runtime.getMode(),
@@ -652,6 +660,7 @@ export function createSessionFacade(deps: CreateSessionFacadeDeps): SessionFacad
           : {}),
       };
       deps.runtime.setSessionModelSelection(sessionSelection);
+      // transient 切换不产出 modelChange 聊天通知：应用/还原成对出现会刷出两条无意义通知。
       if (!options?.transient) {
         deps.runtime.recordPendingModelChange({
           fromModel: previousSelection,
@@ -741,7 +750,7 @@ export function createSessionFacade(deps: CreateSessionFacadeDeps): SessionFacad
   };
 }
 
-async function closeSessionResources(input: SessionResourceCloseInput): Promise<void> {
+export async function closeSessionResources(input: SessionResourceCloseInput): Promise<void> {
   try {
     // 第一拍先关闭 runtime admission；后续 execution cancel 只能收口状态，不能再唤醒模型。
     input.beginShutdown();

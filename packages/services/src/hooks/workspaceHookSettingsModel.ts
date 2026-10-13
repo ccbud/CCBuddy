@@ -16,7 +16,7 @@ import {
   type WorkspaceHooksConfig,
 } from "@ccbuddy/shared/workspace-hook-discovery";
 
-interface LegacyHookDefinition {
+export interface LegacyHookDefinition {
   type?: "command" | "process" | string;
   command?: string;
   args?: string[];

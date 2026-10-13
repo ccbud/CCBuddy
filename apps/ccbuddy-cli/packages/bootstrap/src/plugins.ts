@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
   addSuppressedBuiltinInFileConfig,
@@ -17,6 +17,7 @@ import {
   addMarketplace,
   comparePluginUpdate,
   describeMarketplacePlugin,
+  enrichCachedClaudeMarketplaceIcons,
   ensureDefaultPluginMarketplaces,
   discoverNodePluginsSync,
   ensureMarketplaceManifestAvailable,
@@ -196,11 +197,11 @@ export interface CCbuddyPluginUpdateData extends CCbuddyPluginInstallData {
   previousVersion: string;
 }
 
-interface RestoreBuiltinPluginOptions extends ResolveCCbuddyPluginsOptions {
+export interface RestoreBuiltinPluginOptions extends ResolveCCbuddyPluginsOptions {
   pluginId: string;
 }
 
-interface ConfigureCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
+export interface ConfigureCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
   clearOptionKeys?: string[];
   dryRun?: boolean;
   options: Record<string, unknown>;
@@ -208,18 +209,18 @@ interface ConfigureCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
   scope?: "user" | "workspace";
 }
 
-interface ResetCCbuddyPluginConfigOptions extends ResolveCCbuddyPluginsOptions {
+export interface ResetCCbuddyPluginConfigOptions extends ResolveCCbuddyPluginsOptions {
   pluginId: string;
   scope?: "user" | "workspace";
 }
 
-interface ValidateCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
+export interface ValidateCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
   marketplace?: string;
   pluginName?: string;
   source?: string;
 }
 
-interface DescribeCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
+export interface DescribeCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
   marketplace: string;
   pluginName: string;
 }
@@ -402,6 +403,16 @@ export function getCCbuddyPluginsOverview(
       ),
     ],
   };
+}
+
+export function enrichCachedClaudeMarketplaceIconsForOverview(
+  options: ResolveCCbuddyPluginsOptions = {},
+): void {
+  const { pluginStorageRoot } = resolvePluginContext(options);
+  // 图标是可选展示增强：overview 不等待网络；仅写回阶段进入 storage lock。
+  void enrichCachedClaudeMarketplaceIcons(pluginStorageRoot, (write) =>
+    withPluginStorageLock(pluginStorageRoot, write),
+  );
 }
 
 export function listCCbuddyPlugins(options: ListCCbuddyPluginsOptions = {}): PluginLoadOutcome {
@@ -1322,7 +1333,20 @@ function normalizePluginConfigPathForComparison(
   return platform === "win32" ? resolvedPath.replaceAll("\\", "/").toLowerCase() : resolvedPath;
 }
 
-function resolveMarketplaceRefreshTargetIds(input: {
+export function isWorkspacePluginConfigPath(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === "win32") {
+    return (
+      win32.basename(path).toLowerCase() === "config.json" &&
+      win32.basename(win32.dirname(path)).toLowerCase() === ".ccbuddy"
+    );
+  }
+  return basename(path) === "config.json" && basename(dirname(path)) === ".ccbuddy";
+}
+
+export function resolveMarketplaceRefreshTargetIds(input: {
   declaredIds: Iterable<string>;
   knownIds: Iterable<string>;
   marketplace?: string;

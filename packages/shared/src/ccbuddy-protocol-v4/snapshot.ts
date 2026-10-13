@@ -60,6 +60,7 @@ export const activeWorkSummarySchema = z.object({
     "turnSteer",
   ]),
   foregroundExecutionId: z.string().min(1).optional(),
+  sourceCommandId: z.string().min(1).optional(),
   startedAt: timestampSchema,
 });
 export type ActiveWorkSummary = z.infer<typeof activeWorkSummarySchema>;

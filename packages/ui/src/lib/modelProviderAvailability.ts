@@ -1,6 +1,6 @@
 import type { ModelSelectionView } from "@ccbuddy/services";
 
-interface ProviderAvailabilityState {
+export interface ProviderAvailabilityState {
   readonly source: "registry";
   readonly hydrated: boolean;
   readonly providerCount: number;

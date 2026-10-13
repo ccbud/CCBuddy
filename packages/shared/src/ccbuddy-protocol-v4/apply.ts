@@ -34,9 +34,13 @@ export function createMutableConversationSnapshotAccumulator(
   };
 }
 
-// row.delta 只允许作用于流式态行（不变量，服务端保证）。
-// 本函数按协议语义实现为：路径不存在/行不存在时 no-op（patch 命中未加载行 = no-op）。
-function appendToRow(row: ConversationRow, path: StreamablePath, append: string): ConversationRow {
+// row.delta 只允许作用于流式态行（§4.4.4 不变量，服务端保证）。
+// 本函数按协议语义实现为：路径不存在/行不存在时 no-op（§4.3：patch 命中未加载行 = no-op）。
+function appendToRow(
+  row: ConversationRow,
+  path: StreamablePath,
+  append: string,
+): ConversationRow {
   switch (path) {
     case "text":
       if (row.kind === "assistantText" || row.kind === "reasoning") {
@@ -81,15 +85,19 @@ export function applyConversationDelta(
         },
       };
     case "row.upserted": {
-      const index = snapshot.rows.window.findIndex((row) => row.rowId === delta.row.rowId);
-      // 未加载 rowId = no-op（被逐出的行只能经 rows/range 取回）。
+      const index = snapshot.rows.window.findIndex(
+        (row) => row.rowId === delta.row.rowId,
+      );
+      // §4.3：未加载 rowId = no-op（被逐出的行只能经 rows/range 取回）。
       if (index === -1) return snapshot;
       const window = [...snapshot.rows.window];
       window[index] = delta.row;
       return { ...snapshot, rows: { ...snapshot.rows, window } };
     }
     case "row.removed": {
-      const window = snapshot.rows.window.filter((row) => row.rowId < delta.fromRowId);
+      const window = snapshot.rows.window.filter(
+        (row) => row.rowId < delta.fromRowId,
+      );
       const removed = snapshot.rows.window.length - window.length;
       const removesEntireActiveBranch =
         snapshot.rows.firstRowId !== null && delta.fromRowId <= snapshot.rows.firstRowId;
@@ -109,7 +117,9 @@ export function applyConversationDelta(
       };
     }
     case "row.delta": {
-      const index = snapshot.rows.window.findIndex((row) => row.rowId === delta.rowId);
+      const index = snapshot.rows.window.findIndex(
+        (row) => row.rowId === delta.rowId,
+      );
       const target = snapshot.rows.window[index];
       if (index === -1 || target === undefined) return snapshot;
       const window = [...snapshot.rows.window];

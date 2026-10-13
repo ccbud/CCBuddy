@@ -8,11 +8,11 @@ interface CCbuddyStdioTapStateFile {
   enabled?: boolean;
 }
 
-function isCCbuddyStdioTapDevVisible(): boolean {
+export function isCCbuddyStdioTapDevVisible(): boolean {
   return isEffectiveDevelopmentNodeEnv();
 }
 
-function getCCbuddyStdioTapDevDir(): string {
+export function getCCbuddyStdioTapDevDir(): string {
   return join(getAppConfigDir(), "dev");
 }
 
@@ -20,7 +20,7 @@ export function getCCbuddyStdioTapDevLogDir(): string {
   return join(getCCbuddyStdioTapDevDir(), "stdio-traffic");
 }
 
-function getCCbuddyStdioTapDevStatePath(): string {
+export function getCCbuddyStdioTapDevStatePath(): string {
   return join(getCCbuddyStdioTapDevDir(), "ccbuddy-stdio-tap.json");
 }
 

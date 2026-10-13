@@ -20,6 +20,7 @@ import type {
 } from "../interfaces/session-store.port.js";
 import type {
   CollaborationMode,
+  HighspeedMessageMetadata,
   RiskLevel,
   TurnInputIntentMetadata,
   TurnSteerCommandKind,
@@ -111,11 +112,13 @@ export const SessionEventType = {
   UserMessage: "user_message",
   AssistantMessage: "assistant_message",
   AssistantFeedbackUpdated: "assistant_feedback_updated",
+  HighspeedMetricsUpdated: "highspeed_metrics_updated",
   // （2026-09-12）：原 ToolWidgetStateUpdated / SessionPluginUiStateUpdated 已删除，
   // 插件 UI widgetState 回退 renderer 内存，不再经 CLI 事件流。
   SystemMessage: "system_message",
   ModelRequest: "model_request",
   ModelSelected: "model_selected",
+  TurnExecutionModelFallback: "turn_execution_model_fallback",
   ModelStreaming: "model_streaming",
   StreamingToolLedgerUpdated: "streaming_tool_ledger_updated",
   StreamRecoveryAnchorCreated: "stream_recovery_anchor_created",
@@ -286,6 +289,24 @@ export type WorkflowNotificationMeta =
       context?: string;
       askedAt?: number;
     }
+  /**
+   * 脚本到达一处留白（docs/dynamic-workflow/transcript-and-notifications.md 的 `hole` 载荷）：
+   * 主代理欠这个 run 一段代码。`prompt` ≤4000（与升级问题同界）；`before` / `after` 是留白前后
+   * 的阶段名，`draftPath` / `line` 指向 run 草稿里的那一行。每个 `hole-reached` 恰好一条。
+   */
+  | {
+      kind: "hole";
+      siteId: string;
+      ordinal: number;
+      name: string;
+      type: string;
+      prompt?: string;
+      draftPath?: string;
+      line?: number;
+      before?: string;
+      after?: string;
+      reachedAt?: number;
+    }
   /** run 级停滞：每个 stall 段一条，不是终态。 */
   | {
       kind: "stall";
@@ -333,15 +354,16 @@ export type TurnBackgroundAttribution =
 export type WorkflowLaunchDisplay = Extract<ToolResultDisplayPayload, { kind: "create_workflow" }>;
 
 /**
- * 设置轮的「改了什么」：只有改动过的设置在场，
- * 每项 from / to 缺一端即那一端是默认（模型 = 会话模型，上限 = 本机上限）。`ceiling` 是本机上限，
- * 供「13 → 4」这种读法。与 shared 的 `workflowSettingsAmendMetaSchema` 同形。
+ * 设置轮（docs/dynamic-workflow/launch.md「The settings turn」）的「改了什么」：只有改动过的设置在场，
+ * 每项 from / to 缺一端即那一端是默认（模型 = 会话模型，上限 = 默认并发）。`ceiling` 是默认并发 D
+ * （线上键名早于「默认并发」这个概念，为兼容旧端保留），供「默认 13 → 4」这种读法。与 shared 的 `workflowSettingsAmendMetaSchema` 同形。
  */
 export interface WorkflowSettingsAmendMeta {
   /**
-   * 被这次调整替代（或接着跑）的那个 run。**缺席即就地生效**：只改并发上界、run 又还在飞时，
+   * 被这次调整替代（或接着跑）的那个 run。**缺席即就地生效**
+   * （docs/dynamic-workflow/launch.md「The settings turn」）：只改并发上界、run 又还在飞时，
    * 那次「配置」既不停这次 run 也不另起一次，于是没有前驱可指——`runId` 指的就是被调整的那一个。
-   * 与 shared 的 `workflowSettingsAmendMetaSchema` 同形。
+   * 与 shared 的 `workflowSettingsAmendMetaSchema` 同形（那边记着老桌面上的偏斜）。
    */
   predecessorRunId?: string;
   subagentModel?: { from?: string; to?: string };
@@ -633,6 +655,11 @@ export interface AssistantFeedbackUpdatedPayload {
   feedback: "like" | "dislike" | null;
 }
 
+export interface HighspeedMetricsUpdatedPayload {
+  entityId: string;
+  highspeed: HighspeedMessageMetadata;
+}
+
 export interface SystemMessagePayload {
   type: "init" | "compact_boundary" | "interrupted";
   content: string;
@@ -699,6 +726,23 @@ export interface ModelSelectedPayload {
   supportedThoughtLevels?: string[];
   /** 当前 selection 在 runtime 实际应用的上下文窗口；null 表示显式清除，字段缺失兼容旧事件。 */
   contextWindow?: number | null;
+}
+
+/**
+ * 执行 Selection 退回会话 Selection 的原因，与 @ccbuddy/shared 的 selectionFallback 规则同值域：
+ * 卡过期由声明的 provider 错误码命中，其余任何加速请求失败归为 request_failed。
+ */
+export type TurnExecutionModelFallbackReason = "highspeed_card_expired" | "highspeed_request_failed";
+
+export interface TurnExecutionModelFallbackPayload {
+  inputId?: string;
+  reason: TurnExecutionModelFallbackReason;
+  /**
+   * Provider 重构后单轮执行模型统一用稀疏 Selection 表达（旧的 ModelRef 已删除）：
+   * from 是本轮 execution 作用域的加速 Selection，to 是会话常驻 Selection。
+   */
+  fromModelSelection: ModelSelection;
+  toModelSelection: ModelSelection;
 }
 
 export type ModelStreamingKind =
@@ -966,6 +1010,7 @@ export interface DynamicWorkflowRunProgressPayload {
 }
 
 export interface PermissionRequestedPayload {
+  approvalMode?: "user-once";
   requestId?: string;
   toolCallId: ToolCallId;
   toolName: string;
@@ -1239,6 +1284,7 @@ export type SessionEventPayload =
   | SystemMessagePayload
   | ModelRequestPayload
   | ModelSelectedPayload
+  | TurnExecutionModelFallbackPayload
   | ModelStreamingPayload
   | StreamingToolLedgerPayload
   | StreamRecoveryAnchorPayload

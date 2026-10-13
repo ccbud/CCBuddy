@@ -1,18 +1,34 @@
 import {
-  createFailClosedAccountProviderConfigSnapshot,
+  AccountProviderService,
+  MutableAccountProviderConfigSource,
   parseAccountProviderConfigMap,
   type AccountProviderConfigSnapshot,
   type AccountProviderStates,
-  type ProviderSource,
 } from "@ccbuddy/provider";
-import { isBuiltinModelProviderId } from "@ccbuddy/shared";
+import {
+  isBuiltinModelProviderId,
+  resolveRuntimeCCbuddyEndpointOrigin,
+  CCBUDDY_VERSION,
+} from "@ccbuddy/shared";
+import { dirname, join } from "node:path";
 import {
   NodeModelSelectionConfigRepository,
   NodeProviderRegistryRuntime,
   resolveNodeProviderRuntimePaths,
+  downloadCCbuddyBuiltinRelease,
+  resolveCCbuddyBuiltinClientPlatform,
+  CCBUDDY_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV,
   type CCbuddyBuiltinRefreshEvent,
 } from "@ccbuddy/provider-node";
-import type { SharedCCbuddyCredentialStore } from "@ccbuddy/adapters/auth";
+import {
+  createSharedCCbuddyCredentialStore,
+  type SharedCCbuddyCredentialStore,
+} from "@ccbuddy/adapters/auth";
+import { readLegacyCliPersonalProviderConfig } from "./legacy-cli-personal-provider-config-importer.js";
+import {
+  createStandaloneProviderRuntimeHeadersPort,
+  readStandaloneAccountProviderConfigSnapshot,
+} from "./standalone-account-provider-runtime.js";
 
 export interface ProcessProviderRegistryRuntimeOptions {
   /** Standalone Prompt CLI / TUI 自己拥有账号凭据与旧配置的一次性导入。 */
@@ -28,28 +44,109 @@ export interface ProcessProviderRegistryRuntimeOptions {
 
 export async function startProcessProviderRegistryRuntime(
   env: Readonly<Record<string, string | undefined>>,
-  _options: ProcessProviderRegistryRuntimeOptions = {},
+  options: ProcessProviderRegistryRuntimeOptions = {},
 ) {
   const paths = resolveNodeProviderRuntimePaths(env);
   if (!paths) {
-    throw new Error("缺少进程 Provider Registry 的 Built-in / Personal Config 路径");
+    throw new Error("缺少进程 Provider Registry 的 CCbuddy Built-in / Personal Config 路径");
   }
 
-  let accountSource: ProviderSource<AccountProviderConfigSnapshot> | undefined;
+  const accountSource = new MutableAccountProviderConfigSource();
+  const credentialStore = options.standalone
+    ? (options.standalone.credentialStore ?? createSharedCCbuddyCredentialStore({ env: { ...env } }))
+    : undefined;
+  let standaloneAccount: AccountProviderService | undefined;
+  const bundledFile = options.standalone
+    ? env[CCBUDDY_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV]?.trim()
+    : undefined;
   const runtime = new NodeProviderRegistryRuntime({
     ...paths,
-    // CCbuddy 只使用用户自配 Provider：账号 Overlay 永远 fail-closed，也不装配旧凭据。
-    createAccountSource(configService) {
-      accountSource = {
-        read: async () =>
-          createFailClosedAccountProviderConfigSnapshot(await configService.read()),
-        onDidChange: () => () => {},
-      };
-      return accountSource;
-    },
-    // 无远端 Built-in 同步和旧 CLI Provider 配置导入。
+    ...(bundledFile
+      ? {
+          ccbuddyBuiltinFilePath: bundledFile,
+          ccbuddyBuiltinActiveFilePath: paths.ccbuddyBuiltinFilePath,
+          ccbuddyBuiltinRemote: {
+            controlFilePath: join(
+              dirname(paths.ccbuddyBuiltinFilePath),
+              "ccbuddy-builtin-refresh.json",
+            ),
+            resolveEndpointKey: () => resolveRuntimeCCbuddyEndpointOrigin(env),
+            fetchRelease: (endpointOrigin, signal) =>
+              downloadCCbuddyBuiltinRelease({
+                endpointOrigin,
+                signal,
+                appVersion: CCBUDDY_VERSION,
+                platform: resolveCCbuddyBuiltinClientPlatform(),
+                request: options.standalone?.request ?? globalThis.fetch,
+              }),
+            onRefreshResult: options.standalone?.onBuiltinRefreshResult,
+          },
+        }
+      : {}),
+    onCCbuddyBuiltinRefreshError: options.standalone?.onBuiltinRefreshError,
+    accountSource,
+    ...(credentialStore
+      ? {
+          createAccountSource(configService) {
+            standaloneAccount = new AccountProviderService({
+              configSource: configService,
+              async resolve({ configRevision, configuredProviders }) {
+                // 使用本轮捕获的 Built-in，而不是异步读另一份文件后仅贴上新 revision。
+                const snapshot = await readStandaloneAccountProviderConfigSnapshot(
+                  credentialStore,
+                  env,
+                  {
+                    revision: configRevision,
+                    providers: configuredProviders,
+                  },
+                );
+                return {
+                  providers: snapshot.providers,
+                  states: snapshot.states ?? {},
+                };
+              },
+            });
+            standaloneAccount.onDidRefreshError(({ error }) => {
+              try {
+                options.standalone?.onAccountInitializationError?.(error);
+              } catch {
+                /* 观测回调不能改变账号事实。 */
+              }
+            });
+            return standaloneAccount;
+          },
+        }
+      : {}),
+    ...(options.standalone
+      ? {
+          importLegacy: () =>
+            readLegacyCliPersonalProviderConfig({
+              ...(options.standalone?.legacyCliUserConfigFilePath
+                ? { filePath: options.standalone.legacyCliUserConfigFilePath }
+                : {}),
+            }),
+        }
+      : {}),
   });
-
+  const disposeRecovery = standaloneAccount
+    ? runtime.onDidCheckCCbuddyBuiltin(async () => {
+        const [config, account] = await Promise.all([
+          runtime.configService.read(),
+          standaloneAccount!.read(),
+        ]);
+        if (config.ccbuddyBuiltinRevision !== account.basedOnCCbuddyBuiltinRevision)
+          await standaloneAccount!.refresh("builtin-account-recovery");
+      })
+    : undefined;
+  // 复用 AccountService 的串行、过期结果丢弃机制，凭据变化与 Built-in 变化不能各自发布。
+  const standaloneHeaders = credentialStore
+    ? createStandaloneProviderRuntimeHeadersPort(credentialStore, env)
+    : undefined;
+  const disposeCredentialSubscription = credentialStore?.onDidChange?.(async () => {
+    await standaloneHeaders?.invalidateChangedCredentials();
+    await standaloneAccount!.refresh("standalone-credentials-changed");
+    await runtime.registryService.refresh("standalone-credentials-barrier");
+  });
   try {
     await runtime.start();
     const snapshot = runtime.registryService.getSnapshot()!;
@@ -59,25 +156,43 @@ export async function startProcessProviderRegistryRuntime(
     try {
       const configuredDefaultModelSelection = await modelSelectionConfigRepository.read();
       return Object.freeze({
-        accountSource: accountSource!,
-        providerRuntimeHeadersPort: undefined,
-        async syncAccountProviderConfig(_next: AccountProviderConfigSnapshot): Promise<boolean> {
-          return false;
+        accountSource: standaloneAccount ?? accountSource,
+        async syncAccountProviderConfig(next: AccountProviderConfigSnapshot): Promise<boolean> {
+          if (standaloneAccount)
+            throw new Error("Standalone Account 由本进程管理，不接收 Host 覆盖");
+          const changed = accountSource.replace(next, "host-account-config");
+          // Source 去重只证明收过，不证明上次刷新成功。重交时仍刷新；配套配置未到
+          // 则由 Registry 保留完整旧快照，不能把接收确认冒充应用确认。
+          await runtime.registryService.refresh("host-account-config");
+          return changed;
         },
         dispose() {
+          disposeCredentialSubscription?.();
+          standaloneHeaders?.clearProjectTokens();
+          disposeRecovery?.();
+          standaloneAccount?.dispose();
           modelSelectionConfigRepository.dispose();
           runtime.dispose();
         },
+        ...(credentialStore
+          ? {
+              providerRuntimeHeadersPort: standaloneHeaders!,
+            }
+          : {}),
         runtime,
         snapshot,
         modelSelectionConfigRepository,
         configuredDefaultModelSelection,
       });
     } catch (error) {
+      disposeCredentialSubscription?.();
       modelSelectionConfigRepository.dispose();
       throw error;
     }
   } catch (error) {
+    disposeCredentialSubscription?.();
+    disposeRecovery?.();
+    standaloneAccount?.dispose();
     runtime.dispose();
     throw error;
   }

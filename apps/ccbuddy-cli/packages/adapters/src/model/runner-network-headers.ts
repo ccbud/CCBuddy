@@ -1,6 +1,8 @@
+import { requestSecuritySensitiveHeaders } from "@ccbuddy/shared";
 const HEADER_REDACTION_VALUE = "[redacted]";
 
 const redactedHeaderNames = new Set([
+  ...requestSecuritySensitiveHeaders,
   "authorization",
   "proxy-authorization",
   "cookie",

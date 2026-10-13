@@ -15,6 +15,7 @@ import {
   NotepadTextIcon,
   PackageIcon,
   PaletteIcon,
+  ShieldCheckIcon,
   SquareTerminalIcon,
   TerminalIcon,
   WaypointsIcon,
@@ -312,6 +313,10 @@ export function SidePaneTabIcon({ tab }: { tab: WorkspaceSidePaneTab }) {
     return <BrowserTabFavicon faviconUrl={tab.faviconUrl} />;
   }
 
+  if (tab.type === "browser-permissions") {
+    return <ShieldCheckIcon className="size-3.5" />;
+  }
+
   if (tab.type === "git") {
     return <FileDiffIcon className="size-3.5" />;
   }
@@ -455,7 +460,7 @@ function getPatchHeaderFileDisplayTarget(patch: string): string | null {
   return null;
 }
 
-function getPatchFileDisplayTarget(source: {
+export function getPatchFileDisplayTarget(source: {
   path?: string;
   title: string;
   patch: string;
@@ -518,6 +523,10 @@ export function getSidePaneTabTitle(
   if (tab.type === "browser") {
     const pageTitle = tab.title?.trim();
     return pageTitle || formatMessage({ id: "browser.title" });
+  }
+
+  if (tab.type === "browser-permissions") {
+    return formatMessage({ id: "browser.permission.settings" });
   }
 
   if (tab.type === "git") {

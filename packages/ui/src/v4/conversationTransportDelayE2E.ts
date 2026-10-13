@@ -1,4 +1,4 @@
-import type { CommandAck } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type { CommandAck, CommandEnvelope } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { shouldExposeE2EStoreBridge } from "@/lib/e2eStoreBridge.js";
 
 interface DelayPlan {
@@ -9,13 +9,15 @@ interface DelayPlan {
 }
 /** 仅 E2E build 的公开传输 seam 故障注入；只延迟真实命令/ACK，不伪造事件。 */
 export async function sendWithConversationDelayE2E(
+  envelope: CommandEnvelope,
   send: () => Promise<CommandAck>,
 ): Promise<CommandAck> {
   const host =
     typeof window === "undefined"
       ? undefined
       : (window as Window & { __ccbuddyTransportDelayE2E?: DelayPlan });
-  const plan = shouldExposeE2EStoreBridge() ? host?.__ccbuddyTransportDelayE2E : undefined;
+  const plan =
+    shouldExposeE2EStoreBridge() && envelope.ttft ? host?.__ccbuddyTransportDelayE2E : undefined;
   if (!plan || plan.consumed) return send();
   plan.consumed = true;
   const delay = (ms: number) =>

@@ -1,10 +1,13 @@
 import type { IGenUiService } from "./gen-ui/contract.js";
 import { IOffPeakTaskService } from "./session/offPeakTask.js";
+import type { IHighspeedCardService } from "./highspeed/highspeedCard.js";
 import type { IPluginUiBridgeService } from "./plugin-ui-bridge/contract.js";
 import type { IPluginUiSamplingService } from "./plugin-ui-bridge/samplingContract.js";
 import type { IPluginUiAppToolsService } from "./plugin-ui-bridge/appToolsContract.js";
 import type { IFileService } from "./file/file.js";
 import type { IMediaPreviewService } from "./media-preview/mediaPreview.js";
+import type { ICloudContentService } from "#src/cloud-content/cloudContent.js";
+import type { IMarketingTouchService } from "#src/marketing-touch/marketingTouch.js";
 import type { IGitService } from "./git/git.js";
 import type { IGitCheckpointService } from "./git/gitCheckpoint.js";
 import type { ISystemService } from "./system/system.js";
@@ -37,6 +40,7 @@ import type { ISubagentsService } from "./subagents/subagents.js";
 import type { ICommandsService } from "./commands/commands.js";
 import type { IHooksService } from "./hooks/hooks.js";
 import type { IMemoryService } from "./memory/memory.js";
+import type { IOutputStyleService } from "./output-style/outputStyle.js";
 import type { ISettingsSyncService } from "./settings-sync/settingsSync.js";
 import type { IFeedbackService } from "./feedback/feedback.js";
 import type { IPromptAttachmentTransferService } from "./prompt-attachment-transfer/promptAttachmentTransfer.js";
@@ -48,6 +52,8 @@ import type { IConversationShareService } from "./conversation-share/conversatio
 export interface IServiceAccessor {
   readonly fileService: IFileService;
   readonly mediaPreviewService?: IMediaPreviewService;
+  readonly cloudContentService?: ICloudContentService;
+  readonly marketingTouchService?: IMarketingTouchService;
   readonly gitService: IGitService;
   readonly gitCheckpointService: IGitCheckpointService;
   readonly systemService: ISystemService;
@@ -78,6 +84,7 @@ export interface IServiceAccessor {
   readonly clientScenesService: IClientScenesService;
   /** 闲时任务管理（独立服务面）。 */
   readonly offPeakTaskService: IOffPeakTaskService;
+  readonly highspeedCardService: IHighspeedCardService;
   readonly skillsService: ISkillsService;
   readonly skillSyncService: ISkillSyncService;
   readonly mcpSyncService: IMcpSyncService;
@@ -96,6 +103,7 @@ export interface IServiceAccessor {
   readonly commandsService: ICommandsService;
   readonly hooksService: IHooksService;
   readonly memoryService: IMemoryService;
+  readonly outputStyleService: IOutputStyleService;
   readonly settingsSyncService: ISettingsSyncService;
   readonly feedbackService: IFeedbackService;
   readonly promptAttachmentTransferService: IPromptAttachmentTransferService;

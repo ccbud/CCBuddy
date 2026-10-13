@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import type { RootsResolverPort } from "../app/ports.js";
 import type { StorageRootSpec } from "@ccbuddy/shared";
 
-const CCBUDDY_DATA_DIR_NAME = ".ccbuddy";
+export const CCBUDDY_DATA_DIR_NAME = ".ccbuddy";
 
 export function resolveStorageRoots(params: {
   homeDir: string;

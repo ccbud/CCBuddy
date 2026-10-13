@@ -2,7 +2,7 @@ import type { ServiceAuthorityMode } from "@ccbuddy/shared";
 
 export type CCbuddyAgentPresentationSurface = "desktop";
 
-interface CCbuddyAgentPresentationHostFacts {
+export interface CCbuddyAgentPresentationHostFacts {
   runtimeSurface?: "desktop_local_host" | "remote_workspace_host";
   serviceAuthorityMode?: ServiceAuthorityMode;
   /** Main 已完成服务端单功能灰度裁决；未提供时保持历史 Host 装配语义。 */

@@ -7,7 +7,7 @@ import { z } from "zod";
  * 避免各处内联 z.enum([...]) 副本随新增/删除 provider 漂移。
  * 本模块只依赖 zod(叶子),可被 validation / ccbuddy-protocol 等无环引用。
  */
-const CCBUDDY_PROVIDERS = ["glm"] as const;
+export const CCBUDDY_PROVIDERS = ["glm"] as const;
 
 export const ccbuddyProviderSchema = z.enum(CCBUDDY_PROVIDERS);
 

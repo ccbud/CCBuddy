@@ -1,5 +1,6 @@
-import type { CCbuddyError, TraceId } from "@ccbuddy/shared";
+import type { CCbuddyError, CCbuddyTaskMeta, TraceId } from "@ccbuddy/shared";
 import { errorAttributionSchema, type ErrorAttribution } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import { resolveRequestVerificationBusinessCode } from "@/lib/providerBusinessError.js";
 
 export interface CCbuddyUiError extends CCbuddyError {
   attribution?: ErrorAttribution;
@@ -235,6 +236,10 @@ export function normalizeCCbuddyUiError(
     ["data", "ccbuddy", "error", "underlyingErrorDetail"],
   ]);
   const providerCodeFromDetail = detailFromError?.match(/provider_code=([0-9]+)/)?.[1];
+  const verificationRejectedCode = resolveRequestVerificationBusinessCode(
+    codeFromError ?? providerCodeFromDetail,
+    primaryMessage,
+  );
   const traceIdFromError = readFirstStringFromPaths(error, [
     ["traceId"],
     ["data", "traceId"],
@@ -253,7 +258,12 @@ export function normalizeCCbuddyUiError(
     // 部分上游错误外层 code 只是 PROVIDER_BUSINESS_ERROR，
     // 真实 GLM / ccbuddy-plan 业务码只保存在 detail 的 provider_code=xxxx。
     // 业务码需要进入统一错误分类层，否则 ChatView quota 横幅无法命中。
-    code: providerCodeFromDetail ?? codeFromError ?? options.fallbackCode ?? "UNKNOWN",
+    code:
+      verificationRejectedCode ??
+      providerCodeFromDetail ??
+      codeFromError ??
+      options.fallbackCode ??
+      "UNKNOWN",
     message: primaryMessage,
     detail: detailMessage,
     ...(underlyingErrorMessage ? { underlyingErrorMessage } : {}),
@@ -262,4 +272,18 @@ export function normalizeCCbuddyUiError(
     taskId: options.taskId ?? taskIdFromError,
     ...(attribution ? { attribution } : {}),
   };
+}
+
+export function normalizeRestoredTaskFailureError(meta: CCbuddyTaskMeta): CCbuddyUiError | null {
+  if (!meta.lastError) {
+    return null;
+  }
+
+  // Bugfix: 手机 Web 断连恢复时可能只拿到 error snapshot，看不到断连期间的 task_error。
+  // 没有服务端持久化的 lastError 时不再编造兜底文案，避免展示没有实际根因的错误。
+  return normalizeCCbuddyUiError(meta.lastError, {
+    fallbackCode: meta.lastError.code,
+    traceId: meta.lastError.traceId ?? meta.traceId,
+    taskId: meta.lastError.taskId ?? meta.taskId,
+  });
 }

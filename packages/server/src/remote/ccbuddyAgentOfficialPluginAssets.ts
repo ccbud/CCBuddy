@@ -3,7 +3,19 @@ import { posix } from "node:path";
 export const REMOTE_AGENT_OFFICIAL_PLUGIN_DIR_NAME = "packages";
 
 export const REMOTE_AGENT_OFFICIAL_PLUGIN_PACKAGE_NAMES = [
+  "android-emulator-plugin",
   "browser-use-plugin",
+  "ccbuddy-cua-plugin",
+  "documents-plugin",
+  "pdf-plugin",
+  "presentations-plugin",
+  "spreadsheets-plugin",
+  "image-search-plugin",
+  "ios-simulator-plugin",
+  "restore-legacy-sessions-plugin",
+  "skill-creator-plugin",
+  "plugin-creator-plugin",
+  "ccbuddy-guide-plugin",
   "visualize-plugin",
 ] as const;
 
@@ -72,11 +84,28 @@ export const REMOTE_AGENT_OFFICIAL_PLUGIN_REQUIRED_RELATIVE_PATHS = [
   "browser-use-plugin/scripts/browser-client.mjs",
   "browser-use-plugin/skills/control-browser/SKILL.md",
   "browser-use-plugin/skills/web-gui-tester/SKILL.md",
-  // 仅校验 manifest 无法发现文档插件缺少技能正文或视觉评审 Agent。
+  // 修复原因：仅校验 manifest 无法发现文档插件缺少技能正文或视觉评审 Agent。
+  "image-search-plugin/.mcp.json",
+  "documents-plugin/agents/visual-judge.md",
+  "documents-plugin/skills/docx/SKILL.md",
+  "pdf-plugin/agents/visual-judge.md",
+  "pdf-plugin/skills/pdf/SKILL.md",
+  "presentations-plugin/agents/visual-judge.md",
+  "presentations-plugin/skills/pptx/SKILL.md",
+  "spreadsheets-plugin/agents/visual-judge.md",
+  "spreadsheets-plugin/skills/xlsx/SKILL.md",
+  "ccbuddy-cua-plugin/docs/computer-use.md",
+  "ccbuddy-cua-plugin/scripts/computer-use-client.mjs",
+  "ccbuddy-cua-plugin/skills/computer-use/SKILL.md",
 ] as const;
 
-export function buildRemoteAgentOfficialPluginDir(remoteProviderDir: string): string {
-  return posix.join(remoteProviderDir, REMOTE_AGENT_OFFICIAL_PLUGIN_DIR_NAME);
+export function buildRemoteAgentOfficialPluginDir(
+  remoteProviderDir: string,
+): string {
+  return posix.join(
+    remoteProviderDir,
+    REMOTE_AGENT_OFFICIAL_PLUGIN_DIR_NAME,
+  );
 }
 
 export function buildRemoteAgentOfficialPluginSourceRelativePath(params: {
@@ -90,9 +119,12 @@ export function buildRemoteAgentOfficialPluginSourceRelativePath(params: {
   );
 }
 
-export function buildRemoteAgentOfficialPluginRequiredPaths(remoteProviderDir: string): string[] {
-  const remoteOfficialPluginDir = buildRemoteAgentOfficialPluginDir(remoteProviderDir);
-  return REMOTE_AGENT_OFFICIAL_PLUGIN_REQUIRED_RELATIVE_PATHS.map((relativePath) =>
-    posix.join(remoteOfficialPluginDir, relativePath),
+export function buildRemoteAgentOfficialPluginRequiredPaths(
+  remoteProviderDir: string,
+): string[] {
+  const remoteOfficialPluginDir =
+    buildRemoteAgentOfficialPluginDir(remoteProviderDir);
+  return REMOTE_AGENT_OFFICIAL_PLUGIN_REQUIRED_RELATIVE_PATHS.map(
+    (relativePath) => posix.join(remoteOfficialPluginDir, relativePath),
   );
 }

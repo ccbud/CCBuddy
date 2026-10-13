@@ -4,7 +4,7 @@ import {
   type WorkspaceSidePaneState,
 } from "@/lib/workspaceSidePane.js";
 
-interface TaskSidePaneMemoryState {
+export interface TaskSidePaneMemoryState {
   sidePaneState: WorkspaceSidePaneState | null;
   isSidePaneCollapsed: boolean;
   /** 对话级展开/收起偏好；tabs 本身仍按 workspace 复用。 */
@@ -27,7 +27,7 @@ const DEFAULT_TASK_SIDE_PANE_MEMORY_STATE: TaskSidePaneMemoryState = {
   browserUrl: null,
 };
 
-const TASK_SIDE_PANE_MEMORY_MAX_ENTRIES = 50;
+export const TASK_SIDE_PANE_MEMORY_MAX_ENTRIES = 50;
 
 const DRAFT_SIDE_PANE_OWNER_KEY = "__draft__";
 
@@ -143,6 +143,10 @@ export function saveTaskSidePaneCollapsedPreference(
       [ownerKey]: isSidePaneCollapsed,
     },
   });
+}
+
+export function clearTaskSidePaneMemoryStateForTest(): void {
+  taskSidePaneMemory.clear();
 }
 
 export function claimPluginUiSidePaneAutoOpen(

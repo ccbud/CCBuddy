@@ -3,7 +3,7 @@ import type { CCbuddyModelTrajectory } from "@ccbuddy/services";
 import { logger } from "@/logger.js";
 import { useCCbuddyTaskService } from "@/hooks/useCCbuddyTaskService.js";
 
-interface ModelTrajectoryState {
+export interface ModelTrajectoryState {
   loading: boolean;
   data: CCbuddyModelTrajectory | null;
   error: string | null;

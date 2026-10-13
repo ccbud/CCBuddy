@@ -59,6 +59,12 @@ modules:
   - id: formal-proof
     roots: [packages/formal-proof/src]
     managed: false
+  - id: stream-animate
+    roots: [packages/stream-animate/src]
+    managed: false
+  - id: e2e-report
+    roots: [packages/e2e-report/src]
+    managed: false
   - id: ccbuddy-cli
     roots: [apps/ccbuddy-cli]
     managed: false

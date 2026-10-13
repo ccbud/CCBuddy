@@ -56,7 +56,7 @@ function isEditableHook(hook: Hook): boolean {
 // 里的只读工作区 Hook」。它们不是外部格式兼容导入源，塞进 Legacy 会让 Import 按钮
 // 必然失败（importHook 拒绝 source=ccbuddy），也违反「只读但可逐条 Trust」的约定。
 // 这类行应留在 Installed 分组，由信任状态门控 Switch，走行内 Trust 流程。
-function isReadOnlyCCbuddyHook(hook: Hook): boolean {
+export function isReadOnlyCCbuddyHook(hook: Hook): boolean {
   return hook.editable === false && (hook.location?.source ?? "ccbuddy") === "ccbuddy";
 }
 
@@ -73,14 +73,8 @@ function isInCompatibilitySection(hook: Hook): boolean {
  *   workspacePath 回退（与 matchesWorkspaceBinding 的降级规则一致）；
  * - 找不到对应 tab（workspace 已关闭/未知）返回 null——调用方不得切过去。
  */
-function resolveLatestReviewScopeTarget(
-  bindings: Record<
-    string,
-    {
-      request: { interactionId: string; createdAt: number; workspaceIdentity?: string };
-      workspacePath: string;
-    }
-  >,
+export function resolveLatestReviewScopeTarget(
+  bindings: Record<string, { request: { interactionId: string; createdAt: number; workspaceIdentity?: string }; workspacePath: string }>,
   workspaceTabs: readonly { workspacePath: string; workspaceIdentity?: string }[],
 ): { interactionId: string; scopeKey: string } | null {
   let latest: {
@@ -111,14 +105,12 @@ function resolveLatestReviewScopeTarget(
   return tab ? { interactionId: latest.interactionId, scopeKey: scopeKeyOf(tab) } : null;
 }
 
-function buildPluginHookRows(
+export function buildPluginHookRows(
   plugins: readonly Pick<CCbuddyPluginInfo, "enabled" | "hookDetails" | "id" | "name">[],
   installedPlugins: readonly Pick<CCbuddyInstalledPluginSummary, "id" | "scope">[],
   scopeMetadataKnown: boolean,
 ): PluginHookRow[] {
-  const scopeByPluginId = new Map(
-    installedPlugins.map((plugin) => [plugin.id, plugin.scope] as const),
-  );
+  const scopeByPluginId = new Map(installedPlugins.map((plugin) => [plugin.id, plugin.scope] as const));
   return plugins.flatMap((plugin) =>
     (plugin.hookDetails ?? []).map((detail) => ({
       detail,
@@ -131,15 +123,10 @@ function buildPluginHookRows(
   );
 }
 
-function filterPluginHooksByScope(
-  pluginHooks: readonly PluginHookRow[],
-  scope: HookScope,
-): PluginHookRow[] {
+export function filterPluginHooksByScope(pluginHooks: readonly PluginHookRow[], scope: HookScope): PluginHookRow[] {
   const expectedScope = scope === "project" ? "workspace" : "user";
   // 未知 scope 在两个 Tab 都保留并由列表标记，避免降级时隐藏真实存在的插件 Hook。
-  return pluginHooks.filter(
-    (hook) => hook.pluginScope === undefined || hook.pluginScope === expectedScope,
-  );
+  return pluginHooks.filter((hook) => hook.pluginScope === undefined || hook.pluginScope === expectedScope);
 }
 
 export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionProps) {
@@ -149,9 +136,7 @@ export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionP
   const plugins = usePluginManagementStore((state) => state.plugins);
   const availablePlugins = usePluginManagementStore((state) => state.availablePlugins);
   const installedPlugins = usePluginManagementStore((state) => state.installedPlugins);
-  const marketplaceAvailabilityKnown = usePluginManagementStore(
-    (state) => state.marketplaceAvailabilityKnown,
-  );
+  const marketplaceAvailabilityKnown = usePluginManagementStore((state) => state.marketplaceAvailabilityKnown);
   const pluginsLoading = usePluginManagementStore((state) => state.loading);
   const pluginsError = usePluginManagementStore((state) => state.error);
   const initializePlugins = usePluginManagementStore((state) => state.initialize);
@@ -173,9 +158,7 @@ export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionP
   }, [tabs]);
   const [selectedScopeKey, setSelectedScopeKey] = useState("user");
   const deferredQuery = useDeferredValue(query);
-  const selectedWorkspace = workspaceTabs.find(
-    (tab) => getPluginWorkspaceKey(tab) === selectedScopeKey,
-  );
+  const selectedWorkspace = workspaceTabs.find((tab) => getPluginWorkspaceKey(tab) === selectedScopeKey);
   const activeScope: HookScope = selectedWorkspace ? "project" : "user";
   const targetWorkspacePath = selectedWorkspace?.workspacePath ?? workspacePath;
   const targetWorkspaceIdentity = selectedWorkspace?.workspaceIdentity ?? workspaceIdentity;
@@ -211,18 +194,12 @@ export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionP
   const editableHooks = useMemo(
     () =>
       hooksState.hooks.filter(
-        (hook) =>
-          (isEditableHook(hook) || isReadOnlyCCbuddyHook(hook)) &&
-          (hook.location?.scope ?? "user") === activeScope,
+        (hook) => (isEditableHook(hook) || isReadOnlyCCbuddyHook(hook)) && (hook.location?.scope ?? "user") === activeScope,
       ),
     [activeScope, hooksState.hooks],
   );
   const compatibilityHooks = useMemo(
-    () =>
-      hooksState.hooks.filter(
-        (hook) =>
-          isInCompatibilitySection(hook) && (hook.location?.scope ?? "user") === activeScope,
-      ),
+    () => hooksState.hooks.filter((hook) => isInCompatibilitySection(hook) && (hook.location?.scope ?? "user") === activeScope),
     [activeScope, hooksState.hooks],
   );
   const pluginHooks = useMemo(
@@ -270,11 +247,7 @@ export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionP
 
   useEffect(() => {
     if (!targetServiceResolution.rpcReady) return;
-    void hooksState.initialize(
-      targetWorkspacePath ?? undefined,
-      targetWorkspaceIdentity,
-      hooksService,
-    );
+    void hooksState.initialize(targetWorkspacePath ?? undefined, targetWorkspaceIdentity, hooksService);
   }, [
     hooksService,
     hooksState.initialize,
@@ -394,10 +367,7 @@ export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionP
     async (hook: Hook) => {
       const confirmed = await confirmDialog({
         title: intl.formatMessage({ id: "settings.hooks.delete" }),
-        description: intl.formatMessage(
-          { id: "settings.hooks.deleteDescription" },
-          { event: hook.event },
-        ),
+        description: intl.formatMessage({ id: "settings.hooks.deleteDescription" }, { event: hook.event }),
         confirmLabel: intl.formatMessage({ id: "common.delete" }),
       });
       if (!confirmed) return;
@@ -473,8 +443,7 @@ export function HooksSection({ workspacePath, workspaceIdentity }: HooksSectionP
 
   const loading = hooksState.loading || pluginsLoading;
   const error = hooksState.error || pluginsError;
-  const visibleCount =
-    filteredEditableHooks.length + filteredCompatibilityHooks.length + filteredPluginHooks.length;
+  const visibleCount = filteredEditableHooks.length + filteredCompatibilityHooks.length + filteredPluginHooks.length;
   const totalCount = editableHooks.length + compatibilityHooks.length + scopedPluginHooks.length;
   const hasSearchResultEmpty = Boolean(normalizedQuery) && visibleCount === 0;
   const showWorkspaceHookTrustNotice = shouldShowWorkspaceHookTrustNotice({
@@ -584,12 +553,7 @@ function hookMatchesQuery(hook: Hook, normalizedQuery: string): boolean {
   if (!normalizedQuery) {
     return true;
   }
-  return [
-    hook.event,
-    hook.type,
-    hook.matcher,
-    hook.command,
-    ...(hook.args ?? []),
-    hook.location?.directoryPath,
-  ].some((value) => value?.toLowerCase().includes(normalizedQuery));
+  return [hook.event, hook.type, hook.matcher, hook.command, ...(hook.args ?? []), hook.location?.directoryPath].some(
+    (value) => value?.toLowerCase().includes(normalizedQuery),
+  );
 }

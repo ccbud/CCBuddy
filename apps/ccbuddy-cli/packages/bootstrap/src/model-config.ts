@@ -3,6 +3,7 @@ import type {
   AiSdkNetworkConfig,
   EnvRecord,
 } from "@ccbuddy/adapters/model";
+import type { ProviderEndpointRoutingPort } from "@ccbuddy/contracts";
 import {
   resolveRuntimeCCbuddyEnv,
   resolveRuntimeCCbuddyEndpointOrigin,
@@ -17,6 +18,7 @@ export type ModelProviderSourceTitle = "cli" | "electron";
 
 interface RuntimeExecutionConfigOptions {
   appVersion?: string;
+  endpointRoutingPort?: ProviderEndpointRoutingPort;
   network?: AiSdkNetworkConfig;
   sourceTitle?: ModelProviderSourceTitle;
 }
@@ -30,6 +32,7 @@ export function createRuntimeAiSdkModelExecutionConfig(
     defaultHeaders: buildCliCCbuddySourceHeaders(env, options),
     env,
     ...(network ? { network } : {}),
+    ...(options.endpointRoutingPort ? { endpointRoutingPort: options.endpointRoutingPort } : {}),
   };
 }
 
@@ -44,7 +47,7 @@ function normalizeAiSdkNetworkConfig(
   };
 }
 
-function buildCliCCbuddySourceHeaders(
+export function buildCliCCbuddySourceHeaders(
   env: EnvRecord,
   options: Pick<RuntimeExecutionConfigOptions, "appVersion" | "sourceTitle"> = {},
 ): Record<string, string> {

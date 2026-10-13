@@ -36,7 +36,7 @@ export function parseArmsViewName(url: string): string {
 /** Renderer Browser SDK init 配置（与主进程 endpoint/env/version 对齐） */
 export function buildArmsBrowserInitConfig(runtimeEnv: CCbuddyRuntimeEnv) {
   return {
-    enable: true,
+    enable: CCBUDDY_ARMS_RUM_ENDPOINT !== "",
     version: CCBUDDY_VERSION,
     endpoint: CCBUDDY_ARMS_RUM_ENDPOINT,
     env: mapCCbuddyEnvToArmsRumEnv(runtimeEnv),

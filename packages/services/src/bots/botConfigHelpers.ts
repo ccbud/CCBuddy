@@ -37,6 +37,13 @@ export function findCallbackBot(
 }
 
 export function findAuthorizedBot(config: BotsConfigFile, actor: BotActor): BotConfig | null {
+  if (actor.chatType === "group" && (actor.provider === "feishu" || actor.provider === "lark")) {
+    return (
+      config.bots.find(
+        (bot) => bot.enabled && bot.id === actor.botId && bot.provider === actor.provider,
+      ) ?? null
+    );
+  }
   if (actor.provider === "weixin") {
     return (
       config.bots.find(

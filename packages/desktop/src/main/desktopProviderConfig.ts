@@ -1,5 +1,6 @@
 import { app } from "electron";
 import { join } from "node:path";
+import { CCBUDDY_ENV } from "@ccbuddy/shared";
 
 export function resolveCCbuddyBuiltinProviderConfigFilePath(options?: {
   readonly appPath?: string;
@@ -17,7 +18,7 @@ export function resolveCCbuddyBuiltinProviderConfigFilePath(options?: {
       "config/provider/ccbuddy-builtin.json",
     );
   }
-  // 开发态与打包共用唯一线上配置源。
-  const filename = "ccbuddy-builtin.json";
+  // 开发态没有 resources 复制步骤，必须与构建注入的产品环境读取同一份源文件。
+  const filename = CCBUDDY_ENV === "production" ? "ccbuddy-builtin.json" : "ccbuddy-builtin.test.json";
   return join(options?.appPath ?? app.getAppPath(), "../../config/provider", filename);
 }

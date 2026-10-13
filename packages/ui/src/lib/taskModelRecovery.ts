@@ -1,6 +1,9 @@
 import type { CCbuddyConfigOption, CCbuddyTaskMeta } from "@ccbuddy/shared";
 import { getCCbuddyAgentModeSelectOptions } from "@ccbuddy/shared";
-import { decodeCustomModelValue, encodeCustomModelValue } from "@/lib/ccbuddyCustomModelValue.js";
+import {
+  decodeCustomModelValue,
+  encodeCustomModelValue,
+} from "@/lib/ccbuddyCustomModelValue.js";
 
 function parseProviderQualifiedModel(
   model: string,
@@ -24,7 +27,9 @@ function isSyntheticModelPlaceholder(model: string): boolean {
   return model.trim().toLocaleLowerCase() === "<synthetic>";
 }
 
-function resolveGlmRecoveredTaskModelValue(taskModel: string | undefined): string | null {
+export function resolveGlmRecoveredTaskModelValue(
+  taskModel: string | undefined,
+): string | null {
   const normalizedTaskModel = taskModel?.trim();
   if (!normalizedTaskModel || isSyntheticModelPlaceholder(normalizedTaskModel)) {
     return null;
@@ -46,7 +51,7 @@ function resolveGlmRecoveredTaskModelValue(taskModel: string | undefined): strin
   return normalizedTaskModel;
 }
 
-function resolveRecoveredTaskModelValue(
+export function resolveRecoveredTaskModelValue(
   taskMeta: Pick<CCbuddyTaskMeta, "provider" | "model">,
 ): string | null {
   const normalizedTaskModel = taskMeta.model?.trim();
@@ -160,7 +165,7 @@ function ensureSelectOptionCurrentValue(
   };
 }
 
-function mergeRecoveredTaskModelConfigOptions({
+export function mergeRecoveredTaskModelConfigOptions({
   taskMeta,
   configOptions,
 }: {
@@ -254,4 +259,18 @@ export function resolveTaskRestorePreloadConfigOptions({
   // 工具栏会先隐藏 mode/thought，等新快照回来后再出现；这里保留 task 级缓存，
   // 真正的新 settings 缺项时再由 setTaskConfigOptions 覆盖并隐藏。
   return cachedOptions;
+}
+
+export function mergeGlmRecoveredTaskModelConfigOptions({
+  taskMeta,
+  configOptions,
+}: {
+  taskMeta: Pick<CCbuddyTaskMeta, "provider" | "model">;
+  configOptions: readonly CCbuddyConfigOption[];
+}): CCbuddyConfigOption[] | null {
+  if (taskMeta.provider !== "glm") {
+    return null;
+  }
+
+  return mergeRecoveredTaskModelConfigOptions({ taskMeta, configOptions });
 }

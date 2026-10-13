@@ -18,6 +18,7 @@ import type {
   Model,
   ModelCatalogPort,
   OffPeakPort,
+  TopicResourcePort,
   PdfDocumentPort,
   PermissionBrokerPort,
   SessionEvent,
@@ -106,6 +107,7 @@ export interface ToolExecutorOptions {
   artifactStore?: ToolArtifactStorePort;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
+  topicResourcePort?: TopicResourcePort;
   sessionStore?: SessionStorePort;
   sessionModePort?: SessionModePort;
   workflowPort?: WorkflowPort;
@@ -219,6 +221,7 @@ export interface ToolExecutorDeps {
   artifactStore?: ToolArtifactStorePort;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
+  topicResourcePort?: TopicResourcePort;
   sessionStore?: SessionStorePort;
   sessionModePort?: SessionModePort;
   workflowPort?: WorkflowPort;

@@ -1,10 +1,15 @@
 import type { CCbuddyConfigOption, CCbuddyProvider, CCbuddyTaskMode } from "@ccbuddy/shared";
 
 const CANONICAL_SESSION_MODES = new Set<CCbuddyTaskMode>([
+  "default",
   "yolo",
+  "guarded",
   "plan",
   "edit",
+  "acceptEdits",
   "auto",
+  "dontAsk",
+  "bypassPermissions",
   "autoEdit",
   "build",
 ]);
@@ -43,9 +48,23 @@ function normalizePersistedSessionMode(
     case "read-only":
     case "read_only":
       return "plan";
+    case "auto_edit":
+    case "auto-edit":
+    case "autoEdit":
+    case "accept_edits":
+    case "accept-edits":
+      return "acceptEdits";
     case "full-auto":
     case "full_auto":
       return "yolo";
+    case "agent":
+      // 该 modeId 专属于已下线的第三方 provider；不再映射到任何本地 mode。
+      return undefined;
+    case "agent-full-access":
+    case "agent_full_access":
+    case "full-access":
+    case "full_access":
+      return "bypassPermissions";
     default:
       return undefined;
   }

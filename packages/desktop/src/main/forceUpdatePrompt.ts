@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- 强制升级提示窗口包含内联 HTML/CSS 和状态脚本，启动前不能依赖 renderer 包 */
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { type Locale } from "@ccbuddy/shared";
 import type { ForceUpdateDialogText, ForceUpdateGuardLogger } from "./forceUpdateGuard.js";
 import type { ForceAutoUpdateState } from "./autoUpdater.js";
@@ -28,19 +28,10 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-export function resolveForceUpdatePromptIconPath(
-  isPackaged: boolean,
-  resourcesPath: string,
-  mainModuleDirectory = import.meta.dirname,
-): string {
-  return isPackaged
-    ? join(resourcesPath, "ccbuddy-about-icon.png")
-    : join(mainModuleDirectory, "../../build/icons/128x128.png");
-}
-
-export async function readForceUpdatePromptIcon(iconPath: string): Promise<string | null> {
+function readForceUpdatePromptIcon(): string | null {
   try {
-    const icon = (await readFile(iconPath)).toString("base64");
+    const iconPath = resolve(process.cwd(), "build/icon.png");
+    const icon = readFileSync(iconPath).toString("base64");
     return `data:image/png;base64,${icon}`;
   } catch {
     return null;
@@ -64,8 +55,7 @@ function buildForceUpdatePromptMessages(locale: Locale) {
       devSkippedTitle: "调试环境无法自动升级",
       devSkippedMessage: "自动升级仅在打包后的应用中可用，请使用手动升级或打包应用验证。",
       confirmCloseTitle: "自动升级正在进行",
-      confirmCloseMessage:
-        "关闭窗口会中断当前自动升级流程，旧版本仍然无法进入主界面。你可以继续等待，或确认关闭并退出。",
+      confirmCloseMessage: "关闭窗口会中断当前自动升级流程，旧版本仍然无法进入主界面。你可以继续等待，或确认关闭并退出。",
       confirmCloseButton: "确认关闭",
       continueUpdateButton: "继续更新",
       retryButton: "重试自动升级",
@@ -88,11 +78,9 @@ function buildForceUpdatePromptMessages(locale: Locale) {
     errorTitle: "Auto update failed",
     errorMessage: "You can retry auto update or use manual update.",
     devSkippedTitle: "Auto update unavailable in development",
-    devSkippedMessage:
-      "Auto update is only available in packaged apps. Use manual update or test a packaged build.",
+    devSkippedMessage: "Auto update is only available in packaged apps. Use manual update or test a packaged build.",
     confirmCloseTitle: "Auto update in progress",
-    confirmCloseMessage:
-      "Closing this window will stop the current auto update flow, and this old version still cannot open the main app. You can keep waiting or close and quit.",
+    confirmCloseMessage: "Closing this window will stop the current auto update flow, and this old version still cannot open the main app. You can keep waiting or close and quit.",
     confirmCloseButton: "Close anyway",
     continueUpdateButton: "Continue update",
     retryButton: "Retry auto update",
@@ -102,11 +90,8 @@ function buildForceUpdatePromptMessages(locale: Locale) {
   };
 }
 
-export function renderForceUpdatePromptHtml(
-  text: ForceUpdateDialogText,
-  locale: Locale,
-  iconDataUrl: string | null,
-): string {
+function renderForceUpdatePromptHtml(text: ForceUpdateDialogText, locale: Locale): string {
+  const icon = readForceUpdatePromptIcon();
   const messages = buildForceUpdatePromptMessages(locale);
   const detailLines = text.detail
     .split("\n")
@@ -146,7 +131,7 @@ export function renderForceUpdatePromptHtml(
       background: #f8f8f8;
       display: flex;
     }
-    /* 强更截图范围就是完整 BrowserWindow；外层留白加内层圆角会把宿主底色显示成黑框。*/
+    /* Bugfix: 强更截图范围就是完整 BrowserWindow；外层留白加内层圆角会把宿主底色显示成黑框。 */
     .panel {
       width: 100%;
       height: 100%;
@@ -175,13 +160,17 @@ export function renderForceUpdatePromptHtml(
       width: 22px;
       height: 22px;
       border-radius: 6px;
+      background: #ebf4ff;
+      border: 1px solid rgba(13, 13, 13, 0.1);
       display: flex;
       align-items: center;
       justify-content: center;
       flex: 0 0 auto;
-      overflow: hidden;
+      color: #0b7fff;
+      font-size: 12px;
+      font-weight: 600;
     }
-    .brand-icon img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
+    .brand-icon img { width: 100%; height: 100%; border-radius: 6px; }
     .brand-title { font-size: 13px; font-weight: 500; color: #0d0d0d; }
     .close {
       position: absolute;
@@ -202,7 +191,7 @@ export function renderForceUpdatePromptHtml(
       cursor: pointer;
       -webkit-app-region: no-drag;
     }
-    /* 字体字符 × 的字形基线会让视觉中心偏移，改用两条线保证和主窗口关闭按钮一致居中。*/
+    /* Bugfix: 字体字符 × 的字形基线会让视觉中心偏移，改用两条线保证和主窗口关闭按钮一致居中。 */
     .close::before,
     .close::after {
       content: "";
@@ -285,6 +274,7 @@ export function renderForceUpdatePromptHtml(
       .panel { background: #2b2b2b; border-color: transparent; }
       .titlebar { background: #202020; border-bottom-color: rgba(255, 255, 255, 0.1); }
       .brand-title, h1 { color: #f8f8f8; }
+      .brand-icon { background: #001d3d; border-color: rgba(255, 255, 255, 0.1); color: #80beff; }
       .close { color: rgba(248, 248, 248, 0.64); }
       .close:hover { background: #363636; border-color: rgba(255, 255, 255, 0.15); color: #f8f8f8; }
       .message { color: rgba(248, 248, 248, 0.64); }
@@ -313,7 +303,7 @@ export function renderForceUpdatePromptHtml(
     <main class="panel" role="dialog" aria-modal="true" aria-labelledby="title">
       <header class="titlebar">
         <div class="brand">
-          ${iconDataUrl ? `<div class="brand-icon"><img src="${iconDataUrl}" alt="" /></div>` : ""}
+          <div class="brand-icon">${icon ? `<img src="${icon}" alt="" />` : "Z"}</div>
           <div class="brand-title">CCbuddy</div>
         </div>
         <button class="close" type="button" data-action="quit" aria-label="${escapeHtml(text.quitButton)}">×</button>
@@ -391,7 +381,7 @@ export function renderForceUpdatePromptHtml(
       return kind === 'checking' || kind === 'downloading' || kind === 'ready' || kind === 'installing';
     }
     function showCloseConfirmation() {
-      // 自动升级会禁用主按钮，但关闭窗口仍应给用户二次确认，避免误关中断下载。
+      // Bugfix: 自动升级会禁用主按钮，但关闭窗口仍应给用户二次确认，避免误关中断下载。
       resizePromptHeight(${FORCE_UPDATE_PROMPT_HEIGHT});
       previousAutoState = isActiveAutoState(currentState.kind) ? currentState : previousAutoState;
       currentState = { kind: 'confirm-close' };
@@ -498,13 +488,8 @@ export async function showForceUpdatePrompt(
   logger: ForceUpdateGuardLogger,
   options: ShowForceUpdatePromptOptions = {},
 ): Promise<ForceUpdatePromptAction> {
-  const { app, BrowserWindow, nativeTheme } = await import("electron");
-  // 旧实现按 cwd 读仓库图标，安装包从其他目录启动时会失败并显示旧底座字母。
-  // 窗口每次直接读取随包图标；缺失时只保留已有的 CCbuddy 文字标题。
-  const iconPath = resolveForceUpdatePromptIconPath(app.isPackaged, process.resourcesPath);
-  const iconDataUrl = await readForceUpdatePromptIcon(iconPath);
-  const parentWindow =
-    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+  const { BrowserWindow, nativeTheme } = await import("electron");
+  const parentWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
   return new Promise<ForceUpdatePromptAction>((resolvePrompt) => {
     let resolved = false;
     let shown = false;
@@ -581,8 +566,7 @@ export async function showForceUpdatePrompt(
       }
       logger.info("[force-update] 用户选择自动升级");
       updatePromptState({ kind: "checking" });
-      autoUpdateDispose =
-        options.startAutoUpdate?.((state) => updatePromptState(state)) ?? undefined;
+      autoUpdateDispose = options.startAutoUpdate?.((state) => updatePromptState(state)) ?? undefined;
     };
 
     const showPromptWindow = (source: string) => {
@@ -645,8 +629,6 @@ export async function showForceUpdatePrompt(
       showPromptWindow("did-fail-load");
     });
     fallbackTimer = setTimeout(() => showPromptWindow("timeout"), 1000);
-    win.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(renderForceUpdatePromptHtml(text, locale, iconDataUrl))}`,
-    );
+    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(renderForceUpdatePromptHtml(text, locale))}`);
   });
 }

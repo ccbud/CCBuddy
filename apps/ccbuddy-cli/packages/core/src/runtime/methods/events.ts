@@ -25,6 +25,7 @@ import { buildPersistedConversationInputIntent } from "./input-intent-persistenc
 import { recordToolUsageFromEvent } from "./usage-observability.js";
 import { persistSessionShellEnvironmentSnapshot } from "./session-shell-environment.js";
 import { persistRuntimeModelSelection } from "./turn-model.js";
+import { writeDynamicWorkflowActivationEntryIfActivated } from "./dynamic-workflow-activation.js";
 import {
   persistWorkspaceCheckpointEntry,
   persistWorkspaceFileRewindEntry,
@@ -630,6 +631,8 @@ async function persistSession(
     await this.sessionStore.saveSessionEntry?.(
       buildExecutionStateEntry(this.sessionId, readRuntimeExecutionState(this)),
     );
+    // `/workflow` 作为首轮时激活先于落盘（launch.md「On demand: activation」），entry 在这里补写。
+    await writeDynamicWorkflowActivationEntryIfActivated(this);
     this.sessionPersisted = true;
     this.logger?.debug("Session persisted", {
       ...traceContextToLogContext(traceContext),

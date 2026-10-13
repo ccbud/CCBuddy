@@ -7,6 +7,8 @@
     "third-party/inventory.json",
     "third-party/upstream/**",
     "third-party/native-search/licenses/**",
-    "third-party/runtime/*.txt"
+    "third-party/runtime/*.txt",
+    "docs/knip/docs/LICENSE",
+    "docs/knip/docs/licenses/**"
   ]
 }

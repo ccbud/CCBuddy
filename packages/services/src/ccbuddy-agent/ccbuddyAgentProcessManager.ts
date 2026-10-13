@@ -1,3 +1,4 @@
+import { localRuntimeNetworkCapture } from "#src/ccbuddy-agent/localRuntimeNetworkCapture.js";
 import { resolveCCbuddyAgentSpawnCwd } from "#src/ccbuddy-agent/ccbuddyAgentSpawnCwd.js";
 import type { CCbuddyAgentStorageStartupSnapshot } from "#src/ccbuddy-agent/ccbuddyAgent.js";
 /* eslint-disable max-lines -- ccbuddyAgentProcessManager 集中维护 agent 子进程启动、复用、超时回收和 runtime identity，拆分会扩大进程生命周期状态同步面 */
@@ -86,9 +87,8 @@ export interface CCbuddyAgentProcessManagerOptions {
    * 每次 spawn agent 子进程前解析的额外环境变量（在 process.env 之后、workspace 变量之前合入）。
    * 用于把设置页的代理等配置注入子进程；按 spawn 时读取，天然「下次启动生效」。
    *
-   * context 携带本次 spawn 的 workspace 标识三元组（workspacePath/workspaceIdentity/workspaceKey），
-   * 让 CUA broker 凭据注入能按 workspace 记录 Helper admission（见 services/node.ts 的
-   * cuaProductHelperWorkspaceRegistry）。Helper lifecycle 不再回收或重启已有 Agent。
+   * context 携带本次 spawn 的 workspace 标识三元组（workspacePath/workspaceIdentity/workspaceKey）。
+   * Helper lifecycle 不再回收或重启已有 Agent。
    */
   resolveSpawnEnv?: (context: {
     workspacePath: string;
@@ -183,7 +183,9 @@ if (coverageDirectory) {
 }
 `;
 
-function buildE2EAgentCoverageEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function buildE2EAgentCoverageEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   const artifactDir = env.CCBUDDY_E2E_ARTIFACT_DIR?.trim();
   if (env.CCBUDDY_E2E_COVERAGE !== "1" || !artifactDir) {
     return {};
@@ -206,7 +208,7 @@ function buildE2EAgentCoverageEnv(env: NodeJS.ProcessEnv = process.env): Record<
  * 首个 getClient 重新拉起）。v4 订阅（sessions-index/workspace-config/conversation）
  * 都活在 CLI 进程内存里，进程换代即失效——订阅方收到本事件后必须重发 subscribe。
  */
-interface CCbuddyAgentRuntimeRestartedEvent {
+export interface CCbuddyAgentRuntimeRestartedEvent {
   workspaceKey: string;
   runtimeIdentity: CCbuddyAgentRuntimeIdentity;
 }
@@ -219,7 +221,7 @@ export interface CCbuddyAgentRuntimeLifecycleEvent {
   state: "available" | "unavailable";
 }
 
-interface CCbuddyAgentRuntimeIdentity {
+export interface CCbuddyAgentRuntimeIdentity {
   generation: number;
   identity: string;
   processId?: number;
@@ -395,8 +397,8 @@ function resolveDeployedCCbuddyAgentBinaryCommand(
 ): CCbuddyAgentCommand | null {
   // 旧 resolver 只识别 CCBUDDY_AGENT_SERVER_COMMAND env 和 monorepo 源码树。
   // SSH 远端把 ccbuddy-server.cjs 单文件部署到 ~/.ccbuddy/server/，宿主进程的 cwd 不在仓库内、
-  // env 也不会被 ssh exec 继承，即使 agent 已经部署到 ~/.ccbuddy/server/agents/glm/，
-  // resolver 也找不到，第一次 getClient 就抛 "CCbuddy Agent server command is not configured"。
+  // env 也不会被 ssh exec 继承，即使 ccbuddy-agent 已经部署到 ~/.ccbuddy/server/agents/glm/，
+  // resolver 也找不到，第一次 getClient 就抛 "CCbuddy agent server command is not configured"。
   // 这里复用 findCCbuddyAgentRuntimeBinary 的候选链（含 GLM_BINARY_PATH env、
   // packagedResourcesPath、~/.ccbuddy/server/agents/glm、bundled-agents 等），
   // 把已部署的原生 binary 当成最终兜底，远端/桌面打包形态都能命中。
@@ -445,10 +447,7 @@ export function resolveDefaultCCbuddyAgentCommand(
     return applyPresentationSurfaceToCommand(
       {
         command,
-        args: parseArgsJson(process.env.CCBUDDY_AGENT_SERVER_ARGS_JSON) ?? [
-          "app-server",
-          "--stdio",
-        ],
+        args: parseArgsJson(process.env.CCBUDDY_AGENT_SERVER_ARGS_JSON) ?? ["app-server", "--stdio"],
         cwd: process.env.CCBUDDY_AGENT_SERVER_CWD?.trim() || context.workspacePath,
       },
       context.presentationSurface,
@@ -502,7 +501,7 @@ function applyPresentationSurfaceToCommand(
   };
 }
 
-function wrapCCbuddyAgentCommandWithStdioTapDevProxy(
+export function wrapCCbuddyAgentCommandWithStdioTapDevProxy(
   command: CCbuddyAgentCommand,
   workspaceKey: string,
 ): CCbuddyAgentCommand {
@@ -614,7 +613,7 @@ export class CCbuddyAgentProcessManager {
       callback(reporter);
     } catch (error) {
       // 进程生命周期上报是旁路观测，临时失败不得阻断 agent 启动或回收。
-      warnLog("CCbuddy Agent process lifecycle reporter failed", error);
+      warnLog("CCbuddy agent process lifecycle reporter failed", error);
     }
   }
 
@@ -650,7 +649,7 @@ export class CCbuddyAgentProcessManager {
       ) {
         return;
       }
-      log("CCbuddy Agent process idle timeout; reclaiming", {
+      log("CCbuddy agent process idle timeout; reclaiming", {
         workspaceKey,
         pid: managed.child.pid,
         runtimeIdentity: managed.runtimeIdentity.identity,
@@ -755,7 +754,7 @@ export class CCbuddyAgentProcessManager {
       .disposeAndWait()
       .then(() => {
         cleanupCompleted = true;
-        log("CCbuddy Agent process cleanup completed", {
+        log("CCbuddy agent process cleanup completed", {
           workspaceKey: managed.runtimeIdentity.workspaceKey,
           pid: managed.child.pid,
           runtimeIdentity: managed.runtimeIdentity.identity,
@@ -771,23 +770,26 @@ export class CCbuddyAgentProcessManager {
         }
       });
     managed.cleanupPromise = cleanupPromise;
-    if (options.reportError !== false) {
-      void cleanupPromise.catch((error) => {
-        errorLog("CCbuddy Agent process cleanup failed", {
-          workspaceKey: managed.runtimeIdentity.workspaceKey,
-          pid: managed.child.pid,
-          runtimeIdentity: managed.runtimeIdentity.identity,
-          reason,
-          error,
-        });
+    // Bug 原因：dispose 与重试编排竞态时，rejection 可能先于调用方 await 挂靠被判为
+    // unhandledRejection（vitest 计为运行级失败，生产等价于未处理拒绝）。catch 必须在
+    // 创建点无条件挂靠：reportError:false（重试路径）时静默吞掉，统一上报由
+    // cleanupManagedProcessWithRetry 的 await/catch 完成，告警语义不变。
+    void cleanupPromise.catch((error) => {
+      if (options.reportError === false) {
+        return;
+      }
+      errorLog("CCbuddy agent process cleanup failed", {
+        workspaceKey: managed.runtimeIdentity.workspaceKey,
+        pid: managed.child.pid,
+        runtimeIdentity: managed.runtimeIdentity.identity,
+        reason,
+        error,
       });
-    }
+    });
     return cleanupPromise;
   }
 
-  private async cleanupManagedProcessForShutdown(
-    managed: ManagedCCbuddyAgentProcess,
-  ): Promise<void> {
+  private async cleanupManagedProcessForShutdown(managed: ManagedCCbuddyAgentProcess): Promise<void> {
     await this.cleanupManagedProcessWithRetry(
       managed,
       "manager-dispose",
@@ -811,7 +813,7 @@ export class CCbuddyAgentProcessManager {
       // 残留。restart/app quit 都不能把这种中间态暴露给调用方，需重试一次并复用
       // transport 内部快照；真实残留会在第二次 cleanup 继续抛出。
       const cleanupError = firstError as NodeJS.ErrnoException;
-      warnLog(`CCbuddy Agent process cleanup retrying during ${retryScope}`, {
+      warnLog(`CCbuddy agent process cleanup retrying during ${retryScope}`, {
         workspaceKey: managed.runtimeIdentity.workspaceKey,
         pid: managed.child.pid,
         runtimeIdentity: managed.runtimeIdentity.identity,
@@ -823,7 +825,7 @@ export class CCbuddyAgentProcessManager {
       try {
         await this.cleanupManagedProcess(managed, retryReason, { reportError: false });
       } catch (finalError) {
-        errorLog("CCbuddy Agent process cleanup failed", {
+        errorLog("CCbuddy agent process cleanup failed", {
           workspaceKey: managed.runtimeIdentity.workspaceKey,
           pid: managed.child.pid,
           runtimeIdentity: managed.runtimeIdentity.identity,
@@ -841,7 +843,7 @@ export class CCbuddyAgentProcessManager {
     workspaceIdentity?: string;
   }): Promise<CCbuddyProtocolClient> {
     if (this.disposed) {
-      throw new Error("CCbuddy Agent process manager is disposed.");
+      throw new Error("CCbuddy agent process manager is disposed.");
     }
     const workspaceKey = resolveWorkspaceKey(params);
     const existing = this.processesByWorkspaceKey.get(workspaceKey);
@@ -852,11 +854,11 @@ export class CCbuddyAgentProcessManager {
     const starting = this.startingByWorkspaceKey.get(workspaceKey);
     if (starting) {
       const waitStartedAt = Date.now();
-      log("CCbuddy Agent process start already in progress", {
+      log("CCbuddy agent process start already in progress", {
         workspaceKey,
       });
       const client = await starting;
-      log("CCbuddy Agent process start wait completed", {
+      log("CCbuddy agent process start wait completed", {
         workspaceKey,
         durationMs: Date.now() - waitStartedAt,
       });
@@ -968,14 +970,14 @@ export class CCbuddyAgentProcessManager {
     const resolveCommandDurationMs = Date.now() - resolveCommandStartedAt;
     if (!command) {
       throw new Error(
-        "CCbuddy Agent server command is not configured. Set CCBUDDY_AGENT_SERVER_COMMAND before integration.",
+        "CCbuddy agent server command is not configured. Set CCBUDDY_AGENT_SERVER_COMMAND before integration.",
       );
     }
     if (admissionSignal.aborted) {
-      throw admissionSignal.reason ?? new Error("CCbuddy Agent process start was cancelled.");
+      throw admissionSignal.reason ?? new Error("CCbuddy agent process start was cancelled.");
     }
     const effectiveCommand = wrapCCbuddyAgentCommandWithStdioTapDevProxy(command, workspaceKey);
-    log("CCbuddy Agent command resolved", {
+    log("CCbuddy agent command resolved", {
       workspaceKey,
       command: command.command,
       effectiveCommand: effectiveCommand.command,
@@ -992,12 +994,12 @@ export class CCbuddyAgentProcessManager {
     if (this.disposed) {
       // app 正在关闭时，启动中的 warmup 可能刚完成 command/env resolve。
       // 这时继续 spawn 会绕过 disposeAllAndWait 的快照，重新制造一个无人托管的 agent 进程。
-      throw new Error("CCbuddy Agent process manager is disposed.");
+      throw new Error("CCbuddy agent process manager is disposed.");
     }
     if ((this.restartGenerationByWorkspaceKey.get(workspaceKey) ?? 0) !== startGeneration) {
       // 切模型会重启单个 workspace。旧启动请求如果在重启后才恢复，
       // 不能继续 spawn 并写回进程池，否则新配置会被旧 agent 覆盖。
-      throw new Error("CCbuddy Agent process start was cancelled.");
+      throw new Error("CCbuddy agent process start was cancelled.");
     }
     // cwd 探测也让出事件循环，必须放在最终 admission 与销毁/代际检查之前。
     const spawnPreflight = await buildCCbuddyAgentSpawnPreflight(
@@ -1010,15 +1012,15 @@ export class CCbuddyAgentProcessManager {
     // 再等待并复查代际，不能只依赖第一次 admission。
     await this.waitForSpawnAdmission?.({ ...params, workspaceKey, signal: admissionSignal });
     if (this.disposed) {
-      throw new Error("CCbuddy Agent process manager is disposed.");
+      throw new Error("CCbuddy agent process manager is disposed.");
     }
     if ((this.restartGenerationByWorkspaceKey.get(workspaceKey) ?? 0) !== startGeneration) {
-      throw new Error("CCbuddy Agent process start was cancelled.");
+      throw new Error("CCbuddy agent process start was cancelled.");
     }
     // app 以本地开发方式启动时，让 agent 子进程也带上 CCBUDDY_RUNTIME_ENV=development；
     // 不再传 NODE_ENV，避免用户 shell/runtime 变量影响 CCbuddy 运行模式或泄漏到 Bash 工具。
     const runtimeEnv = resolveCCbuddyRuntimeEnv(process.env);
-    log("CCbuddy Agent spawn preflight", {
+    log("CCbuddy agent spawn preflight", {
       workspaceKey,
       spawnPreflight,
     });
@@ -1093,6 +1095,10 @@ export class CCbuddyAgentProcessManager {
       requireStorageStartup: effectiveCommand.supportsStorageStartup,
       requestTimeoutMs: this.requestTimeoutMs,
     });
+    if (child.pid) {
+      const unregisterNetworkCapture = localRuntimeNetworkCapture.register(client, child.pid);
+      child.once("close", unregisterNetworkCapture);
+    }
     // Agent 进程重启后，Host 仍需要 runtime identity 区分新旧订阅和运行命令。
     // Provider Registry 由新 Worker 从所属 Environment 的 Config 重建，不再由 UI 重新下发。
     const runtimeGeneration = (this.runtimeGenerationByWorkspaceKey.get(workspaceKey) ?? 0) + 1;
@@ -1178,7 +1184,7 @@ export class CCbuddyAgentProcessManager {
         );
       }
       this.reportRuntimeReady(managed);
-      log("CCbuddy Agent process started", {
+      log("CCbuddy agent process started", {
         workspaceKey,
         command: effectiveCommand.command,
         cwd: spawnPreflight.cwd,
@@ -1188,7 +1194,7 @@ export class CCbuddyAgentProcessManager {
     });
     child.once("error", (error) => {
       errorLog(
-        `CCbuddy Agent process error${this.processLifecycleReporter?.onError ? ` ${CCBUDDY_AGENT_LIFECYCLE_LOG_MARKER}` : ""}`,
+        `CCbuddy agent process error${this.processLifecycleReporter?.onError ? ` ${CCBUDDY_AGENT_LIFECYCLE_LOG_MARKER}` : ""}`,
         {
           workspaceKey,
           pid: child.pid,
@@ -1244,14 +1250,14 @@ export class CCbuddyAgentProcessManager {
       };
       // 之前日志只有新的 "process started"，缺少旧 pid 的退出轨迹。
       // agent native crash 后 UI 只会看到 protocol close/Session is not active，无法判断是崩溃还是主动重启。
-      log("CCbuddy Agent process exited", exitContext);
+      log("CCbuddy agent process exited", exitContext);
       if (terminationKind === "unexpected") {
         // Agent 顶层异常只写 stderr 并以非零 code 退出；stderr 过去仅走开发态
         // debug，生产日志只剩 code=1，无法还原异常。不能只按非零 code 判断：signal crash
         // 和长期运行的 Agent 自行 exit 0 同样是非预期退出。
         // 已有独立生命周期事件，显式标记包装日志，避免 Electron 将其再计为 JS 异常。
         errorLog(
-          `CCbuddy Agent process exited unexpectedly${this.processLifecycleReporter ? ` ${CCBUDDY_AGENT_LIFECYCLE_LOG_MARKER}` : ""}`,
+          `CCbuddy agent process exited unexpectedly${this.processLifecycleReporter ? ` ${CCBUDDY_AGENT_LIFECYCLE_LOG_MARKER}` : ""}`,
           {
             ...exitContext,
             stderr,
@@ -1288,7 +1294,7 @@ export class CCbuddyAgentProcessManager {
       }
       if (event.method === "workspace/cancelGenerateText") {
         warnLog(
-          "CCbuddy Agent cancel notification timed out; keeping client (best-effort control plane)",
+          "CCbuddy agent cancel notification timed out; keeping client (best-effort control plane)",
           {
             workspaceKey,
             method: event.method,
@@ -1299,7 +1305,7 @@ export class CCbuddyAgentProcessManager {
         );
         return;
       }
-      warnLog("CCbuddy Agent request timed out; disposing stale protocol client", {
+      warnLog("CCbuddy agent request timed out; disposing stale protocol client", {
         workspaceKey,
         method: event.method,
         requestId: event.requestId,
@@ -1320,7 +1326,7 @@ export class CCbuddyAgentProcessManager {
     });
     client.onClose(() => {
       const wasActiveClient = this.processesByWorkspaceKey.get(workspaceKey) === managed;
-      log("CCbuddy Agent protocol client closed", {
+      log("CCbuddy agent protocol client closed", {
         workspaceKey,
         pid: child.pid,
         runtimeIdentity: runtimeIdentity.identity,
@@ -1353,7 +1359,7 @@ export class CCbuddyAgentProcessManager {
     // runtime identity 是查询接口，旧实现却复用了启动型 getClient，
     // 导致 provider 保存等被动探测按 workspace 数量隐式 spawn Agent CLI。
     if (!managed || managed.exited || managed.child.killed) {
-      throw new Error("CCbuddy Agent runtime identity is unavailable.");
+      throw new Error("CCbuddy agent runtime identity is unavailable.");
     }
     return managed.runtimeIdentity;
   }
@@ -1416,7 +1422,7 @@ export class CCbuddyAgentProcessManager {
 
   private abortPendingStarts(
     workspaceKey: string,
-    reason = new Error("CCbuddy Agent process start was cancelled."),
+    reason = new Error("CCbuddy agent process start was cancelled."),
   ): void {
     const controllers = this.startAdmissionAbortControllersByWorkspaceKey.get(workspaceKey);
     if (!controllers) {
@@ -1428,7 +1434,7 @@ export class CCbuddyAgentProcessManager {
   }
 
   private abortAllPendingStarts(
-    reason = new Error("CCbuddy Agent process manager is disposed."),
+    reason = new Error("CCbuddy agent process manager is disposed."),
   ): void {
     for (const workspaceKey of this.startAdmissionAbortControllersByWorkspaceKey.keys()) {
       this.abortPendingStarts(workspaceKey, reason);

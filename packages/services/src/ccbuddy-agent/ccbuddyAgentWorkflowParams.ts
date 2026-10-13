@@ -1,4 +1,8 @@
-import type { CCbuddySavedWorkflowMeta, CCbuddySavedWorkflowScope } from "@ccbuddy/shared";
+import type {
+  CCbuddySavedWorkflowMeta,
+  CCbuddySavedWorkflowScope,
+  CCbuddyWorkflowsForRunCandidate,
+} from "@ccbuddy/shared";
 import type { CCbuddyAgentWorkspaceTarget } from "./ccbuddyAgentPluginParams.js";
 
 // 已保存工作流的 GUI 中枢：五个 workspace 级、无会话的方法。
@@ -41,4 +45,24 @@ export type CCbuddyAgentListSavedWorkflowRunsParams = CCbuddyAgentSavedWorkflowT
 // 必填，既是载体也是「移到项目…」选中的目标项目；同机同用户，不覆盖已存在的目标。
 export type CCbuddyAgentMoveSavedWorkflowParams = CCbuddyAgentWorkspaceTarget & {
   name: string;
+};
+
+// 完成卡的「直接保存」与「已保存」判定（docs/dynamic-workflow/transcript-and-notifications.md
+// 「Saving the run, and running it again」）。两者都**必带 workspace**，全局档也不例外：要存的
+// 脚本在那个 agent 的 journal 里，载体不能由 services 另选一个本机运行时。
+export type CCbuddyAgentSaveSavedWorkflowFromRunParams = CCbuddyAgentWorkspaceTarget & {
+  /** 要保存的那次 run；脚本取它实际执行的那一份。 */
+  runId: string;
+  name: string;
+  meta: CCbuddySavedWorkflowMeta;
+  /** 缺省 `project`。 */
+  scope?: CCbuddySavedWorkflowScope;
+  /** 只有在已经把覆盖警告摆给用户看过之后才传 true。 */
+  overwrite?: boolean;
+};
+
+export type CCbuddyAgentFindSavedWorkflowForRunParams = CCbuddyAgentWorkspaceTarget & {
+  runId: string;
+  /** 转写自对话的候选（模型存过并认领了这次 run）；最多 8 个，由 agent 再解析一遍。 */
+  candidates?: readonly CCbuddyWorkflowsForRunCandidate[];
 };

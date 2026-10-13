@@ -57,6 +57,8 @@ export {
 // File service — IFileService is both a type (interface) and value (descriptor)
 export { IFileService } from "./file/file.js";
 export { IMediaPreviewService } from "./media-preview/mediaPreview.js";
+export { ICloudContentService } from "#src/cloud-content/cloudContent.js";
+export { IMarketingTouchService } from "#src/marketing-touch/marketingTouch.js";
 export type { MediaPreviewPreparation } from "./media-preview/mediaPreview.js";
 
 // Git service — IGitService is both a type (interface) and value (descriptor)
@@ -164,6 +166,7 @@ export type {
   CCbuddyAgentRuntimeLifecycleEvent,
   CCbuddyAgentRuntimePolicy,
   CCbuddyAgentReadSessionParams,
+  CCbuddyAgentRespondProviderRuntimeHeadersParams,
   CCbuddyAgentResumeSessionParams,
   CCbuddyAgentRunAutomationNowResult,
   CCbuddyAgentSavedWorkflowTarget,
@@ -217,6 +220,8 @@ export {
 } from "./memory/memory.js";
 export type { ProjectMemoryFileSummary, ProjectMemoryWorkspaceSummary } from "./memory/memory.js";
 
+// OutputStyle service — IOutputStyleService is both a type (interface) and value (descriptor).
+export { IOutputStyleService } from "./output-style/outputStyle.js";
 export type { SessionRealtimePort } from "./session/sessionRealtimePort.js";
 
 // FileWatcher service — IFileWatcherService is both a type (interface) and value (descriptor)
@@ -342,6 +347,14 @@ export {
   type PluginUiWorkspaceTarget,
 } from "./plugin-ui-bridge/contract.js";
 export { IClientConfigService } from "./client-config/clientConfig.js";
+
+export { IHighspeedCardService } from "./highspeed/highspeedCard.js";
+export {
+  HighspeedCardService,
+  createHighspeedHttpTransport,
+  buildHighspeedTurnExecution,
+} from "./highspeed/highspeedCardService.js";
+export { createHighspeedMockTransport } from "./highspeed/highspeedMockTransport.js";
 
 export { IGenUiService } from "./gen-ui/contract.js";
 export type { GenUiPrepareParams } from "./gen-ui/contract.js";

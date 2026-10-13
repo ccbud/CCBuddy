@@ -1,18 +1,23 @@
+import { getPluginSandboxHost } from "./pluginSandbox/index.js";
 /* eslint-disable max-lines -- 桌面命令分发需要共享窗口与平台上下文，集中维护更便于一致性 */
 import { readCCbuddyStdioTapDevState, setCCbuddyStdioTapDevEnabled } from "@ccbuddy/services/node";
 import {
   buildCCbuddyEndpointUrls,
   DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
   DesktopCommandIds,
-  PlatformChannels,
-  type AppSettings,
-  type DesktopCommandId,
-  type Locale,
-  resolveRuntimeCCbuddyEndpointOrigin,
-  CCBUDDY_ENV,
+  REWARDS_PARTITION,
+  TEST_CCBUDDY_ENDPOINT_ORIGIN,
   getCommunityUrlFromConfigs,
   getFeedbackUrlFromConfig,
   normalizeCCbuddyEndpointOrigin,
+  PlatformChannels,
+  resolveHelpAppConfig,
+  resolveCCbuddyEndpointOrigin,
+  CCBUDDY_ENV,
+  CCBUDDY_PRODUCT_FLAVOR,
+  type AppSettings,
+  type DesktopCommandId,
+  type Locale,
 } from "@ccbuddy/shared";
 import type { MessageBoxOptions } from "electron";
 import { app, BrowserWindow, dialog, session, shell } from "electron";
@@ -20,10 +25,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { showAboutDialog } from "./about.js";
 import { checkForUpdateMenuClick } from "./autoUpdater.js";
-import { desktopUpdatePolicy } from "./desktopUpdatePolicy.js";
-import { exportLogs } from "./exportLogs.js";
-import { getPluginSandboxHost } from "./pluginSandbox/index.js";
-import { openResourceManager } from "./resourceManagerWindow.js";
 import { resolveCuaOsSupport } from "./cuaOsSupport.js";
 import { syncWindowControlsOverlayForZoomLevel } from "./desktopWindowButtonPosition.js";
 import {
@@ -35,6 +36,8 @@ import {
   resolveDesktopZoomFactorForLevel,
   resolveDesktopZoomLevelFromFactor,
 } from "./desktopZoom.js";
+import { exportLogs } from "./exportLogs.js";
+import { openResourceManager } from "./resourceManagerWindow.js";
 
 export const HELP_TOGGLE_DEV_TOOLS_MENU_ID = "help.toggle-dev-tools";
 export const HELP_TOGGLE_CCBUDDY_STDIO_TAP_MENU_ID = "help.toggle-ccbuddy-stdio-tap";
@@ -49,7 +52,7 @@ function resolveTargetWindow(senderWindow?: BrowserWindow | null) {
 
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
 }
-function updateDesktopZoomLevel(
+export function updateDesktopZoomLevel(
   targetWindow: BrowserWindow | null | undefined,
   action: "reset" | "in" | "out",
 ) {
@@ -91,7 +94,8 @@ async function clearAllDataAndRelaunch(options: {
     cancelId: 0,
     title: "Clear All Data",
     message: "确定要清除所有数据吗？",
-    detail: `将删除 ${options.credentialsDir}（配置、凭据、日志）和浏览器缓存（localStorage）。操作不可恢复，清除后应用将自动重启。`,
+    detail:
+      "将删除 ~/.ccbuddy/v2（配置、凭据、日志）和浏览器缓存（localStorage）。操作不可恢复，清除后应用将自动重启。",
   });
   if (response !== 1) {
     return;
@@ -101,9 +105,9 @@ async function clearAllDataAndRelaunch(options: {
   const { rm } = await import("node:fs/promises");
   try {
     await rm(options.credentialsDir, { recursive: true, force: true });
-    options.logger.info(`[clear-all-data] deleted ${options.credentialsDir}`);
+    options.logger.info("[clear-all-data] deleted ~/.ccbuddy/v2");
   } catch (error) {
-    options.logger.error(`[clear-all-data] failed to delete ${options.credentialsDir}:`, error);
+    options.logger.error("[clear-all-data] failed to delete ~/.ccbuddy/v2:", error);
   }
 
   for (const win of BrowserWindow.getAllWindows()) {
@@ -138,6 +142,7 @@ export async function clearCodingPlanWebviewStorage(options: {
     // Coding Plan webview 使用独立持久 partition，默认窗口 session.clearStorageData()
     // 不会覆盖它；退出登录/清理数据时必须显式清除，避免旧账号 token 被下一次官网首屏读到。
     await session.fromPartition(CODING_PLAN_WEBVIEW_PARTITION).clearStorageData();
+    await session.fromPartition(REWARDS_PARTITION).clearStorageData();
     options.logger.info("[coding-plan-webview] cleared persistent partition storage");
   } catch (error) {
     options.logger.warn(
@@ -152,7 +157,7 @@ async function fetchRemoteAppConfig(fetchRemoteConfig?: () => Promise<unknown>):
   return fetchRemoteConfig();
 }
 
-function resolveLocalAppConfigPath(options?: {
+export function resolveLocalAppConfigPath(options?: {
   appPath?: string;
   isPackaged?: boolean;
   resourcesPath?: string;
@@ -321,8 +326,8 @@ function buildCCbuddyEndpointPromptHtml(currentValue: string): string {
   <body>
     <form id="form">
       <label for="endpoint">CCbuddy endpoint origin</label>
-      <input id="endpoint" value="${value}" placeholder="https://endpoint.example.com" spellcheck="false" />
-      <div class="hint">Use an http or https origin, for example https://endpoint.example.com.</div>
+      <input id="endpoint" value="${value}" placeholder="https://ccbuddy.z.ai" spellcheck="false" />
+      <div class="hint">Use an http or https origin, for example https://ccbuddy.z.ai.</div>
       <div class="actions">
         <button id="cancel" type="button">Cancel</button>
         <button type="submit">Save</button>
@@ -444,8 +449,33 @@ function toggleCCbuddyStdioTapDevProxy(options: {
   });
 }
 
-export async function openChangelog() {
-  await shell.openExternal("https://github.com/ccbud/CCBuddy/releases");
+function resolveChangelogUrl(
+  locale: Locale,
+  endpointOrigin = DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
+): string {
+  // 帮助菜单里的外链以前只有固定英文地址，切到中文界面后仍会落到英文 changelog。
+  // 这里统一收口到主进程按当前应用语言分流，避免菜单模板里手写分支后续再出现多处不一致。
+  const origin = buildCCbuddyEndpointUrls(endpointOrigin).origin;
+  return locale === "zh-CN" ? `${origin}/cn/changelog` : `${origin}/en/changelog`;
+}
+
+export async function openChangelog(
+  locale: Locale,
+  endpointOrigin = DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
+) {
+  await shell.openExternal(resolveChangelogUrl(locale, endpointOrigin));
+}
+
+async function resolveCurrentCCbuddyEndpointOrigin(settingService: {
+  get(): Promise<{ ccbuddyEndpointOrigin?: string }>;
+  envBaseOrigin?: string | null;
+}): Promise<string> {
+  const settings = await settingService.get();
+  return resolveCCbuddyEndpointOrigin({
+    env: CCBUDDY_ENV,
+    envBaseOrigin: settingService.envBaseOrigin,
+    overrideOrigin: settings.ccbuddyEndpointOrigin,
+  });
 }
 
 export async function executeDesktopCommand(options: {
@@ -554,14 +584,20 @@ export async function executeDesktopCommand(options: {
       await showAboutDialog(targetWindow ?? undefined, options.currentApplicationLocale);
       return;
     case DesktopCommandIds.OpenChangelog:
-      await openChangelog();
+      await openChangelog(
+        options.currentApplicationLocale,
+        await resolveCurrentCCbuddyEndpointOrigin({
+          ...options.settingService,
+          envBaseOrigin: options.ccbuddyEndpointEnvBaseOrigin,
+        }),
+      );
       return;
     case DesktopCommandIds.CheckForUpdates:
-      // 命令入口与后台更新共用一个 CCbuddy 源策略，不能绕过隐藏菜单发上游请求。
-      if (desktopUpdatePolicy.autoUpdateEnabled) {
+      // 按产品身份而不是后端环境放行：生产后端的 Preview 同样没有更新器。
+      if (CCBUDDY_PRODUCT_FLAVOR === "production") {
         checkForUpdateMenuClick(targetWindow);
       } else {
-        options.logger.info("[auto-update] 未配置 CCbuddy 发行源，已禁用手动更新检查");
+        options.logger.info("[auto-update] Preview 已禁用手动更新检查");
       }
       return;
     case DesktopCommandIds.RelaunchApp:
@@ -602,7 +638,7 @@ export async function executeDesktopCommand(options: {
       return;
     case DesktopCommandIds.SetCCbuddyEndpointTest:
       await setCCbuddyEndpointOverride({
-        value: options.ccbuddyEndpointEnvBaseOrigin ?? resolveRuntimeCCbuddyEndpointOrigin(),
+        value: TEST_CCBUDDY_ENDPOINT_ORIGIN,
         settingService: options.settingService,
         onCCbuddyEndpointChanged: options.onCCbuddyEndpointChanged,
         logger: options.logger,
@@ -610,8 +646,7 @@ export async function executeDesktopCommand(options: {
       return;
     case DesktopCommandIds.SetCCbuddyEndpointCustom: {
       const current =
-        (await options.settingService.get()).ccbuddyEndpointOrigin ??
-        DEFAULT_CCBUDDY_ENDPOINT_ORIGIN;
+        (await options.settingService.get()).ccbuddyEndpointOrigin ?? DEFAULT_CCBUDDY_ENDPOINT_ORIGIN;
       const value = await promptCustomCCbuddyEndpoint(targetWindow, current);
       if (!value) {
         return;

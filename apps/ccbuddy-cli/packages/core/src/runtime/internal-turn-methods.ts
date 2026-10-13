@@ -214,6 +214,7 @@ export interface AgentRuntimeTurnMethods {
       sourceCommandId?: string;
       trigger?: CompactTrigger;
       model?: Model;
+      agentListingTools?: readonly { name: string }[];
       activeEntries?: readonly RuntimeMessageEntry[];
     },
   ): Promise<{

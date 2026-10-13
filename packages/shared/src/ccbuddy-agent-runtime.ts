@@ -32,7 +32,7 @@ export const CCBUDDY_AGENT_RUNTIME: CCbuddyAgentRuntimeDescriptor = {
   nativeConfigDir: ".ccbuddy/cli",
   nativeConfigFileName: "config.json",
   missingBinaryMessage:
-    "[CCbuddy Agent] glm binary 未找到，请设置 GLM_BINARY_PATH 或先准备 GLM 运行时资源",
+    "[CCbuddy Agent] glm binary 未找到，请设置 CCBUDDY_AGENT_WORKDIR、GLM_BINARY_PATH 或先准备 GLM 运行时资源",
   resolveEntrySegments: (platform) => [resolvePlatformBinaryName("ccbuddy-agent", platform)],
   nodeBundleEntryFile: "ccbuddy.cjs",
   resolveNodeBundleSegments() {

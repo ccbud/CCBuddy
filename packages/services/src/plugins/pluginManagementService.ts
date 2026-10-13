@@ -5,7 +5,7 @@
 import type { ICCbuddyAgentService } from "../ccbuddy-agent/ccbuddyAgent.js";
 import type { IPluginManagementService } from "./pluginManagement.js";
 
-interface PluginManagementServiceDependencies {
+export interface PluginManagementServiceDependencies {
   ccbuddyAgentService: Pick<
     ICCbuddyAgentService,
     | "listPlugins"

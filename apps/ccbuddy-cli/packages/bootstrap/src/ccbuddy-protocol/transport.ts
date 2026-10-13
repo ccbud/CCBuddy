@@ -6,7 +6,12 @@ import type {
   CCbuddyProtocolRequestId,
   CCbuddyProtocolResponse,
 } from "@ccbuddy/shared";
-import { ccbuddyProtocolMessageSchema, ccbuddyProtocolMethods } from "@ccbuddy/shared";
+import {
+  networkCaptureControlSchema,
+  ccbuddyProtocolMessageSchema,
+  ccbuddyProtocolMethods,
+  ccbuddyProtocolNotifications,
+} from "@ccbuddy/shared";
 import type { Logger } from "@ccbuddy/contracts";
 
 type CCbuddyProtocolOutgoingMessage =
@@ -94,6 +99,15 @@ export class CCbuddyProtocolNdjsonConnection {
 
   send(message: CCbuddyProtocolOutgoingMessage): void {
     if (this.terminal) return;
+    // 观测可丢弃，不能在 stdout 背压时无界积压或挤占业务协议输出。
+    if (
+      "method" in message &&
+      message.method === ccbuddyProtocolNotifications.processNetworkRequests &&
+      ((this.options.output as NodeJS.WritableStream & { writableLength?: number })
+        .writableLength ?? 0) >=
+        256 * 1024
+    )
+      return;
     try {
       this.options.output.write(`${JSON.stringify(message)}\n`);
     } catch (error) {
@@ -178,6 +192,19 @@ export class CCbuddyProtocolNdjsonConnection {
     if (this.terminal) return;
     const message = this.decodeLine(line);
     if (!message) {
+      return;
+    }
+    if (
+      !("id" in message) &&
+      "method" in message &&
+      message.method === ccbuddyProtocolMethods.processNetworkCapture
+    ) {
+      // 启停是进程观测控制，不等待正在执行的生成任务，也不进入 CommandInbox。
+      if (networkCaptureControlSchema.safeParse(message.params).success) {
+        void this.handleMessage(message).catch(() => {
+          /* 观测失败不关闭业务连接 */
+        });
+      }
       return;
     }
     if ("id" in message && ("result" in message || "error" in message)) {

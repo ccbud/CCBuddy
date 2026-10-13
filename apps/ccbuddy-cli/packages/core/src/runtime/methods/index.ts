@@ -25,6 +25,7 @@ import { getPendingPermissionRequests } from "./config.js";
 import { recordUserInputAutoResolutionUpdate } from "./interaction-auto-resolution.js";
 import { recordDynamicWorkflowRunProgress } from "./dynamic-workflow-run-progress.js";
 import { trackResumedDynamicWorkflowRun } from "./dynamic-workflow-run-track.js";
+import { activateDynamicWorkflowTools } from "./dynamic-workflow-activation.js";
 import { startSavedWorkflowRun } from "./dynamic-workflow-run-start.js";
 import { amendWorkflowRunSettings } from "./dynamic-workflow-run-settings.js";
 import { getProjection } from "./config.js";
@@ -231,6 +232,7 @@ export function installAgentRuntimeMethods(ctor: AgentRuntimeConstructor): void 
   proto.recordUserInputAutoResolutionUpdate = recordUserInputAutoResolutionUpdate;
   proto.recordDynamicWorkflowRunProgress = recordDynamicWorkflowRunProgress;
   proto.trackResumedDynamicWorkflowRun = trackResumedDynamicWorkflowRun;
+  proto.activateDynamicWorkflowTools = activateDynamicWorkflowTools;
   proto.startSavedWorkflowRun = startSavedWorkflowRun;
   proto.amendWorkflowRunSettings = amendWorkflowRunSettings;
   proto.getProjection = getProjection;
