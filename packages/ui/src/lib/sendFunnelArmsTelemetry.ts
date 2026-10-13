@@ -1,10 +1,6 @@
 import type { ArmsCustomEventPayload, IPlatformService } from "@ccbuddy/shared";
 import { logger } from "@/logger.js";
 
-// Composer 发送漏斗埋点的 ARMS 出口。
-// 本组事件只走 ARMS，不进 /event/report；reporter 由 Root.tsx 按 isDesktop 安装，
-// Web / 手机远控拿不到 reporter，整组静默。
-
 export const SEND_FUNNEL_ARMS_GROUP = "send_funnel";
 
 export const SEND_FUNNEL_EVENT_INPUT_FOCUS = "send_input_focus";

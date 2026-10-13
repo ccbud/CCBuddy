@@ -42,10 +42,7 @@ interface RootWorkspaceContentProps {
   reconnectingRemoteWorkspaceLogsByWorkspaceKey: AppProps["reconnectingRemoteWorkspaceLogsByWorkspaceKey"];
   remoteConnectionLogs?: AppProps["remoteConnectionLogs"];
   allowOpenWorkspace: NonNullable<RootProps["allowOpenWorkspace"]>;
-  webRemoteControlWorkspaceSwitcher?: RootProps["webRemoteControlWorkspaceSwitcher"];
-  initialWebRemoteControlMobileNavigationIntent?: RootProps["initialWebRemoteControlMobileNavigationIntent"];
-  initialWebRemoteControlWorkspaceList?: RootProps["initialWebRemoteControlWorkspaceList"];
-  webRemoteControlTerminalTransportState?: RootProps["webRemoteControlTerminalTransportState"];
+
   isDesktop?: RootProps["isDesktop"];
   isMacDesktop?: RootProps["isMacDesktop"];
   isWindowsDesktop?: RootProps["isWindowsDesktop"];
@@ -84,10 +81,6 @@ export function RootWorkspaceContent({
   reconnectingRemoteWorkspaceLogsByWorkspaceKey,
   remoteConnectionLogs,
   allowOpenWorkspace,
-  webRemoteControlWorkspaceSwitcher,
-  initialWebRemoteControlMobileNavigationIntent,
-  initialWebRemoteControlWorkspaceList,
-  webRemoteControlTerminalTransportState,
   isDesktop,
   isMacDesktop,
   isWindowsDesktop,
@@ -173,14 +166,7 @@ export function RootWorkspaceContent({
               remoteConnectionInProgress={remoteConnectionInProgress}
               onReturnToWorkspace={handleBackFromSettings}
               allowOpenWorkspace={allowOpenWorkspace}
-              webRemoteControlWorkspaceSwitcher={webRemoteControlWorkspaceSwitcher}
-              initialWebRemoteControlMobileNavigationIntent={
-                initialWebRemoteControlMobileNavigationIntent
-              }
-              initialWebRemoteControlWorkspaceList={initialWebRemoteControlWorkspaceList}
-              webRemoteControlTerminalTransportState={
-                webRemoteControlTerminalTransportState
-              }
+
               allowRemoteWorkspace={allowRemoteWorkspace}
               remoteWorkspaceSessions={remoteWorkspaceSessions}
               isWorkspaceVisible={!isSettingsTabActive}

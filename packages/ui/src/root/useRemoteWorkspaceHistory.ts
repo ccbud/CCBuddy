@@ -531,7 +531,7 @@ export async function selectRemoteWorkspaceProjectFromDialog({
   }
   const remoteTarget = connectionTarget ?? remoteSession.target;
   if (!remoteTarget) {
-    // 手机 web relay 复用 remote session store 只做服务路由，没有本地可重连 target。
+    // 没有本地连接目标的session只参与服务路由，不构造虚假的重连选项。
     // 远程历史的选目录/持久化流程必须有 target，缺失时直接阻断，避免把无 target 的桥接 session 写进历史。
     throw new Error(`远程 workspace session 缺少连接目标: ${sessionId}`);
   }

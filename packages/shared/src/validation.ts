@@ -1,10 +1,7 @@
 import { databaseStartupControlSchema, databaseStartupStateSchema } from "./database-startup.js";
 import { mcpAppInstanceSchema } from "./mcp-apps/instance.js";
-import {
-  automationSessionCreateTelemetrySchema,
-  sessionCreateTelemetrySchema,
-} from "./sessionCreateTelemetry.js";
-/* eslint-disable max-lines -- 运行时 schema 当前集中在共享包入口，外部 relay payload 校验加入后先保持单一导出面。 */
+import { automationSessionCreateTelemetrySchema } from "./sessionCreateTelemetry.js";
+/* eslint-disable max-lines -- 跨进程运行时 schema 集中在共享包入口，保持单一校验与导出面。 */
 import { z } from "zod";
 import { networkCaptureControlSchema, networkCaptureBatchSchema } from "./networkCapture.js";
 import { browserCommandSchema } from "./browser-use/commands.js";
@@ -19,13 +16,6 @@ import {
 import { ccbuddyProviderSchema } from "./providers.js";
 import { REMOTE_ASSET_INSTALL_MODES } from "./remoteAssetInstallMode.js";
 import { isKnownRemoteResourcePackageId } from "./remoteResourcePackages.js";
-import type { WebRemoteControlAppPayload } from "./web-remote-control.js";
-import { PROTOCOL_V4_LIMITS } from "./ccbuddy-protocol-v4/core.js";
-import { sessionWorkflowActivitySchema } from "./ccbuddy-protocol-v4/sessions-index-workflow-activity.js";
-import {
-  webRemoteControlRpcTransportAckSchema,
-  webRemoteControlRpcTransportFrameSchema,
-} from "./web-remote-control-rpc-transport.js";
 import {
   taskOwnerCommandDeliverySchema,
   taskOwnerCommandRequestSchema,
@@ -71,319 +61,15 @@ export function formatZodError(error: z.ZodError): string {
 
 export const nonEmptyStringSchema = z.string().trim().min(1);
 export const stringArraySchema = z.array(z.string());
-// Task04B：topic physical-frame 计量器按 bridge/recovery id 的协议最大长度计算
-// mobile relay 外壳；不在不可信 payload 入口机械限长，1MiB 上限就只是估算。
-const webRemoteControlTransportIdSchema = nonEmptyStringSchema
-  .max(PROTOCOL_V4_LIMITS.transportEnvelopeIdMaxChars)
-  .regex(/^[A-Za-z0-9._~-]+$/u);
-
-export const webRemoteControlWorkspaceTargetSchema = z.object({
-  workspacePath: nonEmptyStringSchema,
-  workspaceIdentity: nonEmptyStringSchema.optional(),
-  remoteSessionId: nonEmptyStringSchema.optional(),
-  label: nonEmptyStringSchema,
-  workspacePurpose: z.enum(["project", "conversation"]).optional(),
-  kind: z.enum(["local", "remote"]),
-  connectionState: z.enum(["connected", "disconnected", "reconnecting"]).optional(),
-  lastConnectionError: z.string().optional(),
-});
-
-export const webRemoteControlWorkspaceTargetsSchema = z.array(
-  webRemoteControlWorkspaceTargetSchema,
-);
-
-export const webRemoteControlReconnectWorkspaceRequestSchema = z.object({
-  requestId: nonEmptyStringSchema,
-  workspaceKey: nonEmptyStringSchema,
-});
-
-export const webRemoteControlReconnectWorkspaceResultSchema = z.union([
-  z.object({
-    requestId: nonEmptyStringSchema,
-    workspaceKey: nonEmptyStringSchema,
-    success: z.literal(true),
-  }),
-  z.object({
-    requestId: nonEmptyStringSchema,
-    workspaceKey: nonEmptyStringSchema,
-    success: z.literal(false),
-    error: z.string(),
-  }),
-]);
-
-export const webRemoteControlTaskTargetSchema = z.object({
-  taskId: nonEmptyStringSchema,
-  title: z.string(),
-  workspacePath: nonEmptyStringSchema,
-  workspaceIdentity: nonEmptyStringSchema.optional(),
-  remoteSessionId: nonEmptyStringSchema.optional(),
-  workspaceLabel: nonEmptyStringSchema,
-  workspaceKind: z.enum(["local", "remote"]),
-  createdAt: z.number().finite(),
-  updatedAt: z.number().finite(),
-  provider: ccbuddyProviderSchema.optional(),
-  unreadAt: z.number().finite().optional(),
-  displayStatus: z.enum(["idle", "running", "completed", "error"]).optional(),
-  hasBackgroundWork: z.boolean().optional(),
-  workflowActivity: sessionWorkflowActivitySchema.optional(),
-  pinned: z.boolean().optional(),
-  archived: z.boolean().optional(),
-});
-
-export const webRemoteControlTaskTargetsSchema = z.array(webRemoteControlTaskTargetSchema);
-
-export const webRemoteControlFailureReasonSchema = z.enum([
-  "session-not-found",
-  "session-expired",
-  "session-conflict",
-  "workspace-closed",
-  "desktop-disconnected",
-  "invalid-mobile-connection",
-  "desktop-bootstrap-timeout",
-  "connection-recovery-timeout",
-  "relay-unavailable",
-  "unsupported-action",
-  "unexpected-error",
-]);
-
-export const webRemoteControlExternalWorkspaceBridgeSchema = z.discriminatedUnion("kind", [
-  z.object({
-    bridgeSessionId: webRemoteControlTransportIdSchema,
-    bridgeGeneration: z.number().int().nonnegative().optional(),
-    recoveryId: webRemoteControlTransportIdSchema.optional(),
-    kind: z.literal("local"),
-    workspaceKey: nonEmptyStringSchema,
+// 普通 SSH/Bot 绑定只负责会话与 workspace 身份，不能将展示字段混入 registry 协议。
+export const remoteWorkspaceSessionTargetSchema = z
+  .object({
     workspacePath: nonEmptyStringSchema,
-    initialTaskId: nonEmptyStringSchema.optional(),
-  }),
-  z.object({
-    bridgeSessionId: webRemoteControlTransportIdSchema,
-    bridgeGeneration: z.number().int().nonnegative().optional(),
-    recoveryId: webRemoteControlTransportIdSchema.optional(),
-    kind: z.literal("remote"),
-    workspaceKey: nonEmptyStringSchema,
-    workspacePath: nonEmptyStringSchema,
-    workspaceIdentity: nonEmptyStringSchema,
+    workspaceIdentity: nonEmptyStringSchema.optional(),
     remoteSessionId: nonEmptyStringSchema,
-    initialTaskId: nonEmptyStringSchema.optional(),
-  }),
-]);
-
-export const webRemoteControlMobileViewStateSchema = z.object({
-  activeWorkspaceKey: nonEmptyStringSchema.optional(),
-  activeTaskId: nonEmptyStringSchema.optional(),
-  updatedAt: z.number().finite(),
-});
-
-export const webRemoteControlMobileDeviceInfoSchema = z.object({
-  platform: nonEmptyStringSchema,
-  version: nonEmptyStringSchema,
-  name: nonEmptyStringSchema,
-  userAgent: z.string().optional(),
-  language: z.string().optional(),
-  languages: z.array(z.string()).optional(),
-  browserPlatform: z.string().optional(),
-  viewport: z
-    .object({
-      width: z.number().finite(),
-      height: z.number().finite(),
-      devicePixelRatio: z.number().finite(),
-    })
-    .optional(),
-  screen: z
-    .object({
-      width: z.number().finite(),
-      height: z.number().finite(),
-    })
-    .optional(),
-  timezone: z.string().optional(),
-  online: z.boolean().optional(),
-  updatedAt: z.number().finite(),
-});
-
-export const webRemoteControlWindowBootstrapResultSchema = z.object({
-  windowControlSessionId: nonEmptyStringSchema,
-  desktopAppVersion: nonEmptyStringSchema.optional(),
-  workspaces: webRemoteControlWorkspaceTargetsSchema,
-  tasks: webRemoteControlTaskTargetsSchema,
-  initialViewState: webRemoteControlMobileViewStateSchema.optional(),
-  mobileViewState: webRemoteControlMobileViewStateSchema.optional(),
-});
-
-export const webRemoteControlWorkspaceListResultSchema = z.object({
-  workspaces: webRemoteControlWorkspaceTargetsSchema,
-  tasks: webRemoteControlTaskTargetsSchema.optional(),
-  activeWorkspaceKey: nonEmptyStringSchema.optional(),
-  activeTaskId: nonEmptyStringSchema.optional(),
-});
-
-export const webRemoteControlPlatformMethodSchema = z.enum([
-  "isDockerAvailable",
-  "listWSLDistros",
-  "listDockerContainers",
-  "listSSHConfigAliases",
-  "loadMcpFromUserDirectory",
-  "saveMcpToUserDirectory",
-  "migrateLegacyCommonMcp",
-]);
-
-const webRemoteControlAppPayloadSchemas = [
-  z
-    .object({ ccbuddy_type: z.literal("telemetry-report"), event: sessionCreateTelemetrySchema })
-    .strict(),
-  z.object({
-    ccbuddy_type: z.literal("bootstrap-request"),
-    requestId: nonEmptyStringSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("bootstrap-response"),
-    requestId: nonEmptyStringSchema,
-    success: z.literal(true),
-    result: webRemoteControlWindowBootstrapResultSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-list-request"),
-    requestId: nonEmptyStringSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-list-response"),
-    requestId: nonEmptyStringSchema,
-    success: z.literal(true),
-    result: webRemoteControlWorkspaceListResultSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-list-updated"),
-    result: webRemoteControlWorkspaceListResultSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-bridge-open"),
-    requestId: nonEmptyStringSchema,
-    bridgeSessionId: webRemoteControlTransportIdSchema,
-    bridgeGeneration: z.number().int().nonnegative().optional(),
-    recoveryId: webRemoteControlTransportIdSchema.optional(),
-    workspaceKey: nonEmptyStringSchema,
-    taskId: nonEmptyStringSchema.optional(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-bridge-ready"),
-    requestId: nonEmptyStringSchema,
-    bridgeSessionId: webRemoteControlTransportIdSchema,
-    bridgeGeneration: z.number().int().nonnegative().optional(),
-    recoveryId: webRemoteControlTransportIdSchema.optional(),
-    bridge: webRemoteControlExternalWorkspaceBridgeSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-bridge-error"),
-    requestId: nonEmptyStringSchema,
-    bridgeSessionId: webRemoteControlTransportIdSchema.optional(),
-    bridgeGeneration: z.number().int().nonnegative().optional(),
-    recoveryId: webRemoteControlTransportIdSchema.optional(),
-    reason: webRemoteControlFailureReasonSchema,
-    error: z.string(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-reconnect-request"),
-    requestId: nonEmptyStringSchema,
-    workspaceKey: nonEmptyStringSchema,
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-reconnect-response"),
-    requestId: nonEmptyStringSchema,
-    workspaceKey: nonEmptyStringSchema,
-    success: z.literal(true),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("workspace-reconnect-response"),
-    requestId: nonEmptyStringSchema,
-    workspaceKey: nonEmptyStringSchema,
-    success: z.literal(false),
-    error: z.string(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("mobile-view-state-update"),
-    viewState: webRemoteControlMobileViewStateSchema,
-    deviceInfo: webRemoteControlMobileDeviceInfoSchema.optional(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("platform-request"),
-    requestId: nonEmptyStringSchema,
-    method: webRemoteControlPlatformMethodSchema,
-    args: z.unknown().optional(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("platform-response"),
-    requestId: nonEmptyStringSchema,
-    method: webRemoteControlPlatformMethodSchema,
-    success: z.literal(true),
-    result: z.unknown(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("platform-response"),
-    requestId: nonEmptyStringSchema,
-    method: webRemoteControlPlatformMethodSchema,
-    success: z.literal(false),
-    error: z.string(),
-  }),
-  // Bugfix：04D-3 必须让 fragment/ACK 与 acknowledged adapter 原子切换。
-  // 继续接受 legacy 单片会让 raw bytes 绕过 ACK/replay owner 和 1MiB 外壳硬边界。
-  webRemoteControlRpcTransportFrameSchema,
-  webRemoteControlRpcTransportAckSchema,
-  z.object({
-    ccbuddy_type: z.literal("bridge-degraded"),
-    bridgeSessionId: webRemoteControlTransportIdSchema,
-    bridgeGeneration: z.number().int().nonnegative().optional(),
-    recoveryId: webRemoteControlTransportIdSchema.optional(),
-    reason: z.enum(["rpc-transport-fault", "rpc-frame-gap", "buffer-overflow", "buffer-timeout"]),
-    seq: z.number().int().nonnegative().optional(),
-    expectedSeq: z.number().int().nonnegative().optional(),
-    droppedCount: z.number().int().nonnegative().optional(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("app-error"),
-    requestId: nonEmptyStringSchema.optional(),
-    bridgeSessionId: webRemoteControlTransportIdSchema.optional(),
-    reason: webRemoteControlFailureReasonSchema,
-    error: z.string(),
-  }),
-  z.object({
-    ccbuddy_type: z.literal("mobile-diagnostic"),
-    event: z.enum([
-      "state-transition",
-      "socket-close",
-      "socket-error",
-      "recover-start",
-      "recover-scheduled",
-      "pair-status",
-      "failure",
-    ]),
-    timestamp: z.number().int().nonnegative(),
-    state: z.string().optional(),
-    previousState: z.string().optional(),
-    pairStatus: z.enum(["waiting", "matched"]).optional(),
-    closeCode: z.number().int().optional(),
-    closeReason: z.string().optional(),
-    wasClean: z.boolean().optional(),
-    wasPaired: z.boolean().optional(),
-    failureReason: webRemoteControlFailureReasonSchema.optional(),
-    failureMessage: z.string().optional(),
-    visibilityState: z.string().optional(),
-    online: z.boolean().optional(),
-    hiddenDurationMs: z.number().int().nonnegative().optional(),
-  }),
-] as const;
-
-// Bugfix: app payload 里多个消息共享 ccbuddy_type（例如 platform-response），
-// 不能直接用 z.discriminatedUnion("ccbuddy_type")，否则 schema 初始化会因重复值失败。
-// 这里保留同一批运行时约束，改用普通 union，让外部 relay 的不可信 payload
-// 在进入 desktop/web 路由前仍然先被机械校验。
-export const webRemoteControlAppPayloadSchema = z.union(webRemoteControlAppPayloadSchemas);
-
-export function parseWebRemoteControlAppPayload(
-  payload: unknown,
-): WebRemoteControlAppPayload | null {
-  const result = webRemoteControlAppPayloadSchema.safeParse(payload);
-  return result.success ? (result.data as WebRemoteControlAppPayload) : null;
-}
+  })
+  .strict();
+export const remoteWorkspaceSessionTargetsSchema = z.array(remoteWorkspaceSessionTargetSchema);
 
 export const credentialRecordSchema = z.record(z.string(), z.string());
 export const credentialKeySchema = nonEmptyStringSchema;
@@ -595,7 +281,7 @@ export const hostAttachServicePortMessageSchema = z
   .object({
     type: z.literal("attach-service-port"),
     // main 只能声明 attachment 来源；connectionId 仍由 host process 分配。
-    // desktop reload/remote reattach 必须显式 continuous，手机 shared-host 必须 replayable。
+    // desktop reload/remote reattach 必须显式 continuous，普通 Web/Bot attachment 保留 replayable。
     requestId: nonEmptyStringSchema,
     attachmentId: nonEmptyStringSchema,
     clientMode: z.enum(["desktop-continuous", "web-remote-replayable"]),
@@ -1580,7 +1266,12 @@ export const ccbuddyPersistedMessageSchema = z.object({
     .optional(),
 });
 
-export const ccbuddyTaskGoalStatusSchema = z.enum(["active", "paused", "budget_limited", "complete"]);
+export const ccbuddyTaskGoalStatusSchema = z.enum([
+  "active",
+  "paused",
+  "budget_limited",
+  "complete",
+]);
 
 export const ccbuddyTaskTargetChangedActionSchema = z.enum([
   "set",

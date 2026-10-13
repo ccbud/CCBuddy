@@ -162,9 +162,11 @@ export class BrowserTabRecoveryStore {
 
   private async mutate(mutation: (snapshot: BrowserTabRecoverySnapshot) => void): Promise<void> {
     const task = this.mutationQueue.then(async () => {
-      const snapshot = await this.ensureLoaded();
+      // 写盘失败不能提前污染缓存：在副本上修改，原子写成功后才提交内存事实。
+      const snapshot = cloneSnapshot(await this.ensureLoaded());
       mutation(snapshot);
       await this.writeSnapshot(snapshot);
+      this.snapshot = snapshot;
     });
     this.mutationQueue = task.catch(() => undefined);
     await task;

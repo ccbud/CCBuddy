@@ -15,8 +15,7 @@ import type {
 import type { IFeedbackService, IServiceAccessor } from "@ccbuddy/services";
 import type { SavedWorkflowsOpenTarget } from "@/settings/saved-workflows/SavedWorkflowsSection.js";
 import type { SavedWorkflowHubTarget } from "@/v4/savedWorkflowHubContext.js";
-import type { WebRemoteControlWorkspaceSwitcherApi } from "@/root/types.js";
-import type { WebRemoteControlTerminalTransportState } from "@/root/types.js";
+
 import type { BrowserNavigationRequest, RecentClosedSidePaneTab } from "@/hooks/useAppPanels.js";
 import type { CodeViewerSource } from "@/lib/codeViewer.js";
 import type { AssistantPreviewCardsAutoOpenRequest } from "@/lib/assistantPreviewCards.js";
@@ -104,10 +103,7 @@ export interface AppProps {
   remoteConnectionInProgress?: boolean;
   onReturnToWorkspace?: () => void;
   allowOpenWorkspace?: boolean;
-  webRemoteControlWorkspaceSwitcher?: WebRemoteControlWorkspaceSwitcherApi;
-  initialWebRemoteControlMobileNavigationIntent?: import("@ccbuddy/shared").WebRemoteControlMobileNavigationIntent;
-  initialWebRemoteControlWorkspaceList?: import("@ccbuddy/shared").WebRemoteControlWorkspaceListResult;
-  webRemoteControlTerminalTransportState?: WebRemoteControlTerminalTransportState;
+
   allowRemoteWorkspace?: boolean;
   remoteWorkspaceSessions?: RemoteWorkspaceSessionEntry[];
   workspaceAbsPath: string;

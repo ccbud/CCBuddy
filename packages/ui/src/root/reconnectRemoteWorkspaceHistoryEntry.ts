@@ -162,8 +162,7 @@ export async function reconnectRemoteWorkspaceHistoryEntry({
     ) {
       // connect 只携带历史记录里的 path/identity，main 的 logical session descriptor 也停在这组值上；
       // realpath 归一化后若结果不同，tab 会用新值而 descriptor 仍是旧值，
-      // 手机远控桥接按 tab 的 path/identity 比对 descriptor 时就会被 REMOTE_WORKSPACE_IDENTITY_MISMATCH 拒绝。
-      // 绑定失败说明 session 与 tab 无法对齐：回收 session 并走失败落库，不留下半连接 workspace。
+            // 绑定失败说明 session 与 tab 无法对齐：回收 session 并走失败落库，不留下半连接 workspace。
       // 这次 await 必须放在下方保留校验之前：校验与 upsertWorkspaceTab 之间不能再有异步间隙，
       // 否则用户在 bind 等待 ready ACK 期间移除 tab，校验结果已过期，workspace 会被重新加回来。
       try {
@@ -260,8 +259,7 @@ export async function reconnectRemoteWorkspaceHistoryEntry({
     }
     if (options?.throwOnFailure) {
       // 桌面端重连按钮需要吞掉异常并通过 toast/状态落库反馈，
-      // 但手机端 Web 远控是 RPC 语义，必须把失败明确回传给手机端。
-      throw error;
+            throw error;
     }
   } finally {
     setReconnectingRemoteWorkspaceKeys((currentKeys) =>

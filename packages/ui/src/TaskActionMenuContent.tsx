@@ -24,7 +24,6 @@ export function TaskActionMenuContent({
   disableTaskTargetActions = false,
   disablePinTaskAction = false,
   disabledReason,
-  hideMobileUnsupportedActions = false,
   Item,
   Separator,
   onTogglePinTask,
@@ -62,14 +61,14 @@ export function TaskActionMenuContent({
   disableTaskTargetActions?: boolean;
   disablePinTaskAction?: boolean;
   disabledReason?: string;
-  hideMobileUnsupportedActions?: boolean;
+
   Item: React.ComponentType<TaskActionMenuItemProps>;
   Separator: React.ComponentType<TaskActionMenuSeparatorProps>;
   onTogglePinTask: () => void;
   onStartRenameTask: () => void;
   onArchiveTask: () => void;
   onMarkTaskAsUnread: () => void;
-  /** 「在分屏打开」（仅桌面 shell 传入；手机远控不显示该入口）。 */
+
   onOpenInSplitPane?: () => void;
   /** 当前 session 或 pane 数达上限且目标无已有归属时禁用（保留布局与层级）。 */
   openInSplitPaneDisabled?: boolean;
@@ -141,7 +140,7 @@ export function TaskActionMenuContent({
         </Item>
       ) : null}
       <Separator />
-      {!hideMobileUnsupportedActions ? (
+      {(
         <Item
           disabled={disableTaskActions}
           title={disableTaskActions ? disabledReason : undefined}
@@ -153,7 +152,7 @@ export function TaskActionMenuContent({
         >
           {fileManagerLabel}
         </Item>
-      ) : null}
+      )}
       <Item
         disabled={disableTaskActions}
         title={disableTaskActions ? disabledReason : undefined}
@@ -194,9 +193,8 @@ export function TaskActionMenuContent({
           {intl.formatMessage({ id: "appHeader.copySessionId" })}
         </Item>
       ) : null}
-      {!hideMobileUnsupportedActions ? (
-        /* Bugfix: 手机远控运行在浏览器里，无法可靠打开桌面端 provider 配置文件。
-           这里只在远控移动端隐藏入口，桌面端仍沿用“路径已知即可前往配置”的能力。 */
+      {(
+
         <Item
           disabled={
             disableTaskActions ||
@@ -214,7 +212,7 @@ export function TaskActionMenuContent({
             {intl.formatMessage({ id: "appHeader.goToProviderConfig" })}
           </span>
         </Item>
-      ) : null}
+      )}
       {onViewModelTrajectory ? (
         <>
           <Separator />

@@ -8,7 +8,6 @@ import {
   LoaderIcon,
   Moon,
   Pin,
-  Smartphone,
 } from "lucide-react";
 import { isCronTask, isOffPeakTask, type CCbuddyTaskMeta } from "@ccbuddy/shared";
 import { TID_TASK_ARCHIVE, TID_TASK_ITEM, testId } from "@ccbuddy/shared";
@@ -64,7 +63,7 @@ interface TaskListItemProps {
   task: CCbuddyTaskMeta;
   isPinned: boolean;
   isActive: boolean;
-  isMobileActive?: boolean;
+
   onSelectTask: (taskId: string) => void;
   onArchiveTaskInline: (e: React.MouseEvent, taskId: string) => void;
   onCancelArchiveConfirm: () => void;
@@ -128,7 +127,6 @@ function areTaskListItemPropsEqual(
     areTaskListItemTaskFieldsEqual(left.task, right.task) &&
     left.isPinned === right.isPinned &&
     left.isActive === right.isActive &&
-    left.isMobileActive === right.isMobileActive &&
     left.isArchiveConfirming === right.isArchiveConfirming &&
     left.variant === right.variant &&
     left.showPinAction === right.showPinAction &&
@@ -153,7 +151,6 @@ export const MemoTaskItem = memo(function TaskListItem({
   task,
   isPinned,
   isActive,
-  isMobileActive = false,
   onSelectTask,
   onArchiveTaskInline,
   onCancelArchiveConfirm,
@@ -393,10 +390,9 @@ export const MemoTaskItem = memo(function TaskListItem({
   const isTaskOffPeak = isOffPeakTask(task);
   const showTimelineIdleIndicator =
     variant === "timeline" && leadingIndicator === "none" && !isPinned;
-  // 手机远控标记和置顶状态共用左侧 leading 槽。
-  // 已置顶任务如果继续常显 Pin，会和绝对定位的手机图标重叠；手机激活态默认让手机图标优先，hover 时再显示 Pin 操作。
+    // 已置顶任务如果继续常显 Pin，会和绝对定位的手机图标重叠；手机激活态默认让手机图标优先，hover 时再显示 Pin 操作。
   const showPinnedState =
-    isPinned && leadingIndicator === "none" && !isMobileActive;
+    isPinned && leadingIndicator === "none";
   const shouldMountWorkspaceTaskActions =
     hoverActionsVisible || focusActionsVisible || isHoverNone;
   // Bugfix：hover:none 只代表触屏端需要常驻 action，不代表应永久隐藏时间、状态和变更摘要。
@@ -508,7 +504,7 @@ export const MemoTaskItem = memo(function TaskListItem({
     canOpenFileTree &&
     !workspaceActionsDisabled &&
     !hasPendingInteraction &&
-    (shouldMountWorkspaceTaskActions || isMobileActive) ? (
+    (shouldMountWorkspaceTaskActions) ? (
       <span className="inline-flex shrink-0">
         {/* Bugfix：Pinned 文件树按钮曾手写 hover 背景和 tooltip，导致与 Grouped task
             的同一操作视觉不一致。直接复用共享 action，统一 bg-hover、尺寸和 pointer 行为。 */}
@@ -557,7 +553,7 @@ export const MemoTaskItem = memo(function TaskListItem({
       ref={itemRef}
       data-testid={testId(TID_TASK_ITEM, task.taskId)}
       data-task-item-key={taskItemKey}
-      data-mobile-active-task={isMobileActive ? "true" : undefined}
+
       data-archive-confirming-task-id={
         isArchiveConfirming ? task.taskId : undefined
       }
@@ -607,7 +603,6 @@ export const MemoTaskItem = memo(function TaskListItem({
           className={cn(
             "flex size-4 items-center justify-center transition-opacity",
             shouldRenderPinAction && "hidden",
-            isMobileActive && "invisible",
           )}
         >
           {leadingIndicator === "error" ? (
@@ -648,24 +643,7 @@ export const MemoTaskItem = memo(function TaskListItem({
       {variant === "timeline" ? (
         <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-1.5">
-            {isMobileActive && !shouldSuppressWorkspaceTaskMetadata ? (
-              <ControlHintTooltip
-                title={intl.formatMessage({ id: "taskList.mobileActive" })}
-                side="right"
-                align="center"
-                triggerClassName="absolute -left-6 top-2 z-10 -translate-y-1/2"
-              >
-                <span
-                  data-mobile-active-task="true"
-                  className="inline-flex size-4 items-center justify-center rounded-sm text-success"
-                  aria-label={intl.formatMessage({
-                    id: "taskList.mobileActive",
-                  })}
-                >
-                  <Smartphone className="size-3.5" />
-                </span>
-              </ControlHintTooltip>
-            ) : null}
+
             <TaskTitleOverflowText
               className="text-ui-base text-foreground"
               title={taskTitleWithChanges}
@@ -739,28 +717,7 @@ export const MemoTaskItem = memo(function TaskListItem({
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-w-0 items-center gap-2">
             <div className="relative min-w-0 flex h-6 flex-1 flex-wrap items-center gap-1.5">
-              {isMobileActive && !shouldSuppressWorkspaceTaskMetadata ? (
-                <ControlHintTooltip
-                  title={intl.formatMessage({ id: "taskList.mobileActive" })}
-                  side="right"
-                  align="center"
-                  triggerClassName="absolute -left-6 top-1/2 z-10 -translate-y-1/2"
-                >
-                  <span
-                    data-mobile-active-task="true"
-                    className="inline-flex size-4 items-center justify-center rounded-sm text-success"
-                    aria-label={intl.formatMessage({
-                      id: "taskList.mobileActive",
-                    })}
-                  >
-                    {/* Bugfix: mobileViewState 已经能告诉桌面端手机正在看的 task，
-                        但列表未消费这个状态，用户会误以为只有桌面端在操作。上一版把图标作为标题前的 flex 子项，
-                        会把当前行标题往右挤，造成上下 task 标题不对齐；这里改成绝对定位到原有 leading 槽，
-                        标题文本仍然从原来的位置开始；同时 hover 时隐藏手机标记，把原来的置顶按钮还给用户。 */}
-                    <Smartphone className="size-3.5" />
-                  </span>
-                </ControlHintTooltip>
-              ) : null}
+
               <TaskTitleOverflowText
                 className="text-ui-base text-foreground"
                 title={taskTitleWithChanges}
@@ -870,8 +827,7 @@ export function TaskListItemContextMenuContent({
       intl.formatMessage({ id: "workspaceSidebar.unavailableLocalDirectory" }))
     : undefined;
   // 收尾：「在分屏打开」仅桌面 shell（context 由 WorkspaceShellLayout 提供；
-  // 手机远控/无 Provider 环境默认 false → 菜单项整体不渲染）。
-  const splitPaneEntry = useV4SplitPaneEntry();
+    const splitPaneEntry = useV4SplitPaneEntry();
   const splitPaneEntryEnabled = splitPaneEntry.enabled;
   const splitPaneTarget = useMemo(
     () => ({

@@ -38,7 +38,7 @@ interface TaskWorkflowRunLinesProps {
   intl: TaskWorkflowRunLinesIntl;
   /** 点击打开 run pane 所需的会话地址；缺席（手机首页）时运行行不是按钮。 */
   session?: { workspacePath: string; workspaceIdentity?: string; sessionId: string };
-  /** compact = 手机远控行（24px、更小字号）。 */
+
   density?: "default" | "compact";
   className?: string;
 }

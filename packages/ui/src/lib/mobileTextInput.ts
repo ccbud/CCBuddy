@@ -22,7 +22,7 @@ function subscribeMediaQuery(query: string, listener: (matches: boolean) => void
   update();
 
   // Bugfix: 部分移动端 WebView / 旧 Safari 仍只支持 addListener。
-  // 这里沿用远控 shell 的兼容方式，避免手机端输入框挂载时因监听 API 不存在而崩溃。
+  // 这里同时支持两种浏览器监听 API，避免手机端输入框挂载时因监听 API 不存在而崩溃。
   if (typeof mediaQueryList.addEventListener === "function") {
     mediaQueryList.addEventListener("change", update);
     return () => mediaQueryList.removeEventListener("change", update);
@@ -88,12 +88,11 @@ export function resolveChatEnterShortcut({
 
 export function shouldAvoidIosInputFocusZoom({
   isMobileTextInputViewport,
-  isWebRemoteControl,
 }: {
   isMobileTextInputViewport: boolean;
-  isWebRemoteControl: boolean;
+
 }): boolean {
-  return isWebRemoteControl && isMobileTextInputViewport;
+  return isMobileTextInputViewport;
 }
 
 export function resolveMobileInputTextSizeClassName({
@@ -102,7 +101,7 @@ export function resolveMobileInputTextSizeClassName({
   avoidIosInputFocusZoom: boolean;
 }): "text-ui-base leading-5" | "text-mobile-input-safe leading-6" {
   // Bugfix: iOS Safari / WKWebView 聚焦低于 16px 的可编辑输入区时会自动放大页面。
-  // text-ui-lg 会随用户偏好降到 14px，因此手机远控必须使用固定 16px 的平台兼容 token。
+  // text-ui-lg 会随用户偏好降到 14px，因此触屏 Web 必须使用固定 16px 的平台兼容 token。
   return avoidIosInputFocusZoom
     ? "text-mobile-input-safe leading-6"
     : "text-ui-base leading-5";

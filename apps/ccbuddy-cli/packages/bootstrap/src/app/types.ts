@@ -8,8 +8,8 @@ import type {
   ContextSourcePort,
   DynamicWorkflowRunArtifact,
   DynamicWorkflowRunArtifactBytes,
-  DynamicWorkflowRunArtifactItem,
-  DynamicWorkflowRunEvent,
+  DynamicWorkflowRunArtifactItemsResult,
+  DynamicWorkflowRunEventsResult,
   DynamicWorkflowRunProgressPayload,
   DynamicWorkflowRunResumeResult,
   DynamicWorkflowRunSessionSummary,
@@ -42,6 +42,7 @@ import type {
   PluginLoadOutcome,
   PluginMetadata,
   PluginReferenceCatalog,
+  ProviderEndpointRoutingPort,
   QueryId,
   SessionEvent,
   SessionEventSink,
@@ -54,6 +55,7 @@ import type {
   SkillPort,
   SupportedLocale,
   TodoItem,
+  TopicResourcePort,
   ToolArtifactReadResult,
   ToolArtifactStorePort,
   TraceContext,
@@ -93,6 +95,7 @@ import type {
   BackgroundBashOutputResult,
   CCbuddyModelOption,
   CCbuddyToolExecResource,
+  SubagentRuntimeConfig,
 } from "@ccbuddy/shared";
 import type { McpAppsToolVisibility } from "@ccbuddy/shared/mcp-apps";
 import type { EffectiveModelSelectionResult } from "@ccbuddy/shared/model-selection";
@@ -142,6 +145,11 @@ export interface CCbuddyAppOptions {
    * 普通 CLI 不传，继续使用 cli 默认值。
    */
   sourceTitle?: ModelProviderSourceTitle;
+  /** 合并时遗漏了 Host 读取端口声明；初始化与父轮必须共享同一配置来源。 */
+  readSubagentRuntimeConfig?: (input: {
+    signal: AbortSignal;
+    traceContext: TraceContext;
+  }) => Promise<SubagentRuntimeConfig>;
   eventStore?: SessionEventStorePort;
   sessionStore?: SessionStorePort;
   sessionMailboxPort?: SessionMailboxPort;
@@ -155,6 +163,7 @@ export interface CCbuddyAppOptions {
   modelIoFullRetentionEnabled?: boolean;
   /** 同进程嵌入宿主可注入完整的 borrowed 进程级 Owner；Endpoint 配置不得覆盖它。 */
   telemetryOwner?: AgentTelemetryRuntimeOwner;
+  providerEndpointRoutingPort?: ProviderEndpointRoutingPort;
   /**
    * provider runtime headers 端口：主 runtime 每次调用报自己的会话；child runtime 一律向父
    * runtime 取派生实例。
@@ -176,6 +185,8 @@ export interface CCbuddyAppOptions {
   pdfDocumentPort?: PdfDocumentPort;
   artifactStore?: ToolArtifactStorePort;
   contextSourcePort?: ContextSourcePort;
+  /** 仅协议宿主注入；普通 CLI 不加载内置 visualize 技能。 */
+  includeVisualize?: boolean;
   skillPort?: SkillPort;
   mcpPort?: McpPort;
   /** 由宿主提供 per-app lease；产出的端口归 app 所有。 */
@@ -192,6 +203,7 @@ export interface CCbuddyAppOptions {
   onWorkflowEvent?: (event: WorkflowEvent) => void | Promise<void>;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
+  topicResourcePort?: TopicResourcePort;
   /** 首次真实用户执行或 cold-resume fallback 时解析一次，之后由 app 生命周期缓存。 */
   resolveInitialBashShellSelection?: () => Promise<ExecutionShellSelection | undefined>;
   /** Trusted embedder policy; workspace/project files cannot populate this field. */
@@ -487,7 +499,8 @@ export interface CCbuddyApp {
     runId: string;
     afterSequence?: number;
     limit?: number;
-  }): Promise<DynamicWorkflowRunEvent[]>;
+    maxBytes?: number;
+  }): Promise<DynamicWorkflowRunEventsResult>;
   /**
    * 恢复一个 dwf run。可选能力，缺席条件同
    * {@link listDynamicWorkflowRunEvents}。成功路径除了 port.resume 之外还负责**追踪重臂**
@@ -552,7 +565,7 @@ export interface CCbuddyApp {
   }): Promise<readonly DynamicWorkflowRunArtifact[] | undefined>;
   /**
    * 喂给某个预置看板的 `report` 条目分页（cursor = journal sequence，严格大于）。
-   * `limit` 由网关钳好再传下来，这里**精确**兑现——调用方传「上限 + 1」探测 hasMore。
+   * 条数和字节上限由网关传入，hasMore 由 journal 判定，不在 bridge 再派生。
    * 缺席条件同 {@link listDynamicWorkflowRunArtifacts}。
    */
   listDynamicWorkflowRunArtifactItems?(input: {
@@ -560,7 +573,9 @@ export interface CCbuddyApp {
     artifactId: string;
     afterSequence?: number;
     limit: number;
-  }): Promise<readonly DynamicWorkflowRunArtifactItem[]>;
+    maxBytes: number;
+    fields?: readonly string[];
+  }): Promise<DynamicWorkflowRunArtifactItemsResult>;
   /**
    * 读一个产物版本的**全部**字节；分块归网关（≤ 512 KiB 一块）。授权链在端口实现侧：
    * 该 run 必须属于本会话 ∧ journal 里有 `(artifactId, version)` 的 completed 行，然后才拿
@@ -807,6 +822,8 @@ export interface ResolveLatestSessionOptions {
 }
 
 export interface RunCCbuddyProtocolAgentOptions {
+  /** 已有调用支持宿主注入路由端口；声明与实现同源，避免合并漏项阻断入口构建。 */
+  providerEndpointRoutingPort?: ProviderEndpointRoutingPort;
   /** 入口拥有退出时限；bootstrap 只编排取消和资源清理，不直接退出进程。 */
   lifecycle?: {
     readonly signal: AbortSignal;

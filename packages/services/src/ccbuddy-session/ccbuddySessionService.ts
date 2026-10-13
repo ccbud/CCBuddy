@@ -415,7 +415,7 @@ export function createCCbuddySessionService({
       if (!wasDeferredDraft) {
         return Promise.resolve();
       }
-      // 手机 replayable 首发由 task facade 消费 deferred draft，需要在这里清除草稿标记
+      // Web replayable 首发由 task facade 消费 deferred draft，需要在这里清除草稿标记
       // 并通知 task index 同步，避免桌面后续控制同一 task 时仍按 deferred 规则跳过同步。
       notifySyncer(params);
       logger.info(undefined, "[ccbuddy-session-service] deferred draft session 已提升为 task", {

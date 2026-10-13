@@ -144,7 +144,7 @@ export const localTtftRecordSchema = z
       "expired",
       "capacity",
       "recovery",
-      // 桌面 continuous 缓冲溢出/投影重建后的 online snapshot；不是手机 replayable 恢复。
+      // 桌面 continuous 缓冲溢出/投影重建后的 online snapshot；不是Web replayable 恢复。
       "resync",
       "clock_invalid",
       "rejected",

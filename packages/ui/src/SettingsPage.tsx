@@ -272,7 +272,6 @@ export function SettingsPage({
   isDesktop,
   isWindowsDesktop,
   isMacDesktop,
-  isWebRemoteControl = false,
   windowsWindowControlsRightPaddingPx: _windowsWindowControlsRightPaddingPx,
   captionWorkspacePath,
   onBack,
@@ -286,7 +285,7 @@ export function SettingsPage({
   isDesktop?: boolean;
   isWindowsDesktop?: boolean;
   isMacDesktop?: boolean;
-  isWebRemoteControl?: boolean;
+
   windowsWindowControlsRightPaddingPx?: number;
   captionWorkspacePath?: string | null;
   onBack?: () => void;
@@ -324,7 +323,7 @@ export function SettingsPage({
   const [pluginTab, setPluginTab] = useState(() => consumePendingSettingsPluginTab());
   // Linux 关闭驻留托盘能力查询（spec：docs/desktop/linux-close-to-tray.md）：打开设置页时
   // 经 platform IPC 触发 main 侧探测（带 stale 缓存），用户装完 AppIndicator 扩展重开
-  // 设置页即可解除置灰；Web/远控无桥不查询。
+  // 设置页即可解除置灰；Web 无桌面桥时不查询。
   const [linuxCloseToTrayCapability, setLinuxCloseToTrayCapability] =
     useState<DesktopCloseToTrayCapability | null>(null);
   useEffect(() => {
@@ -1798,7 +1797,7 @@ export function SettingsPage({
                             isDesktop={Boolean(isDesktop)}
                             isMacDesktop={Boolean(isMacDesktop)}
                             isWindowsDesktop={Boolean(isWindowsDesktop)}
-                            isWebRemoteControl={isWebRemoteControl}
+
                             initialTab={pluginTab}
                             initialScopeKey={pluginScopeKey}
                             workspacePath={activeWorkspacePath}
@@ -1815,7 +1814,7 @@ export function SettingsPage({
                           <PluginsSection
                             key={`mcp:${settingsSectionNavigationVersion}`}
                             mode="mcp"
-                            isWebRemoteControl={isWebRemoteControl}
+
                             workspacePath={activeWorkspacePath}
                             workspaceIdentity={activeWorkspaceIdentity}
                             onCreateTask={onCreateTask}
@@ -1829,7 +1828,7 @@ export function SettingsPage({
                           <PluginsSection
                             key={`skill:${settingsSectionNavigationVersion}`}
                             mode="skill"
-                            isWebRemoteControl={isWebRemoteControl}
+
                             workspacePath={activeWorkspacePath}
                             workspaceIdentity={activeWorkspaceIdentity}
                             onCreateTask={onCreateTask}
@@ -1867,7 +1866,7 @@ export function SettingsPage({
                         ) : activeSection === "commands" ? (
                           <PluginsSection
                             mode="command"
-                            isWebRemoteControl={isWebRemoteControl}
+
                             workspacePath={activeWorkspacePath}
                             workspaceIdentity={activeWorkspaceIdentity}
                             onCreateTask={onCreateTask}

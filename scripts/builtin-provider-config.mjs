@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { pathToFileURL } from "node:url";
 import { tsImport } from "tsx/esm/api";
+import { loadEndpointEnv } from "./load-endpoint-env.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 
@@ -40,9 +41,14 @@ export async function resolveBuiltinProviderBuildEnvironment({
 
 /** @param {{root?: string, env?: Record<string, string | undefined>}} options */
 export async function loadBuiltinProviderConfig({ root = repositoryRoot, env = process.env } = {}) {
+  env = await loadEndpointEnv({ root, env });
   const environment = await resolveBuiltinProviderBuildEnvironment({ root, env });
-  const filename = environment === "production" ? "ccbuddy-builtin.json" : "ccbuddy-builtin.test.json";
-  const sourcePath = resolve(root, "config/provider", filename);
+  // 修复：CCbuddy 只有本地 BYOK 模板，复制上游 test 文件名会让默认构建读取不存在的文件。
+  // 环境身份仍由构建入口决定；两个环境复用同一模板，并保留显式配置文件覆盖。
+  const sourcePath = resolve(
+    root,
+    env.CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE?.trim() || "config/provider/ccbuddy-builtin.json",
+  );
   try {
     const content = await readFile(sourcePath, "utf8");
     // 构建期复用运行时的完整 Release 校验，避免打包成功后才发现 Schema 不兼容。

@@ -15,7 +15,6 @@ import {
   type RemoteTarget,
   type ProviderProvisioningTrigger,
   type WindowHostRemoteWorkspaceDescriptor,
-  type WebRemoteControlFailure,
 } from "@ccbuddy/shared";
 import type {
   RemoteConnectionStats,
@@ -44,11 +43,14 @@ interface RemoteAttachmentRoute {
   // Main 只保留端口转发所需的 request/session 关联和脱敏 descriptor；连接/任务事实归 Host。
   descriptor: WindowHostRemoteWorkspaceDescriptor;
   rendererAttachmentId?: string;
+  rendererAttachmentGeneration?: number;
   pendingRendererAttachment?: {
     attachmentId: string;
+    generation: number;
     previousAttachmentId?: string;
     reason: string;
     timeout: NodeJS.Timeout;
+    completion: Promise<void>;
     resolve: () => void;
     reject: (error: Error) => void;
   };
@@ -159,11 +161,6 @@ export function createRemoteWorkspaceSessionManager(options: {
     durationMs: number;
   }) => void;
   monotonicNowMs?: () => number;
-  webRemoteControlManagerRef: {
-    current: {
-      failRemoteSession(sessionId: string, reason: string, failure: WebRemoteControlFailure): void;
-    } | null;
-  };
   providerProvisioningCoordinator?: ProviderProvisioningEnvironmentCoordinator;
 }) {
   const pendingByRequestKey = new Map<string, PendingConnect>();
@@ -272,66 +269,68 @@ export function createRemoteWorkspaceSessionManager(options: {
       );
     }
 
-    return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const pending = route.pendingRendererAttachment;
-        if (!pending || pending.attachmentId !== attachmentId) return;
-        route.pendingRendererAttachment = undefined;
-        detachServicePort(child, attachmentId, "ready-timeout");
-        const error = new Error(
-          `renderer attachment ready 超时，sessionId=${descriptor.remoteSessionId}`,
-        );
-        options.logger.warn("[window-host-remote] renderer attachment ready timeout", {
-          sessionId: descriptor.remoteSessionId,
-          attachmentId,
-          reason,
-        });
-        reject(error);
-      }, options.rendererAttachmentReadyTimeoutMs ?? 15_000);
-      timeout.unref?.();
-      route.pendingRendererAttachment = {
+    const { promise: completion, resolve, reject } = Promise.withResolvers<void>();
+    const timeout = setTimeout(() => {
+      const pending = route.pendingRendererAttachment;
+      if (!pending || pending.attachmentId !== attachmentId) return;
+      route.pendingRendererAttachment = undefined;
+      detachServicePort(child, attachmentId, "ready-timeout");
+      const error = new Error(
+        `renderer attachment ready 超时，sessionId=${descriptor.remoteSessionId}`,
+      );
+      options.logger.warn("[window-host-remote] renderer attachment ready timeout", {
+        sessionId: descriptor.remoteSessionId,
         attachmentId,
-        previousAttachmentId,
         reason,
-        timeout,
-        resolve,
-        reject,
-      };
+      });
+      reject(error);
+    }, options.rendererAttachmentReadyTimeoutMs ?? 15_000);
+    timeout.unref?.();
+    route.pendingRendererAttachment = {
+      attachmentId,
+      generation: descriptor.generation,
+      previousAttachmentId,
+      reason,
+      timeout,
+      completion,
+      resolve,
+      reject,
+    };
 
-      try {
-        child.postMessage(
-          {
-            type: HostMessageTypes.AttachServicePort,
-            requestId: randomUUID(),
-            attachmentId,
-            clientMode: "desktop-continuous",
-            scope: {
-              kind: "remote",
-              remoteSessionId: descriptor.remoteSessionId,
-              workspacePath: descriptor.workspacePath,
-              workspaceIdentity: descriptor.workspaceIdentity,
-            },
+    try {
+      child.postMessage(
+        {
+          type: HostMessageTypes.AttachServicePort,
+          requestId: randomUUID(),
+          attachmentId,
+          clientMode: "desktop-continuous",
+          scope: {
+            kind: "remote",
+            remoteSessionId: descriptor.remoteSessionId,
+            workspacePath: descriptor.workspacePath,
+            workspaceIdentity: descriptor.workspaceIdentity,
           },
-          [port2],
-        );
-        win.webContents.postMessage(
-          InternalChannels.ScopedServicePort,
-          {
-            attachmentId,
-            sessionId: descriptor.remoteSessionId,
-            target: descriptor.target,
-          },
-          [port1],
-        );
-      } catch (error) {
-        clearTimeout(timeout);
-        route.pendingRendererAttachment = undefined;
-        detachServicePort(child, attachmentId, "delivery-failed");
-        closeMessagePort(port1);
-        closeMessagePort(port2);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
+        },
+        [port2],
+      );
+      win.webContents.postMessage(
+        InternalChannels.ScopedServicePort,
+        {
+          attachmentId,
+          sessionId: descriptor.remoteSessionId,
+          target: descriptor.target,
+        },
+        [port1],
+      );
+    } catch (error) {
+      clearTimeout(timeout);
+      route.pendingRendererAttachment = undefined;
+      detachServicePort(child, attachmentId, "delivery-failed");
+      closeMessagePort(port1);
+      closeMessagePort(port2);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    return completion;
   }
 
   function confirmRendererAttachmentReady(
@@ -362,6 +361,7 @@ export function createRemoteWorkspaceSessionManager(options: {
       return;
     }
     route.rendererAttachmentId = pending.attachmentId;
+    route.rendererAttachmentGeneration = pending.generation;
     if (pending.previousAttachmentId) {
       // Host generation bind 会 fail-closed 立即失效 A；Main 仍需等 renderer 注册 B
       // 后再提升 route 并做幂等清理。reload 复挂没有 generation 换代，也因此不会提前拆掉可用旧 port。
@@ -570,14 +570,6 @@ export function createRemoteWorkspaceSessionManager(options: {
     const win = BrowserWindow.getAllWindows().find(
       (candidate) => candidate.webContents.id === webContentsId,
     );
-    options.webRemoteControlManagerRef.current?.failRemoteSession(
-      event.remoteSessionId,
-      "window-host:connection-closed",
-      {
-        reason: "workspace-closed",
-        message: "远程工作区连接已结束，请在桌面端重新连接。",
-      },
-    );
     if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
       win.webContents.send(PlatformChannels.RemoteSessionClosed, {
         sessionId: event.remoteSessionId,
@@ -765,6 +757,9 @@ export function createRemoteWorkspaceSessionManager(options: {
     if (expectedWebContentsId != null && route.webContentsId !== expectedWebContentsId) {
       throw new Error(`远程 workspace session 不属于当前窗口，sessionId=${sessionId}`);
     }
+    if (route.attachmentState !== "attachable") {
+      throw new Error(`远程 workspace source 已关闭，sessionId=${sessionId}`);
+    }
     const workspaceIdentity =
       context.workspaceIdentity?.trim() ||
       buildRemoteWorkspaceIdentity(context.workspacePath, route.descriptor.target);
@@ -772,8 +767,26 @@ export function createRemoteWorkspaceSessionManager(options: {
     const win = BrowserWindow.getAllWindows().find(
       (candidate) => candidate.webContents.id === route.webContentsId,
     );
-    if (!child || !win) {
+    if (!child || child.pid == null || !win || win.isDestroyed() || win.webContents.isDestroyed()) {
       throw new Error(`未找到远程 workspace 所属窗口 Host，sessionId=${sessionId}`);
+    }
+    // 同一 scope 的 UI 快照曾反复换代 renderer attachment；在真实窗口及 Host 存活检查后幂等返回。
+    // 身份统一 trim/path fallback，不重复写入 Host，也不增加 descriptor generation。
+    if (
+      route.descriptor.workspacePath === context.workspacePath &&
+      resolveWorkspaceKey({
+        workspacePath: route.descriptor.workspacePath ?? "",
+        workspaceIdentity: route.descriptor.workspaceIdentity,
+      }) === workspaceIdentity
+    ) {
+      if (route.pendingRendererAttachment) return route.pendingRendererAttachment.completion;
+      if (
+        route.rendererAttachmentId &&
+        route.rendererAttachmentGeneration === route.descriptor.generation
+      )
+        return;
+      // scope 已提交但端口投递失败时，仅重试当前 generation 的 attachment，不能沿用旧 scope 端口。
+      return attachRendererPort(win, route, "workspace-context-restored");
     }
     child.postMessage({
       type: HostMessageTypes.BindRemoteWorkspaceContext,

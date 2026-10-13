@@ -46,6 +46,10 @@ state machine. The build config supplies the immutable optional new CCbuddy mani
 URL. Desktop menu and command handlers read the same policy; renderer update
 state is only a projection. `forceUpdateGuard.ts` remains a legacy implementation
 module but is not called by new CCbuddy startup.
+The visible-target predicate narrows the Main state to `update-available` or
+`update-downloaded`; both variants permit a release channel. A no-update check
+that preserves an existing target reads that same state and channel without
+changing the update state machine or synthesizing another target.
 
 ```text
 build-time new CCbuddy manifest URL → desktop main policy → initAutoUpdater

@@ -3,8 +3,8 @@
 /**
  * Host Process 入口 —— 每个窗口对应一个独立的 host process
  *
- * 同一窗口的 Renderer 和手机 都 attachment 到这个 Host：
- *   Renderer / Mobile ←MessagePort→ Window Host
+ * 同一窗口的 Renderer 与 Bot runtime attachment 复用这个 Host：
+ *   Renderer / Bot runtime ←MessagePort→ Window Host
  *                                      ├─ local services
  *                                      └─ remote connection registry
  *
@@ -1325,14 +1325,8 @@ function createReportingRemoteCCbuddyTaskService<T extends object>(
       timestamp: Date.now(),
     });
 
-    // 写路径（send/stop/交互回执）已收敛 v4 命令面；本镜像属**读路径**——
-    // taskRealtimePort → 手机 relay → 手机端
-    // ccbuddySessionStore 的整条消费链词表都是 CCbuddyStreamEvent。两个方案的评估结论：
-    // a) relay 直接转发 v4 帧、手机端消费 v4 store（正解）：需要重做 relay stream-op
-    //    协议 + 手机端 store；
-    // b) 帧→CCbuddyStreamEvent 薄映射：等价复刻 adapter mapSessionEvent，
-    //    否决。
-    // 结论：本镜像保持 legacy 源不动。
+    // Bot 远端 runtime 的写路径已使用 v4 命令；读取仍将现有 CCbuddyStreamEvent
+    // 发布到同一 taskRealtimePort，复用桌面 observer，不另建队列或转换所有者。
     const dynamicStreamEvent = Reflect.get(target, "onDynamicStreamEvent");
     const streamDisposable =
       typeof dynamicStreamEvent === "function"
@@ -2109,7 +2103,7 @@ function exposeServicesOnMessagePort(
   const overrides = new Map<string, unknown>([
     [IWindowControllerService.channelName, controllerAttachment],
   ]);
-  // 远端媒体必须按 attachment 的 clientMode 选择数据面：桌面使用 Host loopback Range，手机保持 inline。
+  // 远端媒体必须按 attachment 的 clientMode 选择数据面：桌面使用 Host loopback Range，其它 runtime 保持 inline。
   const remoteMediaPreviewProxy =
     attachmentScope.kind === "remote" && clientMode === "desktop-continuous"
       ? capabilities?.remoteMediaPreviewFactory?.(attachmentScope)
@@ -2602,7 +2596,9 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
   if (msg.type === HostMessageTypes.SessionMessageDeliveryResult) {
     const ccbuddyTaskService = activeServices?.getOptional(ICCbuddyTaskService);
     if (!ccbuddyTaskService) {
-      logger.warn("session message delivery result received before CCbuddy task service initialized");
+      logger.warn(
+        "session message delivery result received before CCbuddy task service initialized",
+      );
       return;
     }
     void ccbuddyTaskService.sendSessionMessageDeliveryResult(msg.result).catch((error) => {
@@ -2775,7 +2771,7 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
     }
     const current = windowRemoteConnectionRegistry.getSession(msg.remoteSessionId);
     if (current) {
-      // scope generation 换代后，旧 Renderer/手机 attachment 不得继续持有远端 IO facade。
+      // scope generation 换代后，旧 Renderer/Bot attachment 不得继续持有远端 IO facade。
       windowHostAttachmentRegistry.detachStaleRemoteSessionAttachments(
         msg.remoteSessionId,
         current.generation,
@@ -2847,7 +2843,7 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
       return;
     }
     if (msg.scope.kind === "local" && databaseStartup?.coordinator.snapshot.phase !== "ready") {
-      // 刷新/手机 attachment 复用同一 Host，等待现有准备，不启动第二个执行者。
+      // 刷新/Bot attachment 复用同一 Host，等待现有准备，不启动第二个执行者。
       pendingStartupAttachments.set(msg.attachmentId, () => {
         windowHostAttachmentRegistry.attach({ ...msg, port });
       });

@@ -40,11 +40,7 @@ interface StartMemoryDiagnosticsLoggerOptions {
   readHeap?: () => RendererHeapSnapshot | undefined;
   write?: (line: string) => void;
   registry?: MemoryDiagnosticsRegistry;
-  /**
-   * 资源遥测出口：同一次读数除写本地
-   * 诊断日志外，还经 preload 桥送 main 的 `renderer_main` 角色事件。由 App 注入
-   * `platform.reportRendererHeapSample`；Web 端与手机远控没有桥，不注入即 no-op。
-   */
+
   reportHeapSample?: (sample: RendererHeapSample) => void;
 }
 

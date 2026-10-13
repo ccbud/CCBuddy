@@ -78,7 +78,7 @@ interface AssistantPreviewCardsProps {
   /** Desktop 完成态生成产物：批量打开本轮已通过校验的 PPTX。 */
   autoOpenPptxKey?: string;
   onAutoOpenPptx?: (request: AssistantPreviewCardsAutoOpenRequest) => void;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
 }
 
 export function shouldRenderAssistantPreviewCardAsFile(
@@ -86,7 +86,7 @@ export function shouldRenderAssistantPreviewCardAsFile(
   scope: {
     workspaceIdentity?: string;
     workspaceRemoteSessionId?: string;
-    compactForRemoteControl?: boolean;
+    compactLayout?: boolean;
   },
 ): boolean {
   const filePath = getAssistantPreviewCardFilePath(card);
@@ -192,7 +192,7 @@ export function AssistantPreviewCards({
   onOpenCodeViewer,
   autoOpenPptxKey,
   onAutoOpenPptx,
-  compactForRemoteControl,
+  compactLayout,
 }: AssistantPreviewCardsProps) {
   const { intl } = useCCbuddyIntl();
   const { visibleCards, settled } = useAssistantPreviewCardValidation(cards, {
@@ -242,7 +242,7 @@ export function AssistantPreviewCards({
           onOpenBrowserUrl={onOpenBrowserUrl}
           onOpenFileLink={onOpenFileLink}
           onOpenCodeViewer={onOpenCodeViewer}
-          compactForRemoteControl={compactForRemoteControl}
+          compactLayout={compactLayout}
         />
       ))}
     </div>
@@ -259,7 +259,7 @@ function AssistantPreviewCardRow({
   onOpenBrowserUrl,
   onOpenFileLink,
   onOpenCodeViewer,
-  compactForRemoteControl,
+  compactLayout,
 }: {
   card: AssistantPreviewCard;
   animationDelayMs: number;
@@ -270,13 +270,13 @@ function AssistantPreviewCardRow({
   onOpenBrowserUrl?: (url: string) => void;
   onOpenFileLink?: (target: MessageFileLinkTarget) => void;
   onOpenCodeViewer?: (source: CodeViewerSource) => void;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
 }) {
   const filePath = getAssistantPreviewCardFilePath(card);
   const renderAsFile = shouldRenderAssistantPreviewCardAsFile(card, {
     workspaceIdentity,
     workspaceRemoteSessionId,
-    compactForRemoteControl,
+    compactLayout,
   });
   const descriptor = filePath ? resolveFileDisplayDescriptor(filePath) : null;
   const fileSource =

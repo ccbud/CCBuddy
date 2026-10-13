@@ -32,17 +32,11 @@ import type {
   ApplicationIconInfo,
   ApplicationIconRequest,
   Locale,
-  WebRemoteControlContext,
-  WebRemoteControlReconnectWorkspaceRequest,
-  WebRemoteControlReconnectWorkspaceResult,
-  WebRemoteControlStartOperationResult,
-  WebRemoteControlStatus,
-  WebRemoteControlTaskTarget,
-  WebRemoteControlWorkspaceTarget,
   OAuthStateRegistration,
   PostUpdateReleaseNotesPayload,
   RemoteConnectionRuntimeLog,
   RemoteSessionClosedEvent,
+  RemoteWorkspaceSessionTarget,
   BotRemoteWorkspaceReconnectedEvent,
   RemoteTarget,
   SSHConfigAliasOption,
@@ -95,22 +89,6 @@ declare global {
         workspacePath: string;
         workspaceIdentity?: string;
       }): Promise<BrowserGuestAttachResult>;
-      /** 为当前 workspace 开启 Web 远程控制 */
-      startWebRemoteControl(
-        context: WebRemoteControlContext,
-      ): Promise<WebRemoteControlStartOperationResult>;
-      /** 清除旧配对材料并重新生成 Web 远程控制二维码 */
-      refreshWebRemoteControlPairing(
-        context: WebRemoteControlContext,
-      ): Promise<WebRemoteControlStartOperationResult>;
-      /** 关闭当前窗口的 Web 远程控制 */
-      stopWebRemoteControl(): Promise<void>;
-      /** 查询当前窗口 Web 远程控制状态 */
-      getWebRemoteControlStatus(): Promise<WebRemoteControlStatus>;
-      /** 订阅当前窗口 Web 远程控制状态变化 */
-      onWebRemoteControlStatusChanged?(
-        handler: (status: WebRemoteControlStatus) => void,
-      ): () => void;
       /** 释放当前窗口里的远程 session */
       disposeRemoteSession(sessionId: string): Promise<void>;
       /** 检查本机 Docker daemon 是否可用 */
@@ -153,16 +131,8 @@ declare global {
       activateOrSetWorkspace?(path: string): Promise<{ activated: boolean }>;
       /** 同步当前窗口所有 tab 的 workspace 路径到 main 进程 */
       syncWindowTabs(paths: string[]): void;
-      /** 同步当前窗口里 Web 远程控制允许切换的 workspace */
-      syncWebRemoteControlWorkspaces?(workspaces: WebRemoteControlWorkspaceTarget[]): void;
-      /** 同步当前窗口里 Web 远程控制可展示的 task 快照 */
-      syncWebRemoteControlTasks?(tasks: WebRemoteControlTaskTarget[]): void;
-      /** 注册手机端 Web 远控请求重连 workspace 的回调 */
-      onWebRemoteControlReconnectWorkspace?(
-        handler: (
-          request: WebRemoteControlReconnectWorkspaceRequest,
-        ) => Promise<WebRemoteControlReconnectWorkspaceResult>,
-      ): () => void;
+      /** 同步当前窗口已连接的远程 workspace 身份到宿主 registry。 */
+      syncRemoteWorkspaceSessions?(targets: RemoteWorkspaceSessionTarget[]): void;
       /** 同步当前窗口的未读 task 数到 main 进程 */
       syncWindowUnreadCount(count: number): void;
       syncActiveTaskSession(sessionId: string | null): void;

@@ -70,7 +70,7 @@ export const clientHelloSchema = z
     kind: z.literal("clientHello"),
     protocolVersion: z.literal(V4_WIRE_PROTOCOL_VERSION),
     clientId: z.string(),
-    clientKind: z.enum(["desktop", "web", "mobileRemote", "mobileApp"]).optional(),
+    clientKind: z.enum(["desktop", "web"]).optional(),
     appVersion: z.string(),
     // 缺失代表旧客户端，不具备 Settings-centered review UI。
     capabilities: z

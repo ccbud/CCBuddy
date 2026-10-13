@@ -1422,12 +1422,10 @@ const SingleUserInputRowView = memo(function SingleUserInputRowView({
           {status}
         </div>
       ) : null}
-      {/* Bugfix：手机远控没有 hover，v4 迁移时漏掉了旧 UserMessage 的常显分支，
-          导致复制和编辑入口不可发现；远控直接显示，桌面端继续通过 hover/focus 降噪。 */}
       <MessageActions
         className={cn(
           "mt-1",
-          context.compactForRemoteControl
+          context.compactLayout
             ? "opacity-100"
             : "opacity-0 transition-opacity group-hover/user-row:opacity-100 focus-within:opacity-100",
         )}
@@ -1465,7 +1463,7 @@ const UserInputRowView = memo(function UserInputRowView(
           data-topic-message-id={row.botGroupSource!.messageId}
         >
           {/* 多条原文共用一个已接收输入，不能把局部编辑误当作替换整批。 */}
-          <SingleUserInputRowView {...props} row={row} onEdit={undefined} />
+          <SingleUserInputRowView {...props} row={row}  />
         </div>
       ))}
     </div>
@@ -1480,7 +1478,7 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   entityId,
   text,
   createdAt,
-  compactForRemoteControl = false,
+  compactLayout = false,
   feedback = null,
   hookInvocations,
   sessionId,
@@ -1494,7 +1492,7 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   entityId?: string;
   text: string;
   createdAt: number;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
   feedback?: AssistantMessageFeedback | null;
   hookInvocations?: readonly HookInvocationRow[];
   sessionId?: string | null;
@@ -1518,7 +1516,7 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   const forkLabel = intl.formatMessage({ id: "chat.message.fork" });
   const timeLabel = formatMessageTimeLabel(createdAt, locale, intl);
   const resolveTooltip = (label: string): string | undefined =>
-    compactForRemoteControl ? undefined : label;
+    compactLayout ? undefined : label;
 
   useEffect(() => {
     setLocalFeedback(feedback);
@@ -1740,7 +1738,7 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
             onOpenFileLink={context.onOpenFileLink}
             autoOpenPptxKey={previewCardsAutoOpenKey}
             onAutoOpenPptx={context.onAutoOpenAssistantPptx}
-            compactForRemoteControl={context.compactForRemoteControl}
+            compactLayout={context.compactLayout}
           />
         </div>
       ) : null}
@@ -1753,7 +1751,7 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
           entityId={row.entityId}
           text={copyText ?? row.text}
           createdAt={row.createdAt}
-          compactForRemoteControl={context.compactForRemoteControl}
+          compactLayout={context.compactLayout}
           feedback={readAssistantFeedback(row)}
           sessionId={context.sessionId}
           onFork={onFork}
@@ -1761,7 +1759,7 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
           onFeedbackChange={onFeedbackChange}
           className={cn(
             "mt-1",
-            context.compactForRemoteControl
+            context.compactLayout
               ? "opacity-100"
               : "opacity-0 transition-opacity group-hover/assistant-row:opacity-100 focus-within:opacity-100",
           )}

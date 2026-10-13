@@ -1,5 +1,9 @@
 import { recordArmsCustomEventForE2E } from "@ccbuddy/ui";
-import { DesktopCommandIds, buildLocalMediaPreviewUrl, type IPlatformService } from "@ccbuddy/shared";
+import {
+  DesktopCommandIds,
+  buildLocalMediaPreviewUrl,
+  type IPlatformService,
+} from "@ccbuddy/shared";
 
 import { desktopBrowserPlatformBridge } from "./desktopBrowserPlatformBridge.js";
 import { createDesktopPluginSandboxPlatform } from "./plugin-sandbox/desktopPluginSandboxPlatform.js";
@@ -30,13 +34,6 @@ export function createDesktopPlatform(options: {
       window.ccbuddy.cancelPendingRemoteConnection?.(requestId) ?? Promise.resolve(),
     bindRemoteWorkspaceSessionContext: (context) =>
       window.ccbuddy.bindRemoteWorkspaceSessionContext?.(context) ?? Promise.resolve(),
-    startWebRemoteControl: (context) => window.ccbuddy.startWebRemoteControl(context),
-    refreshWebRemoteControlPairing: (context) =>
-      window.ccbuddy.refreshWebRemoteControlPairing(context),
-    stopWebRemoteControl: () => window.ccbuddy.stopWebRemoteControl(),
-    getWebRemoteControlStatus: () => window.ccbuddy.getWebRemoteControlStatus(),
-    onWebRemoteControlStatusChanged: (handler) =>
-      window.ccbuddy.onWebRemoteControlStatusChanged?.(handler) ?? (() => {}),
     disposeRemoteSession: (sessionId) => window.ccbuddy.disposeRemoteSession(sessionId),
     isDockerAvailable: () => window.ccbuddy.isDockerAvailable(),
     listWSLDistros: () => window.ccbuddy.listWSLDistros(),
@@ -89,11 +86,7 @@ export function createDesktopPlatform(options: {
       : undefined,
     showTaskNotification: (payload) => window.ccbuddy.showTaskNotification(payload),
     syncWindowTabs: (paths) => window.ccbuddy.syncWindowTabs(paths),
-    syncWebRemoteControlWorkspaces: (workspaces) =>
-      window.ccbuddy.syncWebRemoteControlWorkspaces?.(workspaces),
-    syncWebRemoteControlTasks: (tasks) => window.ccbuddy.syncWebRemoteControlTasks?.(tasks),
-    onWebRemoteControlReconnectWorkspace: (handler) =>
-      window.ccbuddy.onWebRemoteControlReconnectWorkspace?.(handler) ?? (() => {}),
+    syncRemoteWorkspaceSessions: (targets) => window.ccbuddy.syncRemoteWorkspaceSessions?.(targets),
     syncWindowUnreadCount: (count) => window.ccbuddy.syncWindowUnreadCount(count),
     syncActiveTaskSession: (sessionId) => window.ccbuddy.syncActiveTaskSession(sessionId),
     syncAppSettings: (patch) => window.ccbuddy.syncAppSettings?.(patch),
@@ -143,7 +136,8 @@ export function createDesktopPlatform(options: {
     onDesktopWindowChromeStateChanged: window.ccbuddy.onDesktopWindowChromeStateChanged
       ? (handler) => window.ccbuddy.onDesktopWindowChromeStateChanged!(handler)
       : undefined,
-    getWindowControlsOverlayMetrics: () => window.ccbuddy.getWindowControlsOverlayMetrics?.() ?? null,
+    getWindowControlsOverlayMetrics: () =>
+      window.ccbuddy.getWindowControlsOverlayMetrics?.() ?? null,
     onWindowControlsOverlayChanged: (handler) =>
       window.ccbuddy.onWindowControlsOverlayChanged?.(handler) ?? (() => {}),
     getDesktopZoomLevel: () =>
@@ -156,7 +150,8 @@ export function createDesktopPlatform(options: {
       window.ccbuddy.captureWindowScreenshot?.() ?? Promise.resolve(null),
     onUpdateReady: (callback) => window.ccbuddy.onUpdateReady(callback),
     onUpdateCheckResult: (callback) => window.ccbuddy.onUpdateCheckResult(callback),
-    onUpdateStateChanged: (callback) => window.ccbuddy.onUpdateStateChanged?.(callback) ?? (() => {}),
+    onUpdateStateChanged: (callback) =>
+      window.ccbuddy.onUpdateStateChanged?.(callback) ?? (() => {}),
     getUpdateState: () =>
       window.ccbuddy.getUpdateState?.() ?? Promise.resolve({ kind: "idle", enabled: true }),
     downloadUpdate: () => window.ccbuddy.downloadUpdate?.() ?? Promise.resolve(),
@@ -179,7 +174,8 @@ export function createDesktopPlatform(options: {
     onPostUpdateReleaseNotes: (callback) => window.ccbuddy.onPostUpdateReleaseNotes(callback),
     acknowledgePostUpdateReleaseNotes: (version) =>
       window.ccbuddy.acknowledgePostUpdateReleaseNotes(version),
-    skipUpdateVersion: (version) => window.ccbuddy.skipUpdateVersion?.(version) ?? Promise.resolve(),
+    skipUpdateVersion: (version) =>
+      window.ccbuddy.skipUpdateVersion?.(version) ?? Promise.resolve(),
     quitAndInstallUpdate: () => window.ccbuddy.quitAndInstallUpdate(),
     getInstalledEditors: () => window.ccbuddy.getInstalledEditors(),
     getApplicationIcon: (bundleId) =>

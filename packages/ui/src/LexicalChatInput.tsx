@@ -1459,8 +1459,7 @@ export function LexicalChatInput({
   const contentEditable = (
     <ContentEditable
       // Bugfix: mention node 使用固定行高的 inline-flex chip，普通正文如果继承浏览器 normal line-height，
-      // 在 token 后继续输入文字时会按不同 line box 计算基线；这里显式收口正文行高，并允许手机远控使用 16px 防止 iOS 聚焦放大。
-      className={`min-h-10 max-h-40 overflow-y-auto ${resolveMobileInputTextSizeClassName({
+            className={`min-h-10 max-h-40 overflow-y-auto ${resolveMobileInputTextSizeClassName({
         avoidIosInputFocusZoom,
       })} text-foreground outline-none`}
       data-testid={inputTestId}

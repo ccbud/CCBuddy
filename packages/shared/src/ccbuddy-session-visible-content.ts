@@ -93,7 +93,7 @@ export function getCCbuddyUserVisibleMessages(
     ) {
       // /goal 续跑、后台任务、子 agent、rewind 通知和 compact summary
       // 都是 runtime 注入给模型继续推理的上下文，不是用户真实 query；可见投影必须过滤，
-      // 避免快照/远控恢复时渲染成右侧用户气泡或挤占 timeline 位置。
+      // 避免快照/普通 Web 恢复时渲染成右侧用户气泡或挤占 timeline 位置。
       continue;
     }
     visibleMessages.push(message);

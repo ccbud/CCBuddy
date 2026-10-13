@@ -1,11 +1,4 @@
-/**
- * 设备标识符 —— renderer 进程内单例缓存
- *
- * 生成策略：
- * - 桌面端：使用 main 进程提供的 deviceMid（基于 userData 路径的 SHA-256，稳定且唯一）
- * - 手机端（Web 远程控制）：使用物理属性指纹（browserPlatform + screen.width/height + colorDepth），
- *   抗浏览器/网络/语言/时区变化，换手机才会变
- */
+
 import { createUuid } from "@ccbuddy/shared";
 
 let cachedStreamClientId: string | null = null;

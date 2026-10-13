@@ -145,8 +145,6 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
   taskListHasMore,
   taskListHasUnread = false,
   taskListLiveWorkflowCount = 0,
-  mobileActiveTaskKey,
-  isWebRemoteControl = false,
   onShowMoreTasks,
   reconnectingRemoteWorkspaceKeys,
   remoteWorkspaceErrorByWorkspaceKey,
@@ -177,8 +175,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
   taskListHasUnread?: boolean;
   /** 组内在跑的工作流 run 数；项目收起时在未读点旁画脉冲灯（>1 带数量）。 */
   taskListLiveWorkflowCount?: number;
-  mobileActiveTaskKey?: string | null;
-  isWebRemoteControl?: boolean;
+
   onShowMoreTasks: () => void;
   reconnectingRemoteWorkspaceKeys: string[];
   remoteWorkspaceErrorByWorkspaceKey: Record<string, string>;
@@ -256,7 +253,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
   const showRemoteSkillSyncAction = shouldShowRemoteSyncActions({
     remoteSessionId: tab.remoteSessionId,
     remoteTarget: tab.remoteTarget,
-    clientMode: isWebRemoteControl ? "web-remote-replayable" : "desktop-continuous",
+    clientMode: "desktop-continuous",
     hasLocalSourceService: Boolean(baseServices.skillSyncService),
   });
   // 远端工作区在“重连中”时，之前只有轻微背景呼吸效果，
@@ -1139,7 +1136,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
             showFooter={false}
             loading={taskListLoading}
             hasMore={taskListHasMore}
-            mobileActiveTaskKey={mobileActiveTaskKey}
+
             onShowMore={onShowMoreTasks}
             onRenameTask={handleRenameTask}
             onSetTaskPinned={handleSetTaskPinned}

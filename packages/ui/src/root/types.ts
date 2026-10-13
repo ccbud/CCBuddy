@@ -1,44 +1,9 @@
 import type {
   IPlatformService,
   UserInfo,
-  WebRemoteControlMobileNavigationIntent,
-  WebRemoteControlTaskTarget,
-  WebRemoteControlWorkspaceListResult,
-  WebRemoteControlWorkspaceSwitchOptions,
 } from "@ccbuddy/shared";
 import type { IServiceAccessor } from "@ccbuddy/services";
-import type { ReactNode } from "react";
 import type { CreateTaskRequest } from "@/app-shell/types.js";
-
-export type WebRemoteControlTerminalTransportState =
-  | "idle"
-  | "connecting"
-  | "authenticating"
-  | "waiting"
-  | "paired"
-  | "reconnecting"
-  | "suspended"
-  | "kicked"
-  | "error";
-
-export interface WebRemoteControlWorkspaceSwitcherApi {
-  listWorkspaces(): Promise<WebRemoteControlWorkspaceListResult>;
-  onWorkspaceListUpdated?(
-    listener: (result: WebRemoteControlWorkspaceListResult) => void,
-  ): () => void;
-  switchWorkspace(
-    workspaceKey: string,
-    options?: WebRemoteControlWorkspaceSwitchOptions,
-  ): Promise<void>;
-  /** 手机任务首页确认用户查看了当前 bridge 内的未读 task；桌面任务选择链路不使用。 */
-  markTaskRead?(task: WebRemoteControlTaskTarget): Promise<void>;
-  updateMobileViewState?(workspaceKey: string, taskId?: string): Promise<void>;
-  reconnectWorkspace?(workspaceKey: string): Promise<void>;
-  startDraft?(
-    workspaceKey: string,
-    options?: { mobileNavigationIntent?: WebRemoteControlMobileNavigationIntent },
-  ): Promise<void>;
-}
 
 export interface RootProps {
   services: IServiceAccessor;
@@ -71,18 +36,7 @@ export interface RootProps {
   supportsEmbeddedBrowser?: boolean;
   /** 是否启用远程工作区能力，Web 普通模式先只支持本地 server 工作区 */
   allowRemoteWorkspace?: boolean;
-  /** Web 远程控制模式下的已打开 workspace 切换入口 */
-  webRemoteControlWorkspaceSwitcher?: WebRemoteControlWorkspaceSwitcherApi;
-  /** Web 远控跨 workspace 点击任务后的单次移动端落点 */
-  initialWebRemoteControlMobileNavigationIntent?: WebRemoteControlMobileNavigationIntent;
-  /** Web 远控没有可 bridge workspace 时，手机首页预先拿到的 workspace/task 列表 */
-  initialWebRemoteControlWorkspaceList?: WebRemoteControlWorkspaceListResult;
-  /** Web 远控手机端 relay terminal transport 状态，用于已进入页面后的轻量恢复提示 */
-  webRemoteControlTerminalTransportState?: WebRemoteControlTerminalTransportState;
-  /** 手机 Web 远控初始 workspace 注入前继续展示的入口 loading，桌面端不使用 */
-  initialWorkspaceLoadingFallback?: ReactNode;
-  /** Web 远程控制入口能力开关；默认只在 development 启用 */
-  webRemoteControlFeatureEnabled?: boolean;
+
   /** Assistant code-comment 卡片灰度；默认关闭，关闭时保留原始 directive。 */
   assistantCodeCommentCardsEnabled?: boolean;
 }
@@ -92,7 +46,7 @@ export interface WorkspaceSettingsLayerProps {
   isDesktop?: boolean;
   isMacDesktop?: boolean;
   isWindowsDesktop?: boolean;
-  isWebRemoteControl?: boolean;
+
   windowsWindowControlsRightPaddingPx?: number;
   captionWorkspacePath?: string | null;
   onBack?: () => void;

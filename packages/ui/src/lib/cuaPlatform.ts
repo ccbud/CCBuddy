@@ -1,13 +1,5 @@
 import type { IPlatformService } from "@ccbuddy/shared";
 
-// macOS 才具备 TCC 权限、授权引导和 Helper 状态轮询；Windows 本地桌面仅复用
-// ccbuddy-cua 插件总开关，不读取 TCC 或 Helper 状态。Linux、普通 Web 和手机远控不展示电脑控制设置。
-// 因此权限弹窗、预检和 Helper 状态轮询都必须先判定本地是 macOS desktop。
-// 用 navigator.userAgent 判定，并显式排除 iOS（iPhone/iPad 的 UA 含 Macintosh 子串）。
-//
-// 由模块级常量改为惰性函数。原常量在模块 import 时求值，导致按 UA 分支的单测
-// 无法在同一进程内覆盖多平台（改 navigator.userAgent 对已求值的常量无效）。运行时行为等价——
-// 真实环境里 UA 不会中途变化。
 function isMacOsDesktopUserAgent(): boolean {
   return (
     typeof navigator !== "undefined" &&

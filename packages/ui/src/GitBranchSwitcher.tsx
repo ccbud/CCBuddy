@@ -55,7 +55,7 @@ interface GitBranchSwitcherProps {
   popoverClassName?: string;
   branchListClassName?: string;
   markAsWorkspaceHeaderBranch?: boolean;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
   popoverSide?: "top" | "bottom" | "left" | "right";
   avoidPopoverCollisions?: boolean;
   showFooterActions?: boolean;
@@ -71,7 +71,7 @@ export function GitBranchSwitcher({
   popoverClassName,
   branchListClassName,
   markAsWorkspaceHeaderBranch = false,
-  compactForRemoteControl = false,
+  compactLayout = false,
   popoverSide = "top",
   avoidPopoverCollisions = true,
   showFooterActions = true,
@@ -212,8 +212,7 @@ export function GitBranchSwitcher({
               })}
               className={cn(
                 "min-w-0 rounded-full text-ui-base/relaxed",
-                // Bugfix: 手机远控聊天页底部空间很窄，分支名会挤压输入工具栏；远控模式只保留图标入口。
-                compactForRemoteControl
+                                compactLayout
                   ? "size-8 px-0"
                   : "max-w-full pl-3 pr-2",
                 triggerClassName,
@@ -223,7 +222,7 @@ export function GitBranchSwitcher({
                 data-branch-switcher-primary-icon="true"
                 className="size-4 text-foreground-subtle"
               />
-              {!compactForRemoteControl ? (
+              {!compactLayout ? (
                 <>
                   <span className="min-w-0 max-w-25 truncate text-left">{triggerLabel}</span>
                   {loadingBranches || mutationPending ? (

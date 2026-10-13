@@ -60,7 +60,7 @@ function isTruthyRuntimeEnvOverride(name: string): boolean {
 
 // e2e 运行的是生产构建，默认会和本机正式版 CCbuddy 共用 app name / userData，
 // 触发 Electron 单实例锁后只激活已有窗口，Chromedriver 无法接管测试进程。
-// 这里允许测试显式隔离运行时身份，正常桌面/远控路径保持原来的默认值。
+// 这里允许测试显式隔离运行时身份，正常桌面路径保持原来的默认值。
 export const runtimeApplicationName =
   readRuntimeEnvOverride("CCBUDDY_DESKTOP_APPLICATION_NAME") ??
   (isLocalDevelopmentRuntime

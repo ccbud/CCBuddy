@@ -240,7 +240,7 @@ export async function createCCbuddyApp(options: CCbuddyAppOptions): Promise<CCbu
     });
     // 随 CLI 内置的技能包（dynamic-workflows 等）：不属于任何插件，用户无法停用或卸载。
     const bundledSkillRoots = resolveBundledSkillRoots({ cliStorageRoot, logger });
-    const pluginTemplates = loadPluginAgentTemplates({ logger, plugins: pluginOutcome.plugins });
+    const pluginTemplates = await loadPluginAgentTemplates({ logger, plugins: pluginOutcome.plugins });
     const pluginSubagentProfiles =
       hostSubagentSnapshot?.kind === "built-in-fallback"
         ? []

@@ -84,6 +84,7 @@ export {
   getCCbuddyDataRootDir,
   getConversationWorkspaceDir,
   getAppConfigDir,
+  getWorkspaceAppConfigDir,
   getExportLogStageDir,
   getExportLogDir,
   getFeedbackRootDir,
@@ -2140,7 +2141,7 @@ export function createLocalServices(options: {
       : {
           sessionRuntimePreferencesAuthority: "local" as const,
           resolveSessionRuntimePreferences: async (scope) => {
-            // 预算已统一，不能把可选远端配置作为本地/手机 shared-host 建会话的前置条件。
+            // 预算已统一，不能把可选远端配置作为本地/Web shared-host 建会话的前置条件。
             const settings = await settingService.get();
             const modelContextBudgetStrategy = DEFAULT_CCBUDDY_MODEL_CONTEXT_BUDGET_STRATEGY;
             return {

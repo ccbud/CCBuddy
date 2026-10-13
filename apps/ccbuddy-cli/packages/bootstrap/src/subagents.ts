@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { migrateUserSubagentMarkdown, migrateSubagentStateFile } from "@ccbuddy/shared/node";
 import {
@@ -14,7 +15,6 @@ import {
   parsePluginSubagentModelSelectionOverrides,
   modelSelectionSchema,
   type BuiltInSubagentModelSelectionOverrides,
-  type BuiltInSubagentName,
   type PluginSubagentModelSelectionOverrides,
 } from "@ccbuddy/shared";
 
@@ -127,26 +127,37 @@ function sanitizeProjectAgentProfile(profile: AgentProfile): AgentProfile {
   return safeProfile;
 }
 
-export function loadPluginAgentProfiles(
-  input: LoadPluginAgentProfilesInput,
-): LoadCCbuddyAgentProfilesResult {
+export async function loadPluginAgentTemplates(
+  input: Pick<LoadPluginAgentProfilesInput, "plugins" | "logger">,
+): Promise<{ profiles: ParsedPluginAgentProfile[]; diagnostics: AgentProfileParseDiagnostic[] }> {
   const diagnostics: AgentProfileParseDiagnostic[] = [];
   const parsedProfiles: ParsedPluginAgentProfile[] = [];
-  const reservedProfileNames = new Set([
-    ...RESERVED_AGENT_NAMES,
-    ...(input.reservedProfileNames ?? []),
-  ]);
-
   for (const plugin of input.plugins) {
     if (!plugin.enabled) continue;
     const agents = plugin.components.find((group) => group.kind === "agent")?.items ?? [];
     for (const agent of agents) {
       const filePath = join(plugin.rootPath, "agents", `${agent.name}.md`);
-      const result = parsePluginAgentProfile({ filePath, logger: input.logger, plugin });
+      const result = await parsePluginAgentProfile({ filePath, logger: input.logger, plugin });
       if (result.diagnostic) diagnostics.push(result.diagnostic);
       if (result.parsed) parsedProfiles.push(result.parsed);
     }
   }
+
+  return { profiles: parsedProfiles, diagnostics };
+}
+
+export function resolvePluginAgentProfiles(
+  input: LoadPluginAgentProfilesInput,
+  templates: Awaited<ReturnType<typeof loadPluginAgentTemplates>>,
+): LoadCCbuddyAgentProfilesResult {
+  // 修复：启动已采用模板/快照分离接口，旧 loader 只有一次性解析，既缺导出也无法刷新模型覆盖。
+  // 磁盘模板只在启动时读取；Host 的新快照通过纯解析得到独立 profiles，不污染上一份或原模板。
+  const diagnostics = [...templates.diagnostics];
+  const parsedProfiles = templates.profiles;
+  const reservedProfileNames = new Set([
+    ...RESERVED_AGENT_NAMES,
+    ...(input.reservedProfileNames ?? []),
+  ]);
 
   const bareNameCounts = countBareProfileNames(parsedProfiles);
   const profiles: AgentProfile[] = [];
@@ -192,13 +203,19 @@ export function loadPluginAgentProfiles(
   };
 }
 
-function parsePluginAgentProfile(input: {
+export async function loadPluginAgentProfiles(
+  input: LoadPluginAgentProfilesInput,
+): Promise<LoadCCbuddyAgentProfilesResult> {
+  return resolvePluginAgentProfiles(input, await loadPluginAgentTemplates(input));
+}
+
+async function parsePluginAgentProfile(input: {
   filePath: string;
   logger?: Logger;
   plugin: PluginMetadata;
-}): { diagnostic?: AgentProfileParseDiagnostic; parsed?: ParsedPluginAgentProfile } {
+}): Promise<{ diagnostic?: AgentProfileParseDiagnostic; parsed?: ParsedPluginAgentProfile }> {
   try {
-    const content = readFileSync(input.filePath, "utf8");
+    const content = await readFile(input.filePath, "utf8");
     const result = parseAgentProfileFromMarkdown({
       content,
       path: input.filePath,

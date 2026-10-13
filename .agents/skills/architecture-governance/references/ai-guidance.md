@@ -10,7 +10,7 @@ Architecture governance is a pre-code decision protocol. Apply the rows relevant
 | Layer    | Which layer owns the new code, and which direction may imports travel?                                        |
 | Reuse    | Which existing path already performs part of this work, and why is a new path necessary?                      |
 | Time     | What is the event order, idempotency key, stale-result rule, and retry boundary?                              |
-| Remote   | Does this preserve desktop continuous delivery and mobile replayable recovery separately?                     |
+| Remote   | Does this preserve desktop continuous delivery and ordinary Web/SSH replayable recovery separately?           |
 | Context  | Which contracts, specs, and tests are sufficient for the agent to work without reading whole implementations? |
 
 The agent should reject these shapes during design:
@@ -20,7 +20,7 @@ The agent should reject these shapes during design:
 - a new cache, event bus, adapter, or helper that duplicates an existing path;
 - a domain object importing filesystem, process, network, timer, or platform APIs;
 - a cross-module deep import added only to avoid defining a contract;
-- a remote stream change that mixes desktop `continuous` and mobile `replayable` semantics;
+- a remote stream change that mixes desktop `continuous` and ordinary Web/SSH `replayable` semantics;
 - a broad refactor that changes unrelated modules without an explicit migration boundary.
 
 For stateful or cross-boundary changes, capture the relevant decisions in the existing spec/contract or patch description; omit fields that do not apply:

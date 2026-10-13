@@ -382,7 +382,7 @@ export interface ICCbuddyTaskService {
     expectedForegroundExecutionId?: string;
   }): Promise<void>;
 
-  /** 执行 agent 内建 /compact 命令；手机 replayable 仍经 shared host 路由。 */
+  /** 执行 agent 内建 /compact 命令；普通 Web replayable 仍经共享 Host 路由。 */
   compactSession(params: {
     taskId: string;
     workspacePath?: string;
@@ -579,7 +579,7 @@ export interface ICCbuddyTaskService {
     refId: string;
   }): Promise<CCbuddyTaskSnapshotRefContent | null>;
 
-  /** 按 message + 下标范围补拉 tools 切片，用于远控首屏按条数裁剪后的增量加载。 */
+  /** 按 message + 下标范围补拉 tools 切片，用于快照首屏按条数裁剪后的增量加载。 */
   getTaskSnapshotToolCallsSlice(params: {
     taskId: string;
     workspacePath: string;

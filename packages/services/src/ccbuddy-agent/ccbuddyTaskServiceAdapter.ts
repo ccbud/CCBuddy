@@ -268,7 +268,7 @@ export function createCCbuddyTaskServiceAdapter(
   options: CreateCCbuddyTaskServiceAdapterOptions,
 ): ICCbuddyTaskService {
   // Bot 原来绕过连接 facade，导致真实附件 admission 缺少可信身份；复用既有 scope，
-  // 同一 Bot 接入的附件、命令及对账共用连接，不改变桌面与手机各自的传输模式。
+  // 同一 Bot 接入的附件、命令及对账共用连接，不改变桌面与Web 客户端各自的传输模式。
   const botConnectionScopes = new Map<string, ReturnType<typeof createCCbuddyAgentConnectionScope>>();
   function botAgent(workspace: CCbuddyAgentWorkspaceTarget) {
     const key = JSON.stringify([resolveWorkspaceKey(workspace), workspace.remoteSessionId ?? ""]);
@@ -397,12 +397,12 @@ export function createCCbuddyTaskServiceAdapter(
     const key = taskKey(params);
     const activeRunId = activePromptInputIds.get(key);
     if (!activeRunId) {
-      // 手机端 owner command 到达 host 时，task 可能已经终态收口。
+      // Web 客户端 owner command 到达 host 时，task 可能已经终态收口。
       // 没有 active run 时不能再把旧 command 写入 host 队列，否则会在桌面 shared host 上误发旧输入。
       throw createTaskOwnerCommandError("No active task owner.", "NO_ACTIVE_TASK_OWNER");
     }
     if (activeRunId !== ownerRunId) {
-      // ownerRunId 是远控请求的 stale 防护边界。
+      // ownerRunId 是跨连接 owner 请求的 stale 防护边界。
       // 旧 run 的 enqueue/promote 不能修改当前 task command queue。
       throw createTaskOwnerCommandError("Stale task owner command.", "STALE_TASK_OWNER_COMMAND");
     }
@@ -449,7 +449,7 @@ export function createCCbuddyTaskServiceAdapter(
       if (params.attachments?.length) {
         // 遗留（附件命令面）：v4 sendText 的 attachments 是 attachmentRef 引用模型，
         // 上传/寄存命令面尚未建模（CLI 侧 fork-edit-retry.ts 同款裁决“附件命令面后续”）。
-        // 带附件输入保留旧 session/send，避免手机 replayable 图片/文件输入回归；
+        // 带附件输入保留旧 session/send，避免Web replayable 图片/文件输入回归；
         // 过渡归宿 = v4 附件命令面（届时由 v4 sendText 承接）。
         await options.ccbuddyAgentService.sendPrompt({
           workspacePath: target.workspacePath,
@@ -611,8 +611,8 @@ export function createCCbuddyTaskServiceAdapter(
     if (!command) {
       return;
     }
-    // 手机 host command 在 sendPrompt ACK 后仍要保持 running，
-    // 否则手机刷新拿不到“已开始发送”的 pendingCommands。只有真实终态到达后才能从 host 队列移除。
+    // Web host command 在 sendPrompt ACK 后仍要保持 running，
+    // 否则Web 客户端刷新拿不到“已开始发送”的 pendingCommands。只有真实终态到达后才能从 host 队列移除。
     removeRuntimeCommand(params, command.commandId);
     logger.info(command.traceId, "CCbuddy task command 终态收口", {
       commandId: command.commandId,
@@ -668,7 +668,7 @@ export function createCCbuddyTaskServiceAdapter(
         ...turnAttributionOf(
           runningCommand.automationId ? { automationId: runningCommand.automationId } : {},
         ),
-        // v4 sendText 信封保留手机提交端 clientId（pendingCommands 展示与幂等表按提交端区分）。
+        // v4 sendText 信封保留Web 提交端 clientId（pendingCommands 展示与幂等表按提交端区分）。
         clientId: runningCommand.clientId,
         logReason: "host-command-drain",
       });
@@ -1186,7 +1186,7 @@ export function createCCbuddyTaskServiceAdapter(
       workspacePath: params.workspacePath,
       workspaceIdentity: params.workspaceIdentity,
       sessionId: params.taskId,
-      // replayable 手机端恢复仍经 task adapter，但 stale model guard 在
+      // replayable Web 客户端恢复仍经 task adapter，但 stale model guard 在
       // session resume 内执行；这里带上当前 UI 模型，避免只保护 desktop continuous 主链路。
       model: params.model ? parseModelPickerValue(params.model) : undefined,
       ...(thoughtLevel ? { thoughtLevel } : {}),
@@ -1332,7 +1332,6 @@ export function createCCbuddyTaskServiceAdapter(
           pendingCommands: runtimeCommands.get(taskKey(params)) ?? [],
         },
       };
-      legacySnapshotTaskKeys.add(taskKey(params));
       rememberIndexedTaskMeta(snapshot.meta);
       return snapshot;
     } catch (error) {
@@ -1349,6 +1348,8 @@ export function createCCbuddyTaskServiceAdapter(
   > {
     try {
       const snapshot = await resumeSnapshot(params);
+      // 只读保护只属于没有 CLI session 的历史；真实 owner 恢复成功后必须允许继续订阅。
+      legacySnapshotTaskKeys.delete(taskKey(params));
       return {
         kind: "session",
         snapshot: await repairEmptyImportedClaudeSnapshot(params, snapshot),
@@ -1385,6 +1386,8 @@ export function createCCbuddyTaskServiceAdapter(
               })),
             },
           });
+          // 旧快照升级成功后已有真实 CLI owner。若保留只读标记，桌面/Web继续执行会丢失正文和终态。
+          legacySnapshotTaskKeys.delete(taskKey(params));
           const meta = await syncTaskIndexSnapshot(snapshot);
           await syncTaskIndexMeta({ ...meta, migrationSource: "claudeCode" });
           logger.info(
@@ -1405,6 +1408,7 @@ export function createCCbuddyTaskServiceAdapter(
         `CCbuddy Protocol session 缺失，已按 legacy task snapshot 恢复 taskId=${params.taskId}`,
         error,
       );
+      legacySnapshotTaskKeys.add(taskKey(params));
       return { kind: "legacy", snapshot: legacySnapshot };
     }
   }
@@ -1436,7 +1440,7 @@ export function createCCbuddyTaskServiceAdapter(
               ...(snapshot.projection.lastError.detail
                 ? { detail: snapshot.projection.lastError.detail }
                 : {}),
-              // service snapshot 是 mobile replayable/cold task meta 的来源，不能
+              // service snapshot 是 Web replayable/cold task meta 的来源，不能
               // 让它与 UI 直接投影的 lastError 产生归因漂移。
               ...(snapshot.projection.lastError.attribution
                 ? { attribution: snapshot.projection.lastError.attribution }
@@ -1707,7 +1711,7 @@ export function createCCbuddyTaskServiceAdapter(
           undefined,
         pendingPermissions,
         backgroundBashJobs: backgroundTaskControls,
-        // 手机 replayable 快照需要用空数组表达“用户输入队列已清空”。
+        // Web replayable 快照需要用空数组表达“用户输入队列已清空”。
         // desktop-continuous 主链路仍保持原投影形态，避免把 replayable 的集合恢复语义扩散过去。
         ...(pendingElicitations.length > 0 || options?.includeEmptyPendingElicitations
           ? { pendingElicitations }
@@ -1850,7 +1854,7 @@ export function createCCbuddyTaskServiceAdapter(
     const activeInputId = activePromptInputIds.get(key);
     completeRuntimeCommandByInputId(params, activeInputId, event.reason);
     // prompt_completed/prompt_failed 由 agent server 在释放 activeAbortController 后发出。
-    // 手机 host command queue 以它作为“下一条可以发送”的 ready 边界，避免 fixed delay 重试，
+    // Web host command queue 以它作为“下一条可以发送”的 ready 边界，避免 fixed delay 重试，
     // 也不改变桌面 continuous 的 renderer-local queue。
     activePromptInputIds.delete(key);
     scheduleRuntimeCommandDrain(params, "session-ready");
@@ -1934,7 +1938,7 @@ export function createCCbuddyTaskServiceAdapter(
           if (requestedSelection) {
             if (!sameModelSelection(snapshot.settings.model.current, requestedSelection)) {
               // replayable 首发复用 draft session 时，draft 可能仍停在预热时的旧模型。
-              // 复用前必须同步 UI 当前模型，否则手机远控首发会显示新模型但真实请求仍用旧模型。
+              // 复用前必须同步 UI 当前模型，否则普通 Web 首发会显示新模型但真实请求仍用旧模型。
               snapshot = await options.ccbuddyAgentService.setModel({
                 ...target,
                 sessionId: draftSessionId,
@@ -1947,7 +1951,7 @@ export function createCCbuddyTaskServiceAdapter(
             snapshot.settings.thoughtLevel.current !== requestedSelection.options.reasoningLevel
           ) {
             // replayable 首发复用 draft session 时也必须以 UI 当前 thought_level 为准。
-            // 否则手机远控可能复用旧 draft session，导致首发请求沿用过期推理强度。
+            // 否则普通 Web 可能复用旧 draft session，导致首发请求沿用过期推理强度。
             snapshot = await options.ccbuddyAgentService.setThoughtLevel({
               ...target,
               sessionId: draftSessionId,
@@ -1958,9 +1962,9 @@ export function createCCbuddyTaskServiceAdapter(
           if (!isSessionMissingError(error)) {
             throw error;
           }
-          // 手机端草稿 session 和桌面一样只存在 agent runtime 内存里。
+          // Web 客户端草稿 session 和桌面一样只存在 agent runtime 内存里。
           // 远端重连/agent 重启后旧 draftSessionId 可能失效；首发消费点降级新建，避免用户卡死。
-          logger.warn(undefined, "手机 replayable draft session 已失效，降级创建新 task", {
+          logger.warn(undefined, "Web replayable draft session 已失效，降级创建新 task", {
             draftSessionId,
             workspaceIdentity: target.workspaceIdentity ?? null,
             workspacePath: target.workspacePath,
@@ -2025,7 +2029,7 @@ export function createCCbuddyTaskServiceAdapter(
                 }
               : {}),
             // Bugfix: replayable task facade 创建 session 时同样会启动 runtime；
-            // 之前这里丢掉 mcpServers，导致手机远控路径和 desktop-continuous 的 MCP 行为不一致。
+            // 之前这里丢掉 mcpServers，导致普通 Web 路径和 desktop-continuous 的 MCP 行为不一致。
             mcpServers,
           });
         }
@@ -2048,8 +2052,8 @@ export function createCCbuddyTaskServiceAdapter(
         workspaceIdentity: meta.workspaceIdentity,
       });
       emitWorkspaceConfig(target, snapshot.settings);
-      // 手机端通过 shared-host 创建 task 时，桌面 renderer 没有本地乐观插入。
-      // create 事件必须保留 task_created 语义，否则 UI 会按普通 meta 事件只重排已存在项，远控首页就拿不到新任务。
+      // Web 客户端通过 shared-host 创建 task 时，桌面 renderer 没有本地乐观插入。
+      // create 事件必须保留 task_created 语义，否则 UI 会按普通 meta 事件只重排已存在项，普通 Web 列表就拿不到新任务。
       emitWorkspaceTaskListChanged(target, meta, "task_created");
       // task 创建结果需要携带 agent 协议快照里的命令列表；否则 replayable 首屏会覆盖为空。
       return {
@@ -2336,13 +2340,13 @@ export function createCCbuddyTaskServiceAdapter(
         type: "send_prompt",
         content: params.content,
         attachments: params.attachments,
-        // manual run / 手机 replayable 的 prompt 可能先进入 host command queue；
+        // manual run / Web replayable 的 prompt 可能先进入 host command queue；
         // 若这里丢 automationId，drain 时会按普通用户输入发送，CronCreate 会重新暴露。
         automationId: params.automationId,
       };
       const key = taskKey(params);
       runtimeCommands.set(key, [...(runtimeCommands.get(key) ?? []), command]);
-      // 手机 replayable host command 被 accepted 后，前端本地 drain 会主动跳过 hostCommand。
+      // Web replayable host command 被 accepted 后，前端本地 drain 会主动跳过 hostCommand。
       // 因此 host 需要在当前 task 已空闲时自行触发消费；桌面 continuous 不调用该入口，不会受影响。
       scheduleRuntimeCommandDrain(params, "enqueue");
       return { accepted: true, command };
@@ -2405,7 +2409,7 @@ export function createCCbuddyTaskServiceAdapter(
           status: command.status,
         };
       }
-      // 手机 replayable 队列的事实源在 host runtime command queue。
+      // Web replayable 队列的事实源在 host runtime command queue。
       // 删除按钮不能只清 renderer 本地 store，否则下一次 snapshot 会把已 accepted 的命令恢复回来。
       setRuntimeCommands(
         params,
@@ -2633,7 +2637,7 @@ export function createCCbuddyTaskServiceAdapter(
       assertV4CommandAckOk("resolveInteraction", ack, `elicitation ${params.requestId}`);
       if (params.clientMode === "web-remote-replayable") {
         // 语义保真（原 agentService.respondUserInput 的 web-remote-replayable 分支）：
-        // 手机远控应答后，桌面/其它 observer 需要显式响应事件清理同一 requestId 的弹窗；
+        // 普通 Web 应答后，桌面/其它 observer 需要显式响应事件清理同一 requestId 的弹窗；
         // v4 命令路径不再经过旧 respondUserInput，这里由 adapter 本地补投同一事件。
         emitTaskEvent(
           target,
@@ -2895,7 +2899,7 @@ export function createCCbuddyTaskServiceAdapter(
         taskId: params.taskId,
         workspacePath: params.workspacePath,
         workspaceIdentity: params.workspaceIdentity,
-        // 手机 replayable 首屏 snapshot 会先于后续 resumeTask 读取。
+        // Web replayable 首屏 snapshot 会先于后续 resumeTask 读取。
         // 这里必须把 task meta 解析出的历史模型和 thoughtLevel 传进 session/resume，
         // 避免冷恢复用 workspace/draft 默认配置污染 context window 与思考强度。
         model,
@@ -3320,7 +3324,7 @@ export function createCCbuddyTaskServiceAdapter(
 
     async getTaskTokenUsage(params): Promise<CCbuddyTaskTokenUsageResult> {
       // 摘要面板需要展示 task 的累计模型消耗，不能复用 usage_update 的 context window。
-      // 这里通过 CCbuddy Protocol 读 agent SQLite 的 model_usage 聚合，保持桌面和远控同一事实源。
+      // 这里通过 CCbuddy Protocol 读 agent SQLite 的 model_usage 聚合，保持桌面和普通 Web 同一事实源。
       return options.ccbuddyAgentService.getTaskTokenUsage({
         workspacePath: params.workspacePath,
         workspaceIdentity: params.workspaceIdentity,
@@ -3345,7 +3349,7 @@ export function createCCbuddyTaskServiceAdapter(
       // task_meta_changed 只会重拉普通 membership，不能表达持久删除语义；
       // sessions-index 后续仍会返回 CLI 中保留的 session，必须用 task_deleted 让 UI
       // 立即移除缓存并换代 deleted tombstone join，避免重启或 live upsert 后复活。
-      // 同时携带 meta，让桌面/远控的重复订阅能按同一事件去重 membership bump。
+      // 同时携带 meta，让桌面/普通 Web 的重复订阅能按同一事件去重 membership bump。
       emitWorkspaceTaskListChanged(params, meta, "task_deleted");
     },
 
@@ -3493,7 +3497,7 @@ export function createCCbuddyTaskServiceAdapter(
           workspaceIdentity: params.workspaceIdentity,
           expectedUnreadAt: params.expectedUnreadAt,
         });
-        // 旧手机点击可能晚于新的终态未读到达。CAS 未命中时必须把
+        // 旧 Web 客户端点击可能晚于新的终态未读到达。CAS 未命中时必须把
         // service overlay 对账到当前 meta，不能先乐观清除后留下 renderer-only 已读状态。
         setOverlay(params, { unreadAt: result.meta.unreadAt });
         if (result.cleared) {
@@ -3586,7 +3590,7 @@ export function createCCbuddyTaskServiceAdapter(
         // 最后消费点（replayable/bots 的 stream 投影源）。写路径（send/stop/交互回执）
         // 本波已收敛 v4 命令；读路径消费方是 bots handleStreamEvent（10 种事件词表）与
         // host 镜像 taskRealtimePort（词表同为 CCbuddyStreamEvent），二者换 v4 帧 = relay
-        // 协议 + 手机 store + bots 投影整波重做（且 ui/store 本波由并行 agent 主修，避让）。
+        // 协议 + Web store + bots 投影整波重做（且 ui/store 本波由并行 agent 主修，避让）。
         // 死期改判 = replayable 读路径 v4 store 波次（波次 3），与 host/index.ts 镜像、
         // mapStateUpdated/mapServiceEvent、agentService.onDynamicSessionEvent 同批摘除。
         const upstreamDisposable = options.ccbuddyAgentService.onDynamicSessionEvent({
@@ -3740,7 +3744,7 @@ function limitTaskSnapshotMessages(
   return {
     ...snapshot,
     messages: history.truncatedBefore ? snapshot.messages.slice(-limit) : snapshot.messages,
-    // 手机 replayable 首屏为了性能只拿尾部窗口。
+    // Web replayable 首屏为了性能只拿尾部窗口。
     // UI 不能再用“返回条数是否等于 limit”猜测是否还有更早历史，因为短尾部终态快照也可能是裁剪窗口。
     history,
   };
@@ -3983,7 +3987,7 @@ function backgroundTaskNotificationToolUpdateFromInput(params: {
     status,
     content: parsed.notification.result ?? parsed.notification.summary,
     // replayable 动态事件也必须把 notification error 放到标准 tool error，
-    // 否则手机远控与桌面 continuous 的失败详情会产生分叉。
+    // 否则普通 Web 与桌面 continuous 的失败详情会产生分叉。
     ...(status === "failed" && parsed.notification.error
       ? { error: parsed.notification.error }
       : {}),
@@ -4231,7 +4235,7 @@ function mapToolPart(
   const state = part.state;
   const taskNotification = backgroundTaskNotifications?.get(part.callId);
   // CCbuddy Protocol 的 part.callId 是实时流和终态 snapshot 共同的工具身份。
-  // 以前只保存 metadata 会丢掉 toolCallId，手机 replayable 里 result-only 临时工具就无法被终态快照覆盖。
+  // 以前只保存 metadata 会丢掉 toolCallId，Web replayable 里 result-only 临时工具就无法被终态快照覆盖。
   const raw = attachCCbuddyBackgroundTaskNotificationToRaw(
     attachToolCallIdToRaw("metadata" in state ? (state.metadata ?? state) : state, part.callId),
     taskNotification,

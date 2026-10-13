@@ -35,6 +35,8 @@ export function buildToolInputResolutionContext(
   const workingDirectory = deps.getWorkingDirectory?.();
   return {
     ...(workingDirectory === undefined ? {} : { workingDirectory }),
+    // 合并时曾漏传 identity，导致确认前读到其他逻辑 workspace；两次解析必须与 handler 同源。
+    ...(deps.workspaceIdentity === undefined ? {} : { workspaceIdentity: deps.workspaceIdentity }),
     runtimeTaskRegistry: deps.runtimeTaskRegistry,
     ...(deps.dynamicWorkflowRunPort === undefined
       ? {}

@@ -40,7 +40,7 @@ import {
   deriveLogicalUiInstances,
   getPluginUiDisclosureVersion,
   getPluginUiManualPin,
-  setPluginUiInstanceDerivation,
+  usePluginUiTimelineViewState,
   subscribePluginUiDisclosure,
   type PluginUiRowPinResolver,
 } from "@/plugin-ui/index.js";
@@ -262,8 +262,8 @@ function getUnitHeightCacheKey(unit: ConversationTurnRenderUnit | undefined): st
 
 export interface ConversationTimelineProps {
   rows: readonly ConversationRow[];
-  /** 手机远控窄屏允许整条会话 flex 链按抽屉宽度收缩；桌面布局保持原样。 */
-  compactForRemoteControl?: boolean;
+
+  compactLayout?: boolean;
   /** CLI 权威 queue 中等待 model-step 注入的 guide；只改变 renderer 落位。 */
   pendingGuides?: readonly QueueItem[];
   /** runtime memory 状态，只交给当前 live turn，不进入历史虚拟列表。 */
@@ -367,7 +367,7 @@ export interface ConversationTimelineProps {
  */
 function ConversationTimelineImpl({
   rows,
-  compactForRemoteControl = false,
+  compactLayout = false,
   pendingGuides = EMPTY_PENDING_GUIDES,
   apiRetry = null,
   totalCount,
@@ -433,9 +433,7 @@ function ConversationTimelineImpl({
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   // 插件卡片展示模型——同资源替代 + 最近三回合自动展开 + 手动固定；推导结果发布给卡片自己读。
   const pluginUiDerivation = useMemo(() => deriveLogicalUiInstances(rows), [rows]);
-  useEffect(() => {
-    setPluginUiInstanceDerivation(sessionKey, pluginUiDerivation);
-  }, [pluginUiDerivation, sessionKey]);
+  const pluginUiSessionKey = usePluginUiTimelineViewState(pluginUiDerivation);
   const pluginUiDisclosureVersion = useSyncExternalStore(
     subscribePluginUiDisclosure,
     getPluginUiDisclosureVersion,
@@ -446,9 +444,12 @@ function ConversationTimelineImpl({
     void pluginUiDisclosureVersion;
     return (toolCallId) => ({
       disposition: pluginUiDerivation.byToolCallId[toolCallId],
-      manualPinned: getPluginUiManualPin(sessionKey, toolCallId),
+      manualPinned:
+        pluginUiSessionKey === null
+          ? undefined
+          : getPluginUiManualPin(pluginUiSessionKey, toolCallId),
     });
-  }, [pluginUiDerivation, sessionKey, pluginUiDisclosureVersion]);
+  }, [pluginUiDerivation, pluginUiSessionKey, pluginUiDisclosureVersion]);
   const topicPreparations = useBotTopicPreparations();
   const renderUnits = useMemo(
     () =>
@@ -647,8 +648,7 @@ function ConversationTimelineImpl({
     if (!element) return;
 
     // rail 改由 CSS container query 隐藏后，完整历史补拉失去了同一宽度
-    // 资格边界，手机远控与窄分屏也会请求全部 rows。这里仅同步只读分页资格；
-    // rail 的显隐、占位与过渡仍完全由 CSS 裁决，不恢复 composer 几何测量。
+        // rail 的显隐、占位与过渡仍完全由 CSS 裁决，不恢复 composer 几何测量。
     const commitWidth = (width: number) => {
       const normalizedWidth = Math.max(0, Math.round(width));
       setTurnNavigatorContainerWidthPx((current) =>
@@ -1841,7 +1841,7 @@ function ConversationTimelineImpl({
   return (
     <div
       ref={timelineRootRef}
-      className={cn("relative flex min-h-0 flex-1 flex-col", compactForRemoteControl && "min-w-0")}
+      className={cn("relative flex min-h-0 flex-1 flex-col", compactLayout && "min-w-0")}
     >
       {selectionActions ? (
         <ConversationSelectionTooltip
@@ -1905,7 +1905,7 @@ function ConversationTimelineImpl({
           // 分享选择面板展开时改为 overflow-hidden：scrollTop 与 scrollbar-gutter 都保持不变，
           // 但原生滚动条、滚轮和键盘翻页都不再能移动背景，勾选目标不会漂走。
           backgroundScrollLocked && "!overflow-y-hidden",
-          compactForRemoteControl && "min-w-0",
+          compactLayout && "min-w-0",
           // 修复原因：Conversation turn map 覆盖 timeline 左侧 48px；表格增强滚动如果仍按
           // 普通 16px 边距借位，会有 32px 落到 turn map 下方，必须把完整占用计入左边界。
           turnNavigatorQueryRowIds.size >= 2 &&

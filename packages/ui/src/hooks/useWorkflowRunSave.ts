@@ -39,7 +39,7 @@ export interface WorkflowRunSaveHost extends WorkflowRunSaveTarget {
   runId: string;
   /** 转写自对话的候选（`buildWorkflowSaveCandidatesByRunId`）。 */
   candidates?: readonly CCbuddyWorkflowsForRunCandidate[];
-  /** 启动成功后切到新会话；缺席即宿主不会导航（手机远控首页、静态渲染）。 */
+
   onNavigateToRun?: (target: SavedWorkflowLaunchTarget, sessionId: string) => void;
 }
 

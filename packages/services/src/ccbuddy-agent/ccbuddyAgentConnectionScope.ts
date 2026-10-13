@@ -66,7 +66,7 @@ export function readTrustedCCbuddyAgentV4UnsubscribeRoute(
 
 /**
  * 该字段只在 host facade → base/remote service proxy 之间传递；facade 会覆盖所有
- * UI 入参中的同名字段，因此 renderer/mobile 不能伪造可信连接模式。
+ * UI 入参中的同名字段，因此 renderer/Web 不能伪造可信连接模式。
  */
 export function readTrustedCCbuddyAgentV4Connection(
   value: unknown,
@@ -870,7 +870,7 @@ export function createCCbuddyAgentConnectionScope(
     },
     onDynamicConversationTelemetryFact(params) {
       assertOpen();
-      // 可信 clientMode 来自 host attachment；Web/mobile/relay 即使能读权威对话态，
+      // 可信 clientMode 来自 host attachment；Web/relay 即使能读权威对话态，
       // 也不能借共享 workspace emitter 安装生产 telemetry reporter。
       const downstream = readTrustedCCbuddyAgentV4Connection(params);
       const relayDesktopDownstream =
@@ -892,7 +892,7 @@ export function createCCbuddyAgentConnectionScope(
     },
     onDynamicCuaPermissionObservation() {
       assertOpen();
-      // 权限弹窗是本地桌面副作用；手机 replay attachment 只能消费可恢复对话事实。
+      // 权限弹窗是本地桌面副作用；Web 客户端 replay attachment 只能消费可恢复对话事实。
       if (role !== "terminal-client" || context.clientMode !== "desktop-continuous") {
         return RpcEvent.None;
       }
@@ -900,7 +900,7 @@ export function createCCbuddyAgentConnectionScope(
     },
     onDynamicProcessResourceSample() {
       assertOpen();
-      // CLI 资源样本只供远端 Desktop Host relay 回传 main；renderer/mobile attachment
+      // CLI 资源样本只供远端 Desktop Host relay 回传 main；renderer/Web attachment
       // 不消费该事件，也不能把它引入 continuous/replayable 消息面。
       if (role !== "trusted-host-relay") {
         return RpcEvent.None;
@@ -913,13 +913,13 @@ export function createCCbuddyAgentConnectionScope(
       return base.onDynamicToolExecResource();
     },
     onDynamicMcpResourceSamples() {
-      // 资源事实不属于会话流，桌面 continuous 与手机 replayable attachment 均不能订阅。
+      // 资源事实不属于会话流，桌面 continuous 与Web replayable attachment 均不能订阅。
       if (disposed || role !== "trusted-host-relay") return RpcEvent.None;
       return base.onDynamicMcpResourceSamples();
     },
     onDynamicMcpTelemetry() {
       assertOpen();
-      // MCP 遥测与 CLI 资源样本共用可信 Host relay 边界，不进入 renderer/mobile 会话链路。
+      // MCP 遥测与 CLI 资源样本共用可信 Host relay 边界，不进入 renderer/Web 会话链路。
       if (role !== "trusted-host-relay") {
         return RpcEvent.None;
       }

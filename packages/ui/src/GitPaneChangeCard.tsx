@@ -182,8 +182,6 @@ export function GitPaneChangeCard({
             diffState.afterContent !== null &&
             multiFileDiffFiles ? (
             <div className="w-full min-w-0">
-              {/* 手机远控右侧栏宽度较窄，展开的文件 diff 不能依赖父级隐藏溢出。
-                外层允许横向滚动，长行 diff 才不会在窄屏被裁掉。 */}
               <DiffViewer
                 oldFile={multiFileDiffFiles.oldFile}
                 newFile={multiFileDiffFiles.newFile}

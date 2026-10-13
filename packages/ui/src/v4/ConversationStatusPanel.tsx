@@ -126,8 +126,7 @@ export interface ConversationStatusPanelProps {
   endedSubagentCount?: number;
   rootSessionId?: string;
   parentSessionId?: string;
-  /** 当前 pane 是否由手机 Web 远控壳承载。 */
-  isWebRemoteControl?: boolean;
+
   /** 当前是否为粗指针手机视口。 */
   isMobileViewport?: boolean;
   layoutMode?: "none" | "auto" | "inline";
@@ -370,7 +369,6 @@ function GitStatusSection({
   separated,
   workspaceIdentity,
   workspacePath,
-  useVerticalFloatingPanels,
 }: {
   activeTaskChangeSummary?: CCbuddyTaskChangeSummary | null;
   gitSummary: GitRepositorySummary | null | undefined;
@@ -381,7 +379,7 @@ function GitStatusSection({
   separated: boolean;
   workspaceIdentity?: string;
   workspacePath: string;
-  useVerticalFloatingPanels: boolean;
+
 }) {
   const { intl } = useCCbuddyIntl();
   const git = model.git;
@@ -443,7 +441,7 @@ function GitStatusSection({
           triggerClassName="flex h-8 w-full min-w-0 justify-start gap-2 rounded-lg px-2 text-left text-ui-base text-[var(--color-foreground)] hover:bg-[var(--color-hover)] hover:text-[var(--color-foreground)] [&>span]:max-w-[calc(100%-3.5rem)] [&_svg:first-child]:text-[var(--color-foreground)]"
           popoverClassName="w-72 max-w-[calc(100vw-2rem)]"
           branchListClassName="max-h-56"
-          popoverSide={useVerticalFloatingPanels ? "bottom" : "left"}
+          popoverSide={"left"}
           showFooterActions
         />
         <GitActionMenu
@@ -1888,8 +1886,6 @@ function ConversationStatusPanelImpl({
   endedSubagentCount = 0,
   rootSessionId,
   parentSessionId,
-  isWebRemoteControl = false,
-  isMobileViewport = false,
   layoutMode = "none",
   summaryPanelVariantOverride,
   onVariantChange,
@@ -1946,10 +1942,8 @@ function ConversationStatusPanelImpl({
     variantOverride: summaryPanelVariantOverride ?? null,
   });
   const isVariantAutomatic = summaryPanelVariantOverride == null;
-  // Bug 根因：状态面板在手机远控中仍把分支/Todo 浮层固定到左侧，
-  // 而面板本身已占据大部分视口，左右均无法容纳固定宽度。手机远控改用纵向定位，
-  // 让 Radix 在上/下之间翻转；桌面和宽屏 Web 保持原左侧交互。
-  const useVerticalFloatingPanels = isWebRemoteControl && isMobileViewport;
+      // 让 Radix 在上/下之间翻转；桌面和宽屏 Web 保持原左侧交互。
+
   const panelModeValue = isVariantAutomatic ? "auto" : variant;
   const { intl } = useCCbuddyIntl();
   const panelMenuLabel = intl.formatMessage({
@@ -2117,7 +2111,7 @@ function ConversationStatusPanelImpl({
                 onRefreshGit={onRefreshGit}
                 onOpenGitReview={onOpenGitReview}
                 separated={false}
-                useVerticalFloatingPanels={useVerticalFloatingPanels}
+
               />
             ) : null}
             {canRenderGoal ? (
@@ -2139,7 +2133,7 @@ function ConversationStatusPanelImpl({
             {canRenderPlan ? (
               <PlanStatusSection
                 model={model}
-                popoverSide={useVerticalFloatingPanels ? "bottom" : "left"}
+                popoverSide={"left"}
                 separated={canRenderGit || canRenderGoal || canRenderSessionPlans}
               />
             ) : null}

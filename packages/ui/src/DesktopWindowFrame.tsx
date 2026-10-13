@@ -31,7 +31,7 @@ export const DesktopWindowFrame = memo(function DesktopWindowFrameComponent({
     <div
       className={cn(
         // 手机浏览器的 100vh 会把地址栏区域算进页面高度，
-        // 远控页底部输入框容易被挤到可视区外。动态视口高度能跟随浏览器 chrome 收放，桌面端视觉不变。
+        // 动态视口高度跟随浏览器地址栏收放，避免底部输入框被挤出可视区，桌面端视觉不变。
         "flex h-dvh flex-col overflow-hidden border-border text-foreground",
         // Linux BrowserWindow 的不透明底色会把最外层恢复为直角。
         // 外壳 16px 与内层 12px 面板及 4px inset 构成同心圆。Linux 合成器在原生拖拽/缩放时

@@ -53,8 +53,7 @@ export interface WorkspaceHeaderTitleSectionProps {
   isMacDesktop?: boolean;
   isMacFullscreen?: boolean;
   isWindowsDesktop?: boolean;
-  isWebRemoteControl?: boolean;
-  simplifyForNarrowRemote?: boolean;
+
   selectedEditor: EditorInfo | null;
   compact?: boolean;
 }
@@ -68,7 +67,7 @@ export interface WorkspaceHeaderActionSectionProps {
   workspaceIdentity?: string;
   remoteSessionId?: string;
   remoteTarget?: RemoteTarget;
-  isWebRemoteControl?: boolean;
+
   isDesktop?: boolean;
   isTerminalOpen: boolean;
   isSidePaneOpen: boolean;
@@ -76,7 +75,7 @@ export interface WorkspaceHeaderActionSectionProps {
   onToggleSidePane: () => void;
   toggleSidePaneShortcutLabel?: string;
   onSelectedEditorChange?: (editor: EditorInfo | null) => void;
-  simplifyForNarrowRemote?: boolean;
+
   hideHelpMenu?: boolean;
   showWindowControls?: boolean;
   useWindowsCaptionSpacing?: boolean;

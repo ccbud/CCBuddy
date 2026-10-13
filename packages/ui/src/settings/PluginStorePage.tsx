@@ -50,7 +50,7 @@ import {
 } from "@/settings/pluginStoreTryPrompt.js";
 
 interface PluginStorePageProps {
-  isWebRemoteControl?: boolean;
+
   workspacePath?: string | null;
   workspaceIdentity?: string;
   onCreateTask?: (request?: CreateTaskRequest) => void;
@@ -60,7 +60,6 @@ interface PluginStorePageProps {
 type PluginStoreView = "store" | "detail";
 
 export function PluginStorePage({
-  isWebRemoteControl = false,
   workspacePath,
   workspaceIdentity,
   onCreateTask,
@@ -504,7 +503,7 @@ export function PluginStorePage({
             </ControlHintTooltip>
             <PluginAddMenu
               testId="plugin-store-create"
-              isWebRemoteControl={isWebRemoteControl}
+
               onCreateTask={onCreateTask}
               onAddMarketplace={() => {
                 setAddMarketplaceError(null);

@@ -24,7 +24,7 @@ export interface ConversationDraftSuggestedPromptsContainerProps {
   workspaceIdentity?: string;
   remoteSessionId?: string;
   isDesktop?: boolean;
-  isWebRemoteControl?: boolean;
+
 }
 
 export async function trackDraftSuggestedPluginOperation<T>(
@@ -55,9 +55,7 @@ export function resolveDraftSuggestedPluginFlowStage(
   return status === "ready" ? "checking" : "unavailable";
 }
 
-export function resolveSuggestedPluginClientBoundary(isWebRemoteControl: boolean) {
-  const profile = isWebRemoteControl
-    ? ("web-remote-replayable" as const)
-    : ("desktop-continuous" as const);
+export function resolveSuggestedPluginClientBoundary() {
+  const profile = ("desktop-continuous" as const);
   return { clientMode: profile, deliveryKind: profile };
 }

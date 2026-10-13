@@ -31,46 +31,53 @@ nodes:
         symbol: "grantPermissionFullAccess"
       - file: "packages/ui/src/v4/composer/composerPermissionGrant.ts"
         symbol: "applyComposerPermissionGrant"
-  - id: "surface.permission-full-access"
-    kind: "ui-surface"
-    label: "Shared desktop/mobile approval full access action"
+  - id: surface.permission-full-access
+    kind: ui-surface
+    label: Shared desktop/Web approval full access action
     codeSeeds:
-      - file: "packages/ui/src/v4/V4InteractionDialogs.tsx"
-        symbol: "V4InteractionDialogs"
-      - file: "packages/ui/src/PermissionDialog.tsx"
-        symbol: "PermissionDialog"
-  - id: "capability.plugin-store-mode-order"
-    kind: "capability"
-    label: "Public plugin categories ordered by interface mode"
-    aliases: ["插件分类排序", "Code Work 插件排序", "pluginStoreOrder", "@ 插件排序", "+ 插件排序"]
-    docs: ["docs/plugins/plugin-store-mode-order.md", "docs/plugin-marketplace-ui-ux.md"]
+      - file: packages/ui/src/v4/V4InteractionDialogs.tsx
+        symbol: V4InteractionDialogs
+      - file: packages/ui/src/PermissionDialog.tsx
+        symbol: PermissionDialog
+  - id: capability.plugin-store-mode-order
+    kind: capability
+    label: Public plugin categories ordered by interface mode
+    aliases:
+      - 插件分类排序
+      - Code Work 插件排序
+      - pluginStoreOrder
+      - "@ 插件排序"
+      - + 插件排序
+    docs:
+      - docs/plugins/plugin-store-mode-order.md
+      - docs/plugin-marketplace-ui-ux.md
     codeSeeds:
-      - file: "packages/ui/src/settings/PluginStoreListView.tsx"
-        symbol: "PluginStoreListView"
-      - file: "packages/ui/src/settings/pluginStoreListing.ts"
-        symbol: "groupItemsByCategory"
-      - file: "packages/ui/src/hooks/usePluginStoreOrder.ts"
-        symbol: "usePluginStoreOrder"
-      - file: "packages/ui/src/mentions/providers/pluginsMentionProvider.ts"
-        symbol: "usePluginsMentionProvider"
-      - file: "packages/shared/src/pluginStoreOrdering.ts"
-        symbol: "sortPluginStoreEntries"
-      - file: "packages/services/src/ccbuddy-agent/pluginReferenceCatalogRequest.ts"
-        symbol: "requestPluginReferenceCatalog"
-      - file: "apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-reference-catalog.ts"
-        symbol: "getPluginReferenceCatalog"
-      - file: "packages/shared/src/pluginStoreOrder.ts"
-        symbol: "parsePluginStoreOrder"
-      - file: "packages/services/src/client-config/clientConfigService.ts"
-        symbol: "createClientConfigService"
+      - file: packages/ui/src/settings/PluginStoreListView.tsx
+        symbol: PluginStoreListView
+      - file: packages/ui/src/settings/pluginStoreListing.ts
+        symbol: groupItemsByCategory
+      - file: packages/ui/src/hooks/usePluginStoreOrder.ts
+        symbol: usePluginStoreOrder
+      - file: packages/ui/src/mentions/providers/pluginsMentionProvider.ts
+        symbol: usePluginsMentionProvider
+      - file: packages/shared/src/pluginStoreOrdering.ts
+        symbol: sortPluginStoreEntries
+      - file: packages/services/src/ccbuddy-agent/pluginReferenceCatalogRequest.ts
+        symbol: requestPluginReferenceCatalog
+      - file: apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-reference-catalog.ts
+        symbol: getPluginReferenceCatalog
+      - file: packages/shared/src/pluginStoreOrder.ts
+        symbol: parsePluginStoreOrder
+      - file: packages/services/src/client-config/clientConfigService.ts
+        symbol: createClientConfigService
     invariants:
-      - "coding selects code and general selects work without requests; category membership remains marketplace-owned."
-      - "Configured items precede default-sorted remainder; explicit other rank is allowed; featured, personal, search and installed ordering remain isolated."
-      - "Window Local Host owns the independent public ClientConfigService; remote workspace and mobile attachments reuse it. Legacy config readers stay unchanged."
-      - "Public config cache is partitioned by endpoint/version/platform; failed refresh keeps the last successful snapshot; late UI results cannot cross service or request generations."
-      - "Retired guides maps to utilities in list and detail; legal is localized and only appears when it contains plugins."
+      - coding selects code and general selects work without requests; category membership remains marketplace-owned.
+      - Configured items precede default-sorted remainder; explicit other rank is allowed; featured, personal, search and installed ordering remain isolated.
+      - Window Local Host owns the independent public ClientConfigService; remote workspace attachments reuse it. Legacy config readers stay unchanged.
+      - Public config cache is partitioned by endpoint/version/platform; failed refresh keeps the last successful snapshot; late UI results cannot cross service or request generations.
+      - Retired guides maps to utilities in list and detail; legal is localized and only appears when it contains plugins.
       - "@ and + share official category/plugin ordering, with personal entries retaining relative order afterward; fuzzy score remains primary. Display category cannot widen frozen Session identity or enable disabled plugins."
-      - "Legacy referenceCatalog omits category; only method-not-found on referenceCatalogWithCategory falls back. Closed Pickers do not request config; mode changes only reorder locally."
+      - Legacy referenceCatalog omits category; only method-not-found on referenceCatalogWithCategory falls back. Closed Pickers do not request config; mode changes only reorder locally.
   - id: "capability.referrals-embedded"
     kind: "capability"
     label: "Rewards center embedded website"
@@ -86,24 +93,28 @@ nodes:
     invariants:
       - "Current-account credentials stay inside trusted embedded origins; no token in URL or bridge events."
       - "Website invitation records remain static until a server contract is supplied."
-  - id: "capability.foreground-bash-output"
-    kind: "capability"
-    label: "Foreground Bash output viewport"
-    aliases: ["前台 Bash 实时输出", "Bash 五行输出", "Bash 吸底"]
-    docs: ["docs/bash-background-parity.md"]
+  - id: capability.foreground-bash-output
+    kind: capability
+    label: Foreground Bash output viewport
+    aliases:
+      - 前台 Bash 实时输出
+      - Bash 五行输出
+      - Bash 吸底
+    docs:
+      - docs/bash-background-parity.md
     codeSeeds:
-      - file: "packages/ui/src/ToolCallBlocks/renderers/execute.tsx"
-        symbol: "ExecuteToolCallBlock"
-      - file: "packages/ui/src/ToolCallBlocks/renderers/ExecuteOutput.tsx"
-        symbol: "ExecuteOutput"
-      - file: "packages/ui/src/components/ui/scroll-fade-viewport.tsx"
-        symbol: "ScrollFadeViewport"
-      - file: "apps/ccbuddy-cli/packages/adapters/src/exec/bash-progress-poller.ts"
-        symbol: "subscribeBashOutputProgress"
+      - file: packages/ui/src/ToolCallBlocks/renderers/execute.tsx
+        symbol: ExecuteToolCallBlock
+      - file: packages/ui/src/ToolCallBlocks/renderers/ExecuteOutput.tsx
+        symbol: ExecuteOutput
+      - file: packages/ui/src/components/ui/scroll-fade-viewport.tsx
+        symbol: ScrollFadeViewport
+      - file: apps/ccbuddy-cli/packages/adapters/src/exec/bash-progress-poller.ts
+        symbol: subscribeBashOutputProgress
     invariants:
-      - "Only expanded details render output; running and final fit short content with a five-line maximum and no additional notices or file links."
-      - "Follow bounded previews by default; scrolling up freezes one window and scrolling to the bottom resumes; no frontend polling or output history accumulation."
-      - "CLI execution, background output query, and desktop/mobile delivery boundaries are unchanged."
+      - Only expanded details render output; running and final fit short content with a five-line maximum and no additional notices or file links.
+      - Follow bounded previews by default; scrolling up freezes one window and scrolling to the bottom resumes; no frontend polling or output history accumulation.
+      - CLI execution, background output query, and desktop/Web delivery boundaries are unchanged.
   - id: "capability.background-bash-output"
     kind: "capability"
     label: "Background Bash live output details"
@@ -145,33 +156,37 @@ nodes:
     codeSeeds:
       - file: "packages/ui/src/hooks/useAppPanels.ts"
         symbol: "useAppPanels"
-  - id: "capability.dangerous-command-approval"
-    kind: "capability"
-    label: "Guarded permission mode"
-    aliases: ["guarded", "dangerousCommandRules", "危险命令确认", "强制单次确认"]
+  - id: capability.dangerous-command-approval
+    kind: capability
+    label: Guarded permission mode
+    aliases:
+      - guarded
+      - dangerousCommandRules
+      - 危险命令确认
+      - 强制单次确认
     docs:
-      - "docs/dangerous-command-approval-v1-plan.md"
+      - docs/dangerous-command-approval-v1-plan.md
     codeSeeds:
-      - symbol: "matchDangerousCommand"
-        file: "apps/ccbuddy-cli/packages/core/src/tool/handlers/guarded/command.ts"
-      - symbol: "resolveToolPermission"
-        file: "apps/ccbuddy-cli/packages/core/src/tool/executor/permission-flow.ts"
-      - symbol: "buildProtocolPermissionOptions"
-        file: "apps/ccbuddy-cli/packages/bootstrap/src/permission-options.ts"
-      - symbol: "getCCbuddyAgentAvailableModes"
-        file: "packages/shared/src/ccbuddy-agent-model-state.ts"
-      - symbol: "buildAutomationModeOption"
-        file: "packages/ui/src/settings/automationAgentConfigOptions.ts"
-      - symbol: "filterModeOptions"
-        file: "apps/ccbuddy-cli/packages/tui/src/app-mode-command.ts"
+      - symbol: matchDangerousCommand
+        file: apps/ccbuddy-cli/packages/core/src/tool/handlers/guarded/command.ts
+      - symbol: resolveToolPermission
+        file: apps/ccbuddy-cli/packages/core/src/tool/executor/permission-flow.ts
+      - symbol: buildProtocolPermissionOptions
+        file: apps/ccbuddy-cli/packages/bootstrap/src/permission-options.ts
+      - symbol: getCCbuddyAgentAvailableModes
+        file: packages/shared/src/ccbuddy-agent-model-state.ts
+      - symbol: buildAutomationModeOption
+        file: packages/ui/src/settings/automationAgentConfigOptions.ts
+      - symbol: filterModeOptions
+        file: apps/ccbuddy-cli/packages/tui/src/app-mode-command.ts
     invariants:
-      - "Only guarded mode explicit catalog matches add mandatory one-time approval; unsupported analysis retains YOLO policy. Existing modes and defaults are unchanged."
-      - "Guarded replaces Edit only in selectable menus and shortcut cycles; persisted edit values and explicit legacy commands retain their original policy. YOLO and full-auto aliases remain unchanged."
-      - "V1 targets bounded syntax in existing POSIX, Git Bash, and CMD shells; PowerShell payload analysis is out of scope and Bash AST must not stand in for CMD parsing."
-      - "Deletion catalog includes recursive or syntactically batch rm, forced git clean, POSIX/Git Bash find -delete, CMD rd/rmdir /s and del/erase, and CMD/Git Bash robocopy MIR/PURGE unless reliably list-only. Quoted/escaped glob is not batch evidence; no filesystem expansion, indirect exec wrappers, or JOB file inspection."
-      - "Matched input requires direct approval across guarded ingress and inherited children; no Hook auto-allow or project permission persistence."
-      - "Ordinary and Explore subagents inherit guarded; dynamic-workflow subagents inherit the launching session's permission mode (guarded included) journaled when their run was created, and ask permissions and AskUserQuestion questions through the parent broker with a subagent origin; legacy workflow/script children remain YOLO while their guarded parent mode is preserved. Unattended guarded automation waits for approval."
-      - "Approval remains bound to the actual input version; desktop continuous, mobile replayable, and workspace identity remain isolated."
+      - Only guarded mode explicit catalog matches add mandatory one-time approval; unsupported analysis retains YOLO policy. Existing modes and defaults are unchanged.
+      - Guarded replaces Edit only in selectable menus and shortcut cycles; persisted edit values and explicit legacy commands retain their original policy. YOLO and full-auto aliases remain unchanged.
+      - V1 targets bounded syntax in existing POSIX, Git Bash, and CMD shells; PowerShell payload analysis is out of scope and Bash AST must not stand in for CMD parsing.
+      - Deletion catalog includes recursive or syntactically batch rm, forced git clean, POSIX/Git Bash find -delete, CMD rd/rmdir /s and del/erase, and CMD/Git Bash robocopy MIR/PURGE unless reliably list-only. Quoted/escaped glob is not batch evidence; no filesystem expansion, indirect exec wrappers, or JOB file inspection.
+      - Matched input requires direct approval across guarded ingress and inherited children; no Hook auto-allow or project permission persistence.
+      - Ordinary and Explore subagents inherit guarded; dynamic-workflow subagents inherit the launching session's permission mode (guarded included) journaled when their run was created, and ask permissions and AskUserQuestion questions through the parent broker with a subagent origin; legacy workflow/script children remain YOLO while their guarded parent mode is preserved. Unattended guarded automation waits for approval.
+      - Approval remains bound to the actual input version; desktop continuous, Web/SSH replayable, and workspace identity remain isolated.
   - id: "capability.marketing-touch"
     kind: "capability"
     label: "Marketing Touch card and popup delivery"
@@ -213,16 +228,14 @@ nodes:
         symbol: "DeleteAllArchivedTasksButton"
       - file: "packages/ui/src/WorkspaceArchivedTasksFlatSection.tsx"
         symbol: "WorkspaceArchivedTasksFlatSection"
-  - id: "surface.web-archived-tasks"
-    kind: "ui-surface"
-    label: "Web remote archived task list"
+  - id: surface.web-archived-tasks
+    kind: ui-surface
+    label: Web archived task list
     codeSeeds:
-      - file: "packages/ui/src/WorkspaceSidebar.tsx"
-        symbol: "WorkspaceSidebar"
-      - file: "packages/ui/src/DeleteAllArchivedTasksButton.tsx"
-        symbol: "DeleteAllArchivedTasksButton"
-      - file: "packages/ui/src/WebRemoteControlTaskIndex.tsx"
-        symbol: "WebRemoteControlTaskIndex"
+      - file: packages/ui/src/WorkspaceSidebar.tsx
+        symbol: WorkspaceSidebar
+      - file: packages/ui/src/DeleteAllArchivedTasksButton.tsx
+        symbol: DeleteAllArchivedTasksButton
   - id: "capability.help-client-config"
     kind: "capability"
     label: "Community and feedback client configuration"
@@ -565,71 +578,71 @@ nodes:
       - "docs/usage-stats-app-coding-plan-split.md"
       - "apps/ccbuddy-cli/docs/design/v2/usage-observability.md"
 
-  - id: "capability.data-observability"
-    kind: "capability"
-    label: "Product telemetry, runtime observability, and monitoring"
+  - id: capability.data-observability
+    kind: capability
+    label: Product telemetry, runtime observability, and monitoring
     aliases:
-      - "telemetry"
-      - "ARMS"
-      - "monitoring"
-      - "埋点"
-      - "监控"
-      - "可观测性"
+      - telemetry
+      - ARMS
+      - monitoring
+      - 埋点
+      - 监控
+      - 可观测性
     docs:
-      - "docs/product-capability-map.md"
-      - "docs/monitoring/performance-telemetry-catalog.md"
-      - "docs/monitoring/business-monitoring.md"
-      - "docs/monitoring/event-report-delivery-reliability.md"
-      - "docs/monitoring/ccbuddy-cli-resource-telemetry.md"
-      - "docs/monitoring/process-resource-telemetry.md"
-      - "docs/monitoring/process-resource-telemetry-fixes.md"
-      - "docs/monitoring/ccbuddy-data-size-arms-telemetry.md"
-      - "docs/monitoring/mcp-process-arms-telemetry.md"
-      - "docs/monitoring/remote-usage-telemetry-v1.md"
-      - "docs/trace/model-attempt-error-diagnostics.md"
+      - docs/product-capability-map.md
+      - docs/monitoring/performance-telemetry-catalog.md
+      - docs/monitoring/business-monitoring.md
+      - docs/monitoring/event-report-delivery-reliability.md
+      - docs/monitoring/ccbuddy-cli-resource-telemetry.md
+      - docs/monitoring/process-resource-telemetry.md
+      - docs/monitoring/process-resource-telemetry-fixes.md
+      - docs/monitoring/ccbuddy-data-size-arms-telemetry.md
+      - docs/monitoring/mcp-process-arms-telemetry.md
+      - docs/monitoring/remote-usage-telemetry-v1.md
+      - docs/trace/model-attempt-error-diagnostics.md
     codeSeeds:
-      - symbol: "sanitizeTelemetryError"
-        file: "apps/ccbuddy-cli/packages/telemetry/src/error-sanitizer.ts"
-      - symbol: "TerminalStreamChunkError"
-        file: "apps/ccbuddy-cli/packages/adapters/src/model/runner-retry.ts"
-      - symbol: "createCCbuddyProcessResourceSampler"
-        file: "apps/ccbuddy-cli/packages/bootstrap/src/process-resource-sampler.ts"
-      - symbol: "createCCbuddyAgentService"
-        file: "packages/services/src/ccbuddy-agent/ccbuddyAgentService.ts"
-      - symbol: "ingestCliResourceSample"
-        file: "packages/desktop/src/main/processResourceCliSource.ts"
-      - symbol: "registerHostServiceResourceTelemetry"
-        file: "packages/desktop/src/host/hostServiceResourceTelemetry.ts"
-      - symbol: "createMcpTelemetryTracker"
-        file: "apps/ccbuddy-cli/packages/adapters/src/mcp/telemetry.ts"
-      - symbol: "reportMcpTelemetryToArms"
-        file: "packages/desktop/src/main/desktopMcpTelemetry.ts"
+      - symbol: sanitizeTelemetryError
+        file: apps/ccbuddy-cli/packages/telemetry/src/error-sanitizer.ts
+      - symbol: TerminalStreamChunkError
+        file: apps/ccbuddy-cli/packages/adapters/src/model/runner-retry.ts
+      - symbol: createCCbuddyProcessResourceSampler
+        file: apps/ccbuddy-cli/packages/bootstrap/src/process-resource-sampler.ts
+      - symbol: createCCbuddyAgentService
+        file: packages/services/src/ccbuddy-agent/ccbuddyAgentService.ts
+      - symbol: ingestCliResourceSample
+        file: packages/desktop/src/main/processResourceCliSource.ts
+      - symbol: registerHostServiceResourceTelemetry
+        file: packages/desktop/src/host/hostServiceResourceTelemetry.ts
+      - symbol: createMcpTelemetryTracker
+        file: apps/ccbuddy-cli/packages/adapters/src/mcp/telemetry.ts
+      - symbol: reportMcpTelemetryToArms
+        file: packages/desktop/src/main/desktopMcpTelemetry.ts
     invariants:
-      - "Resource telemetry stays outside desktop continuous and mobile replayable task delivery."
-      - "Host runtime environment identity isolates equal-hardware remote samples; identity is never an ARMS property."
-      - "Only a Server advertising processResourceTelemetry receives resource subscriptions; old Server connections remain usable."
-      - "Bash completion tokens are deduplicated at the main resource outlet across Host processes and omitted from ARMS."
+      - Resource telemetry stays outside desktop continuous and Web/SSH replayable task delivery.
+      - Host runtime environment identity isolates equal-hardware remote samples; identity is never an ARMS property.
+      - Only a Server advertising processResourceTelemetry receives resource subscriptions; old Server connections remain usable.
+      - Bash completion tokens are deduplicated at the main resource outlet across Host processes and omitted from ARMS.
 
-  - id: "capability.renderer-user-action-trace"
-    kind: "capability"
-    label: "Desktop Renderer semantic user action trace"
+  - id: capability.renderer-user-action-trace
+    kind: capability
+    label: Desktop Renderer semantic user action trace
     aliases:
-      - "renderer action trace"
-      - "ui_action"
-      - "Renderer 用户操作 Trace"
+      - renderer action trace
+      - ui_action
+      - Renderer 用户操作 Trace
     docs:
-      - "docs/trace/desktop-renderer-user-action-trace.md"
+      - docs/trace/desktop-renderer-user-action-trace.md
     codeSeeds:
-      - symbol: "USER_ACTION_CATALOG"
-        file: "packages/ui/src/lib/userActionTraceCatalog.ts"
-      - symbol: "RendererUserActionTelemetry"
-        file: "packages/ui/src/lib/userActionTelemetry.ts"
-      - symbol: "createRendererActionTraceBroker"
-        file: "packages/desktop/src/main/rendererActionTraceBroker.ts"
+      - symbol: USER_ACTION_CATALOG
+        file: packages/ui/src/lib/userActionTraceCatalog.ts
+      - symbol: RendererUserActionTelemetry
+        file: packages/ui/src/lib/userActionTelemetry.ts
+      - symbol: createRendererActionTraceBroker
+        file: packages/desktop/src/main/rendererActionTraceBroker.ts
     invariants:
-      - "Only Electron Desktop Renderer creates ui_action spans; Web/mobile remain no-op."
-      - "Host, CLI, RPC and CCbuddy Protocol receive no trace changes."
-      - "Product /event/report remains unchanged and separate."
+      - Only Electron Desktop Renderer creates ui_action spans; Web remain no-op.
+      - Host, CLI, RPC and CCbuddy Protocol receive no trace changes.
+      - Product /event/report remains unchanged and separate.
 
   - id: "capability.ccbuddy-data-size-telemetry"
     kind: "capability"
@@ -1658,19 +1671,23 @@ nodes:
     docs:
       - "docs/oauth/app-marketing-attribution.md"
 
-  - id: "capability.remote-delivery"
-    kind: "capability"
-    label: "Web remote realtime delivery"
+  - id: capability.remote-delivery
+    kind: capability
+    label: Ordinary Web and SSH replayable delivery
     aliases:
-      - "mobile remote"
-      - "replayable"
-      - "remote control"
-      - "手机远控"
-      - "重连恢复"
+      - Web direct server
+      - SSH replayable
+      - replayable
+      - 重连恢复
     docs:
-      - "docs/web-remote-control/web-remote-control-architecture.md"
-      - "docs/web-remote-control/task-realtime-sync.md"
-      - "docs/web-remote-control-task-command-queue.md"
+      - docs/specs/mobile-remote-control-removal.md
+    codeSeeds:
+      - symbol: connectViaWebSocket
+        file: packages/client/src/websocket.ts
+      - symbol: createHttpServer
+        file: packages/server/src/http.ts
+    invariants:
+      - Desktop continuous and ordinary Web/SSH replayable delivery use the existing session owner and sequence; mobile pairing and relay are removed.
 
   - id: "capability.workspace-identity"
     kind: "capability"
@@ -1687,31 +1704,31 @@ nodes:
       - "docs/ssh-remote-app-global-state-authority.md"
       - "docs/v4-refactor/14-sessions-index.md"
 
-  - id: "capability.remote-provider-provisioning"
-    kind: "capability"
-    label: "Remote Environment Provider Provisioning v0"
+  - id: capability.remote-provider-provisioning
+    kind: capability
+    label: Remote Environment Provider Provisioning v0
     aliases:
-      - "provider provisioning"
-      - "remote provider sync"
-      - "Environment provider sync"
-      - "远程 Provider 配置同步"
-      - "远程环境模型配置镜像"
+      - provider provisioning
+      - remote provider sync
+      - Environment provider sync
+      - 远程 Provider 配置同步
+      - 远程环境模型配置镜像
     docs:
-      - "docs/remote/provider-provisioning.md"
-      - "docs/remote-workspace-session-unified-settings.md"
-      - "docs/working-memory/provider-refactor/steps/todo-56-remote-provider-provisioning-environment-sync.md"
+      - docs/remote/provider-provisioning.md
+      - docs/remote-workspace-session-unified-settings.md
+      - docs/working-memory/provider-refactor/steps/todo-56-remote-provider-provisioning-environment-sync.md
     codeSeeds:
-      - symbol: "ProviderProvisioningEnvironmentCoordinator"
-        file: "packages/desktop/src/main/providerProvisioningEnvironmentCoordinator.ts"
-      - symbol: "createProviderProvisioningSource"
-        file: "packages/services/src/model-provider/providerProvisioningSource.ts"
-      - symbol: "createProviderProvisioningTarget"
-        file: "packages/services/src/model-provider/providerProvisioningTarget.ts"
+      - symbol: ProviderProvisioningEnvironmentCoordinator
+        file: packages/desktop/src/main/providerProvisioningEnvironmentCoordinator.ts
+      - symbol: createProviderProvisioningSource
+        file: packages/services/src/model-provider/providerProvisioningSource.ts
+      - symbol: createProviderProvisioningTarget
+        file: packages/services/src/model-provider/providerProvisioningTarget.ts
     invariants:
-      - "The Local Environment is the v0 authority; each online Remote Environment receives a replace-style execution mirror, while Built-in Release and already-created Active Models are unchanged."
-      - "Provisioning is deduplicated by Remote Environment rather than Workspace, window, workspacePath, workspaceIdentity, or remoteSessionId; one lane provides single-flight plus a latest-state trailing refresh."
-      - "Desktop Main coordinates only Environment identity, trigger, generation, and correlation metadata. The selected Local Host reads Config and allowlisted credentials and sends the envelope to the Remote Target; Main never receives Config or Secret values."
-      - "Desktop continuous and Web remote replayable session-delivery semantics are invariant under Provider Provisioning."
+      - The Local Environment is the v0 authority; each online Remote Environment receives a replace-style execution mirror, while Built-in Release and already-created Active Models are unchanged.
+      - Provisioning is deduplicated by Remote Environment rather than Workspace, window, workspacePath, workspaceIdentity, or remoteSessionId; one lane provides single-flight plus a latest-state trailing refresh.
+      - Desktop Main coordinates only Environment identity, trigger, generation, and correlation metadata. The selected Local Host reads Config and allowlisted credentials and sends the envelope to the Remote Target; Main never receives Config or Secret values.
+      - Desktop continuous and Web/SSH replayable session-delivery semantics are invariant under Provider Provisioning.
 
   - id: "capability.remote-file-actions"
     kind: "capability"
@@ -2204,33 +2221,7 @@ nodes:
       - symbol: "WorkspacePinnedTasksSection"
         file: "packages/ui/src/WorkspacePinnedTasksSection.tsx"
 
-  - id: "surface.mobile-remote-task-home"
-    kind: "ui-surface"
-    label: "Mobile remote task home"
-    aliases:
-      - "mobile task list"
-      - "remote task status"
-      - "手机远控任务首页"
-      - "手机任务状态"
-    docs:
-      - "docs/web-remote-control/mobile-task-home-design.md"
-    codeSeeds:
-      - symbol: "WebRemoteControlMobileTaskHome"
-        file: "packages/ui/src/WebRemoteControlMobileTaskHome.tsx"
-      - symbol: "buildWebRemoteControlTaskTargets"
-        file: "packages/ui/src/lib/webRemoteControlTaskIndex.ts"
 
-  - id: "surface.desktop-web-remote-control-dialog"
-    kind: "ui-surface"
-    label: "Desktop Web Remote Control dialog"
-    aliases:
-      - "Web Remote Control QR dialog"
-      - "手机远控二维码弹窗"
-    docs:
-      - "docs/web-remote-control/web-remote-control-architecture.md"
-    codeSeeds:
-      - symbol: "WebRemoteControlDialog"
-        file: "packages/ui/src/WebRemoteControlDialog.tsx"
 
   - id: "state.task-list-row-projection"
     kind: "state-owner"
@@ -2282,12 +2273,6 @@ nodes:
       - symbol: "openCodeViewerSidePane"
         file: "packages/ui/src/lib/workspaceSidePane.ts"
 
-  - id: "state.web-remote-task-target-projection"
-    kind: "state-owner"
-    label: "Web remote task target projection"
-    codeSeeds:
-      - symbol: "buildWebRemoteControlTaskTargets"
-        file: "packages/ui/src/lib/webRemoteControlTaskIndex.ts"
 
   - id: "service.ccbuddy-task-list"
     kind: "service"
@@ -3457,25 +3442,7 @@ nodes:
       - symbol: "CuaToolCallBlock"
         file: "packages/ui/src/ToolCallBlocks/renderers/cua.tsx"
 
-  - id: "service.shared-host-attachment"
-    kind: "service"
-    label: "Web remote shared-host attachment"
-    codeSeeds:
-      - symbol: "createWebRemoteControlSharedHostAttachments"
-        file: "packages/desktop/src/main/webRemoteControlSharedHostAttachments.ts"
 
-  - id: "service.desktop-web-remote-control-authorization"
-    kind: "service"
-    label: "Desktop Web Remote Control start dispatch boundary"
-    codeSeeds:
-      - symbol: "registerWebRemoteControlIpcHandlers"
-        file: "packages/desktop/src/main/desktopWebRemoteControlIpc.ts"
-      - symbol: "authorizeStart"
-        file: "packages/desktop/src/main/webRemoteControlManager.ts"
-    invariants:
-      - "Start and reset-pairing do not add Desktop native confirmation; QR refresh keeps its renderer confirmation."
-      - "The internal one-time ticket binds window and workspace targets but is not proof of user authorization and is not an XSS mitigation."
-      - "Renderer-reachable IPC dependencies expose only target-bound start/reset methods."
 
   - id: "service.desktop-app-shutdown-policy"
     kind: "service"
@@ -3696,9 +3663,9 @@ nodes:
     kind: "delivery-boundary"
     label: "Desktop continuous delivery"
 
-  - id: "boundary.web-remote-replayable"
-    kind: "delivery-boundary"
-    label: "Web remote replayable delivery"
+  - id: boundary.web-remote-replayable
+    kind: delivery-boundary
+    label: Web/SSH replayable delivery
 
   - id: "boundary.workspace-key"
     kind: "delivery-boundary"
@@ -4294,35 +4261,32 @@ nodes:
       - file: "packages/desktop/test/e2e/settings/mcp-dual-era-version-negotiation.test.ts"
       - file: "packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-browser-use-iab-multisession.test.ts"
 
-  - id: "capability.window-single-host-controller-r1"
-    kind: "capability"
-    label: "R1 window-scoped single Host controller"
+  - id: capability.window-single-host-controller-r1
+    kind: capability
+    label: R1 window-scoped single Host controller
     aliases:
-      - "single window Host"
-      - "窗口唯一 Host"
-      - "R1 Host controller"
+      - single window Host
+      - 窗口唯一 Host
+      - R1 Host controller
     docs:
-      - "docs/architecture/r1-single-window-host-refactor.md"
-      - "docs/architecture/ccbuddy-code-architecture-overview.md"
+      - docs/architecture/r1-single-window-host-refactor.md
+      - docs/architecture/ccbuddy-code-architecture-overview.md
     codeSeeds:
-      - symbol: "createRemoteWorkspaceSessionManager"
-        file: "packages/desktop/src/main/desktopRemoteSessions.ts"
-      - file: "packages/desktop/src/host/index.ts"
-      - symbol: "useGlobalTaskList"
-        file: "packages/ui/src/hooks/useGlobalTaskList.ts"
-      - symbol: "createWebRemoteControlSharedHostAttachments"
-        file: "packages/desktop/src/main/webRemoteControlSharedHostAttachments.ts"
+      - symbol: createRemoteWorkspaceSessionManager
+        file: packages/desktop/src/main/desktopRemoteSessions.ts
+      - file: packages/desktop/src/host/index.ts
+      - symbol: useGlobalTaskList
+        file: packages/ui/src/hooks/useGlobalTaskList.ts
 
-  - id: "state.window-host-controller-projection"
-    kind: "state-owner"
-    label: "Window Host workspace and task projection"
+  - id: state.window-host-controller-projection
+    kind: state-owner
+    label: Window Host workspace and task projection
     docs:
-      - "docs/architecture/r1-single-window-host-refactor.md"
-      - "docs/web-remote-control/task-realtime-sync.md"
+      - docs/architecture/r1-single-window-host-refactor.md
     codeSeeds:
-      - symbol: "useGlobalTaskList"
-        file: "packages/ui/src/hooks/useGlobalTaskList.ts"
-      - file: "packages/services/src/task-index"
+      - symbol: useGlobalTaskList
+        file: packages/ui/src/hooks/useGlobalTaskList.ts
+      - file: packages/services/src/task-index
 
   - id: "service.window-host-remote-connection-registry"
     kind: "service"
@@ -4335,17 +4299,16 @@ nodes:
       - symbol: "createRemoteWorkspaceSessionManager"
         file: "packages/desktop/src/main/desktopRemoteSessions.ts"
 
-  - id: "boundary.window-host-scoped-service-attachment"
-    kind: "boundary"
-    label: "Window Host local and remote scoped MessagePort attachment"
+  - id: boundary.window-host-scoped-service-attachment
+    kind: boundary
+    label: Window Host local and remote scoped MessagePort attachment
     docs:
-      - "docs/architecture/r1-single-window-host-refactor.md"
-      - "docs/web-remote-control/web-remote-control-architecture.md"
+      - docs/architecture/r1-single-window-host-refactor.md
     codeSeeds:
-      - file: "packages/desktop/src/host/index.ts"
-      - symbol: "createWebRemoteControlSharedHostAttachments"
-        file: "packages/desktop/src/main/webRemoteControlSharedHostAttachments.ts"
-      - file: "packages/desktop/src/renderer/src/main.tsx"
+      - file: packages/desktop/src/host/index.ts
+      - file: packages/desktop/src/renderer/src/main.tsx
+      - symbol: createRemoteWorkspaceSessionManager
+        file: packages/desktop/src/main/desktopRemoteSessions.ts
 
   - id: "evidence.ssh-remote-p0-e2e"
     kind: "evidence"
@@ -4371,16 +4334,16 @@ nodes:
       - "docs/architecture/unified-ccbuddy-lite-server-multi-server-plan.md"
       - "docs/architecture/ccbuddy-code-architecture-overview.md"
 
-  - id: "surface.multi-server-controller-ui"
-    kind: "ui-surface"
-    label: "Desktop, Browser, and attached Mobile multi-server view"
+  - id: surface.multi-server-controller-ui
+    kind: ui-surface
+    label: Desktop and Browser multi-server view
     docs:
-      - "docs/architecture/unified-ccbuddy-lite-server-multi-server-plan.md"
+      - docs/architecture/unified-ccbuddy-lite-server-multi-server-plan.md
     codeSeeds:
-      - symbol: "Root"
-        file: "packages/ui/src/Root.tsx"
-      - file: "packages/web/src/main.tsx"
-      - file: "packages/desktop/src/renderer/src/main.tsx"
+      - symbol: Root
+        file: packages/ui/src/Root.tsx
+      - file: packages/web/src/main.tsx
+      - file: packages/desktop/src/renderer/src/main.tsx
 
   - id: "state.controller-server-directory"
     kind: "state-owner"
@@ -4996,7 +4959,12 @@ nodes:
     kind: "capability"
     label: "Bot group and topic collaboration"
     aliases: ["群聊机器人", "话题续接", "ReplyToChannel", "渠道提及", "Bot 历史附件"]
-    docs: ["docs/bots-feishu-group-collaboration.md", "docs/bots-topic-input-materials.md", "docs/testing/bots-e2e-coverage-matrix.md"]
+    docs:
+      [
+        "docs/bots-feishu-group-collaboration.md",
+        "docs/bots-topic-input-materials.md",
+        "docs/testing/bots-e2e-coverage-matrix.md",
+      ]
     codeSeeds:
       - file: "packages/services/src/bots/botsService.ts"
         symbol: "createBotsService"
@@ -5400,11 +5368,11 @@ edges:
     to: "boundary.desktop-continuous"
     type: "owned-locally-by"
     rank: "must-inspect"
-  - from: "service.desktop-chromium-network-policy"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-add-recovery-state-to"
-    rank: "invariant-only"
-    condition: "The Electron Session policy affects the existing shared desktop guest only; it adds no relay, task snapshot, or mobile replayable state."
+  - from: service.desktop-chromium-network-policy
+    to: boundary.web-remote-replayable
+    type: must-not-add-recovery-state-to
+    rank: invariant-only
+    condition: The Electron Session policy affects the existing shared desktop guest only; it adds no relay, task snapshot, or Web/SSH replayable state.
   - from: "capability.embedded-browser-network-policy"
     to: "evidence.embedded-browser-network-policy-tests"
     type: "covered-by"
@@ -5447,11 +5415,6 @@ edges:
     to: "boundary.desktop-continuous"
     type: "must-not-change-delivery"
     rank: "invariant-only"
-  - from: "service.host-api-network-policy"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-add-recovery-state-to"
-    rank: "invariant-only"
-    condition: "Mobile remote reuses the existing shared-host attachment; proxy policy adds no relay, snapshot, queue, owner, or replay state."
   - from: "capability.host-api-network-policy"
     to: "evidence.host-api-network-policy-tests"
     type: "covered-by"
@@ -5478,11 +5441,11 @@ edges:
     to: "boundary.desktop-continuous"
     type: "owned-locally-by"
     rank: "must-inspect"
-  - from: "service.desktop-browser-screenshot-activity"
-    to: "boundary.web-remote-replayable"
-    type: "must-remain-isolated-from"
-    rank: "invariant-only"
-    condition: "Screenshot activity is transient Electron main state and never enters relay, task snapshots, or mobile recovery."
+  - from: service.desktop-browser-screenshot-activity
+    to: boundary.web-remote-replayable
+    type: must-remain-isolated-from
+    rank: invariant-only
+    condition: Screenshot activity is transient Electron main state and never enters relay, task snapshots, or Web/SSH recovery.
   - from: "capability.browser-screenshot-surface"
     to: "boundary.workspace-key"
     type: "preserves-existing-scope"
@@ -5522,11 +5485,6 @@ edges:
     type: "executes-locally-without-changing-delivery"
     rank: "must-inspect"
   - from: "capability.browser-webview-video-recording"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-enter-replayable-state"
-    rank: "invariant-only"
-    condition: "Mobile remote may call the shared-host BrowserControl RPC, but recording jobs and frame/artifact state never enter relay, task snapshots, replay queues or a second mobile runtime."
-  - from: "capability.browser-webview-video-recording"
     to: "evidence.browser-webview-video-recording-tests"
     type: "covered-by"
     rank: "evidence-only"
@@ -5559,11 +5517,11 @@ edges:
     to: "boundary.desktop-continuous"
     type: "owned-as-app-setting-outside-task-delivery"
     rank: "must-inspect"
-  - from: "state.embedded-browser-human-viewport-preference"
-    to: "boundary.web-remote-replayable"
-    type: "must-remain-isolated-from"
-    rank: "invariant-only"
-    condition: "The preference never enters task stream, snapshot, replay, relay, owner queue, or mobile recovery state."
+  - from: state.embedded-browser-human-viewport-preference
+    to: boundary.web-remote-replayable
+    type: must-remain-isolated-from
+    rank: invariant-only
+    condition: The preference never enters task stream, snapshot, replay, relay, owner queue, or Web/SSH recovery state.
   - from: "surface.browser-use-side-pane-guest"
     to: "state.embedded-browser-resize-gesture"
     type: "owns-local-pointer-lifecycle"
@@ -5573,11 +5531,11 @@ edges:
     to: "boundary.desktop-continuous"
     type: "owned-locally-by"
     rank: "must-inspect"
-  - from: "state.embedded-browser-resize-gesture"
-    to: "boundary.web-remote-replayable"
-    type: "must-remain-isolated-from"
-    rank: "invariant-only"
-    condition: "The pointer gesture is renderer-local UI state and never enters task snapshots, replay, relay, or mobile recovery."
+  - from: state.embedded-browser-resize-gesture
+    to: boundary.web-remote-replayable
+    type: must-remain-isolated-from
+    rank: invariant-only
+    condition: The pointer gesture is renderer-local UI state and never enters task snapshots, replay, relay, or Web/SSH recovery.
   - from: "surface.browser-use-side-pane-guest"
     to: "state.embedded-browser-fit-presentation"
     type: "owns-local-fit-presentation"
@@ -5587,11 +5545,11 @@ edges:
     to: "boundary.desktop-continuous"
     type: "owned-locally-by"
     rank: "must-inspect"
-  - from: "state.embedded-browser-fit-presentation"
-    to: "boundary.web-remote-replayable"
-    type: "must-remain-isolated-from"
-    rank: "invariant-only"
-    condition: "Fit canvas measurement is renderer-local presentation state and never enters task snapshots, replay, relay, mobile recovery, guest viewport commands, or tab ownership."
+  - from: state.embedded-browser-fit-presentation
+    to: boundary.web-remote-replayable
+    type: must-remain-isolated-from
+    rank: invariant-only
+    condition: Fit canvas measurement is renderer-local presentation state and never enters task snapshots, replay, relay, Web/SSH recovery, guest viewport commands, or tab ownership.
   - from: "state.embedded-browser-fit-presentation"
     to: "evidence.embedded-browser-responsive-viewport-tests"
     type: "covered-by"
@@ -5605,11 +5563,11 @@ edges:
     to: "surface.browser-tab-shell"
     type: "renders-logical-tabs-in"
     rank: "must-inspect"
-  - from: "capability.automations"
-    to: "surface.browser-use-side-pane-guest"
-    type: "may-trigger-background-guest-while"
-    rank: "must-inspect"
-    condition: "Immediate and scheduled automation runs may create Browser Use tabs while the Automations main view remains visible; the Desktop Side Pane host stays mounted but collapsed, completes guest attach without stealing focus, and adds no mobile replayable state or second BrowserWindow."
+  - from: capability.automations
+    to: surface.browser-use-side-pane-guest
+    type: may-trigger-background-guest-while
+    rank: must-inspect
+    condition: Immediate and scheduled automation runs may create Browser Use tabs while the Automations main view remains visible; the Desktop Side Pane host stays mounted but collapsed, completes guest attach without stealing focus, and adds no Web/SSH replayable state or second BrowserWindow.
   - from: "surface.browser-tab-shell"
     to: "state.browser-tab-residency"
     type: "projects-and-reports"
@@ -5638,11 +5596,11 @@ edges:
     to: "boundary.desktop-continuous"
     type: "owned-locally-by"
     rank: "must-inspect"
-  - from: "service.desktop-browser-tab-residency"
-    to: "boundary.web-remote-replayable"
-    type: "must-remain-isolated-from"
-    rank: "invariant-only"
-    condition: "Residency, pageState, guest generations, and renderer budgets remain Electron-local and never enter relay or mobile task snapshots."
+  - from: service.desktop-browser-tab-residency
+    to: boundary.web-remote-replayable
+    type: must-remain-isolated-from
+    rank: invariant-only
+    condition: Residency, pageState, guest generations, and renderer budgets remain Electron-local and never enter relay or Web/SSH task snapshots.
   - from: "service.desktop-browser-tab-residency"
     to: "boundary.workspace-key"
     type: "isolates-logical-tabs-and-snapshots-by"
@@ -5778,11 +5736,11 @@ edges:
     to: "capability.cloud-content-dialog"
     type: "renders-through"
     rank: "must-inspect"
-  - from: "capability.marketing-touch"
-    to: "service.cloud-content-assets"
-    type: "resolves-resources-through"
-    rank: "must-inspect"
-    condition: "Host owns validated ZIP leases; loopback URLs must not be reused by Web/mobile. Marketing Web bundle uses the declared fallback."
+  - from: capability.marketing-touch
+    to: service.cloud-content-assets
+    type: resolves-resources-through
+    rank: must-inspect
+    condition: Host owns validated ZIP leases; loopback URLs must not be reused by Web. Marketing Web bundle uses the declared fallback.
   - from: "surface.start-plan-manual-claim"
     to: "shared.cloud-dialog-hero"
     type: "renders-result-hero-through"
@@ -5870,21 +5828,11 @@ edges:
     type: "reports-outside-conversation-delivery"
     rank: "invariant-only"
     condition: "MCP telemetry uses a strict process notification and trusted Host relay; it does not enter conversation frames, snapshots, queues or replay state."
-  - from: "service.mcp-session-runtime"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-report-through"
-    rank: "invariant-only"
-    condition: "Mobile attachments reuse the existing Agent/MCP runtime and never subscribe to, cache or replay MCP telemetry."
   - from: "capability.workspace-identity"
     to: "service.telemetry-core"
     type: "reports-remote-workspace-lifecycle-through"
     rank: "must-inspect"
     condition: "Only terminal remote connect outcomes and low-cardinality remote_kind/connect_trigger/error_category are reported; paths, identities, session ids, and remote target details must never enter telemetry."
-  - from: "capability.remote-delivery"
-    to: "service.telemetry-core"
-    type: "reports-adoption-lifecycle-through"
-    rank: "must-inspect"
-    condition: "Desktop reports entry/start/pair/bridge lifecycle events best effort; Web and relay add no reporter or rpc-frame inspection, and desktop-continuous remains isolated from web-remote-replayable."
 
   - from: "capability.engineering-infrastructure"
     to: "capability.build-release-engineering"
@@ -6175,11 +6123,6 @@ edges:
     type: "owns-ephemeral-authority-within"
     rank: "invariant-only"
     condition: "Native Helper/TCC and action safety remain desktop-local and fail closed."
-  - from: "state.cua-shared-host-runtime"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-enter-replayable-state"
-    rank: "invariant-only"
-    condition: "Mobile remote only attaches to the existing shared host; relay/main do not own CUA state."
   - from: "capability.build-release-engineering"
     to: "service.cua-plugin-dev-runtime-assets"
     type: "produces-dev-runtime-assets-for"
@@ -6239,11 +6182,6 @@ edges:
     type: "projects-from"
     rank: "should-inspect"
     condition: "Current UI reuses generic tool/interaction projection; a dedicated live control and takeover protocol is still planned."
-  - from: "boundary.web-remote-replayable"
-    to: "boundary.cua-desktop-local"
-    type: "must-not-create-independent-runtime-for"
-    rank: "invariant-only"
-    condition: "Mobile remote may attach to an existing local Host but must not install or launch a separate Computer Use Helper."
 
   - from: "capability.desktop-app-shutdown"
     to: "service.desktop-app-shutdown-policy"
@@ -6286,11 +6224,6 @@ edges:
     type: "must-not-create-independent-host-for"
     rank: "invariant-only"
   - from: "state.desktop-tab-restore-projection"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-publish-partial-workspace-snapshot-to"
-    rank: "invariant-only"
-    condition: "Main workspace sync and Web remote task/workspace snapshots wait for complete tab restore; mobile keeps shared-host replayable semantics."
-  - from: "state.desktop-tab-restore-projection"
     to: "boundary.workspace-key"
     type: "preserves-isolation"
     rank: "must-inspect"
@@ -6327,20 +6260,20 @@ edges:
     type: "commits-enable-toggle-to"
     rank: "must-inspect"
     condition: "The toggle remains session-scoped; existing runtimes keep their materialized value."
-  - from: "surface.project-memory-settings"
-    to: "service.project-memory-catalog"
-    type: "reads-local-snapshots-through"
-    rank: "must-inspect"
-    condition: "Only the Desktop local-Host viewer reads the catalog, and it performs no catalog read while Memory is disabled. The UI navigates project list -> project memories -> one document and reads document content only after explicit file selection. Web Remote and Mobile render a local-desktop notice instead."
+  - from: surface.project-memory-settings
+    to: service.project-memory-catalog
+    type: reads-local-snapshots-through
+    rank: must-inspect
+    condition: Only the Desktop local-Host viewer reads the catalog, and it performs no catalog read while Memory is disabled. The UI navigates project list -> project memories -> one document and reads document content only after explicit file selection. Web render a local-desktop notice instead.
   - from: "service.project-memory-catalog"
     to: "persistence.project-memory-files"
     type: "reads-without-mutating"
     rank: "must-inspect"
-  - from: "surface.project-memory-settings"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-add-remote-aggregation-to"
-    rank: "invariant-only"
-    condition: "Web Remote and Mobile keep the Memory toggle but do not render or query the Project Memory viewer."
+  - from: surface.project-memory-settings
+    to: boundary.web-remote-replayable
+    type: must-not-add-remote-aggregation-to
+    rank: invariant-only
+    condition: Web keep the Memory toggle but do not render or query the Project Memory viewer.
   - from: "surface.project-memory-settings"
     to: "boundary.desktop-continuous"
     type: "must-not-trigger-provider-or-runtime"
@@ -6709,11 +6642,11 @@ edges:
     type: "must-not-change-delivery-semantics"
     rank: "invariant-only"
     condition: "The <=2 presentation threshold must not alter desktop direct continuous delivery or runtime snapshot authority."
-  - from: "capability.provider-retry-live-tail"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-change-recovery-semantics"
-    rank: "invariant-only"
-    condition: "The <=2 presentation threshold must not alter mobile replayable gap/snapshot recovery."
+  - from: capability.provider-retry-live-tail
+    to: boundary.web-remote-replayable
+    type: must-not-change-recovery-semantics
+    rank: invariant-only
+    condition: The <=2 presentation threshold must not alter Web/SSH replayable gap/snapshot recovery.
   - from: "capability.provider-retry-live-tail"
     to: "evidence.conversation-catalog"
     type: "covered-by"
@@ -7147,7 +7080,7 @@ edges:
     to: "boundary.web-remote-replayable"
     type: "must-not-change-recovery-semantics"
     rank: "invariant-only"
-    condition: "The narrow execution context is not replayable session state and does not create a mobile Off-Peak product path."
+    condition: "The narrow execution context does not change ordinary Web/SSH replayable session state."
   - from: "service.off-peak-task"
     to: "state.off-peak-turn-attribution"
     type: "dispatches-with-stable-identity"
@@ -7176,56 +7109,11 @@ edges:
     type: "delivered-by"
     rank: "conditional"
     condition: "Desktop local main path."
-  - from: "capability.conversation-runtime"
-    to: "boundary.web-remote-replayable"
-    type: "recovers-via"
-    rank: "conditional"
-    condition: "Mobile web remote path."
-  - from: "capability.remote-delivery"
-    to: "service.shared-host-attachment"
-    type: "implemented-by"
-    rank: "must-inspect"
-  - from: "capability.remote-delivery"
-    to: "surface.mobile-remote-task-home"
-    type: "renders-in"
-    rank: "must-inspect"
-  - from: "capability.remote-delivery"
-    to: "surface.desktop-web-remote-control-dialog"
-    type: "renders-in"
-    rank: "must-inspect"
-  - from: "surface.desktop-web-remote-control-dialog"
-    to: "service.desktop-web-remote-control-authorization"
-    type: "commits-start-and-reset-through"
-    rank: "must-inspect"
-  - from: "service.desktop-web-remote-control-authorization"
-    to: "service.shared-host-attachment"
-    type: "dispatches-start-before"
-    rank: "must-inspect"
-  - from: "surface.mobile-remote-task-home"
-    to: "state.web-remote-task-target-projection"
-    type: "projects-from"
-    rank: "must-inspect"
-  - from: "state.web-remote-task-target-projection"
-    to: "state.task-list-row-projection"
-    type: "derives-live-activity-from"
-    rank: "must-inspect"
-    condition: "When a row carries sessions-index activity, its phase overrides contradictory renderer runtime and persisted status caches for every user-visible display state."
-  - from: "state.web-remote-task-target-projection"
-    to: "boundary.web-remote-replayable"
-    type: "delivered-by"
-    rank: "must-inspect"
-  - from: "state.web-remote-task-target-projection"
-    to: "boundary.desktop-continuous"
-    type: "must-not-change-delivery-semantics"
-    rank: "invariant-only"
-  - from: "state.web-remote-task-target-projection"
-    to: "boundary.workspace-key"
-    type: "isolated-by"
-    rank: "must-inspect"
-  - from: "boundary.web-remote-replayable"
-    to: "service.shared-host-attachment"
-    type: "attaches-through"
-    rank: "must-inspect"
+  - from: capability.conversation-runtime
+    to: boundary.web-remote-replayable
+    type: recovers-via
+    rank: conditional
+    condition: Ordinary Web and SSH direct server connections.
   - from: "boundary.web-remote-replayable"
     to: "boundary.desktop-continuous"
     type: "must-remain-isolated-from"
@@ -7270,11 +7158,6 @@ edges:
     to: "boundary.workspace-key"
     type: "isolated-by"
     rank: "must-inspect"
-  - from: "capability.prompt-attachment-materialization"
-    to: "boundary.web-remote-replayable"
-    type: "must-remain-isolated-from"
-    rank: "invariant-only"
-    condition: "Renderer-local upload progress is not replayable task state; mobile keeps using the attached shared host."
   - from: "capability.video-input"
     to: "capability.prompt-attachment-materialization"
     type: "uses"
@@ -7304,26 +7187,26 @@ edges:
     type: "reads-exact-row-artifact-from"
     rank: "must-inspect"
     condition: "The CLI authorizes row identity and attachment index. Desktop local preview prefers an artifact-derived .ccbuddy media path, uses an authorized metadata-only local_ref only when no artifact exists, and Host registers the selected realpath with Main before renderer playback; arbitrary absolute paths in renderer URLs remain denied. Artifact path materialization failure still falls back only to chunked artifact bytes."
-  - from: "surface.conversation-sent-media-preview"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-change-recovery-semantics"
-    rank: "invariant-only"
-    condition: "Only Desktop local workspaces request local media paths. Web/mobile and remote workspaces retain the attached-host chunk query; relay and main do not own session/replay state or start another runtime."
+  - from: surface.conversation-sent-media-preview
+    to: boundary.web-remote-replayable
+    type: must-not-change-recovery-semantics
+    rank: invariant-only
+    condition: Only Desktop local workspaces request local media paths. Web and remote workspaces retain the attached-host chunk query; relay and main do not own session/replay state or start another runtime.
   - from: "persistence.session-media-artifacts"
     to: "capability.model-selection"
     type: "rehydrates-for-current-provider"
     rank: "must-inspect"
     condition: "In-conversation model switches and cold resume rebuild media from durable artifacts, then derive the current provider base64 request shape."
-  - from: "persistence.session-media-artifacts"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-change-recovery-semantics"
-    rank: "invariant-only"
-    condition: "Media artifacts remain shared-host session facts; relay and mobile replayable state do not become binary owners or start a second runtime."
-  - from: "capability.video-input"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-change-recovery-semantics"
-    rank: "invariant-only"
-    condition: "Video payload support does not move task, stream, queue, or snapshot ownership into the mobile replayable boundary."
+  - from: persistence.session-media-artifacts
+    to: boundary.web-remote-replayable
+    type: must-not-change-recovery-semantics
+    rank: invariant-only
+    condition: Media artifacts remain shared-host session facts; relay and Web/SSH replayable state do not become binary owners or start a second runtime.
+  - from: capability.video-input
+    to: boundary.web-remote-replayable
+    type: must-not-change-recovery-semantics
+    rank: invariant-only
+    condition: Video payload support does not move task, stream, queue, or snapshot ownership into the Web/SSH replayable boundary.
   - from: "service.workspace-identity-builder"
     to: "boundary.workspace-key"
     type: "produces"
@@ -7356,11 +7239,6 @@ edges:
     to: "surface.pinned-task-list"
     type: "renders-in"
     rank: "must-inspect"
-  - from: "capability.task-title-overflow-marquee"
-    to: "surface.mobile-remote-task-home"
-    type: "shares-static-overflow-structure-with"
-    rank: "conditional"
-    condition: "Touch has no stable hover contract; mobile reuses static overflow DOM and mask only."
   - from: "shared-ui.task-title-overflow-text"
     to: "state.task-list-row-projection"
     type: "renders-title-from"
@@ -7723,11 +7601,11 @@ edges:
     type: "allows"
     rank: "must-inspect"
     condition: "Workspace config may persist ordinary and sensitive Plugin options in plaintext; sensitive metadata masks UI, displays the Git risk warning and restricts template expansion but does not block persistence."
-  - from: "boundary.workspace-plugin-sensitive-config"
-    to: "state.workspace-plugin-effective-config"
-    type: "merges-into"
-    rank: "must-inspect"
-    condition: "Workspace option keys override User by Plugin ID and option key; sensitive values may reach MCP env/header/clientSecret and other valid Plugin runtime fields while logs, diagnostics, provider captures and mobile replay artifacts stay redacted."
+  - from: boundary.workspace-plugin-sensitive-config
+    to: state.workspace-plugin-effective-config
+    type: merges-into
+    rank: must-inspect
+    condition: Workspace option keys override User by Plugin ID and option key; sensitive values may reach MCP env/header/clientSecret and other valid Plugin runtime fields while logs, diagnostics, provider captures and replay artifacts stay redacted.
   - from: "state.workspace-plugin-effective-config"
     to: "persistence.plugin-marketplace-installed-cache"
     type: "resolves-installed-package-from"
@@ -7748,11 +7626,6 @@ edges:
     type: "isolates-through"
     rank: "must-inspect"
     condition: "Filesystem reads use workspacePath; UI requests, async results, caches and Session association use workspaceIdentity?.trim() || workspacePath, with remoteSessionId preserved."
-  - from: "capability.workspace-project-plugin-scope"
-    to: "boundary.web-remote-replayable"
-    type: "reuses-shared-host-in"
-    rank: "invariant-only"
-    condition: "Mobile /remote reuses the attached desktop/window Host effective Plugin set and creates no independent Plugin runtime, config or install store."
   - from: "capability.workspace-project-plugin-scope"
     to: "evidence.workspace-project-plugin-cases"
     type: "covered-by"
@@ -7792,11 +7665,11 @@ edges:
     type: "options-from"
     rank: "must-inspect"
     condition: "Only draft-suggestion.options.prompts.items are mapped; legacy ai-writing is not a fallback, labels and contents retain cn/en values, iconName uses the non-localized img field as a Lucide canonical name and ignores imgs, unknown names fall back to SquareCode, defaults reverse-reference option items for an optional Plugin, and missing or failed configuration renders an empty list without a static fallback."
-  - from: "surface.new-task-suggested-prompts"
-    to: "capability.automations"
-    type: "opens-in"
-    rank: "must-inspect"
-    condition: "NAVIGATE:AUTOMATIONS opens the workspace Automations main view without prefilling; NAVIGATE:AUTOMATIONS:OFFPEAK also records automationTab=idle in renderer-local navigation history and selects Idle-time only after the visible tabs settle with idle present. The more specific action wins when both are declared, and mobile /remote filters both navigation entries."
+  - from: surface.new-task-suggested-prompts
+    to: capability.automations
+    type: opens-in
+    rank: must-inspect
+    condition: NAVIGATE:AUTOMATIONS opens the workspace Automations main view without prefilling; NAVIGATE:AUTOMATIONS:OFFPEAK also records automationTab=idle in renderer-local navigation history and selects Idle-time only after the visible tabs settle with idle present. The more specific action wins when both are declared.
   - from: "surface.new-task-suggested-prompts"
     to: "service.suggested-plugin-reference-resolution"
     type: "validates-with"
@@ -7817,11 +7690,6 @@ edges:
     type: "must-not-change-delivery"
     rank: "invariant-only"
     condition: "Desktop remains desktop-continuous; the operation does not create or send a Session."
-  - from: "service.suggested-plugin-reference-resolution"
-    to: "boundary.web-remote-replayable"
-    type: "must-not-change-delivery"
-    rank: "invariant-only"
-    condition: "Mobile remote control reuses the shared-host attachment and web-remote-replayable boundary; it never creates a separate Agent runtime."
   - from: "surface.new-task-suggested-prompts"
     to: "capability.workspace-identity"
     type: "depends-on"
@@ -7865,11 +7733,6 @@ edges:
     to: "boundary.desktop-continuous"
     type: "constrained-by"
     rank: "invariant-only"
-  - from: "capability.plugin-reference"
-    to: "boundary.web-remote-replayable"
-    type: "constrained-by"
-    rank: "invariant-only"
-    condition: "Mobile remote reuses the shared-host session runtime; no independent plugin selection state crosses the carrier, and command clientMode comes from the host trusted connection carrier rather than renderer input."
   - from: "capability.plugin-reference"
     to: "evidence.conversation-catalog"
     type: "covered-by"
@@ -7935,11 +7798,11 @@ edges:
     to: "surface.customize-capability-settings"
     type: "renders-authorization-in"
     rank: "must-inspect"
-  - from: "capability.window-single-host-controller-r1"
-    to: "service.window-host-remote-connection-registry"
-    type: "owns"
-    rank: "must-inspect"
-    condition: "Each BrowserWindow owns one Host process; local, SSH, WSL, Docker, Server, Mobile, and Bot routes share its in-process registry."
+  - from: capability.window-single-host-controller-r1
+    to: service.window-host-remote-connection-registry
+    type: owns
+    rank: must-inspect
+    condition: Each BrowserWindow owns one Host process; local, SSH, WSL, Docker, Server and Bot routes share its in-process registry.
   - from: "capability.window-single-host-controller-r1"
     to: "state.window-host-controller-projection"
     type: "projects-through"
@@ -7959,22 +7822,17 @@ edges:
     to: "capability.remote-delivery"
     type: "attaches-to"
     rank: "must-inspect"
-    condition: "Main and relay only forward authenticated ports and payloads; they do not own task, stream, queue, or snapshot state."
+    condition: "Main forwards authenticated attachment ports; ordinary Web/SSH carries typed RPC payloads without owning task, stream, queue, or snapshot state."
   - from: "capability.window-single-host-controller-r1"
     to: "capability.workspace-identity"
     type: "isolates-through"
     rank: "must-inspect"
     condition: "All state keys and routes use workspaceIdentity with workspacePath fallback; remote scopes require identity and fail closed."
-  - from: "boundary.window-host-scoped-service-attachment"
-    to: "boundary.desktop-continuous"
-    type: "injects-trusted-mode"
-    rank: "invariant-only"
-    condition: "Desktop ports stay direct continuous and never merge Mobile replayable recovery frames."
-  - from: "boundary.window-host-scoped-service-attachment"
-    to: "boundary.web-remote-replayable"
-    type: "injects-trusted-mode"
-    rank: "invariant-only"
-    condition: "Mobile ports stay replayable with independent seq, gap, snapshot, backpressure, and disposal state."
+  - from: boundary.window-host-scoped-service-attachment
+    to: boundary.desktop-continuous
+    type: injects-trusted-mode
+    rank: invariant-only
+    condition: Desktop ports stay direct continuous and never merge Web/SSH replayable recovery frames.
   - from: "capability.window-single-host-controller-r1"
     to: "evidence.ssh-remote-p0-e2e"
     type: "covered-by"
@@ -7985,11 +7843,11 @@ edges:
     to: "surface.multi-server-controller-ui"
     type: "renders-in"
     rank: "must-inspect"
-  - from: "surface.multi-server-controller-ui"
-    to: "state.controller-server-directory"
-    type: "projects-from"
-    rank: "must-inspect"
-    condition: "Desktop and Lite keep independent controller-local connection lists; attached Mobile reuses the selected controller directory."
+  - from: surface.multi-server-controller-ui
+    to: state.controller-server-directory
+    type: projects-from
+    rank: must-inspect
+    condition: Desktop and Web keep independent controller-local connection lists.
   - from: "state.controller-server-directory"
     to: "service.multi-server-controller"
     type: "connects-through"
@@ -8033,9 +7891,9 @@ edges:
     condition: "Provider definitions can be directionally mirrored; OAuth, runtime-only headers, display order, and UI selection state remain local."
   - from: "capability.unified-ccbuddy-lite-server"
     to: "capability.remote-delivery"
-    type: "reuses-controller-attachment-for"
+    type: "uses-existing-replayable-transport-for"
     rank: "must-inspect"
-    condition: "Mobile sees its controller multi-server projection but remains web-remote-replayable and never starts independent remote runtimes."
+    condition: "Ordinary Web/SSH remains web-remote-replayable and uses the existing server or workspace runtime."
   - from: "capability.unified-ccbuddy-lite-server"
     to: "boundary.desktop-continuous"
     type: "must-not-change-delivery"
@@ -8122,7 +7980,7 @@ edges:
     to: "boundary.web-remote-replayable"
     type: "recovers-safe-summary-through"
     rank: "must-inspect"
-    condition: "Mobile receives only client-safe summary fields through the existing shared-host replayable snapshot/gap boundary."
+    condition: "Ordinary Web/SSH receives only client-safe summary fields through the existing replayable snapshot/gap boundary."
   - from: "capability.conversation-hook-turn-summary"
     to: "evidence.conversation-catalog"
     type: "covered-by"
@@ -8274,7 +8132,7 @@ edges:
     to: "surface.conversation-share-publish"
     type: "renders-in"
     rank: "must-inspect"
-    condition: "Only Desktop local, SSH, WSL, and Docker surfaces publish; mobile and ordinary Web remain unavailable."
+    condition: "Only Desktop local, SSH, WSL, and Docker surfaces publish; ordinary Web remains unavailable."
   - from: "surface.conversation-share-publish"
     to: "service.conversation-share"
     type: "commits-to"
@@ -8363,4 +8221,4 @@ edges:
     to: "boundary.web-remote-replayable"
     type: "must-remain-isolated-from"
     rank: "invariant-only"
-    condition: "Bot output stays bot-channel-continuous; mobile input and recovery retain replayable semantics."
+    condition: "Bot output stays bot-channel-continuous; ordinary Web/SSH input and recovery retain replayable semantics."

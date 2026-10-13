@@ -14,15 +14,6 @@ import type {
   SaveCliMcpToUserDirectoryRequest,
 } from "./mcp.js";
 import type { OAuthStateRegistration } from "./oauth.js";
-import type {
-  WebRemoteControlContext,
-  WebRemoteControlReconnectWorkspaceResult,
-  WebRemoteControlStartOperationResult,
-  WebRemoteControlStatus,
-  WebRemoteControlTaskTarget,
-  WebRemoteControlReconnectWorkspaceRequest,
-  WebRemoteControlWorkspaceTarget,
-} from "./web-remote-control.js";
 import type { AppSettings, Locale } from "./protocol.js";
 import type { ArmsCustomEventPayload, RendererTelemetryEventPayload } from "./telemetry.js";
 import type {
@@ -473,6 +464,13 @@ export interface RemoteConnectionRuntimeLog {
   timestamp: string;
 }
 
+/** 普通远程会话的绑定目标；UI 提供身份，Main registry 保持唯一连接所有权。 */
+export interface RemoteWorkspaceSessionTarget {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  remoteSessionId: string;
+}
+
 export interface RemoteSessionClosedEvent {
   sessionId: string;
   reason: "host-exit";
@@ -657,7 +655,7 @@ export interface IPlatformService {
 
   /**
    * 插件 UI 沙箱平台端口。只有桌面端实现；
-   * web / 手机远控为 undefined，plugin-ui 据此回退到普通 MCP 工具卡片。
+   * Web 为 undefined，plugin-ui 据此回退到普通 MCP 工具卡片。
    */
   pluginSandbox?: PluginSandboxPlatformPort;
 
@@ -681,7 +679,7 @@ export interface IPlatformService {
 
   /**
    * 从浏览器 File 对象解析宿主本地路径；只有 Desktop preload 能安全实现。
-   * Web/手机端返回 null，避免 UI 层依赖 Electron 的非标准 File.path。
+   * Web 端返回 null，避免 UI 层依赖 Electron 的非标准 File.path。
    */
   getPathForFile?(file: unknown): string | null;
 
@@ -690,7 +688,6 @@ export interface IPlatformService {
 
   /**
    * 在宿主 ~/.ccbuddy 临时目录创建文本附件文件。
-   * 手机远控必须通过 shared-host/platform proxy 写到桌面宿主，避免大文本进入 prompt payload。
    */
   createTempTextAttachment?(
     payload: CreateTempTextAttachmentRequest,
@@ -698,7 +695,7 @@ export interface IPlatformService {
 
   /**
    * 把 dwf 产物某一版的字节写成宿主本机上的一份副本（只在路径为空时写），返回其路径。
-   * 仅 Desktop 实现：手机远控与普通 Web 端没有「用本机 App 打开文件」的能力，缺席即不出入口。
+   * 仅 Desktop 实现：普通 Web 端没有「用本机 App 打开文件」的能力，缺席即不出入口。
    */
   materializeWorkflowArtifactFile?(
     payload: MaterializeWorkflowArtifactFileRequest,
@@ -737,25 +734,6 @@ export interface IPlatformService {
     context: BindRemoteWorkspaceSessionContextRequest,
   ): Promise<void>;
 
-  /** 为当前 workspace 开启 Web 远程控制能力 */
-  startWebRemoteControl(
-    context: WebRemoteControlContext,
-  ): Promise<WebRemoteControlStartOperationResult>;
-
-  /** 清除旧配对材料并重新生成 Web 远程控制二维码 */
-  refreshWebRemoteControlPairing(
-    context: WebRemoteControlContext,
-  ): Promise<WebRemoteControlStartOperationResult>;
-
-  /** 关闭当前窗口已开启的 Web 远程控制能力 */
-  stopWebRemoteControl(): Promise<void>;
-
-  /** 查询当前窗口 Web 远程控制状态 */
-  getWebRemoteControlStatus(): Promise<WebRemoteControlStatus>;
-
-  /** 订阅当前窗口 Web 远程控制状态变化；旧平台可不实现，UI 会保留轮询兜底 */
-  onWebRemoteControlStatusChanged?(handler: (status: WebRemoteControlStatus) => void): () => void;
-
   /** 释放当前窗口里已创建的远程 session */
   disposeRemoteSession(sessionId: string): Promise<void>;
 
@@ -771,7 +749,7 @@ export interface IPlatformService {
   /** 列出当前机器 SSH config 中可用于快速填表的 alias */
   listSSHConfigAliases(): Promise<SSHConfigAliasOption[]>;
 
-  /** 读取宿主环境中的原生 MCP 用户目录配置；手机远控通过已连接桌面 host 转发。 */
+  /** 读取宿主环境中的原生 MCP 用户目录配置。 */
   loadMcpFromUserDirectory?(
     payload?: LoadCliMcpFromUserDirectoryRequest,
   ): Promise<LoadCliMcpFromUserDirectoryResult>;
@@ -781,7 +759,7 @@ export interface IPlatformService {
     payload: SaveCliMcpToUserDirectoryRequest,
   ): Promise<{ success: boolean; error?: string }>;
 
-  /** 迁移旧版 Common MCP 配置；仅宿主环境可执行，手机远控通过 desktop attachment 转发。 */
+  /** 迁移旧版 Common MCP 配置；仅宿主环境可执行。 */
   migrateLegacyCommonMcp?(
     payload?: MigrateLegacyCommonMcpRequest,
   ): Promise<MigrateLegacyCommonMcpResult>;
@@ -860,9 +838,9 @@ export interface IPlatformService {
   /** 通过宿主环境上报 ARMS 自定义事件；Web 端当前为空实现 */
   reportArmsCustomEvent(payload: ArmsCustomEventPayload): Promise<void>;
 
-  /** 读取 Desktop Renderer 用户操作 Trace 的当前灰度配置；Web/手机不实现。 */
+  /** 读取 Desktop Renderer 用户操作 Trace 的当前灰度配置；Web 不实现。 */
   getRendererActionTraceConfig?(): Promise<RendererActionTraceConfigV1>;
-  /** 订阅 Main 推送的 Renderer 用户操作 Trace 配置；Web/手机不实现。 */
+  /** 订阅 Main 推送的 Renderer 用户操作 Trace 配置；Web 不实现。 */
   onRendererActionTraceConfigChanged?(
     callback: (config: RendererActionTraceConfigV1) => void,
   ): () => void;
@@ -872,25 +850,15 @@ export interface IPlatformService {
 
   /**
    * Renderer → Main：主窗口 renderer 每 60 秒的 heap 读数，进 `renderer_main` 角色事件。单向 send、fire-and-forget；
-   * Web 端与手机远控没有桥，不实现即 no-op。
+   * Web 端没有桥，不实现即 no-op。
    */
   reportRendererHeapSample?(sample: RendererHeapSample): void;
 
   /** 同步当前窗口所有 tab 的 workspace 路径到 main 进程（用于跨窗口去重） */
   syncWindowTabs(paths: string[]): void;
 
-  /** 同步当前窗口里 Web 远程控制允许切换的 workspace；Web fallback 可忽略 */
-  syncWebRemoteControlWorkspaces?(workspaces: WebRemoteControlWorkspaceTarget[]): void;
-
-  /** 同步当前窗口里 Web 远程控制可展示的 task 快照；Web fallback 可忽略 */
-  syncWebRemoteControlTasks?(tasks: WebRemoteControlTaskTarget[]): void;
-
-  /** 注册 Web 远程控制手机端请求重连 workspace 的回调，返回 disposer */
-  onWebRemoteControlReconnectWorkspace?(
-    handler: (
-      request: WebRemoteControlReconnectWorkspaceRequest,
-    ) => Promise<WebRemoteControlReconnectWorkspaceResult>,
-  ): () => void;
+  /** 同步当前窗口已连接的远程 workspace 身份，供宿主 registry 和机器人会话使用。 */
+  syncRemoteWorkspaceSessions?(targets: RemoteWorkspaceSessionTarget[]): void;
 
   /** 同步当前窗口的未读 task 数给宿主环境，用于 Dock / 任务栏徽标聚合 */
   syncWindowUnreadCount(count: number): void;
@@ -901,7 +869,7 @@ export interface IPlatformService {
   syncAppSettings?(patch: Partial<AppSettings>): void;
 
   /**
-   * 查询"关闭驻留托盘"能力；桌面端 main 进程探测后返回，Web/手机远控无桥不实现。
+   * 查询"关闭驻留托盘"能力；桌面端 main 进程探测后返回，Web 无桥不实现。
    * 设置页据此决定 Linux 上的开关是否置灰。
    */
   getCloseToTrayCapability?(): Promise<DesktopCloseToTrayCapability>;
@@ -1182,8 +1150,8 @@ export interface IPlatformService {
   /** 获取当前设备的稳定标识符
    *
    * - 桌面端：基于 userData 路径的 SHA-256，始终稳定且唯一
-   * - 手机端（Web 远程控制）：物理属性指纹（browserPlatform | screen.width | screen.height | colorDepth），
-   *   抗浏览器/网络/语言/时区变化，换手机才会变
+   * - Web 端：浏览器物理属性指纹（browserPlatform | screen.width | screen.height | colorDepth），
+   *   保持当前设备的浏览器标识稳定
    */
   getDeviceId(): string;
 }

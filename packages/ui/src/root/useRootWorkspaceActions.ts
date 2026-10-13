@@ -438,10 +438,8 @@ export function useRootWorkspaceActions({
 
   const handleOpenWorkspace = useCallback(() => {
     if (!allowOpenWorkspace) {
-      // Web 远程控制当前只保证“进入 desktop 已打开的 workspace”。
-      // 之前这里继续放开“打开工作区”，用户会被带进打开工作区中间页，
-      // 但后续的新工作区/新会话链路并没有在 Web 远程控制模式里补齐，看起来就像页面一直卡住。
-      // 这里直接拦掉入口，避免把用户带进半支持状态。
+            // 之前这里继续放开“打开工作区”，用户会被带进打开工作区中间页，
+            // 这里直接拦掉入口，避免把用户带进半支持状态。
       logger.info("[Root] 当前模式不支持打开其他工作区，已忽略请求");
       return;
     }

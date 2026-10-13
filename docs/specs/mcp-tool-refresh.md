@@ -40,7 +40,7 @@ retry. Notifications arriving during the fetch remain observable because the
 runtime records the revision captured before the fetch, not a later revision.
 Adapter-level retry semantics and server failure handling are unchanged.
 
-Desktop continuous delivery and mobile replayable delivery use the same
+Desktop continuous delivery and ordinary Web/SSH replayable delivery use the same
 runtime registry and turn admission boundary; this change adds no stream,
 snapshot, replay, owner/lease or remote attachment behavior. Existing workspace
 identity and remote-session routing remain in the original tool registration

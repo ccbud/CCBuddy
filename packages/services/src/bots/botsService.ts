@@ -5374,7 +5374,7 @@ export function createBotsService(
         if (shouldBroadcast) {
           await broadcastTaskStreamEvent(context, event);
         }
-        // Bugfix: 共享 host / 远控下 UI 收到的是 workspace 级 mirror batch。
+        // Bugfix: 共享 Host 下 UI 收到的是 workspace 级 mirror batch。
         // 旧逻辑只识别裸 stream event，导致 UI 正常流式显示但 Bot channel 没有任何可发送回复。
         for (const op of event.ops) {
           if (op.kind === "stream_event") {
@@ -5405,7 +5405,7 @@ export function createBotsService(
             automationRuns.delete(event.traceId) ||
             automationPending;
           automationPending = false;
-          // 桌面/手机轮次只能同步输出，不能凭常驻订阅增加 IM 审批入口。
+          // 桌面/Web轮次只能同步输出，不能凭常驻订阅增加 IM 审批入口。
           imInteractionRun = privateImTraces.has(
             JSON.stringify([streamSubscriptionKey, event.traceId]),
           );
@@ -5960,7 +5960,7 @@ export function createBotsService(
     const dynamicTaskEvent = (
       ccbuddyTaskService as Partial<Pick<ICCbuddyTaskService, "onDynamicTaskEvent">>
     ).onDynamicTaskEvent;
-    // Bugfix: 远控/共享 host 场景会通过 workspace+task mirror 分发流事件。
+    // Bugfix: 共享 Host 场景会通过 workspace+task mirror 分发流事件。
     // 这里优先订阅 workspace 级事件，避免只监听本地 taskId relay 时漏掉 channel 回复。
     const streamDisposable = taskStreamHub.add(
       JSON.stringify([
@@ -5975,8 +5975,8 @@ export function createBotsService(
               workspaceIdentity: context.workspaceIdentity,
               taskId: context.activeTaskId!,
               // Bugfix: Bot channel 使用 direct stream 语义。
-              // 手机远控 replayable 的 mirror replay / snapshot gap recovery 会改变 bot 回复边界，
-              // 这里使用 bot 专属 continuous 订阅，避免远控恢复逻辑影响飞书/微信等 channel。
+              // 普通 Web replayable 的 mirror replay / snapshot gap recovery 会改变 bot 回复边界，
+              // 这里使用 bot 专属 continuous 订阅，避免恢复逻辑影响飞书/微信等 channel。
               deliveryKind: "bot-channel-continuous",
             })(receive)
           : ccbuddyTaskService.onDynamicStreamEvent(context.activeTaskId!)(receive),

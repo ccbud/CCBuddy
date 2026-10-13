@@ -231,7 +231,10 @@ function canPollForUpdatesFromState(state: AutoUpdaterMenuState): boolean {
   );
 }
 
-function hasVisibleUpdateTarget(state: AutoUpdaterMenuState): boolean {
+// 同步新增的无更新分支会读取 channel；谓词仅接受这两种已有目标，类型也应保留同一约束。
+function hasVisibleUpdateTarget(
+  state: AutoUpdaterMenuState,
+): state is Extract<AutoUpdaterMenuState, { kind: "update-available" | "update-downloaded" }> {
   return state.kind === "update-available" || state.kind === "update-downloaded";
 }
 
@@ -1704,9 +1707,7 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
           kind: "available",
           version:
             menuState.kind === "update-available" ? menuState.version : (readyUpdateVersion ?? ""),
-          ...(menuState.kind !== "checking" && menuState.channel
-            ? { channel: menuState.channel }
-            : {}),
+          ...(menuState.channel ? { channel: menuState.channel } : {}),
         });
         return;
       }

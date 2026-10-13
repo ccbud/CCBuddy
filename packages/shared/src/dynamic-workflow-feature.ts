@@ -75,7 +75,7 @@ export function createDynamicWorkflowClientConfig(
 /**
  * 功能是否提供（与用户选择无关）：设置行只在提供时出现。
  *
- * 修复原因：快照可能来自没有 offeredMode 的旧 Host（新 UI——例如手机远控 bundle——连旧桌面）。
+ * 修复原因：新 UI 可能连接没有 offeredMode 的旧 Host。
  * 过去直接比 `!== "disabled"`，缺席的字段读作「已提供」，设置行照出、选择写进一个旧 Host 不认的
  * 设置。缺席或读不懂的 offeredMode 一律按未提供：只有认用户选择的 Host 才会写这个字段。
  */

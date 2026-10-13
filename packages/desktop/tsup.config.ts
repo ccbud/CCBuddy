@@ -265,6 +265,8 @@ export default defineConfig([
       "@ccbuddy/rpc",
       "@ccbuddy/services",
       "@ccbuddy/client",
+      // 修复：历史服务是 CCbuddy 自有源码包，生产 Electron 没有 TS loader，必须随 Main 内联。
+      "@ccbuddy/history",
       // Provider Refactor 的 workspace 包导出 TypeScript 源码；Electron 生产运行时没有
       // TS loader，必须随 Desktop bundle 内联，不能留下指向 src/index.ts 的裸包引用。
       "@ccbuddy/provider",
@@ -290,7 +292,6 @@ export default defineConfig([
     entry: {
       "preload/embeddedBrowserJavaScriptDialog": "src/preload/embeddedBrowserJavaScriptDialog.ts",
       "preload/codingPlanWebview": "src/preload/codingPlanWebview.ts",
-      "preload/rewardsWebview": "src/preload/rewardsWebview.ts",
       "preload/browserVideoRecorder": "src/preload/browserVideoRecorder.ts",
       "preload/index": "src/preload/index.ts",
       "preload/resourceManager": "src/preload/resourceManager.ts",
@@ -302,7 +303,7 @@ export default defineConfig([
     platform: "node",
     target: "node22",
     external: ["electron"],
-    noExternal: ["@ccbuddy/shared"],
+    noExternal: ["@ccbuddy/shared", "@ccbuddy/history"],
     outExtension: () => ({ js: ".cjs" }),
     define: createSharedDefines(),
     esbuildOptions(options) {

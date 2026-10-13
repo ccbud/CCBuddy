@@ -252,6 +252,8 @@ export type ToolInputValidationResult = { result: true } | ToolHandlerFailure;
  */
 export interface ToolInputResolutionContext {
   workingDirectory?: string;
+  /** 与 handler 和权限服务同源的逻辑 workspace 身份；缺席时保留路径 fallback。 */
+  workspaceIdentity?: string;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
   /**
    * workflow run 端口与本会话 id：AmendWorkflow 用它们把 `run_id` 解析成「前驱是不是本会话的、

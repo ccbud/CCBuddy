@@ -75,7 +75,7 @@ const taskMetaRealtimeSchema = z.object({
       message: z.string().min(1),
       traceId: nonEmptyString.optional(),
       taskId: nonEmptyString.optional(),
-      // 旧 realtime schema 会静默剥离 lastError.attribution，导致手机 replayable
+      // 旧 realtime schema 会静默剥离 lastError.attribution，导致Web replayable
       // task meta 与桌面 snapshot 的归因不一致；这里沿用共享 schema 保持 wire 约束一致。
       attribution: errorAttributionSchema.optional(),
     })
@@ -185,7 +185,7 @@ const ccbuddyPromptAttachmentSchema = z.discriminatedUnion("kind", [
       localPath: z.string().optional(),
     })
     .strict(),
-  // 附件类型新增 video 后，replayable schema 未同步，手机远控会拒绝合法附件。
+  // 附件类型新增 video 后，replayable schema 也必须接受合法附件。
   z
     .object({
       kind: z.literal("video"),

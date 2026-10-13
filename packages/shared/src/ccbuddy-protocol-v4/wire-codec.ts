@@ -19,13 +19,12 @@ function vqlByteLength(value: number): number {
 }
 
 /**
- * 按当前生产三层真实承载计量 topic notification。mobile relay
- * 会把 Channel binary 再 base64，不能只测 CLI 的 logical JSON。
+ * 按现存 CLI NDJSON 和 Channel/Socket 外壳计量 topic notification。
+ * 已移除的 relay 外壳预算不能继续因 base64 膨胀而限制普通 RPC 帧。
  */
 export function measureTopicNotificationEnvelopeBytes(wire: TopicWireFrameCandidate): {
   cliNdjsonBytes: number;
   channelSocketBytes: number;
-  mobileRelayBytes: number;
   maxBytes: number;
 } {
   const cliNdjsonBytes =
@@ -49,30 +48,10 @@ export function measureTopicNotificationEnvelopeBytes(wire: TopicWireFrameCandid
   const channelPayloadBytes = channelHeaderBytes + 1 + vqlByteLength(wireJsonBytes) + wireJsonBytes;
   // SocketProtocol/PersistentProtocol 在 Channel payload 外再加固定 13-byte frame header。
   const channelSocketBytes = channelPayloadBytes + SOCKET_PROTOCOL_HEADER_BYTES;
-  // topic encoder 继续用 legacy 单片 outer 作为保守 logical budget；production 已不发送该形态，
-  // Channel payload 会再经 acknowledged raw adapter 独立分片并按最终 JSON 精确计量。
-  // 两层预算分别约束 topic logical frame 与 relay physical frame，不能互相替代。
-  const dataBase64Bytes = 4 * Math.ceil(channelPayloadBytes / 3);
-  const transportId = "x".repeat(PROTOCOL_V4_LIMITS.transportEnvelopeIdMaxChars);
-  const mobileRelayFixedBytes = utf8JsonByteLength({
-    type: "data",
-    payload: {
-      ccbuddy_type: "rpc-frame",
-      bridgeSessionId: transportId,
-      bridgeGeneration: Number.MAX_SAFE_INTEGER,
-      recoveryId: transportId,
-      seq: Number.MAX_SAFE_INTEGER,
-      dataBase64: "",
-    },
-    client_ts: Number.MAX_SAFE_INTEGER,
-    server_ts: Number.MAX_SAFE_INTEGER,
-  });
-  const mobileRelayBytes = mobileRelayFixedBytes + dataBase64Bytes;
   return {
     cliNdjsonBytes,
     channelSocketBytes,
-    mobileRelayBytes,
-    maxBytes: Math.max(cliNdjsonBytes, channelSocketBytes, mobileRelayBytes),
+    maxBytes: Math.max(cliNdjsonBytes, channelSocketBytes),
   };
 }
 

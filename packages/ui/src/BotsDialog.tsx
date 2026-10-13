@@ -731,7 +731,7 @@ export function BotsDialog({
       return;
     }
 
-    // Bugfix: 远程控制弹窗新增 Bot Channel 快捷入口后，进入 BotsDialog 不能停在空白选择页。
+    // Bugfix: 从 Bot Channel 快捷入口进入时，应直接打开对应提供方的创建页。
     // 这里在配置加载完成后再判断并创建，避免异步刷新尚未拿到已有 bot 时重复新建。
     setCreatingBot(true);
     setSelectedBotId(null);

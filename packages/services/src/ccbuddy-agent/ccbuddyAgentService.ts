@@ -997,7 +997,7 @@ interface CreateCCbuddyAgentServiceOptions extends Omit<
     | undefined;
   /**
    * browser-use 执行桥：把 agent 的 interaction/browserExecute 反向请求转发到 main
-   * （WebContentsView+CDP）。desktop host 装配时注入；缺省（纯 CLI/远控无 main）则
+   * （WebContentsView+CDP）。Desktop Host 装配时注入；纯 CLI/普通 Web 没有 Main 注入时，
    * browser 命令返回 backend_unavailable，不影响其它功能。
    */
   browserControlExecutor?: BrowserAmbientContextExecutor;
@@ -5589,8 +5589,8 @@ export function createCCbuddyAgentService(
         const disposable = emitter.event((request) => {
           listener(request);
         });
-        // Bug 原因（2026-08-16 web 远控卡死）：session 级入口要求订阅方知道 sessionId，
-        // 而 web 远控新建的会话在桌面没有任何 pane，桌面侧无人订阅，headers 请求
+        // Bug 原因（2026-08-16 workspace 请求滞留）：session 级入口要求订阅方知道 sessionId，
+        // 共享 Host 中由普通 Web 新建的会话在桌面没有 pane，桌面侧无人订阅，headers 请求
         // 永远滞留 pending。workspace 级订阅与 session 级同语义：先注册 live listener，
         // 再按 workspaceKey 前缀补投 pending，封住请求先于订阅到达的窗口；
         // 隔离按 workspaceKey（identity 优先），禁止把远程同路径 workspace 的请求互投。
@@ -5852,7 +5852,7 @@ export function createCCbuddyAgentService(
           connectionId: connection.connectionId,
           clientMode: connection.clientMode,
           // 与 clientMode 同族的可信位（10 §3.1）：只由这里从连接的 clientHello 注入。
-          // 缺席即 CLI 按旧消费者发整键 patch，并先裁到旧界——重订阅、recovery、手机
+          // 缺席即 CLI 按旧消费者发整键 patch，并先裁到旧界——重订阅、recovery、Web 客户端
           // relay attachment 都走这一条 subscribe，所以这一处写全即可。
           ...(connection.workflowRunDeltas === true ? { workflowRunDeltas: true } : {}),
           // Bug 根因：冷订阅过去只传 sessionId，CLI 只能从历史 session.path 反推
@@ -5929,7 +5929,7 @@ export function createCCbuddyAgentService(
         });
       }
       let envelope = await buildConversationCommandEnvelope(params);
-      // TTFT 首版只允许可信桌面本地 continuous，手机/远端透传不能开启本地观测。
+      // TTFT 首版只允许可信桌面本地 continuous，Web/远端透传不能开启本地观测。
       if (
         commandClientMode !== "desktop-continuous" ||
         params.workspaceIdentity?.trim() ||

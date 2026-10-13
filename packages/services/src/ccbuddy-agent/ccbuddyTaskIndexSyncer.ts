@@ -164,7 +164,7 @@ export interface CCbuddyTaskIndexSyncer {
   onSessionTerminalEvent: Event<CCbuddyTaskIndexTerminalEvent>;
   /**
    * 订阅会话收口后的 prompt ready 状态（phase 进入 completedSuccess/completedInterrupted/error）。
-   * 手机 host command queue 只能以这个事件作为继续发送下一条的边界。
+   * Web host command queue 只能以这个事件作为继续发送下一条的边界。
    */
   onSessionReadyEvent: Event<CCbuddyTaskIndexReadyEvent>;
   /** 释放所有 v4 订阅和 workspace emitter；不关闭注入的 taskIndexRepo。 */

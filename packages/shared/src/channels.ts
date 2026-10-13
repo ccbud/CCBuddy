@@ -8,15 +8,6 @@ import type {
   SaveCliMcpToUserDirectoryRequest,
 } from "./index.js";
 import type { OAuthStateRegistration } from "./oauth.js";
-import type {
-  WebRemoteControlContext,
-  WebRemoteControlReconnectWorkspaceRequest,
-  WebRemoteControlReconnectWorkspaceResult,
-  WebRemoteControlStartOperationResult,
-  WebRemoteControlStatus,
-  WebRemoteControlTaskTarget,
-  WebRemoteControlWorkspaceTarget,
-} from "./web-remote-control.js";
 import type { AppSettings, Locale } from "./protocol.js";
 import type { StorageCleanRequest, StorageCleanResult, StorageUsageSnapshot } from "./storage.js";
 import type {
@@ -66,6 +57,7 @@ import type {
   OpenInEditorOptions,
   PostUpdateReleaseNotesPayload,
   RemoteSessionClosedEvent,
+  RemoteWorkspaceSessionTarget,
   SSHConfigAliasOption,
   TaskNotificationPayload,
   WSLDistro,
@@ -228,15 +220,6 @@ export const PlatformChannels = {
   CancelPendingRemoteConnection: "ccbuddy:cancel-pending-remote-connection",
   /** Renderer → Main：绑定远程 logical session 的 canonical workspace context */
   BindRemoteWorkspaceSessionContext: "ccbuddy:bind-remote-workspace-session-context",
-  /** 为当前 workspace 开启 Web 远程控制 */
-  StartWebRemoteControl: "ccbuddy:start-web-remote-control",
-  ResetWebRemoteControlPairing: "ccbuddy:reset-web-remote-control-pairing",
-  /** 关闭当前窗口的 Web 远程控制 */
-  StopWebRemoteControl: "ccbuddy:stop-web-remote-control",
-  /** 查询当前窗口的 Web 远程控制状态 */
-  GetWebRemoteControlStatus: "ccbuddy:get-web-remote-control-status",
-  /** Main → Renderer：当前窗口 Web 远程控制状态变化 */
-  WebRemoteControlStatusChanged: "ccbuddy:web-remote-control-status-changed",
   /** 释放当前窗口里的远程 session */
   DisposeRemoteSession: "ccbuddy:dispose-remote-session",
   /** Renderer → Main：检查本机 Docker daemon 是否可用 */
@@ -257,12 +240,8 @@ export const PlatformChannels = {
   Log: "ccbuddy:log",
   /** Renderer → Main：同步当前窗口所有 tab 的 workspace 路径 */
   SyncWindowTabs: "ccbuddy:sync-window-tabs",
-  /** Renderer → Main：同步当前窗口可供 Web 远程控制切换的 workspace */
-  SyncWebRemoteControlWorkspaces: "ccbuddy:sync-web-remote-control-workspaces",
-  /** Renderer → Main：同步当前窗口可供 Web 远程控制展示的 task 快照 */
-  SyncWebRemoteControlTasks: "ccbuddy:sync-web-remote-control-tasks",
-  /** Main → Renderer：手机端请求重连当前窗口里的远程 workspace */
-  WebRemoteControlReconnectWorkspace: "ccbuddy:web-remote-control-reconnect-workspace",
+  /** Renderer → Main：同步已连接的远程 workspace 身份到现有 session registry。 */
+  SyncRemoteWorkspaceSessions: "ccbuddy:sync-remote-workspace-sessions",
   /** Renderer → Main：同步当前窗口的未读 task 数 */
   SyncWindowUnreadCount: "ccbuddy:sync-window-unread-count",
   /** Renderer → Main：当前窗口 active task，只更新 Main 的临时焦点映射。 */
@@ -829,26 +808,6 @@ export interface PlatformChannelMap {
     request: BindRemoteWorkspaceSessionContextRequest;
     response: void;
   };
-  [PlatformChannels.StartWebRemoteControl]: {
-    request: WebRemoteControlContext;
-    response: WebRemoteControlStartOperationResult;
-  };
-  [PlatformChannels.ResetWebRemoteControlPairing]: {
-    request: WebRemoteControlContext;
-    response: WebRemoteControlStartOperationResult;
-  };
-  [PlatformChannels.StopWebRemoteControl]: {
-    request: void;
-    response: void;
-  };
-  [PlatformChannels.GetWebRemoteControlStatus]: {
-    request: void;
-    response: WebRemoteControlStatus;
-  };
-  [PlatformChannels.WebRemoteControlStatusChanged]: {
-    request: WebRemoteControlStatus;
-    response: void;
-  };
   [PlatformChannels.DisposeRemoteSession]: {
     request: string;
     response: void;
@@ -885,17 +844,9 @@ export interface PlatformChannelMap {
     request: { level: "info" | "warn" | "error"; args: unknown[] };
     response: void;
   };
-  [PlatformChannels.SyncWebRemoteControlWorkspaces]: {
-    request: WebRemoteControlWorkspaceTarget[];
+  [PlatformChannels.SyncRemoteWorkspaceSessions]: {
+    request: RemoteWorkspaceSessionTarget[];
     response: void;
-  };
-  [PlatformChannels.SyncWebRemoteControlTasks]: {
-    request: WebRemoteControlTaskTarget[];
-    response: void;
-  };
-  [PlatformChannels.WebRemoteControlReconnectWorkspace]: {
-    request: WebRemoteControlReconnectWorkspaceRequest;
-    response: WebRemoteControlReconnectWorkspaceResult;
   };
   [PlatformChannels.SyncWindowUnreadCount]: {
     request: number;

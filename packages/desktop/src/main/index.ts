@@ -61,6 +61,7 @@ import {
 } from "@ccbuddy/services/node";
 import {
   desktopMenuMessageIds,
+  appSettingsPatchSchema,
   type Locale,
   type AppSettings,
   PlatformChannels,
@@ -69,8 +70,6 @@ import {
   DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
   DEFAULT_LOCALE,
   CCBUDDY_VERSION,
-  CCBUDDY_TELEMETRY_ENABLED,
-  CCBUDDY_ARMS_RUM_ENDPOINT,
   resolveCCbuddyEndpointOrigin,
   shouldEnableE2ETestBridge,
   type UpdateStatePayload,
@@ -78,6 +77,7 @@ import {
   HostMessageTypes,
 } from "@ccbuddy/shared";
 import { logger } from "./logger.js";
+import { armsRumEnabled } from "./armsRumAvailability.js";
 import { markMainLaunchAppReady } from "./desktopLaunchMarks.js";
 import { createCuaPipFocusRouter, resolveCuaPipWindowKey } from "./cuaPipFocusRouter.js";
 import { createDesktopTelemetryFetch } from "./desktopTelemetryFetch.js";
@@ -128,7 +128,13 @@ import { resolveWindowsAppUserModelIdForFlavor } from "../../scripts/desktop-pro
 import type { DesktopWindowSize } from "./desktopWindowSize.js";
 import { maybeWarnArchitectureMismatch } from "./desktopArchitectureGuard.js";
 import { desktopUpdatePolicy } from "./desktopUpdatePolicy.js";
-import { createWindowsDesktopTray, updateWindowsDesktopTrayMenu } from "./desktopTray.js";
+import { createDesktopTray, updateWindowsDesktopTrayMenu } from "./desktopTray.js";
+import {
+  createCloseToTrayCapabilityMonitor,
+  resolveCloseToTraySupported,
+  resolveCloseToTrayBootstrapValue,
+  resolveCloseToTrayRuntimeValue,
+} from "./desktopTraySupport.js";
 import { createWindowsCuaOperationIndicator } from "./windowsCuaOperationIndicator.js";
 import {
   configureDockMenu,
@@ -227,6 +233,12 @@ import {
   stopDesktopNetworkTelemetry,
 } from "./desktopNetworkTelemetry.js";
 import { applyDesktopChromiumNetworkPolicies } from "./desktopNetworkPolicy.js";
+import { applyEmbeddedBrowserPermissionPolicy } from "./embeddedBrowserPermissionPolicy.js";
+import { createEmbeddedBrowserSitePermissionStore } from "./embeddedBrowserSitePermissionStore.js";
+import {
+  createEmbeddedBrowserPermissionUiBridge,
+  setActiveEmbeddedBrowserPermissionUiBridge,
+} from "./embeddedBrowserPermissionUiBridge.js";
 import { mapCCbuddyEnvToArmsRumEnv } from "@ccbuddy/shared";
 import {
   findWindowsProcessesReferencingResourceMarkers,
@@ -288,6 +300,10 @@ const linuxDesktopIntegrationIconPath =
     : iconPath;
 let currentApplicationLocale: Locale = DEFAULT_LOCALE;
 let closeToTrayOnWindows = true;
+let desktopTrayReady = false;
+const closeToTrayCapabilityMonitor = createCloseToTrayCapabilityMonitor({
+  platform: process.platform,
+});
 // keep-awake：全局开关 keepAwakeWhileRunning。打开后主进程持有
 // powerSaveBlocker("prevent-app-suspension")，阻止系统闲置休眠（防不了合盖/手动睡眠）。
 // 不再绑定闲时任务活跃计数——设置页「常规」与 Automations 入口镜像同一配置。
@@ -818,10 +834,7 @@ let disposeRendererActionTraceIpc: (() => void) | undefined;
 const armsUserIdentitySync = createArmsUserIdentitySync({
   deviceMid,
   // 采集停用时 SDK 未初始化，setConfig 会抛错。
-  setUser:
-    CCBUDDY_TELEMETRY_ENABLED && CCBUDDY_ARMS_RUM_ENDPOINT
-      ? (user) => armsRum.setConfig("user", user)
-      : () => {},
+  setUser: armsRumEnabled ? (user) => armsRum.setConfig("user", user) : () => {},
 });
 
 function extractOpenWorkspacePathFromDeepLinkUrl(url: string): string | null {
@@ -933,7 +946,7 @@ function syncCloseToTrayOnWindows(value: unknown) {
   logger.info(`[settings] closeToTrayOnWindows=${value}`);
 }
 
-function syncImmediateAppSettings(patch: Partial<AppSettings>) {
+function syncImmediateAppSettings(patch: ReturnType<typeof appSettingsPatchSchema.parse>) {
   syncCloseToTrayOnWindows(patch.closeToTrayOnWindows);
 
   if (typeof patch.keepAwakeWhileRunning === "boolean") {
@@ -1706,7 +1719,12 @@ function createWindowInstance(startupBootstrap: StartupWindowBootstrap = {}) {
         platform: process.platform,
         forceQuit: forceQuitRef.current,
         explicitQuitRequested: explicitQuitRef.current,
-        closeToTrayOnWindows,
+        closeToTray: closeToTrayOnWindows,
+        closeToTraySupported: resolveCloseToTraySupported({
+          platform: process.platform,
+          desktopTrayReady,
+          capabilitySupported: closeToTrayCapabilityMonitor.getSync()?.supported,
+        }),
         isLastWindow: getMainApplicationWindows().length === 1,
         label,
         logger,
@@ -1881,7 +1899,8 @@ function createWindowInstance(startupBootstrap: StartupWindowBootstrap = {}) {
     initialWindowSize: currentDesktopWindowSize,
     currentApplicationLocale: () => currentApplicationLocale,
     resolveBrowserViewOwner: (webContentsId) =>
-      browserGuestManager.getTabOwnerByWebContentsId(webContentsId),
+      // Guest manager 的 null 在窗口契约中表示缺失；统一为 undefined，保留权限拒绝边界。
+      browserGuestManager.getTabOwnerByWebContentsId(webContentsId) ?? undefined,
     persistWindowSize: async (state) => {
       currentDesktopWindowSize = state;
       await mainSettingService.update({ desktopWindowSize: state });
@@ -1997,7 +2016,31 @@ app.whenReady().then(async () => {
       loadedBootstrapLocale = true;
       currentApplicationLocale = bootstrapSettings.locale;
     }
-    closeToTrayOnWindows = bootstrapSettings.closeToTrayOnWindows ?? true;
+    // Linux 新增托盘能力后，旧版继承的 Windows 默认 true 不能成为用户选择；复用现有一次性迁移。
+    const closeToTrayBootstrap = resolveCloseToTrayBootstrapValue({
+      platform: process.platform,
+      stored: bootstrapSettings.closeToTrayOnWindows,
+      linuxMigrationInitialized: bootstrapSettings.closeToTrayLinuxMigrationInitialized,
+    });
+    let closeToTrayMigrationPersisted = true;
+    if (closeToTrayBootstrap.needsLinuxMigration) {
+      try {
+        // 必须在 renderer 读设置前等待落盘，防止 Main 与设置页看到不同的关闭行为。
+        await mainSettingService.update({
+          closeToTrayOnWindows: false,
+          closeToTrayLinuxMigrationInitialized: true,
+        });
+      } catch (error) {
+        closeToTrayMigrationPersisted = false;
+        logger.warn("[settings] failed to persist linux close-to-tray default migration", error);
+      }
+    }
+    closeToTrayOnWindows = resolveCloseToTrayRuntimeValue({
+      platform: process.platform,
+      stored: bootstrapSettings.closeToTrayOnWindows,
+      linuxMigrationInitialized: bootstrapSettings.closeToTrayLinuxMigrationInitialized,
+      migrationPersisted: closeToTrayMigrationPersisted,
+    });
     keepAwakeWhileRunning = bootstrapSettings.keepAwakeWhileRunning ?? false;
     currentDesktopZoomLevel = clampDesktopZoomLevel(bootstrapSettings.desktopZoomLevel ?? 0);
     currentDesktopWindowSize = bootstrapSettings.desktopWindowSize;
@@ -2052,6 +2095,21 @@ app.whenReady().then(async () => {
     logger.warn("[desktop-network] Chromium network policy bootstrap failed:", error);
   }
 
+  // 修复原因：只移植网站权限设置而未装配 Session handler，用户的阻止记录不会
+  // 参与 Electron 决策也不会落盘。必须先完成 store、UI bridge 和策略注册，再创建 guest。
+  const embeddedBrowserPermissionUiBridge = createEmbeddedBrowserPermissionUiBridge({ logger });
+  embeddedBrowserPermissionUiBridge.registerResolveListener();
+  setActiveEmbeddedBrowserPermissionUiBridge(embeddedBrowserPermissionUiBridge);
+  await applyEmbeddedBrowserPermissionPolicy(session.fromPartition(EMBEDDED_BROWSER_PARTITION), {
+    logger,
+    prompt: embeddedBrowserPermissionUiBridge.promptPermission,
+    devicePicker: embeddedBrowserPermissionUiBridge.devicePicker,
+    onDisplayMediaRequest: embeddedBrowserPermissionUiBridge.onDisplayMediaRequest,
+    store: createEmbeddedBrowserSitePermissionStore(
+      join(app.getPath("userData"), "embedded-browser-site-permissions.json"),
+    ),
+  });
+
   // 设置仍与 CCbuddy 共享；无 CCbuddy 发行源时不能把上游 pending 版本读成可安装更新。
   if (desktopUpdatePolicy.autoUpdateEnabled) {
     await hydratePendingPostUpdateReleaseNotes(mainSettingService);
@@ -2089,7 +2147,7 @@ app.whenReady().then(async () => {
       ),
     () => showCurrentWindowFromDock(primaryWindowCoordinator),
   );
-  createWindowsDesktopTray({
+  const desktopTrayOptions = {
     getLocale: () => currentApplicationLocale,
     showCurrentWindow: () =>
       primaryWindowCoordinator.ensurePrimaryWindow("tray-show-current-window"),
@@ -2099,7 +2157,23 @@ app.whenReady().then(async () => {
       app.quit();
     },
     logger,
-  });
+  };
+  // 托盘创建结果与能力探测共用一份裁决，不能在无可见托盘时隐藏最后一个窗口。
+  if (process.platform === "win32") {
+    desktopTrayReady = createDesktopTray(desktopTrayOptions) !== null;
+  }
+  const ensureLinuxDesktopTray = async (): Promise<void> => {
+    if (process.platform !== "linux" || desktopTrayReady) return;
+    const capability = await closeToTrayCapabilityMonitor.refresh();
+    if (capability.supported) {
+      desktopTrayReady = createDesktopTray({ ...desktopTrayOptions, platform: "linux" }) !== null;
+    }
+  };
+  if (process.platform === "linux") {
+    void ensureLinuxDesktopTray().catch((error: unknown) => {
+      logger.warn("[desktop-tray] linux tray capability probe failed", error);
+    });
+  }
 
   registerPlatformIpcHandlers({
     fetchHelpConfig: readHelpConfig,
@@ -2192,6 +2266,38 @@ app.whenReady().then(async () => {
     getDesktopSessionActivity: () => ({
       runningAgentSessionCount: getRunningAgentSessionCount(),
     }),
+    syncRemoteWorkspaceSessions: (webContentsId, targets) => {
+      for (const target of targets) {
+        // 手机汇总 API 曾承载普通 Bot 的身份同步；现在直接复用已有 registry 的受控绑定路径。
+        void remoteSessionManager
+          .bindRemoteWorkspaceSessionContext(
+            target.remoteSessionId,
+            {
+              workspacePath: target.workspacePath,
+              workspaceIdentity: target.workspaceIdentity,
+            },
+            webContentsId,
+          )
+          .catch((error: unknown) => {
+            logger.warn("[remote-workspace-session-sync] target unavailable", {
+              remoteSessionId: target.remoteSessionId,
+              error,
+            });
+          });
+      }
+    },
+    refreshCloseToTrayCapability: async () => {
+      await ensureLinuxDesktopTray();
+      const capability = await closeToTrayCapabilityMonitor.refresh();
+      return {
+        supported: resolveCloseToTraySupported({
+          platform: process.platform,
+          desktopTrayReady,
+          capabilitySupported: capability.supported,
+        }),
+        gnomeLikeWithoutTray: capability.gnomeLikeWithoutTray,
+      };
+    },
     syncAppSettings: syncImmediateAppSettings,
     setShortcutRecordingActive,
     deviceMid,
@@ -2239,7 +2345,7 @@ app.whenReady().then(async () => {
   void armsUserIdentitySync.refresh();
 
   // 未配置 ARMS 端点时不初始化上报 context，避免把空转误当成已启用。
-  if (CCBUDDY_TELEMETRY_ENABLED && CCBUDDY_ARMS_RUM_ENDPOINT) {
+  if (armsRumEnabled) {
     configureDesktopStabilityTelemetry({
       deviceMid,
       platform: process.platform,
@@ -2311,7 +2417,7 @@ app.whenReady().then(async () => {
   });
 
   const protocolUrl = extractDeepLinkUrlFromArgs(process.argv);
-  if (startupDeepLinkConsumptionGate.shouldHandleReadyProtocolUrl(protocolUrl)) {
+  if (protocolUrl && startupDeepLinkConsumptionGate.shouldHandleReadyProtocolUrl(protocolUrl)) {
     handleDeepLink(protocolUrl, logger, {
       confirmationCopy: resolveExternalWorkspaceConfirmationCopy(),
       resolveApplicationWindow: () => getApplicationWindowsExcludingCuaIndicator()[0] ?? null,

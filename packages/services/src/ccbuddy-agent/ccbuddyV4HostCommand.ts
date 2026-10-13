@@ -45,13 +45,13 @@ export interface CreateHostCommandEnvelopeInput<T extends CommandType> {
   /** createSession 时为 null。 */
   sessionId: string | null;
   /**
-   * 幂等键。手机 replayable 的 send_prompt 用 inputId（=traceId）作 commandId：
+   * 幂等键。Web replayable 的 send_prompt 用 inputId（=traceId）作 commandId：
    * CLI 侧 sendText 以 commandId 为 inputId 起 turn，终态事件的 inputId 才能与
    * host command queue 的 traceId 对账收口（inputId→commandId 对齐）。
    * 缺省生成 uuid v7（stop/resolveInteraction 等一次性命令）。
    */
   commandId?: string;
-  /** 手机 replayable 保留原提交端 clientId；缺省用 host 进程稳定 id。 */
+  /** 普通 Web replayable 保留原提交端 clientId；缺省用 Host 进程稳定 id。 */
   clientId?: string;
   baseRevision?: number;
   baseLogEpoch?: string;

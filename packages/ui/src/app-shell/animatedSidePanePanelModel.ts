@@ -95,8 +95,7 @@ export function shouldRenderPreviewPaneHeavyContent({
   }
 
   if (isMobileOverlay) {
-    // Bugfix: 手机远控右侧栏用 transform 抽屉滑入，首次测量时可能还在视口外。
-    // transform 动画结束不会触发 ResizeObserver，不能用桌面窄条优化延迟真实预览。
+        // transform 动画结束不会触发 ResizeObserver，不能用桌面窄条优化延迟真实预览。
     return true;
   }
 

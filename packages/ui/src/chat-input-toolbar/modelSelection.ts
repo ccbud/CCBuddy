@@ -3,9 +3,8 @@ import { decodeCustomModelValue } from "@/lib/ccbuddyCustomModelValue.js";
 
 export function shouldShowManageModelsAction(
   onManageModels?: () => void,
-  options: { isWebRemoteControl?: boolean } = {},
 ): boolean {
-  if (options.isWebRemoteControl) return false;
+
   return typeof onManageModels === "function";
 }
 

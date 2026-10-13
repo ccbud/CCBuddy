@@ -16,7 +16,7 @@ Use this skill before editing code in the CCbuddy repository. It is a design gui
    - **One owner:** name the single component that owns each piece of mutable state. Other layers read through its contract and send commands; they do not keep a second accepted queue, cache, or derived truth.
    - **One path:** reuse an existing command, service, hook, adapter, or contract when it already expresses the behavior. Do not create a parallel helper for the same responsibility.
    - **Explicit boundaries:** choose the layer for every new file and the public contract for every cross-module edge. Keep `ui → hooks/services → app → domain → adapters` and keep IO out of domain.
-   - **Explicit time:** for asynchronous or remote behavior, write the event order, owner/lease, idempotency key, stale-result rule, replay/resume boundary, and desktop versus mobile delivery kind before implementation.
+   - **Explicit time:** for asynchronous or remote behavior, write the event order, owner/lease, idempotency key, stale-result rule, replay/resume boundary, and desktop versus Web/SSH delivery kind before implementation.
    - **Bounded context:** use the relevant contracts, specs, and tests. A generated reading package helps when dependencies are unclear; do not require a whole-module reading pass for every local edit.
 5. If the change alters a public contract, ownership, or allowed dependency, record that decision in the relevant spec/contract before implementation. Editing files in two modules alone does not require a new document. Use the root task boundary for when to consult the user; ordinary authorized implementation choices proceed autonomously.
 
@@ -32,7 +32,7 @@ For remote or streaming changes, make the delivery boundary explicit:
 ```text
 desktop: continuous ── direct live stream ──┐
                                            ├─ same owner and sequence
-mobile: replayable ─ snapshot + gap repair ┘
+Web/SSH: replayable ─ snapshot + gap repair ┘
 ```
 
 ## During and after editing

@@ -70,7 +70,6 @@ export function GroupItem({
   activeWorkspacePath,
   activeWorkspaceIdentity,
   activeTaskId,
-  mobileActiveTaskKey,
   getTaskRemoteSessionId,
   getTaskWorkspaceLabel,
   onSelectTask,
@@ -103,7 +102,7 @@ export function GroupItem({
   activeWorkspacePath: string;
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
-  mobileActiveTaskKey?: string | null;
+
   getTaskRemoteSessionId: (task: CCbuddyTaskMeta) => string | undefined;
   getTaskWorkspaceLabel: (task: CCbuddyTaskMeta) => string;
   onSelectTask: (
@@ -753,7 +752,7 @@ export function GroupItem({
                     activeWorkspacePath={activeWorkspacePath}
                     activeWorkspaceIdentity={activeWorkspaceIdentity}
                     activeTaskId={activeTaskId}
-                    mobileActiveTaskKey={mobileActiveTaskKey}
+
                     onSelectTask={onSelectTask}
                     onCloseTask={onCloseTask}
                     onOpenFileTree={onOpenFileTree}
@@ -784,7 +783,7 @@ export function GroupItem({
                       activeWorkspacePath={activeWorkspacePath}
                       activeWorkspaceIdentity={activeWorkspaceIdentity}
                       activeTaskId={activeTaskId}
-                      mobileActiveTaskKey={mobileActiveTaskKey}
+
                       onSelectTask={onSelectTask}
                       onCloseTask={onCloseTask}
                       onOpenFileTree={onOpenFileTree}

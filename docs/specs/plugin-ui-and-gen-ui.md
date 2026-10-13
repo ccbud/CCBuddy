@@ -26,8 +26,8 @@ the workspace. Page state (`widgetState`) lives under the same root
 `modelContent` re-enters the model context. A follow-up message is sent only
 after an explicit user action.
 
-Interactive pages are a Desktop local-workspace capability. Web, mobile remote
-control and remote workspaces keep ordinary MCP tool records and do not claim
+Interactive pages are a Desktop local-workspace capability. Web and remote
+workspaces keep ordinary MCP tool records and do not claim
 these surfaces.
 
 Pages run in a separate Electron sandbox (`persist:plugin-sandbox-v2-…`
@@ -102,7 +102,7 @@ sandbox page owner -> independently retain inline / side-pane guest and calls
 Duplicate mounts each own a lease. Release is idempotent; a release captured
 before explicit removal cannot alter a later entry for the same session.
 This is renderer-local cache retention and does not change desktop continuous
-or mobile replayable delivery.
+or ordinary Web/SSH replayable delivery.
 
 ## Acceptance
 

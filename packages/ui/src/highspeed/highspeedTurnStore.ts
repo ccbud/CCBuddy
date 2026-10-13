@@ -68,7 +68,7 @@ export function recordHighspeedTurn(record: HighspeedTurnRecord): void {
 
 /**
  * 冷启动恢复与跨端追平：到期时 renderer 可能不在场，内存 store 没有机会登记/收口这张卡；
- * 远控 Renderer 也可能先登记运行中 row、桌面端随后才把完成态持久化进 transcript。
+ * Web Renderer 也可能先登记运行中 row、桌面端随后才把完成态持久化进 transcript。
  * 合并口径见 planHighspeedTranscriptHydration；这里只负责按序落库并发一次通知。
  * 返回产生变化的 row 数；无变化不发通知，重复水合不会造成渲染抖动。
  */

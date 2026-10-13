@@ -962,7 +962,6 @@ function ElicitationDialogContent({
 
   return (
     <div className="w-full shrink-0">
-      {/* Bugfix: 手机远控视口较短，长问题和多选项会把按钮顶出弹窗；卡片限高后让内容区内部滚动。 */}
       <div
         ref={cardRef}
         tabIndex={activeOptionIndex < 0 ? 0 : -1}

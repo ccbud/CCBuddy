@@ -53,6 +53,7 @@ import appLogoUrl from "@/assets/ccbuddy-icon.png";
 import { resolveTheme } from "@/useTheme.js";
 import { WorkspaceShellLayout } from "@/app-shell/WorkspaceShellLayout.js";
 import { useAppChromeState } from "@/app-shell/useAppChromeState.js";
+import { useHistoryMainViewNavigation } from "@/app-shell/useHistoryMainViewNavigation.js";
 import { useWorkspaceSessionReload } from "@/app-shell/useWorkspaceSessionReload.js";
 import { useWorkspaceShellLifecycle } from "@/app-shell/useWorkspaceShellLifecycle.js";
 import { useWorkspaceShellCCbuddyState } from "@/app-shell/useWorkspaceShellCCbuddyState.js";
@@ -117,10 +118,6 @@ export function App({
   remoteConnectionInProgress = false,
   onReturnToWorkspace,
   allowOpenWorkspace = true,
-  webRemoteControlWorkspaceSwitcher,
-  initialWebRemoteControlMobileNavigationIntent,
-  initialWebRemoteControlWorkspaceList,
-  webRemoteControlTerminalTransportState,
   allowRemoteWorkspace = true,
   remoteWorkspaceSessions = EMPTY_REMOTE_WORKSPACE_SESSIONS,
   workspaceAbsPath,
@@ -333,7 +330,7 @@ export function App({
     }
 
     // 新建任务只会把 activeTaskId 切到 draft，不会触发 side pane 的 workspace 级内存切换。
-    // 因此用 startDraft 递增的版本号统一收起右侧面板，覆盖按钮、菜单、快捷键和远控入口。
+    // 因此用 startDraft 递增的版本号统一收起右侧面板，覆盖按钮、菜单、快捷键和Web 入口。
     const sidePaneTabCount = sidePaneState?.tabs.length ?? 0;
     if (!isSidePaneCollapsed) {
       logger.info(
@@ -606,12 +603,12 @@ export function App({
   );
   const handleAutoOpenAssistantPptx = useCallback(
     (request: AssistantPreviewCardsAutoOpenRequest) => {
-      if (!isDesktop || webRemoteControlWorkspaceSwitcher || workspaceReadOnlyReason) {
+      if (!isDesktop || workspaceReadOnlyReason) {
         return;
       }
       handleOpenCodeViewers(request.sources);
     },
-    [handleOpenCodeViewers, isDesktop, webRemoteControlWorkspaceSwitcher, workspaceReadOnlyReason],
+    [handleOpenCodeViewers, isDesktop, workspaceReadOnlyReason],
   );
   const handleOpenTreemappingIfWritable = useCallback(
     (...args: Parameters<typeof handleOpenTreemapping>) => {
@@ -780,11 +777,10 @@ export function App({
       ) {
         addTab(targetWorkspacePath, targetTabOptions);
       }
-      if (!webRemoteControlWorkspaceSwitcher) {
+      {
         // 修复原因：workspace 行“新建对话”以前由叶子组件直接 activateTab + startDraft，
         // 没有退出重启恢复的 workbench group/pane。group primary binding 因而仍可覆盖草稿。
-        // desktop 所有显式新建入口统一先回到单 primary pane；手机 /remote 不消费这份本地布局。
-        useWorkbenchGroupStore.getState().deactivateActiveGroup();
+                useWorkbenchGroupStore.getState().deactivateActiveGroup();
         usePaneLayoutStore.getState().resetToPrimaryPane();
       }
       store.startDraft(
@@ -813,7 +809,6 @@ export function App({
       workspaceAbsPath,
       workspaceIdentity,
       workspaceShellCCbuddyState.selectedProvider,
-      webRemoteControlWorkspaceSwitcher,
     ],
   );
 
@@ -879,6 +874,12 @@ export function App({
     isWorkspaceVisible,
     workspaceMainView,
     onExitSettings: handleNavigateToTaskMain,
+  });
+  useHistoryMainViewNavigation({
+    platform,
+    preserveNextSettingsExit,
+    runVisibleWorkspaceCommand,
+    onWorkspaceMainViewChange: setWorkspaceMainView,
   });
   const handleNavigateToAutomationsMain = useCallback((target: AutomationsNavigationTarget) => {
     setOpenAutomationId(target.automationId ?? null);
@@ -1228,12 +1229,7 @@ export function App({
           onCreateScratchWorkspace={onCreateScratchWorkspace}
           remoteConnectionInProgress={remoteConnectionInProgress}
           allowOpenWorkspace={allowOpenWorkspace}
-          webRemoteControlWorkspaceSwitcher={webRemoteControlWorkspaceSwitcher}
-          initialWebRemoteControlMobileNavigationIntent={
-            initialWebRemoteControlMobileNavigationIntent
-          }
-          initialWebRemoteControlWorkspaceList={initialWebRemoteControlWorkspaceList}
-          webRemoteControlTerminalTransportState={webRemoteControlTerminalTransportState}
+
           allowRemoteWorkspace={allowRemoteWorkspace}
           remoteWorkspaceSessions={remoteWorkspaceSessions}
           workspaceAbsPath={workspaceAbsPath}

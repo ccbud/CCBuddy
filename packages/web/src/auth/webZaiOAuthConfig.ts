@@ -13,7 +13,7 @@ interface WebImportMetaEnv {
   VITE_BIGMODEL_OAUTH_APP_ID?: string;
   VITE_CCBUDDY_BASE_URL?: string;
   VITE_CCBUDDY_ENDPOINT_ORIGIN?: string;
-  VITE_WEB_REMOTE_ALLOW_DEV_RETURN_TO?: string;
+  VITE_WEB_AUTH_ALLOW_DEV_RETURN_TO?: string;
 }
 
 export interface WebZaiOAuthConfig extends WebZaiOAuthProviderConfig {
@@ -59,10 +59,10 @@ export function createWebZaiOAuthConfig(env: WebImportMetaEnv = {}): WebZaiOAuth
     bigmodelAuthorizeUrl: buildBigModelAuthorizeUrl(env.VITE_BIGMODEL_OAUTH_ORIGIN),
     // BigModel 用 appId 而不是 client_id，且默认值就是桌面端在用的 "ccbuddy"。
     bigmodelAppId: env.VITE_BIGMODEL_OAUTH_APP_ID?.trim() || "ccbuddy",
-    redirectUri: ccbuddyEndpointUrls.webRemoteCallbackUrl,
+    redirectUri: ccbuddyEndpointUrls.webShareCallbackUrl,
     shareRedirectUri: ccbuddyEndpointUrls.webShareCallbackUrl,
     ...(devOrigin ? { devOrigin } : {}),
-    allowDevReturnToRedirect: env.VITE_WEB_REMOTE_ALLOW_DEV_RETURN_TO === "true",
+    allowDevReturnToRedirect: env.VITE_WEB_AUTH_ALLOW_DEV_RETURN_TO === "true",
   };
 }
 
@@ -71,11 +71,6 @@ const env = ((import.meta as ImportMeta & { env?: WebImportMetaEnv }).env ??
 
 export const WEB_ZAI_OAUTH_CONFIG: WebZaiOAuthConfig = createWebZaiOAuthConfig(env);
 
-export function resolveWebAuthDevReturnTo(
-  config: WebZaiOAuthConfig,
-  surface: "remote" | "share" = "remote",
-): string | undefined {
-  return config.devOrigin
-    ? `${config.devOrigin}/${surface === "share" ? "share" : "web-remote"}/callback`
-    : undefined;
+export function resolveWebAuthDevReturnTo(config: WebZaiOAuthConfig): string | undefined {
+  return config.devOrigin ? `${config.devOrigin}/share/callback` : undefined;
 }

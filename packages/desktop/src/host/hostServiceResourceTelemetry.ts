@@ -39,7 +39,7 @@ function disposeAll(registrations: IDisposable[]): void {
  * 同一台远端机器有多条 dedicated 连接时会有多份订阅；main 按环境与实例归并 CLI/MCP
  * 最近读数，Bash 完成事实由 main 按 completionToken 去重，避免多连接或多窗口重复计数。
  *
- * attachment（桌面 renderer / 手机远控）不是这里的入口：attachment 只复用已就绪的 collection，
+ * attachment（桌面 renderer / Bot runtime）不是这里的入口：attachment 只复用已就绪的 collection，
  * 这些事件在 Agent connection scope 被限制为 trusted host relay，不进入会话消息面。
  */
 export function registerHostServiceResourceTelemetry(

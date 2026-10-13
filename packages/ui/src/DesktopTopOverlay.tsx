@@ -159,8 +159,6 @@ export function DesktopTopOverlay({
               <SidebarToggleIcon className="size-4" />
             </DesktopTopOverlayActionButton>
           )}
-
-          {/* 远程控制移动端左上角空间有限，任务前进/后退在这里会与主操作拥挤重叠。*/}
           {hideTaskNavigationButtons ? null : (
             <>
               <DesktopTopOverlayActionButton

@@ -99,8 +99,7 @@ function getLocalStorage(): Storage | null {
   try {
     return window.localStorage;
   } catch (error) {
-    // 部分 WebView / 移动远控容器可能禁用 localStorage。
-    // 设置页分区记忆只是 UI 偏好，存储不可用时回退默认入口，不应阻断打开设置页。
+        // 设置页分区记忆只是 UI 偏好，存储不可用时回退默认入口，不应阻断打开设置页。
     logger.warn("[settingsNavigation] localStorage 不可用", {
       error: error instanceof Error ? error.message : String(error),
     });

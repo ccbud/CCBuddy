@@ -235,7 +235,7 @@ export interface V4PaneConversationProviderProps {
  *
  * 远程目标在 session store 尚未注册真实 services 时保持 remote-waiting，不挂载子数据层，
  * 因而不会拿断连代理创建连接或发起订阅；同时绝不回落 base services，也不为 pane
- * 另起独立 runtime（远控保护约束）。重连 ready 后 services 换新引用 → 注册表保持
+ * 另起独立 runtime（共享运行时边界）。重连 ready 后 services 换新引用 → 注册表保持
  * 原 layer/transport 身份，并在 commit 阶段单向激活最新 proxy。
  */
 export function V4PaneConversationProvider({ scope, children }: V4PaneConversationProviderProps) {

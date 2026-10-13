@@ -42,7 +42,7 @@ export interface UsePaneSessionPersistenceParams {
   activeSessionId: string | null;
   /** startDraft 的显式用户意图代次；大于 0 时 null 表示草稿，不是待恢复。 */
   draftFocusVersion: number;
-  /** 手机 /remote 不消费 desktop pane 的本地恢复状态。 */
+
   enabled?: boolean;
   /** 恢复入口：与用户点击任务列表同一条选择路径，保证副作用（已读清理等）一致。 */
   selectSession: (sessionId: string) => void;

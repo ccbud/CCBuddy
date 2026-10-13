@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- trace 观测聚合入口集中关联 SQLite/event/log，同一关联规则用于 timeline/span/context/cache 投影；独立分析职责另建相邻模块。 */
 import { basename } from "node:path";
 import type {
   CacheReport,

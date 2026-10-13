@@ -1,17 +1,6 @@
-/**
- * 草稿态空态问候：时间问候语 + CCbuddy Logo。
- * 自旧版 ChatView/ChatViewEmptyState.tsx 恢复（该组件随旧 ChatView 删除，
- * i18n key `chat.empty.greeting.*` 一直保留）；边界时刻自动换档逻辑保真。
- * 手机远控复用同一组件，但继续保留 20px 紧凑标题；桌面草稿首页才按标题自身宽度适配。
- */
-import {
-  type CSSProperties,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import darkEmptyStateLogoUrl from "@/assets/Z.svg";
+
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { CCbuddyAboutLogo } from "@/components/ui/CCbuddyAboutLogo.js";
 import { cn } from "@/components/lib/utils.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { useIsOfficeMode } from "@/hooks/useInterfaceMode.js";
@@ -29,9 +18,7 @@ export type ChatEmptyGreetingMessageId =
   | "chat.empty.greeting.evening"
   | "chat.empty.greeting.lateNight";
 
-export function getChatEmptyGreetingMessageId(
-  date: Date = new Date(),
-): ChatEmptyGreetingMessageId {
+export function getChatEmptyGreetingMessageId(date: Date = new Date()): ChatEmptyGreetingMessageId {
   const hour = date.getHours();
 
   if (hour >= 5 && hour < 9) return "chat.empty.greeting.morningEarly";
@@ -54,8 +41,7 @@ export function getNextChatEmptyGreetingDelayMs(date: Date = new Date()) {
   tomorrowFirstBoundary.setHours(GREETING_BOUNDARY_HOURS[0], 0, 0, 0);
 
   const nextBoundary =
-    candidates.find((candidate) => candidate.getTime() > date.getTime()) ??
-    tomorrowFirstBoundary;
+    candidates.find((candidate) => candidate.getTime() > date.getTime()) ?? tomorrowFirstBoundary;
 
   return Math.max(1, nextBoundary.getTime() - date.getTime());
 }
@@ -63,13 +49,13 @@ export function getNextChatEmptyGreetingDelayMs(date: Date = new Date()) {
 export function resolveGreetingFontSizePx({
   availableWidthPx,
   naturalTextWidthPx,
-  compactForRemoteControl = false,
+  compactLayout = false,
 }: {
   availableWidthPx: number;
   naturalTextWidthPx: number;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
 }) {
-  if (compactForRemoteControl) {
+  if (compactLayout) {
     return GREETING_MIN_FONT_SIZE_PX;
   }
   if (
@@ -86,32 +72,26 @@ export function resolveGreetingFontSizePx({
     GREETING_MIN_FONT_SIZE_PX,
     Math.min(
       GREETING_MAX_FONT_SIZE_PX,
-      Math.floor(
-        GREETING_MAX_FONT_SIZE_PX * (availableWidthPx / naturalTextWidthPx),
-      ),
+      Math.floor(GREETING_MAX_FONT_SIZE_PX * (availableWidthPx / naturalTextWidthPx)),
     ),
   );
 }
 
 export function ConversationDraftEmptyState({
   className,
-  compactForRemoteControl = false,
+  compactLayout = false,
 }: {
   className?: string;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
 }) {
   const { intl } = useCCbuddyIntl();
   const isOfficeMode = useIsOfficeMode();
   const [greetingDate, setGreetingDate] = useState(() => new Date());
-  const [greetingFontSizePx, setGreetingFontSizePx] = useState(
-    GREETING_MAX_FONT_SIZE_PX,
-  );
+  const [greetingFontSizePx, setGreetingFontSizePx] = useState(GREETING_MAX_FONT_SIZE_PX);
   const greetingContainerRef = useRef<HTMLParagraphElement | null>(null);
   const greetingMeasurementRef = useRef<HTMLSpanElement | null>(null);
   const greeting = intl.formatMessage({
-    id: isOfficeMode
-      ? "chat.empty.greeting.office"
-      : getChatEmptyGreetingMessageId(greetingDate),
+    id: isOfficeMode ? "chat.empty.greeting.office" : getChatEmptyGreetingMessageId(greetingDate),
   });
 
   useEffect(() => {
@@ -125,7 +105,7 @@ export function ConversationDraftEmptyState({
   }, [greetingDate]);
 
   useLayoutEffect(() => {
-    if (compactForRemoteControl) {
+    if (compactLayout) {
       setGreetingFontSizePx(GREETING_MIN_FONT_SIZE_PX);
       return;
     }
@@ -195,7 +175,7 @@ export function ConversationDraftEmptyState({
       }
       observer.disconnect();
     };
-  }, [compactForRemoteControl, greeting]);
+  }, [compactLayout, greeting]);
 
   return (
     <div
@@ -223,7 +203,7 @@ export function ConversationDraftEmptyState({
         }
         className={cn(
           "relative z-10 w-full px-4 text-center font-medium text-foreground",
-          compactForRemoteControl
+          compactLayout
             ? "text-xl/[1.2]"
             : "text-[length:var(--v4-draft-greeting-font-size)]/[1.2]",
         )}
@@ -242,38 +222,17 @@ export function ConversationDraftEmptyState({
 }
 
 function CCbuddyEmptyStateLogo({ className }: { className?: string }) {
+  // 修复原因：迁入的 Z 图形及 Z.svg 引用不属于 CCbuddy；沿用现有自有图标与渐隐材质。
   return (
-    <>
-      {/* 修复原因：夜间资源已自带渐变和透明度，公共容器叠加遮罩会让它重复变淡；渐隐效果只属于浅色线框。 */}
-      <svg
-        aria-hidden="true"
-        className={cn(
-          className,
-          "opacity-70 dark:hidden",
-          "[-webkit-mask-image:linear-gradient(to_bottom,black_0%,transparent_70%,transparent_100%)]",
-          "[-webkit-mask-repeat:no-repeat] [-webkit-mask-size:100%_100%]",
-          "[mask-image:linear-gradient(to_bottom,black_0%,transparent_70%,transparent_100%)]",
-          "[mask-repeat:no-repeat] [mask-size:100%_100%]",
-        )}
-        width="400"
-        height="320"
-        viewBox="0 0 400 320"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path
-          d="M398.97 0.5L147.576 319.5H1.03027L37.5996 273.081L120.167 169.603L120.171 169.598L215.342 47.5605L215.343 47.5615L252.424 0.5H398.97ZM264.544 273.271H372.527L336.082 319.498H189.886L202.642 303.307C217.584 284.34 240.398 273.271 264.544 273.271ZM209.164 0.5L202.786 8.58887C183.782 32.6885 154.782 46.752 124.091 46.752H25.9805L62.4268 0.5H209.164Z"
-          stroke="currentColor"
-        />
-      </svg>
-      {/* 深色资源包含专用渐变与模糊效果，不能通过 currentColor 复刻；主题类保证两套 Logo 互斥显示。 */}
-      <img
-        aria-hidden="true"
-        className={cn(className, "hidden dark:block")}
-        data-v4-draft-logo="dark"
-        src={darkEmptyStateLogoUrl}
-        alt=""
-      />
-    </>
+    <CCbuddyAboutLogo
+      className={cn(
+        className,
+        "object-contain opacity-70",
+        "[-webkit-mask-image:linear-gradient(to_bottom,black_0%,transparent_70%,transparent_100%)]",
+        "[-webkit-mask-repeat:no-repeat] [-webkit-mask-size:100%_100%]",
+        "[mask-image:linear-gradient(to_bottom,black_0%,transparent_70%,transparent_100%)]",
+        "[mask-repeat:no-repeat] [mask-size:100%_100%]",
+      )}
+    />
   );
 }

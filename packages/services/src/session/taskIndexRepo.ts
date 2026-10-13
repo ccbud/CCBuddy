@@ -1688,7 +1688,7 @@ export class TaskIndexRepo {
           titleOverridden,
           // turn.completed 会先通过 applyAgentPatch 写入较新的 completed/error。
           // 随后到达的 protocol snapshot 可能仍带较旧 running；如果这里降级 status，
-          // 手机 replayable 切回 task 时就会把已完成任务恢复成“工作中”。
+          // Web replayable 切回 task 时就会把已完成任务恢复成“工作中”。
           status: preserveExistingTerminalStatus ? existingMeta?.status : params.meta.status,
           lastError: preserveExistingTerminalStatus
             ? existingMeta?.lastError
@@ -1867,7 +1867,7 @@ export class TaskIndexRepo {
           ...current,
           unreadAt: undefined,
         };
-        // 手机已读请求可能晚于新的终态未读到达。比较和写入必须持有同一
+        // Web 客户端已读请求可能晚于新的终态未读到达。比较和写入必须持有同一
         // SQLite 写事务，否则旧点击会把随后产生的 unreadAt 无条件清掉。
         const persistedMeta = this.writeRecord({
           meta: nextMeta,

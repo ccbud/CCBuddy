@@ -104,7 +104,7 @@ export const commandPayloadSchemas = {
       source: conversationInputSourceSchema.optional(),
       heldQueueDisposition: z.enum(["clearQueueAndSend", "keepQueueAndSend"]).optional(),
       // 暂停队列确认框打开时看到的 queueItemId 集合。CLI 在执行 clear/keep 前校验，
-      // 防止桌面/手机并发增删后把用户没确认过的新队列一并处置。
+      // 防止桌面/Web并发增删后把用户没确认过的新队列一并处置。
       expectedHeldQueueItemIds: z.array(z.string().min(1)).optional(),
       // 迁移期允许旧发送端缺省；CLI admission 会把当前 Session Selection 固定进
       // canonical intent。Renderer 切换完成后，第一方用户提交始终显式携带这两项。

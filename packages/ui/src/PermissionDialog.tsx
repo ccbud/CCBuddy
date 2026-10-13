@@ -447,7 +447,6 @@ export function PermissionDialog({
   remoteSessionId,
   workflowSessionModel,
   provider,
-  isWebRemoteControl = false,
   responding = false,
   responseError,
 }: {
@@ -470,15 +469,13 @@ export function PermissionDialog({
   remoteSessionId?: string;
   workflowSessionModel?: { providerId: string; modelId: string };
   provider?: CCbuddyProvider;
-  isWebRemoteControl?: boolean;
+
 }) {
   const { intl } = useCCbuddyIntl();
   const isMobileTextInputViewport = useIsMobileTextInputViewport();
-  // Bug 根因：反馈输入也会渲染在手机 Web 远控的 PermissionDialog 中，14px 输入框聚焦时会触发 iOS 页面放大。
-  // 与 composer 复用同一套视口判断和 16px 兼容 token，桌面和非远控 Web 保持原有字号。
+  // 与 composer 复用同一套视口判断和 16px 兼容 token，桌面视口保持原有字号。
   const avoidIosInputFocusZoom = shouldAvoidIosInputFocusZoom({
     isMobileTextInputViewport,
-    isWebRemoteControl,
   });
   // M5②.5 store 耦合剥离：主题/代码预览设置在宿主处取 store，向下走 props/render context。
   const theme = useCCbuddyStoreWithDefault((state) => state.theme, "system");

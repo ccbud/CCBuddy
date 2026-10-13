@@ -76,8 +76,7 @@ const BUSY_TOOLTIP_MESSAGE_ID = "chat.toolbar.computerUse.tooltip.sessionBusy";
  * 不可用场景下留一个灰按钮会误导用户以为「装了就能用」。
  */
 function isEntryVisible(inputs: CuaComposerEntryInputs): boolean {
-  // 平台门：remote workspace / linux 本地 / 普通 Web / 手机远控都不满足。
-  if (!inputs.macLocalDesktop && !inputs.windowsLocalDesktop) return false;
+    if (!inputs.macLocalDesktop && !inputs.windowsLocalDesktop) return false;
   // 设置门：用户显式隐藏后不再渲染，且不因重启或版本更新自愈。
   if (inputs.hiddenBySettings) return false;
   // 服务门：mac 的状态全部来自 Helper；服务缺失时按钮无法反映任何真值。

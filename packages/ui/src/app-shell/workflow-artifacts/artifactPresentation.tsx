@@ -228,13 +228,6 @@ export function buildPresetLabels(
   };
 }
 
-/**
- * 该产物能不能在**本地文件系统**上被定位（「在工作区显示」与 html 的「在浏览器中打开」的门）。
- *
- * 判据与 `shouldOpenAssistantHtmlInBrowser` 同源：远程 workspace（SSH / WSL / Docker）
- * 的路径在本机不存在，手机远控也没有文件树可以跳。`sourcePath` 缺席则连路径都没有——
- * markdown 产物与预置看板天生就没有出处。
- */
 export function canRevealArtifactInWorkspace(params: {
   sourcePath?: string;
   workspaceIdentity?: string;

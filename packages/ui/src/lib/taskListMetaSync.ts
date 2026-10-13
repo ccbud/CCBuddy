@@ -150,9 +150,9 @@ export function syncTaskMetaToTaskCaches(params: {
   if (params.preserveListMembership) {
     updateTaskQueryCacheTaskMetaPreservingMembership(task);
   } else if (params.membership && params.applyQueryCacheMutation !== false) {
-    // Bugfix: 手机 shared-host 创建 task 时，桌面 renderer 只收到 workspace 事件，
+    // Bugfix: 共享 Host 的其它客户端创建 task 时，当前 renderer 只收到 workspace 事件，
     // 没有本地首发路径的 insertTaskIntoTaskCaches。previousTask 缺失时仍要按 active
-    // 成员关系插入 query cache，否则远控首页会继续同步旧列表顺序。
+    // 成员关系插入 query cache，否则当前窗口的任务列表会继续显示旧顺序。
     // Bugfix: 本地首发会先写 optimistic meta，再插入列表成员；此时 previousTask 虽然存在，
     // 但它只代表“已有元数据”，不代表“已经计入列表 total”。新建任务必须显式按 absent -> active
     // 处理，否则第 6 个 workspace task 的 total 仍停在 5，Show more 不会出现。
@@ -180,7 +180,7 @@ export function syncTaskMembershipEventToTaskCaches(params: {
     }) ?? ABSENT_MEMBERSHIP;
   const nextMembership = membershipForWorkspaceEventReason(params.reason);
 
-  // Bugfix: 远控/其它窗口触发归档或置顶时，本窗口没有本地 optimistic mutation。
+  // Bugfix: 其它窗口触发归档或置顶时，本窗口没有本地 optimistic mutation。
   // 过去只能失效整表 query cache，导致点击后列表闪烁；这里根据当前缓存位置推断旧 membership 后增量移动。
   syncTaskMetaToTaskCaches({
     workspacePath: params.workspacePath,
@@ -262,8 +262,8 @@ export function patchTaskMetaInTaskCaches(params: {
       params.workspaceIdentity,
     );
   }
-  // Bugfix: 手机端从聊天页返回任务列表时，运行开始只会 patch 当前 task 的 status/updatedAt。
-  // 如果 query cache 只替换 meta 不重排，按更新时间排序的远控首页会继续停在旧顺序。
+  // Bugfix: 运行开始只会 patch 当前 task 的 status/updatedAt；query cache 需要同步排序，
+  // 否则按更新时间排序的任务列表会继续停在旧顺序。
   updateTaskQueryCacheTaskMetaPreservingMembership(nextTask);
 
   return nextTask;
@@ -275,7 +275,7 @@ export function insertTaskIntoTaskCaches(params: {
   task: CCbuddyTaskMeta;
   membership: TaskListMembershipState;
 }): void {
-  // Bugfix: 新建/fork/远控 shared-host 创建 task 都应走同一条“无 -> 有”成员变更。
+  // Bugfix: 新建/fork/共享 Host 创建 task 都应走同一条“无 -> 有”成员变更。
   // syncTaskMetaToTaskCaches 会在 previousTask 缺失时按 ABSENT_MEMBERSHIP 插入 query cache，
   // 这里不能再二次 apply mutation，否则 total 会被重复加一。
   syncTaskMetaToTaskCaches({

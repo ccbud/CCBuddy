@@ -81,8 +81,8 @@ export function shouldRefreshTaskListForWorkspaceEvent(
 ): boolean {
   // Bugfix: 发送、停止、归档和元数据保存已经通过乐观 task cache / snapshot meta 增量写回。
   // 如果这里继续把 realtime invalidation 当成整表查询信号，左侧 task 会在这些操作时闪一下。
-  // 但消息保存和状态变更事件只携带 taskId/reason，不携带最新 meta；远控 observer 没有本地乐观状态，
-  // 必须保留静默刷新来同步 running/completed/error，否则手机端发送后桌面任务列表状态不会更新。
+  // 但消息保存和状态变更事件只携带 taskId/reason，不携带最新 meta；其它客户端的 observer 没有本地乐观状态，
+  // 必须保留静默刷新来同步 running/completed/error，否则跨窗口发送后的任务列表状态不会更新。
   if (getTaskMetaWorkspaceEventSyncMode(event)) {
     return false;
   }

@@ -26,6 +26,7 @@ type CompactSummaryModelRequest = {
   maxOutputTokens?: number;
   messages: Parameters<Model["generateText"]>[0]["messages"];
   modelCall?: ModelInvocationContext["modelCall"];
+  modelRequestSessionType?: ModelInvocationContext["modelRequestSessionType"];
   metadata?: ModelInvocationContext["metadata"];
   preserveProviderStreamBoundaries?: boolean;
   statusSink?: ModelInvocationContext["statusSink"];
@@ -322,6 +323,8 @@ function invocationContext(request: CompactSummaryModelRequest) {
   return {
     metadata: request.metadata,
     modelCall: request.modelCall,
+    // speculative prepass 已按 taskType 标记来源；stream 与 HTTP fallback 都必须保留该归属。
+    modelRequestSessionType: request.modelRequestSessionType,
     statusSink: request.statusSink,
     traceContext: request.traceContext,
     preserveProviderStreamBoundaries: request.preserveProviderStreamBoundaries,
@@ -338,7 +341,6 @@ function isCompactSummarySetupFailure(error: unknown): boolean {
   }
 
   if (streamFailurePhase === "request_setup") {
-
     // 其他同步 setup 或明确 HTTP 拒绝属于原请求错误，不能用第二种 transport 掩盖。
     return context?.httpResponseStatus !== 404;
   }

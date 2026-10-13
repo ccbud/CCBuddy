@@ -203,7 +203,8 @@ export const runPrompt = async (
     const prepareTelemetry =
       deps.prepareCCbuddyTelemetryEnv ?? bootstrapModule?.prepareCCbuddyTelemetryEnv;
     if (prepareTelemetry) {
-      shutdownTelemetry = deps.shutdownCCbuddyTelemetry ?? bootstrapModule?.shutdownCCbuddyTelemetry;
+      shutdownTelemetry =
+        deps.shutdownCCbuddyTelemetry ?? bootstrapModule?.shutdownCCbuddyTelemetry;
     }
     const appEnv = prepareTelemetry
       ? await prepareTelemetry(env, {
@@ -223,7 +224,7 @@ export const runPrompt = async (
         ? {}
         : {
             standalone: {
-              ...createCliProviderRefreshReporter(ctx.stderr),
+              // CCbuddy 只读本地 BYOK 模板；上游 CDN reporter 已移除，不能保留悬空观察接口。
               ...(deps.userConfigPath ? { legacyCliUserConfigFilePath: deps.userConfigPath } : {}),
             },
           },
@@ -670,4 +671,3 @@ function writeHeadlessWorkspaceHookTrustDiagnostic(
     ].join("\n") + "\n",
   );
 }
-import { createCliProviderRefreshReporter } from "./provider-runtime-env.js";

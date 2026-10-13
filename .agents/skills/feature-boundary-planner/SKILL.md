@@ -94,7 +94,7 @@ For every UI entry point, record:
 - validation and gating;
 - commit command/service;
 - authoritative runtime owner or persistence sink;
-- desktop/web/mobile and local/remote differences;
+- desktop/web and local/remote differences;
 - behavior that must remain isolated from other surfaces.
 
 Shared UI does not imply shared behavior. The same `model` label can mean current conversation runtime, an automation record, a Subagent Markdown field, or a built-in override. Preserve those state and commit boundaries unless the user explicitly changes the product contract.
@@ -171,7 +171,7 @@ For planning modes, append the sections in `references/case-planning-template.md
 - Do not write E2E code until accepted semantics exist in docs.
 - Do not claim coverage from a path that lacks setup, action, and assertion.
 - Mark implementation/spec conflicts as `bug-candidate`; do not rewrite the contract to match current code without confirmation.
-- Keep desktop `desktop-continuous` and mobile `web-remote-replayable` semantics separate.
+- Keep desktop `desktop-continuous` and ordinary Web/SSH `web-remote-replayable` semantics separate.
 - Preserve workspace isolation with `workspaceIdentity?.trim() || workspacePath`; use `workspacePath` for execution and display.
 - Treat task sqlite index, session snapshots, runtime snapshots, localStorage, settings files, provider registry, and backend APIs as distinct sources until synchronization is proven.
 - Split environment faults, remote/replayable semantics, performance, telemetry, persistence migrations, and tool cross-products into specialized docs when they would obscure the main feature path.

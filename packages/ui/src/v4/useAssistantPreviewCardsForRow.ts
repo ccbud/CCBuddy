@@ -21,7 +21,7 @@ interface UseAssistantPreviewCardsForAssistantTextRowParams {
   latestAssistantTextRow?: AssistantTextRow;
   workspacePath: string;
   workspaceHomePath?: string;
-  compactForRemoteControl?: boolean;
+  compactLayout?: boolean;
   fileChangesTarget: ConversationRowTarget | null;
   fileChangesState?: ConversationFileChangesState;
   fetchFileChanges?: (
@@ -50,7 +50,7 @@ export function useAssistantPreviewCardsForAssistantTextRow({
   latestAssistantTextRow,
   workspacePath,
   workspaceHomePath,
-  compactForRemoteControl,
+  compactLayout,
   fileChangesTarget,
   fileChangesState,
   fetchFileChanges,
@@ -72,7 +72,7 @@ export function useAssistantPreviewCardsForAssistantTextRow({
   const needsFileChanges = fileReferences.some(
     (reference) =>
       reference.kind === "markdown" ||
-      (reference.kind === "html" && compactForRemoteControl !== true),
+      (reference.kind === "html" && compactLayout !== true),
   );
   const target = useMemo<ConversationRowTarget | null>(
     () =>
@@ -134,13 +134,13 @@ export function useAssistantPreviewCardsForAssistantTextRow({
         ? buildAssistantPreviewCardsFromReferences(turnText, workspacePath, fileReferences, {
             changedFilePaths,
             homePath: workspaceHomePath,
-            suppressWebRemoteCards: compactForRemoteControl === true,
+            suppressEmbeddedCards: compactLayout === true,
           })
         : [],
     [
       canBuildCards,
       changedFilePaths,
-      compactForRemoteControl,
+      compactLayout,
       fileReferences,
       turnText,
       workspaceHomePath,

@@ -1,4 +1,4 @@
-import type { Session, Streams } from "electron";
+import type { Session, Streams, WebFrameMain } from "electron";
 import type { EmbeddedBrowserPermissionDeviceOption } from "@ccbuddy/shared";
 import { readDeviceOptions } from "./embeddedBrowserDeviceOptions.js";
 import {
@@ -105,13 +105,14 @@ export interface EmbeddedBrowserPermissionPolicyOptions {
     devices: EmbeddedBrowserPermissionDeviceOption[];
     hostWebContentsId?: number;
     guestWebContentsId?: number;
+    frame?: WebFrameMain;
   }) => EmbeddedBrowserDevicePickerSession;
   /**
    * 屏幕共享源选择（Step 2）注入；源列表与 callback 语义需要 desktopCapturer
    * 上下文，整体转发给 bridge，policy 只保留日志与默认拒绝。
    */
   onDisplayMediaRequest?: (
-    input: { origin: string },
+    input: { origin: string; frame?: WebFrameMain },
     callback: (result: unknown) => void,
   ) => void;
 }
@@ -127,7 +128,6 @@ export function originFromUrl(url: string | undefined): string {
     return UNKNOWN_ORIGIN;
   }
 }
-
 
 export async function applyEmbeddedBrowserPermissionPolicy(
   targetSession: EmbeddedBrowserPermissionSession,
@@ -220,8 +220,7 @@ export async function applyEmbeddedBrowserPermissionPolicy(
           });
           if (action === "allow-always") {
             void writeEmbeddedBrowserSitePermission(origin, permission, "allow");
-          }
-          else if (action === "allow-session") {
+          } else if (action === "allow-session") {
             const grantedSet = sessionAllow.get(origin) ?? new Set<string>();
             grantedSet.add(permission);
             sessionAllow.set(origin, grantedSet);
@@ -265,12 +264,13 @@ export async function applyEmbeddedBrowserPermissionPolicy(
   targetSession.setDevicePermissionHandler(() => true);
 
   targetSession.setDisplayMediaRequestHandler((request, callback) => {
-    const frameUrl = (request as { frame?: { url?: string } }).frame?.url;
-    const origin = originFromUrl(frameUrl);
+    const frame = request.frame ?? undefined;
+    const origin = originFromUrl(frame?.url);
     if (options.onDisplayMediaRequest) {
       // 源选择需要 desktopCapturer 上下文与 Electron 专属 callback 语义，整体转发给 bridge。
       logDecision("granted", { permission: "display-capture", origin, source: "source-picker" });
-      options.onDisplayMediaRequest({ origin }, (result) => callback(result as Streams));
+      // 共享请求必须沿发起 frame 解析 guest 宿主，不能按当前焦点把别的窗口当成权限 owner。
+      options.onDisplayMediaRequest({ origin, frame }, (result) => callback(result as Streams));
       return;
     }
     logDecision("denied", { permission: "display-capture", origin, source: "default-deny" });
@@ -282,9 +282,8 @@ export async function applyEmbeddedBrowserPermissionPolicy(
   const cancelArgFor = (permission: string): string | undefined =>
     permission === "select-hid-device" || permission === "select-usb-device" ? undefined : "";
 
-  // 同权限的设备选择器全局只开一个：select-* 事件会在设备发现过程中连续 fire
-  // （蓝牙扫描渐进出设备、USB 枚举同理），后续 fire 只热更新列表；Chromium 语义为
-  // 「callback 结算前重复 fire 同一请求」，因此后续 fire 携带的 callback 不再调用。
+  // 同一个 guest/frame 的 select-* 重复发现只热更新；不能按 permission 全局合并，
+  // 否则另一窗口/guest 的设备列表会串入旧 chooser，且第二个原生 callback 永远不结算。
   const devicePickerSessions = new Map<string, EmbeddedBrowserDevicePickerSession>();
 
   const settleDeviceSelection = (
@@ -294,6 +293,7 @@ export async function applyEmbeddedBrowserPermissionPolicy(
       devices: EmbeddedBrowserPermissionDeviceOption[];
       hostWebContentsId?: number;
       guestWebContentsId?: number;
+      frame?: WebFrameMain;
     },
     callback: (value?: string) => void,
   ): void => {
@@ -303,7 +303,15 @@ export async function applyEmbeddedBrowserPermissionPolicy(
       callback(cancel);
       return;
     }
-    const existing = devicePickerSessions.get(permission);
+    const key = JSON.stringify([
+      permission,
+      input.origin,
+      input.hostWebContentsId,
+      input.guestWebContentsId,
+      input.frame?.processId,
+      input.frame?.routingId,
+    ]);
+    const existing = devicePickerSessions.get(key);
     if (existing) {
       // 诊断蓝牙/USB 渐进枚举：热更新时记录可见设备数（列表为空可据此定位 TCC 权限问题）
       logger.info(`${LOG_TAG} device list updated`, {
@@ -322,7 +330,7 @@ export async function applyEmbeddedBrowserPermissionPolicy(
       callback(cancel);
       return;
     }
-    devicePickerSessions.set(permission, session);
+    devicePickerSessions.set(key, session);
     logger.info(`${LOG_TAG} device picker opened`, {
       permission,
       origin: input.origin,
@@ -330,7 +338,7 @@ export async function applyEmbeddedBrowserPermissionPolicy(
     });
     void session.result.then(
       (picked) => {
-        devicePickerSessions.delete(permission);
+        devicePickerSessions.delete(key);
         if (!picked) {
           logDecision("denied", { permission, origin: input.origin, source: "device-picker" });
           callback(cancel);
@@ -340,7 +348,7 @@ export async function applyEmbeddedBrowserPermissionPolicy(
         callback(picked.deviceId);
       },
       (error: unknown) => {
-        devicePickerSessions.delete(permission);
+        devicePickerSessions.delete(key);
         logger.warn(`${LOG_TAG} device picker failed: ${String(error)}`);
         callback(cancel);
       },
@@ -353,13 +361,14 @@ export async function applyEmbeddedBrowserPermissionPolicy(
       // 必须阻止默认行为，否则 Chromium 在事件 fire 后立即以「未选择设备」取消
       // 页面请求，异步回调无法生效（对照实验：加 preventDefault 后 4s 异步选择正常）。
       (event as { preventDefault?: () => void }).preventDefault?.();
-      const frameUrl = (details as { frame?: { url?: string } | null })?.frame?.url;
+      const frame = (details as { frame?: WebFrameMain | null })?.frame ?? undefined;
       const deviceList = (details as { deviceList?: unknown })?.deviceList;
       settleDeviceSelection(
         permission,
         {
-          origin: originFromUrl(frameUrl),
+          origin: originFromUrl(frame?.url),
           devices: readDeviceOptions(deviceList),
+          frame,
         },
         callback,
       );
@@ -379,9 +388,11 @@ export async function applyEmbeddedBrowserPermissionPolicy(
     ) => {
       // 同 hid/usb：阻止默认取消，等待用户选择。
       (event as { preventDefault?: () => void }).preventDefault?.();
-      const contents = webContents as
-        | { hostWebContents?: { id?: number }; id?: number; getURL?: () => string }
-        | null;
+      const contents = webContents as {
+        hostWebContents?: { id?: number };
+        id?: number;
+        getURL?: () => string;
+      } | null;
       const hostWebContentsId = contents?.hostWebContents?.id ?? contents?.id;
       settleDeviceSelection(
         "select-serial-port",
@@ -389,10 +400,10 @@ export async function applyEmbeddedBrowserPermissionPolicy(
           origin: originFromUrl(contents?.getURL?.()),
           devices: readDeviceOptions(portList),
           ...(hostWebContentsId !== undefined ? { hostWebContentsId } : {}),
+          ...(contents?.id !== undefined ? { guestWebContentsId: contents.id } : {}),
         },
         (value) => callback(value ?? ""),
       );
     },
   );
 }
-

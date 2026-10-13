@@ -9,7 +9,7 @@ import {
   type TopicResourceRelayDependencies,
 } from "./topicResourceRelay.js";
 
-/** 只注册在已鉴权远程连接的反向 server 上，不暴露在 Renderer/手机 service collection。 */
+/** 只注册在已鉴权远程连接的反向 Server 上，不暴露在 Renderer/Web service collection。 */
 export function createTopicResourceRelayChannel(deps: TopicResourceRelayDependencies) {
   const relay = createTopicResourceRelay(deps);
   const validations = new Set<AbortController>();

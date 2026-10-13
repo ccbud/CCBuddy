@@ -13,7 +13,6 @@ import { useTabStore } from "@/store/TabStoreProvider.js";
 import { MemoTaskItem, TaskListItemContextMenuContent } from "@/TaskListItem.js";
 import { TaskListLoadingHint } from "@/TaskListLoadingHint.js";
 import { TaskRenameDialog } from "@/TaskRenameDialog.js";
-import { buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
 import { compareCCbuddyTaskListItems } from "@/lib/taskListOrdering.js";
 import { logger } from "@/logger.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
@@ -46,7 +45,6 @@ export const TaskList = memo(function TaskList({
   onSetTaskPinned,
   onArchiveTask,
   onSetTaskUnread,
-  mobileActiveTaskKey,
   readOnlyReason,
 }: {
   workspacePath: string;
@@ -68,7 +66,7 @@ export const TaskList = memo(function TaskList({
   onSetTaskPinned: (taskId: string, pinned: boolean) => Promise<CCbuddyTaskMeta | null>;
   onArchiveTask: (taskId: string) => Promise<CCbuddyTaskMeta | null>;
   onSetTaskUnread: (taskId: string, unread: boolean) => Promise<CCbuddyTaskMeta | null>;
-  mobileActiveTaskKey?: string | null;
+
   readOnlyReason?: string;
 }) {
   const { intl } = useCCbuddyIntl();
@@ -364,10 +362,7 @@ export const TaskList = memo(function TaskList({
         task={task}
         isPinned={isPinned}
         isActive={isWorkspaceActive && task.taskId === activeTaskId}
-        isMobileActive={
-          mobileActiveTaskKey ===
-          `${buildTaskWorkspaceKey(workspacePath, workspaceIdentity)}:${task.taskId}`
-        }
+
         onSelectTask={handleSelectTaskItem}
         onArchiveTaskInline={handleArchiveTaskFromInline}
         onCancelArchiveConfirm={handleCancelArchiveConfirm}

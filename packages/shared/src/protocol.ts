@@ -278,7 +278,7 @@ export interface AppSettings {
    * 覆盖语义为整组替换（如 openCommandCenter 的双默认绑定被覆盖时同时失效）。
    */
   shortcutBindings?: Record<string, string[]>;
-  /** 界面语言偏好；locale 保存偏好解析后的实际语言，供 main/menu/远控等非浏览器上下文使用。 */
+  /** 界面语言偏好；locale 保存偏好解析后的实际语言，供 Main/原生菜单等非浏览器上下文使用。 */
   localePreference?: LocalePreference;
   /** 是否尽量继承系统终端 profile、shell 环境和字体 */
   terminalInheritSystemProfile?: boolean;
@@ -321,15 +321,15 @@ export interface AppSettings {
    * main 进程 bootstrap 借此标记把首次启动的 Linux 用户一次性归位为默认关。
    */
   closeToTrayLinuxMigrationInitialized?: boolean;
-  /** 桌面端全局页面缩放档位；用于重启后恢复界面缩放，Web/手机端忽略。 */
+  /** 桌面端全局页面缩放档位；用于重启后恢复界面缩放，Web 端忽略。 */
   desktopZoomLevel?: number;
-  /** 桌面主窗口最近一次非最大化宽高及最大化状态；Web/手机端忽略。 */
+  /** 桌面主窗口最近一次非最大化宽高及最大化状态；Web 端忽略。 */
   desktopWindowSize?: {
     width: number;
     height: number;
     maximized: boolean;
   };
-  /** 桌面端 Chromium 硬件加速开关；只在下次启动 main 进程早期生效，Web/手机端忽略。 */
+  /** 桌面端 Chromium 硬件加速开关；只在下次启动 Main 进程早期生效，Web 端忽略。 */
   desktopChromiumHardwareAccelerationEnabled?: boolean;
   /** 是否在消息流中展示模型思考过程 */
   messageStreamShowReasoning?: boolean;
@@ -418,16 +418,6 @@ export interface AppSettings {
   skippedElectronUpdateVersions?: Partial<Record<ElectronReleaseChannel, string>>;
   /** 首次启动设置同步提示是否已消费；只表示弹窗不再出现，不代表导入成功。 */
   settingsSyncFirstRunPromptHandled?: boolean;
-  /** 外部 Web 远控 relay 的非敏感设备身份；passHash 必须存 credentialService。 */
-  webRemoteControlExternalRelayDevice?: {
-    deviceSid: string;
-  };
-  /** 上次成功开启 Web 远控时的目标；缺失表示用户已明确关闭，不自动恢复。 */
-  webRemoteControlLastEnabledContext?: {
-    workspacePath: string;
-    workspaceIdentity?: string;
-    initialTaskId?: string;
-  };
   /** 设置页里的临时 endpoint override；正式/测试默认 base url 由 CCBUDDY_BASE_URL env 管理。 */
   ccbuddyEndpointOrigin?: string;
 }

@@ -17,7 +17,6 @@ export function WorkspaceHeaderActionSection({
   workspaceAbsPath,
   workspaceIdentity,
   remoteTarget,
-  isWebRemoteControl = false,
   isDesktop,
   isTerminalOpen,
   isSidePaneOpen,
@@ -25,7 +24,6 @@ export function WorkspaceHeaderActionSection({
   onToggleSidePane,
   toggleSidePaneShortcutLabel,
   onSelectedEditorChange,
-  simplifyForNarrowRemote = false,
   hideHelpMenu = false,
   showWindowControls = false,
   useWindowsCaptionSpacing = false,
@@ -52,17 +50,15 @@ export function WorkspaceHeaderActionSection({
       {activeTaskId &&
       user &&
       isDesktop !== false &&
-      !isWebRemoteControl &&
       remoteTarget?.kind !== "server" ? (
         <ConversationShareMenu
           taskId={activeTaskId}
           useWindowsCaptionSpacing={useWindowsCaptionSpacing}
         />
       ) : null}
-      {!simplifyForNarrowRemote ? (
+      {(
         <>
           {!hideHelpMenu ? <WorkspaceHelpMenuButton isDesktop={Boolean(isDesktop)} /> : null}
-          {/* Bugfix: 远程控制移动端头部空间过窄，终端入口在这里会和核心操作争抢宽度。 */}
           <WorkspaceTerminalToggleButton
             isTerminalOpen={isTerminalOpen}
             onToggleTerminal={onToggleTerminal}
@@ -70,8 +66,7 @@ export function WorkspaceHeaderActionSection({
             useWindowsCaptionSpacing={useWindowsCaptionSpacing}
           />
         </>
-      ) : null}
-      {/* 远程控制移动端只保留图标，避免 diff 数字把按钮撑宽导致标题拥挤。 */}
+      )}
       {!isSidePaneOpen ? (
         <WorkspaceSidePaneToggleButton
           isSidePaneOpen={isSidePaneOpen}

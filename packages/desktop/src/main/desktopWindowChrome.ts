@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- 桌面窗口 chrome、webview 安全策略和 popup 路由共享同一 BrowserWindow 生命周期上下文。 */
-import { app, BrowserWindow, Menu, nativeImage, nativeTheme, screen, shell } from "electron";
+import { app, BrowserWindow, Menu, nativeTheme, screen, shell } from "electron";
 import { join } from "node:path";
 import type {
   ContextMenuParams,
@@ -40,6 +40,7 @@ import {
 import { getPluginSandboxHost, isPluginSandboxSrc } from "./pluginSandbox/index.js";
 import { installEmbeddedBrowserBluetoothDeviceGuard } from "./embeddedBrowserBluetoothGuard.js";
 import { getEmbeddedBrowserDevicePicker } from "./embeddedBrowserPermissionUiBridge.js";
+export { applyAppIcon } from "./desktopDockIcon.js";
 // CDP-on-guest pivot：内置浏览器改回 `<webview>` 渲染，宿主 BrowserWindow 需重新开 webviewTag，
 // 并在 will/did-attach-webview 里做 guest 硬化 + URL 白名单 + popup 路由回内部 tab。
 const ALLOWED_EMBEDDED_BROWSER_PROTOCOLS = new Set([
@@ -168,20 +169,6 @@ function buildDesktopWindowVisualOptions() {
     // 用户看到的是窗口外缘黑线。只在 Linux 禁用系统阴影，避免影响 macOS/Windows 的原生材质。
     hasShadow: false,
   };
-}
-
-export function applyAppIcon(iconPath: string) {
-  if (process.platform !== "darwin" || app.dock == null) {
-    return;
-  }
-
-  // TypeScript 不会因为 process.platform === "darwin" 自动收窄 app.dock。
-  // app.dock 的类型在定义上仍然可能是 undefined，直接调用会持续报 ts(18048)。
-  // 这里把平台判断和空值判断合并，既符合运行时语义，也让类型系统明确知道 Dock 一定存在。
-  const dockIcon = nativeImage.createFromPath(iconPath);
-  if (!dockIcon.isEmpty()) {
-    app.dock.setIcon(dockIcon);
-  }
 }
 
 function syncWindowFullscreenState(targetWindow: BrowserWindow) {
@@ -695,14 +682,8 @@ export function createBrowserWindow(options: {
       dev: !app.isPackaged,
       e2e: process.env.VITE_CCBUDDY_E2E_STORE_BRIDGE === "1",
     });
-    if (isRewardsWebview) {
-      webPreferences.preload = join(import.meta.dirname, "../preload/rewardsWebview.cjs");
-      if (!app.isPackaged)
-        webPreferences.additionalArguments = [
-          ...(webPreferences.additionalArguments ?? []),
-          "--ccbuddy-rewards-dev",
-        ];
-    }
+    // 修复：CCbuddy 已移除账号奖励 preload，不能为网页选择不存在的脚本；
+    // 奖励 URL 继续使用上面已设置的普通浏览器隔离与 Dialog 桥。
     webPreferences.contextIsolation = true;
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = true;

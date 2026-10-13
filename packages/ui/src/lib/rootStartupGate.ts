@@ -20,12 +20,8 @@ interface ProviderStartupSyncState {
   modelSelectionViewHydrated: boolean;
 }
 
-interface ProviderAvailabilityLoginEntryGuardState {
-  isWebRemoteControlRoot: boolean;
-}
-
 interface ProviderStartupResolutionState {
-  isWebRemoteControlRoot: boolean;
+
   providerStartupSyncPending: boolean;
   providerAvailabilityStartupCheckCompleted: boolean;
 }
@@ -47,22 +43,9 @@ export function shouldShowRootStartupLoading(
   return Boolean(state.isDesktop) && !state.welcomeScreenOpen && shouldBlockRootRender(state);
 }
 
-export function shouldEnableProviderAvailabilityLoginEntryGuard(
-  state: ProviderAvailabilityLoginEntryGuardState,
-): boolean {
-  // 修复原因：手机 Web 远控只 attachment 到桌面已有 host，不能用本地空 provider
-  // 快照触发登录页，否则断连/home-only 首页会被 WelcomeScreen 覆盖。
-  return !state.isWebRemoteControlRoot;
-}
-
 export function shouldResolveProviderStartupState(
   state: ProviderStartupResolutionState,
 ): boolean {
-  if (state.isWebRemoteControlRoot) {
-    // 修复原因：Web 远控的 workspace tab 由 shared-host bridge 注入；
-    // provider 可用性属于桌面 host 侧状态，不应阻断手机端 paired loading / workspace 注入。
-    return false;
-  }
 
   return (
     state.providerStartupSyncPending ||

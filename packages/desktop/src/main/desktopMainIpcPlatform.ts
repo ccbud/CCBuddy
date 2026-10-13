@@ -11,8 +11,7 @@ import {
   PlatformChannels,
   rendererLogPayloadSchema,
   stringArraySchema,
-  webRemoteControlTaskTargetsSchema,
-  webRemoteControlWorkspaceTargetsSchema,
+  remoteWorkspaceSessionTargetsSchema,
   type DesktopCommandId,
   type ApplicationIconRequest,
   type Locale,
@@ -23,8 +22,7 @@ import {
   type CreateTempTextAttachmentRequest,
   type MaterializeWorkflowArtifactFileRequest,
   type UpdateStatePayload,
-  type WebRemoteControlTaskTarget,
-  type WebRemoteControlWorkspaceTarget,
+  type RemoteWorkspaceSessionTarget,
   type WindowControlsOverlayReadyPayload,
 } from "@ccbuddy/shared";
 import { getInstalledEditors } from "./editors.js";
@@ -86,17 +84,12 @@ export function registerPlatformIpcHandlers(options: {
   acknowledgePostUpdateReleaseNotes: (version: string) => Promise<void>;
   syncActiveTaskSession: (windowId: number, sessionId: string | null) => void;
   syncTaskRealtimeWorkspaceKeys: (windowId: number, workspaceKeys: Iterable<string>) => void;
-  restorePreviouslyEnabledWebRemoteControl: (
-    windowId: number,
-    contexts: Array<{ workspacePath: string }>,
-  ) => void;
   getUpdateState: () => UpdateStatePayload;
   openUpdateStatusWindow: () => void;
-  syncWebRemoteControlWorkspaces: (
-    windowId: number,
-    workspaces: WebRemoteControlWorkspaceTarget[],
+  syncRemoteWorkspaceSessions: (
+    webContentsId: number,
+    targets: RemoteWorkspaceSessionTarget[],
   ) => void;
-  syncWebRemoteControlTasks: (windowId: number, tasks: WebRemoteControlTaskTarget[]) => void;
   getDesktopSessionActivity: () => {
     runningAgentSessionCount: number;
   };
@@ -104,9 +97,12 @@ export function registerPlatformIpcHandlers(options: {
     autoDownloadAndInstallUpdates: boolean;
   }>;
   setAutoDownloadAndInstallUpdates: (enabled: boolean) => Promise<void>;
-  syncAppSettings: (patch: unknown) => void;
+  // IPC 已通过 appSettingsPatchSchema 校验；装配接口传递受校验的设置 patch。
+  syncAppSettings: (patch: ReturnType<typeof appSettingsPatchSchema.parse>) => void;
   /** 关闭驻留托盘能力查询（spec：docs/desktop/linux-close-to-tray.md）；传入 monitor 的 refresh */
-  refreshCloseToTrayCapability: () => Promise<import("@ccbuddy/shared").DesktopCloseToTrayCapability>;
+  refreshCloseToTrayCapability: () => Promise<
+    import("@ccbuddy/shared").DesktopCloseToTrayCapability
+  >;
   /** 快捷键设置页录制态开关：true 时 main 重建菜单摘除可配置 accelerator（见 shortcut-settings-spec §7） */
   setShortcutRecordingActive?: (active: boolean, ownerWebContentsId?: number | null) => void;
   /** 桌面端设备标识符（基于 userData 路径的 SHA-256） */
@@ -280,47 +276,20 @@ export function registerPlatformIpcHandlers(options: {
     if (win) {
       options.windowWorkspaceMap.set(win.id, new Set(result.data));
       options.syncTaskRealtimeWorkspaceKeys(win.id, result.data);
-      options.restorePreviouslyEnabledWebRemoteControl(
-        win.id,
-        result.data.map((workspacePath) => ({ workspacePath })),
-      );
     }
   });
 
-  ipcMain.on(PlatformChannels.SyncWebRemoteControlWorkspaces, (event, payload: unknown) => {
-    const result = webRemoteControlWorkspaceTargetsSchema.safeParse(payload);
+  ipcMain.on(PlatformChannels.SyncRemoteWorkspaceSessions, (event, payload: unknown) => {
+    const result = remoteWorkspaceSessionTargetsSchema.safeParse(payload);
     if (!result.success) {
       options.logger.warn(
-        "[sync-web-remote-control-workspaces] invalid payload:",
+        "[sync-remote-workspace-sessions] invalid payload:",
         formatZodError(result.error),
       );
       return;
     }
-
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win) {
-      return;
-    }
-
-    options.syncWebRemoteControlWorkspaces(win.id, result.data);
-  });
-
-  ipcMain.on(PlatformChannels.SyncWebRemoteControlTasks, (event, payload: unknown) => {
-    const result = webRemoteControlTaskTargetsSchema.safeParse(payload);
-    if (!result.success) {
-      options.logger.warn(
-        "[sync-web-remote-control-tasks] invalid payload:",
-        formatZodError(result.error),
-      );
-      return;
-    }
-
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win) {
-      return;
-    }
-
-    options.syncWebRemoteControlTasks(win.id, result.data);
+    if (!BrowserWindow.fromWebContents(event.sender)) return;
+    options.syncRemoteWorkspaceSessions(event.sender.id, result.data);
   });
 
   ipcMain.on(PlatformChannels.SyncWindowUnreadCount, (event, payload: unknown) => {

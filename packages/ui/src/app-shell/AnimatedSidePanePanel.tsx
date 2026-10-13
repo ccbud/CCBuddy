@@ -1157,7 +1157,7 @@ export function AnimatedSidePanePanel({
                           <SubagentSessionSidePane
                             tab={tab}
                             focused={isVisible && tab.id === visibleActiveTabId}
-                            compactForRemoteControl={mobileOverlay}
+                            compactLayout={mobileOverlay}
                             onOpenBrowserUrl={onOpenBrowserUrl}
                             onOpenCodeViewer={onOpenCodeViewer}
                             onOpenFileLink={onOpenFileLink}
@@ -1380,9 +1380,6 @@ export function AnimatedSidePanePanel({
   if (!panelLayout.useResizablePanel) {
     return (
       <>
-        {/* Bugfix: 手机远控侧栏是覆盖聊天区的抽屉，不在 ResizablePanelGroup 的布局上下文里。
-            如果继续渲染 ResizablePanel，外层 auto 宽度会把子级 100% 宽度链路解析成 0px，
-            diff / preview 内容就会挂载但不可见；这里改用普通满宽容器承接内容。 */}
         <div
           ref={panelElementRef}
           aria-hidden={!isVisible}

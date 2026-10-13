@@ -142,8 +142,7 @@ export class BrowserOAuthCredentialRepo {
       }
     } catch {
       // localStorage 可能留下旧版或手工写入的损坏 JSON。
-      // 这里按未登录处理并清理残缺态，避免 Web 远控入口误判成已登录后继续连接。
-    }
+          }
 
     this.clearAll();
     return { status: "signed-out" };

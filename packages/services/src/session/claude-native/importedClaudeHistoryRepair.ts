@@ -196,7 +196,7 @@ export async function repairImportedClaudeSessionSnapshot<T>(params: {
   params.onRepair?.(history);
   // 早期导入可能已经创建了真实 CCbuddy session，但没有把 Claude 历史写入
   // ccbuddy-cli sessionStore，或用了全局 msg_import_* 导致串会话。这里统一用同名 sessionId
-  // 幂等回填 importedHistory，让 session/read、task snapshot 和远控恢复路径走同一套修复。
+  // 幂等回填 importedHistory，让 session/read、task snapshot 和普通 Web 恢复路径走同一套修复。
   return params.createSession({
     workspacePath: params.target.workspacePath,
     workspaceIdentity: params.target.workspaceIdentity,

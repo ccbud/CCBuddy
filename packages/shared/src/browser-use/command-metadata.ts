@@ -122,7 +122,7 @@ export const browserCommandMethodSchema = z.enum([
 ]);
 export type BrowserCommandMethod = z.infer<typeof browserCommandMethodSchema>;
 
-/** 客户端模式；决定桌面 continuous 与手机 replayable 的边界处理。 */
+/** 客户端模式；决定桌面 continuous 与普通 Web replayable 的边界处理。 */
 export const browserClientModeSchema = z.enum(["desktop-continuous", "web-remote-replayable"]);
 export type BrowserClientMode = z.infer<typeof browserClientModeSchema>;
 

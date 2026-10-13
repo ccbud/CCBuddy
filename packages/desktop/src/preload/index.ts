@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld("__CCBUDDY_DEVICE_ID__", parseDeviceIdFromArgs()
 
 import type {
   AppSettings,
+  RemoteWorkspaceSessionTarget,
   ApplicationIconRequest,
   BrowserViewOperationPayload,
   BrowserGuestAttachResult,
@@ -81,12 +82,6 @@ import type {
   SaveFileResult,
   PrintPageToPdfResult,
   SSHConfigAliasOption,
-  WebRemoteControlContext,
-  WebRemoteControlReconnectWorkspaceRequest,
-  WebRemoteControlReconnectWorkspaceResult,
-  WebRemoteControlStatus,
-  WebRemoteControlTaskTarget,
-  WebRemoteControlWorkspaceTarget,
   RemoteConnectionRuntimeLog,
   WindowControlsOverlayMetrics,
   WindowControlsOverlayReadyPayload,
@@ -323,21 +318,6 @@ contextBridge.exposeInMainWorld("ccbuddy", {
     workspaceIdentity?: string;
   }): Promise<void> =>
     ipcRenderer.invoke(PlatformChannels.BindRemoteWorkspaceSessionContext, context),
-  startWebRemoteControl: (context: WebRemoteControlContext) =>
-    ipcRenderer.invoke(PlatformChannels.StartWebRemoteControl, context),
-  refreshWebRemoteControlPairing: (context: WebRemoteControlContext) =>
-    ipcRenderer.invoke(PlatformChannels.ResetWebRemoteControlPairing, context),
-  stopWebRemoteControl: (): Promise<void> =>
-    ipcRenderer.invoke(PlatformChannels.StopWebRemoteControl),
-  getWebRemoteControlStatus: () => ipcRenderer.invoke(PlatformChannels.GetWebRemoteControlStatus),
-  onWebRemoteControlStatusChanged: (
-    callback: (status: WebRemoteControlStatus) => void,
-  ): (() => void) => {
-    const handler = (_event: unknown, payload: WebRemoteControlStatus) => callback(payload);
-    ipcRenderer.on(PlatformChannels.WebRemoteControlStatusChanged, handler);
-    return () =>
-      ipcRenderer.removeListener(PlatformChannels.WebRemoteControlStatusChanged, handler);
-  },
   disposeRemoteSession: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke(PlatformChannels.DisposeRemoteSession, sessionId),
   isDockerAvailable: (): Promise<boolean> => ipcRenderer.invoke(PlatformChannels.IsDockerAvailable),
@@ -409,35 +389,9 @@ contextBridge.exposeInMainWorld("ccbuddy", {
     ipcRenderer.invoke(PlatformChannels.ActivateOrSetWorkspace, path),
   /** 同步当前窗口所有 tab 的 workspace 路径到 main 进程 */
   syncWindowTabs: (paths: string[]) => ipcRenderer.send(PlatformChannels.SyncWindowTabs, paths),
-  /** 同步当前窗口里 Web 远程控制允许切换的 workspace */
-  syncWebRemoteControlWorkspaces: (workspaces: WebRemoteControlWorkspaceTarget[]) =>
-    ipcRenderer.send(PlatformChannels.SyncWebRemoteControlWorkspaces, workspaces),
-  /** 同步当前窗口里 Web 远程控制可展示的 task 快照 */
-  syncWebRemoteControlTasks: (tasks: WebRemoteControlTaskTarget[]) =>
-    ipcRenderer.send(PlatformChannels.SyncWebRemoteControlTasks, tasks),
-  onWebRemoteControlReconnectWorkspace: (
-    callback: (
-      request: WebRemoteControlReconnectWorkspaceRequest,
-    ) => Promise<WebRemoteControlReconnectWorkspaceResult>,
-  ) => {
-    const handler = async (event: Electron.IpcRendererEvent, payload: unknown) => {
-      const request = payload as WebRemoteControlReconnectWorkspaceRequest;
-      try {
-        const result = await callback(request);
-        event.sender.send(PlatformChannels.WebRemoteControlReconnectWorkspace, result);
-      } catch (error) {
-        event.sender.send(PlatformChannels.WebRemoteControlReconnectWorkspace, {
-          requestId: request.requestId,
-          workspaceKey: request.workspaceKey,
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        } satisfies WebRemoteControlReconnectWorkspaceResult);
-      }
-    };
-    ipcRenderer.on(PlatformChannels.WebRemoteControlReconnectWorkspace, handler);
-    return () =>
-      ipcRenderer.removeListener(PlatformChannels.WebRemoteControlReconnectWorkspace, handler);
-  },
+  /** 同步普通远程 session 的 workspace 身份，归属仍由 Main/Host registry 验证。 */
+  syncRemoteWorkspaceSessions: (targets: RemoteWorkspaceSessionTarget[]) =>
+    ipcRenderer.send(PlatformChannels.SyncRemoteWorkspaceSessions, targets),
   /** 同步当前窗口的未读 task 数到 main 进程 */
   syncWindowUnreadCount: (count: number) =>
     ipcRenderer.send(PlatformChannels.SyncWindowUnreadCount, count),

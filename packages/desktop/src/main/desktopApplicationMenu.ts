@@ -84,6 +84,7 @@ function resolveMenuAccelerator(
 function buildApplicationMenuTemplate(options: {
   currentApplicationLocale: Locale;
   ccbuddyEndpointSelection?: "production" | "test" | "custom";
+  openHistoryReview?: () => void;
   executeDesktopCommand: (
     command: DesktopCommandId,
     senderWindow?: BrowserWindow | null,
@@ -197,6 +198,18 @@ function buildApplicationMenuTemplate(options: {
     {
       label: getLabel(desktopMenuMessageIds.view),
       submenu: [
+        // 上游移植不能移除 CCbuddy 的历史入口；复用已有主窗口路由回调，保持单一视图状态所有者。
+        ...(options.openHistoryReview
+          ? [
+              {
+                label:
+                  options.currentApplicationLocale === "zh-CN" ? "会话历史" : "Session History",
+                accelerator: "CmdOrCtrl+Shift+H",
+                click: options.openHistoryReview,
+              },
+              { type: "separator" as const },
+            ]
+          : []),
         {
           label: getLabel(desktopMenuMessageIds.viewToggleFullScreen),
           role: "togglefullscreen" as const,
@@ -286,7 +299,9 @@ function buildApplicationMenuTemplate(options: {
                 type: "checkbox" as const,
                 checked: stdioTapState.enabled,
                 click: () =>
-                  void options.executeDesktopCommand(DesktopCommandIds.ToggleCCbuddyStdioTapDevProxy),
+                  void options.executeDesktopCommand(
+                    DesktopCommandIds.ToggleCCbuddyStdioTapDevProxy,
+                  ),
               },
               { type: "separator" as const },
             ]
@@ -318,7 +333,9 @@ function buildApplicationMenuTemplate(options: {
                   {
                     label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpointCustom),
                     click: () =>
-                      void options.executeDesktopCommand(DesktopCommandIds.SetCCbuddyEndpointCustom),
+                      void options.executeDesktopCommand(
+                        DesktopCommandIds.SetCCbuddyEndpointCustom,
+                      ),
                   },
                   {
                     label: getLabel(desktopMenuMessageIds.helpCCbuddyEndpointReset),
@@ -363,6 +380,7 @@ function buildApplicationMenuTemplate(options: {
 export function rebuildApplicationMenu(options: {
   currentApplicationLocale: Locale;
   ccbuddyEndpointSelection?: "production" | "test" | "custom";
+  openHistoryReview?: () => void;
   executeDesktopCommand: (
     command: DesktopCommandId,
     senderWindow?: BrowserWindow | null,
@@ -377,6 +395,7 @@ export function rebuildApplicationMenu(options: {
       buildApplicationMenuTemplate({
         currentApplicationLocale: options.currentApplicationLocale,
         ccbuddyEndpointSelection: options.ccbuddyEndpointSelection,
+        openHistoryReview: options.openHistoryReview,
         executeDesktopCommand: options.executeDesktopCommand,
         currentZoomLevel: options.currentZoomLevel,
         shortcutBindings: options.shortcutBindings,

@@ -121,7 +121,7 @@ function mergeTranscriptRow(
 
 /**
  * 冷启动恢复与跨端追平：到期时 renderer 可能不在场，内存 store 没有机会登记/收口这张卡；
- * 远控 Renderer 也可能先登记运行中 row、桌面端随后才把完成态持久化进 transcript。
+ * Web Renderer 也可能先登记运行中 row、桌面端随后才把完成态持久化进 transcript。
  * transcript 中的 userInput.highspeed 是持久事实，按 sourceCommandId 幂等合并（spec §8）。
  * Bug 根因：旧实现对已存在的 sourceCommandId 直接 continue，迟到的 outputTokens/durationMs/
  * highspeedTps/savedDurationMs 永远吸收不进来，远端的卡级 TPS、节省时间与自动分享候选无法收口。

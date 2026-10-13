@@ -53,8 +53,8 @@ export interface ConversationRowRenderContext {
   rootSessionId?: string | null;
   /** @deprecated 旧内联下钻标记；新的子会话统一打开侧栏详情。 */
   inSubagentDrilldown?: boolean;
-  /** 手机 /remote 紧凑模式：隐藏外部 App 打开下拉，只保留应用内预览。 */
-  compactForRemoteControl?: boolean;
+
+  compactLayout?: boolean;
   /** 当前 session 正在 compact 或 goal verify；专用状态 UI 独占进度反馈。 */
   chatLoadingBlockedByActiveWork?: boolean;
   /** 当前 session 正在等待权限确认或 AskUserQuestion 回答，隐藏底部 ChatLoading。 */
