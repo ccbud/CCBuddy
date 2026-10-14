@@ -8,6 +8,12 @@ import {
 import { desktopBrowserPlatformBridge } from "./desktopBrowserPlatformBridge.js";
 import { createDesktopPluginSandboxPlatform } from "./plugin-sandbox/desktopPluginSandboxPlatform.js";
 
+declare global {
+  interface Window {
+    ccbuddyHistory?: NonNullable<IPlatformService["historyReview"]>;
+  }
+}
+
 export function createDesktopPlatform(options: {
   isLocalDevelopmentRuntime: boolean;
 }): IPlatformService {
@@ -157,6 +163,20 @@ export function createDesktopPlatform(options: {
     downloadUpdate: () => window.ccbuddy.downloadUpdate?.() ?? Promise.resolve(),
     cancelUpdateDownload: () => window.ccbuddy.cancelUpdateDownload?.() ?? Promise.resolve(),
     openUpdateStatusWindow: () => window.ccbuddy.openUpdateStatusWindow?.() ?? Promise.resolve(),
+    // 合并时遗漏历史平台转接，侧栏因能力缺失同时隐藏日历和会话列表，原生菜单也无法导航。
+    // 恢复既有 preload 只读桥与菜单订阅，让 App 继续作为主视图状态的唯一所有者。
+    onOpenHistoryViewRequested: (listener) =>
+      window.ccbuddy.onOpenHistoryViewRequested?.(listener) ?? (() => {}),
+    historyReview: window.ccbuddyHistory
+      ? {
+          protocolVersion: 1,
+          list: () => window.ccbuddyHistory!.list(),
+          load: (id) => window.ccbuddyHistory!.load(id),
+          refresh: () => window.ccbuddyHistory!.refresh(),
+          onRefreshEvent: (listener) =>
+            window.ccbuddyHistory!.onRefreshEvent((event) => listener(event)),
+        }
+      : undefined,
     getAutoUpdatePreferences: () =>
       window.ccbuddy.getAutoUpdatePreferences?.() ??
       Promise.resolve({ autoDownloadAndInstallUpdates: false }),
