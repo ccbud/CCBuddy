@@ -31,6 +31,12 @@ ZIP with its final SHA-512 and size. The ZIP blockmap matches that unchanged ZIP
 Both macOS jobs set `CCBUDDY_ENV=production` and
 `CCBUDDY_PREVIEW_IDENTITY=0`: their app identity is `app.ccbuddy.desktop`,
 their product name is `CCbuddy`, and their artifacts have no `_TEST` suffix.
+The installed `@ccbuddy/ccbuddy-cua` manifest owns Computer Use availability.
+Packaging reuses `isRealComputerUseProducerInstalled`: the open source
+`ccbuddyCuaPlaceholder: true` package has no Computer Use runtime, so it does not
+stage or require a CUA Helper, Sharp, or the absent `ccbuddy-cua-plugin` Koffi
+runtime. A real producer still requires its target Koffi binary and JavaScript
+entry in the packaged plugin directory; missing required assets fail packaging.
 The DMG is absent from the updater manifest because stapling changes its bytes
 after electron-builder generates the initial manifest. Both archives are verified
 before publication. A draft Release may hold partial upload state, but it becomes
@@ -87,3 +93,6 @@ and no release credentials.
    acceptance criteria.
 4. Failed publication leaves only a draft. An existing public release and a
    newer latest version are never overwritten by a rerun or older tag.
+5. An open source placeholder or an uninstalled Computer Use producer does not
+   require Koffi assets. A real producer with missing target native code or its
+   JavaScript entry fails the same `afterPack` check; a complete runtime passes.

@@ -22,7 +22,10 @@ import {
   resolveDesktopProductIdentity,
 } from "./scripts/desktop-product-identity.mjs";
 import { createWindowsPowerShellSecurityArgs } from "./scripts/powershell-command.mjs";
-import { isSharpRequiredByComputerUse, verifyStagedSharp } from "./scripts/sharp-package-assets.mjs";
+import {
+  isSharpRequiredByComputerUse,
+  verifyStagedSharp,
+} from "./scripts/sharp-package-assets.mjs";
 import { isRealComputerUseProducerInstalled } from "./scripts/computer-use-producer.mjs";
 import { verifyStagedKoffi } from "./scripts/koffi-package-assets.mjs";
 import {
@@ -489,6 +492,9 @@ function assertPackagedCuaSharp(context) {
 }
 
 function assertPackagedCuaKoffi(context) {
+  // 修复原因：开源占位 producer 不提供 CUA 插件，不能要求不存在的 Koffi 原生资源。
+  // 复用 Helper 的真实 producer 判定；真实 producer 仍必须通过完整性校验。
+  if (!shouldPackageComputerUseHelper) return;
   const problems = verifyStagedKoffi({
     resourcesDir: resolvePackagedResourcesDir(context),
     targetPlatform,
