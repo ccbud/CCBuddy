@@ -383,7 +383,7 @@ export function useWorkspaceTaskLists(params: {
     () => buildWorkspaceEventSubscriptionSignature(endpointShards),
     [endpointShards],
   );
-  // 列表数据源 = sessions-index。remote shard（web/手机远控/SSH workspace）
+  // 列表数据源 = sessions-index。remote shard（Web/SSH workspace）
   // 也走 sessions-index——scope 携带 endpoint 维度与该 endpoint 的 agentService proxy；
   // 尚未解析到远端 session 的 tab（断连占位）不在 endpointShards 内，等重连后自动补订阅。
   const sessionsIndexScopes = useMemo(
@@ -704,7 +704,6 @@ export function useWorkspaceTaskLists(params: {
             return;
           }
 
-          // Web 远控发起归档/置顶时，桌面 workspace 行没有本地乐观 mutation；
           // 这里只监听低频归属类事件并标脏对应 workspace 查询，避免消息流事件触发整表重拉。
           logger.info(
             `[useWorkspaceTaskLists] 收到无法增量处理的 workspace_task_list_changed，刷新 workspace 行 workspace=${config.scope.workspacePath} reason=${event.reason}`,

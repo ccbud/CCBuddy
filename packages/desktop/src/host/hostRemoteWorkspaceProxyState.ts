@@ -1,14 +1,14 @@
 import type { IDisposable } from "@ccbuddy/rpc";
 import { resolveWorkspaceKey } from "@ccbuddy/shared";
 
-interface HostRemoteTaskMeta {
+export interface HostRemoteTaskMeta {
   taskId: string;
   traceId: string;
   workspacePath: string;
   workspaceIdentity?: string;
 }
 
-interface HostRemoteWorkspaceContext {
+export interface HostRemoteWorkspaceContext {
   workspacePath: string;
   workspaceIdentity?: string;
 }

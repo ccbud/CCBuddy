@@ -10,13 +10,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip.js";
 
-function scrollRemoteConnectionLogsToLatest(
+export function scrollRemoteConnectionLogsToLatest(
   viewport: Pick<HTMLElement, "scrollHeight" | "scrollTop">,
 ): void {
   viewport.scrollTop = viewport.scrollHeight;
 }
 
-function scheduleRemoteConnectionLogsScrollToLatest(
+export function scheduleRemoteConnectionLogsScrollToLatest(
   viewport: Pick<HTMLElement, "scrollHeight" | "scrollTop">,
   scheduleFrame: (callback: () => void) => number = (callback) =>
     window.requestAnimationFrame(callback),

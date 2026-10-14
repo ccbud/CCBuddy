@@ -1,11 +1,9 @@
-import { pickProductEndpointEnv } from "@ccbuddy/shared/ccbuddyEndpoint";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineConfig } from "tsup";
 import { getBuildMetadata } from "./scripts/build-metadata.mjs";
 import { resolveDesktopProductFlavor } from "./scripts/desktop-product-identity.mjs";
-import { normalizeCCbuddyUpdateManifestUrl } from "./scripts/ccbuddy-update-policy.mjs";
 const { copyGenUiRuntimeAssets } = await import(
   pathToFileURL(resolve(import.meta.dirname, "scripts/gen-ui-runtime-assets.mjs")).href
 );
@@ -13,13 +11,24 @@ const { copyGenUiRuntimeAssets } = await import(
 const { loadBuiltinProviderConfig } = await import(
   pathToFileURL(resolve(import.meta.dirname, "../../scripts/builtin-provider-config.mjs")).href
 );
+const { resolveBuildTimeConfig, createBuildTimeConfigDefines } = await import(
+  pathToFileURL(resolve(import.meta.dirname, "../../scripts/build-time-config.mjs")).href
+);
+// 构建期可选能力（ARMS、事件上报、自动更新），见 docs/desktop/build-time-optional-capabilities.md
+const buildTimeConfigDefines = createBuildTimeConfigDefines(
+  await resolveBuildTimeConfig(process.env),
+);
 
 const buildMetadata = getBuildMetadata();
+
+function resolveCCbuddyEnv(value: string | undefined): "test" | "production" {
+  return value?.trim().toLowerCase() === "production" ? "production" : "test";
+}
 
 // 手动加载 .env 文件，tsup 不像 Vite 会自动读取 .env.*；这些文件只提供链接常量。
 function loadEnvFiles(): Record<string, string> {
   const vars: Record<string, string> = {};
-  const files = ["../../.env", "../../.env.local"];
+  const files = ["../../.env"];
   if (process.env.NODE_ENV === "production") {
     files.push("../../.env.production");
   } else {
@@ -47,20 +56,15 @@ function loadEnvFiles(): Record<string, string> {
   if (process.env.ZAI_BUSINESS_LOGIN_URL) {
     vars.ZAI_BUSINESS_LOGIN_URL = process.env.ZAI_BUSINESS_LOGIN_URL;
   }
+  if (process.env.CDN_DOMAIN) vars.CDN_DOMAIN = process.env.CDN_DOMAIN;
+  if (process.env.OSS_PATH_PREFIX) vars.OSS_PATH_PREFIX = process.env.OSS_PATH_PREFIX;
   if (process.env.VITE_ZAI_OAUTH_CLIENT_ID) {
     vars.VITE_ZAI_OAUTH_CLIENT_ID = process.env.VITE_ZAI_OAUTH_CLIENT_ID;
   }
   if (process.env.VITE_ZAI_OAUTH_ORIGIN) {
     vars.VITE_ZAI_OAUTH_ORIGIN = process.env.VITE_ZAI_OAUTH_ORIGIN;
   }
-  return {
-    ...vars,
-    ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
-    ),
-  };
+  return vars;
 }
 
 const env = loadEnvFiles();
@@ -70,8 +74,94 @@ const ccbuddyProductFlavor = resolveDesktopProductFlavor({
   ...process.env,
   CCBUDDY_ENV: ccbuddyEnv,
 });
-const ccbuddyUpdateManifestUrl = normalizeCCbuddyUpdateManifestUrl(env.CCBUDDY_UPDATE_MANIFEST_URL);
 console.log(`[tsup] CCBUDDY_ENV=${ccbuddyEnv} CCBUDDY_PRODUCT_FLAVOR=${ccbuddyProductFlavor}`);
+
+function parseCsvEnv(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function resolveBuildRemoteCdnReleaseRoots(runtimeEnv: Record<string, string | undefined>) {
+  const domains = parseCsvEnv(runtimeEnv.CDN_DOMAIN);
+  const pathPrefixes = parseCsvEnv(runtimeEnv.OSS_PATH_PREFIX || "ccbuddy/electron/releases");
+  if (domains.length === 0) {
+    return [];
+  }
+  if (pathPrefixes.length !== 1 && pathPrefixes.length !== domains.length) {
+    throw new Error(
+      `OSS_PATH_PREFIX must contain one value or match CDN_DOMAIN count (${domains.length}), got ${pathPrefixes.length}`,
+    );
+  }
+
+  return domains.map((domain, index) => {
+    const pathPrefix = pathPrefixes.length === 1 ? pathPrefixes[0] : pathPrefixes[index];
+    return `https://${domain}/${pathPrefix}`.replace(/\/+$/, "");
+  });
+}
+
+export function resolveBuildPackagedAgentTelemetryEnv(
+  runtimeEnv: Record<string, string | undefined>,
+): Record<string, string> {
+  const endpoint = runtimeEnv.CCBUDDY_PACKAGED_AGENT_OTEL_ENDPOINT?.trim();
+  const headers = runtimeEnv.CCBUDDY_PACKAGED_AGENT_OTEL_HEADERS?.trim();
+  const serviceName =
+    runtimeEnv.CCBUDDY_PACKAGED_AGENT_OTEL_SERVICE_NAME?.trim() || "ccbuddy-cli-agent";
+
+  if (!endpoint && !headers) {
+    if (
+      runtimeEnv.CI &&
+      (runtimeEnv.CI_COMMIT_TAG || runtimeEnv.CI_COMMIT_BRANCH === "release/current")
+    ) {
+      throw new Error("Packaged Agent OTLP configuration is required for release builds");
+    }
+    return {};
+  }
+  if (!endpoint || !headers) {
+    throw new Error(
+      "CCBUDDY_PACKAGED_AGENT_OTEL_ENDPOINT and CCBUDDY_PACKAGED_AGENT_OTEL_HEADERS must be configured together",
+    );
+  }
+  if (endpoint.length > 2_048) {
+    throw new Error("CCBUDDY_PACKAGED_AGENT_OTEL_ENDPOINT exceeds 2048 characters");
+  }
+  if (headers.length > 8_192 || /[\r\n]/u.test(headers)) {
+    throw new Error("CCBUDDY_PACKAGED_AGENT_OTEL_HEADERS is invalid");
+  }
+  if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(serviceName)) {
+    throw new Error("CCBUDDY_PACKAGED_AGENT_OTEL_SERVICE_NAME is invalid");
+  }
+
+  let parsedEndpoint: URL;
+  try {
+    parsedEndpoint = new URL(endpoint);
+  } catch {
+    throw new Error("CCBUDDY_PACKAGED_AGENT_OTEL_ENDPOINT must be a valid HTTP(S) URL");
+  }
+  if (
+    !["http:", "https:"].includes(parsedEndpoint.protocol) ||
+    parsedEndpoint.username ||
+    parsedEndpoint.password
+  ) {
+    throw new Error("CCBUDDY_PACKAGED_AGENT_OTEL_ENDPOINT must be a valid HTTP(S) URL");
+  }
+  if (
+    resolveCCbuddyEnv(runtimeEnv.CCBUDDY_ENV) === "production" &&
+    parsedEndpoint.protocol !== "https:"
+  ) {
+    throw new Error("CCBUDDY_PACKAGED_AGENT_OTEL_ENDPOINT must use HTTPS in production");
+  }
+
+  return {
+    OTEL_EXPORTER_OTLP_ENDPOINT: parsedEndpoint.toString(),
+    OTEL_EXPORTER_OTLP_HEADERS: headers,
+    OTEL_SERVICE_NAME: serviceName,
+    // 只有打进正式 Desktop 安装包的 Agent 才能由构建链可信判定为 packaged；
+    // source/development_bundle 不在运行时猜测，未显式注入时保持 unknown。
+    CCBUDDY_TELEMETRY_RUNTIME_DISTRIBUTION: "packaged",
+  };
+}
 
 export function resolveDesktopTsupBundleSecurityOptions(
   runtimeEnv: Record<string, string | undefined> = process.env,
@@ -109,18 +199,28 @@ function createSharedDefines() {
     __CCBUDDY_COMMIT__: JSON.stringify(buildMetadata.buildCommitId),
     __CCBUDDY_BUILD_TIME__: JSON.stringify(buildMetadata.buildTime),
     __CCBUDDY_ENV__: JSON.stringify(ccbuddyEnv),
-    __CCBUDDY_ENDPOINT_ENV__: JSON.stringify(pickProductEndpointEnv(env)),
     __CCBUDDY_PRODUCT_FLAVOR__: JSON.stringify(ccbuddyProductFlavor),
-    // CCbuddy 自有发行源由构建方固定；缺省为空，运行时绝不回退到 CCbuddy manifest。
-    __CCBUDDY_UPDATE_MANIFEST_URL__: JSON.stringify(ccbuddyUpdateManifestUrl ?? ""),
+    ...buildTimeConfigDefines,
     // Computer Use Helper build identity — helperInstaller 读它决定下载哪个 Helper bundle。
     // 缺失时 installer 抛 "Packaged CCbuddy is missing its embedded Computer Use Helper build identity"。
     // CI 构建时通过 CCBUDDY_CUA_HELPER_BUILD_ID env 注入；dev 为空串走兜底（dev helper 不走下载）。
     __CCBUDDY_CUA_HELPER_BUILD_ID__: JSON.stringify(
       process.env.CCBUDDY_CUA_HELPER_BUILD_ID?.trim() ?? "",
     ),
-    // 客户端只有一个 CDN 配置，与发布端 OSS 目标列表分离。
-    __CCBUDDY_CDN_BASE_URL__: JSON.stringify(env.CCBUDDY_CDN_BASE_URL?.trim() || ""),
+    // Bugfix: remote runtime CDN 根之前硬编码在 main bundle 里，OSS/CDN 切换必须改代码。
+    // 这里改成构建期从 CI 的 CDN_DOMAIN/OSS_PATH_PREFIX 注入；没有配置时保留旧默认。
+    __CCBUDDY_REMOTE_CDN_RELEASE_ROOTS__: JSON.stringify(resolveBuildRemoteCdnReleaseRoots(env)),
+  };
+}
+
+function createMainDefines() {
+  return {
+    ...createSharedDefines(),
+    // 正式安装包无法继承 GitLab Runner 或开发终端环境。这里只把 CI 提供的低权限写入配置
+    // 编译进 Desktop Main，再由既有 Main -> Host -> Agent 安全边界定向传递。
+    __CCBUDDY_PACKAGED_AGENT_TELEMETRY_ENV__: JSON.stringify(
+      resolveBuildPackagedAgentTelemetryEnv(process.env),
+    ),
   };
 }
 
@@ -138,7 +238,7 @@ const desktopNodeRuntimeExternals = [
   "yauzl",
 ];
 
-function createDevReadyMarkerHook(target: "main" | "host" | "preload" | "scheduler"): string {
+function createDevReadyMarkerHook(target: "main" | "host" | "preload"): string {
   // CLI 级 --onSuccess 在多 config watch 模式下会被每个子构建分别触发。
   // 之前 preload 先成功时就提前写入 ready 标记，Electron 仍会在 main/host 未完成时启动。
   // 这里改成每个 config 自己在成功后写独立 marker，让 dev 启动脚本能精确等待全部构建完成。
@@ -169,6 +269,7 @@ export default defineConfig([
       "@ccbuddy/rpc",
       "@ccbuddy/services",
       "@ccbuddy/client",
+      // 修复：历史服务是 CCbuddy 自有源码包，生产 Electron 没有 TS loader，必须随 Main 内联。
       "@ccbuddy/history",
       // Provider Refactor 的 workspace 包导出 TypeScript 源码；Electron 生产运行时没有
       // TS loader，必须随 Desktop bundle 内联，不能留下指向 src/index.ts 的裸包引用。
@@ -179,9 +280,8 @@ export default defineConfig([
       // producer 的 JS broker 必须跟随 services 一起内联，原生 addon 仍只存在于独立 Helper。
       "@ccbuddy/ccbuddy-cua",
     ],
-    // OTLP 端点与鉴权只在运行时读取；构建环境中的凭据不能写进公开安装包。
-    define: createSharedDefines(),
-    // main/host 同时 watch 且共享 out 根目录时，默认 chunk 命名会互相覆盖，
+    define: createMainDefines(),
+    // 修复原因：main/host 同时 watch 且共享 out 根目录时，默认 chunk 命名会互相覆盖，
     // 可能让 main 的 import 指向被 host 刚重写的 chunk，触发“缺少命名导出”的偶发启动报错。
     // 这里按目标分目录输出 chunk，确保并发构建下产物隔离。
     esbuildOptions(options) {

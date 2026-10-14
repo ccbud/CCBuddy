@@ -11,6 +11,10 @@ header and collapsed sidebar.
 The loading and onboarding logo badge displays that same artwork at its full
 96px tile size. It must not add a larger blue surround or replace the app icon
 with a newly drawn mark.
+The Desktop and Web HTML startup shells display the bundled CCbuddy image
+before React loads. The shell and React loading screen use the same full-tile
+artwork; neither phase may show the inherited upstream SVG glyph. Image paths
+must resolve in a real Vite build and in an installed Desktop renderer.
 The sidebar footer shows the full sprout-and-CC artwork within its rounded tile;
 the parent control must not clip the top leaf or either C. The About dialog uses
 the same original artwork as an image that fills its icon tile, never a traced
@@ -23,6 +27,28 @@ product initial. The icon has no independent mutable state: each window reads
 the bundled asset and presents it without a competing brand cache. The compact
 asset is `build/icons/128x128.png` in development and
 `process.resourcesPath/ccbuddy-about-icon.png` in an installed desktop app.
+The forced-update window resolves its development asset relative to the Main
+module, independent of the launch working directory. Main awaits an asynchronous
+asset read before rendering the prompt; the HTML renderer receives the resulting
+image URL or an explicit missing-image value and performs no file IO. Regression
+checks cover installed resources, development paths, and a missing-image prompt
+whose CCbuddy title and update actions remain available in both locales.
+
+On macOS, an installed app keeps the Dock icon supplied by its application
+bundle. Startup must not replace it with the full-tile PNG used inside windows,
+because a direct Dock replacement bypasses the system's application-icon
+presentation and makes the artwork appear larger after launch. Development
+uses `build/icon_macos.png`, generated from the original sprout-and-CC artwork
+on a 1024px transparent canvas with an 832px tile and 96px margins on every
+side. The Dock icon and in-window artwork have separate presentation assets;
+the window asset still fills its tile. Empty or unavailable development Dock
+artwork leaves the existing icon in place.
+
+Dock acceptance: launching an installed macOS app does not replace its bundle
+icon or change its apparent size; the development override uses the padded
+macOS asset and shows the complete sprout and both C letters. Windows and
+Linux do not call the macOS Dock API. Regression checks cover installed and
+development modes, absent Dock support, and unreadable development artwork.
 
 Visible identity includes the window title, startup screen, onboarding, empty
 workspace, About dialog, folder-opening context menus, external-link prompt,

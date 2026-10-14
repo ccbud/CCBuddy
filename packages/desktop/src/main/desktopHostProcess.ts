@@ -46,16 +46,12 @@ import {
   hostModulePath,
   resolveBundledGlmBinaryPath,
 } from "./desktopRuntimeEnv.js";
+import { ingestHostNetworkCapture } from "./resourceManagerNetwork.js";
 import { buildHostE2ECoverageEnv } from "./e2eCoverage.js";
 import { createFeedbackLogArchiveFromExportLogs } from "./exportLogs.js";
 import { createHostLogRelay } from "./hostLogRelay.js";
 import { ingestCliResourceSample } from "./processResourceCliSource.js";
 import { ingestHostSelfResourceSample } from "./processResourceSelfHeapSource.js";
-import {
-  rendererHtmlFileName,
-  resolveRendererDevUrl,
-  type DesktopRendererPage,
-} from "./desktopRendererPage.js";
 import { resolveHostResourceUsageResult } from "./resourceManagerHostSampling.js";
 import {
   registerHostAgentProcess,
@@ -95,7 +91,7 @@ export interface HostInitMessage {
   runtimeProcessEnvPatch?: Record<string, string>;
 }
 
-interface SpawnHostProcessOptions {
+export interface SpawnHostProcessOptions {
   internalChannel?: typeof InternalChannels.ServicePort | typeof InternalChannels.ScopedServicePort;
   internalPayload?: unknown;
   registerBroadcast?: boolean;
@@ -118,7 +114,7 @@ export function listDisposingHostProcesses(): ElectronUtilityProcess[] {
 
 export function loadWindow(
   win: BrowserWindow,
-  page: DesktopRendererPage = "index",
+  page: "index" | "login" = "index",
   bootstrap?: WindowBootstrapOptions,
 ): Promise<void> {
   const query = Object.fromEntries(
@@ -146,13 +142,13 @@ export function loadWindow(
   // 生产包不能信任继承环境中的开发服务器地址，否则会被本机开发会话劫持为空白页。
   if (!app.isPackaged && process.env["ELECTRON_RENDERER_URL"]) {
     const base = process.env["ELECTRON_RENDERER_URL"];
-    const url = resolveRendererDevUrl(base, page);
+    const url = new URL(page === "login" ? `${base}/login.html` : base);
     for (const [key, value] of Object.entries(query)) {
       url.searchParams.set(key, value);
     }
     return win.loadURL(url.toString());
   } else {
-    return win.loadFile(join(import.meta.dirname, "../renderer", rendererHtmlFileName(page)), {
+    return win.loadFile(join(import.meta.dirname, `../renderer/${page}.html`), {
       query,
     });
   }
@@ -336,7 +332,10 @@ export function spawnHostProcess(
       ingestHostNetworkObservations(result.data.observations);
       return;
     }
-
+    if (result.data.type === HostResponseTypes.NetworkCaptureBatch) {
+      ingestHostNetworkCapture(result.data.batch, child.pid ?? 0);
+      return;
+    }
     // CLI 自采的 60 秒样本：按 services 打的 lane 归入 cli_chat / cli_aux 角色。
     if (result.data.type === HostResponseTypes.AgentResourceSample) {
       ingestCliResourceSample(

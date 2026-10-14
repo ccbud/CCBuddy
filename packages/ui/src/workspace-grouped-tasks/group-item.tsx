@@ -88,6 +88,7 @@ export function GroupItem({
   activeWorkspacePath: string;
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
+
   getTaskRemoteSessionId: (task: CCbuddyTaskMeta) => string | undefined;
   getTaskWorkspaceLabel: (task: CCbuddyTaskMeta) => string;
   onSelectTask: (workspacePath: string, taskId: string, workspaceIdentity?: string) => void;
@@ -672,7 +673,7 @@ export function GroupItem({
         )}
       >
         <div className="min-h-0 overflow-hidden">
-          {/* grouped task 的折叠内容不再走 Radix Collapsible。
+          {/* Bugfix: grouped task 的折叠内容不再走 Radix Collapsible。
                 Radix Presence 和高度变量会在频繁挂载时重放动画；这里用本地受控容器，
                 并在收起动画后卸载组内 task。 */}
           {shouldRenderGroupContent ? (

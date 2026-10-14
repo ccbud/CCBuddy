@@ -228,13 +228,6 @@ export function buildPresetLabels(
   };
 }
 
-/**
- * 该产物能不能在**本地文件系统**上被定位（「在工作区显示」与 html 的「在浏览器中打开」的门）。
- *
- * 判据与 `shouldOpenAssistantHtmlInBrowser` 同源：远程 workspace（SSH / WSL / Docker）
- * 的路径在本机不存在，手机远控也没有文件树可以跳。`sourcePath` 缺席则连路径都没有——
- * markdown 产物与预置看板天生就没有出处。
- */
 export function canRevealArtifactInWorkspace(params: {
   sourcePath?: string;
   workspaceIdentity?: string;
@@ -245,4 +238,27 @@ export function canRevealArtifactInWorkspace(params: {
     !params.workspaceIdentity?.trim() &&
     !params.remoteSessionId
   );
+}
+
+/**
+ * 「作为文件打开」副本的文件名。`markdown` 恒为 `<id>.md`（id 已限定在 `[A-Za-z0-9_.-]`）；
+ * `file` 取**这一版**的 `sourcePath` 基名——扩展名决定系统用哪个 App 打开，而同一个 id 的
+ * 不同版本可以来自不同路径。拿不到出处时退回 id。
+ */
+export function artifactOpenAsFileName(
+  artifact: {
+    id: string;
+    kind: WorkflowRunArtifactKind;
+    version: number;
+    sourcePath?: string;
+    versions?: readonly { version: number; sourcePath?: string }[];
+  },
+  version: number,
+): string {
+  if (artifact.kind === "markdown") return `${artifact.id}.md`;
+  const sourcePath =
+    artifact.versions?.find((entry) => entry.version === version)?.sourcePath ??
+    (version === artifact.version ? artifact.sourcePath : undefined);
+  const leaf = sourcePath?.split(/[\\/]/u).at(-1)?.trim();
+  return leaf ? leaf : artifact.id;
 }

@@ -10,14 +10,14 @@ import {
   type CodeCommentComposerAttachment,
 } from "@/lib/codeCommentContext.js";
 
-interface UseCodeCommentContextsOptions {
+export interface UseCodeCommentContextsOptions {
   listenAddToChatEvents?: boolean;
   onContextRemoved?: (context: CodeCommentComposerAttachment) => void;
   requestFocus?: () => void;
   scopeKey: string;
 }
 
-interface UseCodeCommentContextsResult {
+export interface UseCodeCommentContextsResult {
   contexts: readonly CodeCommentComposerAttachment[];
   hasContexts: boolean;
   removeContext: (

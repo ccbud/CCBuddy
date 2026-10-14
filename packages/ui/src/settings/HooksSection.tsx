@@ -56,7 +56,7 @@ function isEditableHook(hook: Hook): boolean {
 // 里的只读工作区 Hook」。它们不是外部格式兼容导入源，塞进 Legacy 会让 Import 按钮
 // 必然失败（importHook 拒绝 source=ccbuddy），也违反「只读但可逐条 Trust」的约定。
 // 这类行应留在 Installed 分组，由信任状态门控 Switch，走行内 Trust 流程。
-function isReadOnlyCCbuddyHook(hook: Hook): boolean {
+export function isReadOnlyCCbuddyHook(hook: Hook): boolean {
   return hook.editable === false && (hook.location?.source ?? "ccbuddy") === "ccbuddy";
 }
 
@@ -73,7 +73,7 @@ function isInCompatibilitySection(hook: Hook): boolean {
  *   workspacePath 回退（与 matchesWorkspaceBinding 的降级规则一致）；
  * - 找不到对应 tab（workspace 已关闭/未知）返回 null——调用方不得切过去。
  */
-function resolveLatestReviewScopeTarget(
+export function resolveLatestReviewScopeTarget(
   bindings: Record<
     string,
     {
@@ -111,7 +111,7 @@ function resolveLatestReviewScopeTarget(
   return tab ? { interactionId: latest.interactionId, scopeKey: scopeKeyOf(tab) } : null;
 }
 
-function buildPluginHookRows(
+export function buildPluginHookRows(
   plugins: readonly Pick<CCbuddyPluginInfo, "enabled" | "hookDetails" | "id" | "name">[],
   installedPlugins: readonly Pick<CCbuddyInstalledPluginSummary, "id" | "scope">[],
   scopeMetadataKnown: boolean,
@@ -131,7 +131,7 @@ function buildPluginHookRows(
   );
 }
 
-function filterPluginHooksByScope(
+export function filterPluginHooksByScope(
   pluginHooks: readonly PluginHookRow[],
   scope: HookScope,
 ): PluginHookRow[] {

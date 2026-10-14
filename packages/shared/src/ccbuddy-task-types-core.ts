@@ -146,7 +146,18 @@ export interface CCbuddyTaskGoalChangedPatch {
 }
 // ---- CCbuddy task 模式 ----
 
-export type CCbuddyTaskMode = "yolo" | "plan" | "edit" | "auto" | "autoEdit" | "build";
+export type CCbuddyTaskMode =
+  | "default"
+  | "yolo"
+  | "guarded"
+  | "plan"
+  | "edit"
+  | "acceptEdits"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions"
+  | "autoEdit"
+  | "build";
 
 export type CCbuddyOffPeakRunType = "init" | "resume";
 
@@ -198,7 +209,8 @@ export interface CCbuddyPromptFileAttachment {
   mimeType: string;
   sizeBytes: number;
   /** 附件来源；clipboard-text 表示由长文本粘贴落盘生成，agent 只应按临时文件引用处理。 */
-  sourceKind?: "clipboard-text";
+  sourceKind?: "clipboard-text" | "topic-history";
+  messageCount?: number;
   /** 旧版/无路径环境的兼容回退；新桌面 GUI 不再为普通文件发送 base64。 */
   dataBase64?: string;
   /** 无本地路径时的小文本回退；有 localPath 时由 agent 自行读取。 */
@@ -334,14 +346,22 @@ export interface CCbuddyTaskMeta {
   /**
    * 最后一次失败的可展示原因。
    *
-   * 手机远控断连时实时 task_error 可能无法送达；恢复只能看到 meta.status=error，
+   * 普通 Web 断连时实时 task_error 可能无法送达；恢复只能看到 meta.status=error，
    * 但拿不到错误正文，用户会以为发送没有触发。这里把失败原因随 task meta 一起持久化。
    */
   lastError?: CCbuddyTaskLastError;
+  /** task 级历史修复状态，用于避免读 snapshot 时重复执行一次性迁移逻辑。 */
+  repairState?: CCbuddyTaskRepairState;
   /** 任务级文件改动摘要，仅用于列表/标题展示，真实回滚仍以 fileChanges 为准 */
   changeSummary?: CCbuddyTaskChangeSummary;
   /** ccbuddy-cli /goal 会话目标；null 表示已显式清空。 */
   target?: CCbuddyTaskGoal | null;
+}
+export interface CCbuddyTaskRepairState {
+  /** Claude 原生日志补齐历史 snapshot assistant 正文的修复版本。 */
+  claudeNativeSnapshotAssistantContentVersion?: number;
+  /** Codex 原生日志补齐历史 snapshot 子 agent 工具块的修复版本。 */
+  codexNativeSnapshotSubagentToolsVersion?: number;
 }
 export interface CCbuddyTaskChangeSummary {
   /** 整个任务里涉及过的唯一文件数 */
@@ -700,6 +720,7 @@ export interface CCbuddyTaskComplete {
   usage?: CCbuddyUsage;
 }
 export interface CCbuddyTaskRunStarted {
+  inputOrigin?: "desktop" | "mobile";
   type: "task_run_started";
   taskId: string;
   traceId: TraceId;

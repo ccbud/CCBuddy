@@ -48,7 +48,7 @@ export function createTaskNavigationHistory(): TaskNavigationHistory {
   return { entries: [], cursor: -1 };
 }
 
-function isTaskNavEntry(entry: WorkspaceNavEntry): entry is TaskNavEntry {
+export function isTaskNavEntry(entry: WorkspaceNavEntry): entry is TaskNavEntry {
   return entry.kind === "task";
 }
 

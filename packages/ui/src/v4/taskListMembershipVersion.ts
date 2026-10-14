@@ -15,14 +15,14 @@ export function bumpTaskListMembershipVersion(): void {
   }
 }
 
-function subscribeTaskListMembershipVersion(listener: () => void): () => void {
+export function subscribeTaskListMembershipVersion(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
 
-function getTaskListMembershipVersion(): number {
+export function getTaskListMembershipVersion(): number {
   return version;
 }
 

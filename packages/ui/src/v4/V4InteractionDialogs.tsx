@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CCbuddyElicitationRequest,
   CCbuddyPermissionOption,
@@ -7,6 +7,7 @@ import type {
 import type { ConversationSnapshot } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { ElicitationDialog } from "@/ElicitationDialog.js";
 import { PermissionDialog } from "@/PermissionDialog.js";
+import { workflowSessionModelOf } from "@/components/workflow-timeline/workflowRunSettings.js";
 import { useOptionalPlatform } from "@/hooks/usePlatform.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { usePendingInteractionTaskNotifications } from "@/hooks/useTaskNotifications.js";
@@ -30,25 +31,25 @@ import {
 import { V4UserInputDialog } from "@/v4/V4UserInputDialog.js";
 import { useV4Conversation } from "@/v4/V4ConversationContext.js";
 
-interface V4InteractionDialogsProps {
+export interface V4InteractionDialogsProps {
   sessionId: string;
   workspacePath: string;
   workspaceIdentity?: string;
   remoteSessionId?: string;
+
   provider?: CCbuddyProvider;
   snapshot: ConversationSnapshot | null;
   onCommandSettled?: (commandId: string) => void;
-  onPlanInteractionAccepted?: (interactionId: string) => void;
 }
 
-function getCurrentSessionInteractionSnapshot(
+export function getCurrentSessionInteractionSnapshot(
   sessionId: string,
   snapshot: ConversationSnapshot | null,
 ): ConversationSnapshot | null {
   return snapshot?.sessionId === sessionId ? snapshot : null;
 }
 
-function resolveV4ElicitationRequest(
+export function resolveV4ElicitationRequest(
   projected: CCbuddyElicitationRequest | null,
   botProgress: CCbuddyElicitationRequest | null,
 ): CCbuddyElicitationRequest | null {
@@ -59,17 +60,17 @@ function resolveV4ElicitationRequest(
   return projected;
 }
 
-function buildV4ElicitationProgressKey(request: CCbuddyElicitationRequest): string {
+export function buildV4ElicitationProgressKey(request: CCbuddyElicitationRequest): string {
   return `${request.requestId}:${request.currentQuestionIndex ?? 0}:${JSON.stringify(request.answerDrafts ?? {})}`;
 }
 
-interface InteractionAutoResolutionIntentTracker {
+export interface InteractionAutoResolutionIntentTracker {
   markInteracted(interactionId: string): void;
   consumeSnooze(interactionId: string, autoResolutionReady: boolean): boolean;
   releaseSnooze(interactionId: string): void;
 }
 
-function createInteractionAutoResolutionIntentTracker(): InteractionAutoResolutionIntentTracker {
+export function createInteractionAutoResolutionIntentTracker(): InteractionAutoResolutionIntentTracker {
   const interactedIds = new Set<string>();
   const sentIds = new Set<string>();
   return {
@@ -101,7 +102,6 @@ export function V4InteractionDialogs({
   provider,
   snapshot,
   onCommandSettled,
-  onPlanInteractionAccepted,
 }: V4InteractionDialogsProps) {
   const { sendCommand } = useV4Conversation();
   const connectWorkspaceHookCommands = useWorkspaceHookReviewStore((state) => state.connect);
@@ -113,7 +113,12 @@ export function V4InteractionDialogs({
   // task 切换时 sessionId 会先更新，旧 task snapshot 可能再保留一帧。
   // 若直接使用旧 snapshot，会把当前 task 的 renderer-local 问答草稿误判为过期并清理。
   const currentSnapshot = getCurrentSessionInteractionSnapshot(sessionId, snapshot);
-  // workspaceHookReview 是 Settings/Hooks 处理的特殊交互，不能由通用 Dialog 渲染；
+  // 工作流确认窗里「会话模型」那一项的名字（与 run 卡「配置」弹层同一个来源）。
+  const workflowSessionModel = useMemo(
+    () => workflowSessionModelOf(currentSnapshot?.config),
+    [currentSnapshot?.config],
+  );
+  // Bug 根因：workspaceHookReview 是 Settings/Hooks 处理的特殊交互，不能由通用 Dialog 渲染；
   // 但它可以和 permission/userInput 共存，固定读取 [0] 会遮挡后续真正需要弹窗的交互。
   // 这里只选择本组件可渲染的首个交互，同时保留 permission/userInput 的队列顺序。
   const pending =
@@ -334,6 +339,9 @@ export function V4InteractionDialogs({
         key={pending.interactionId}
         request={request}
         workspacePath={workspacePath}
+        {...(workspaceIdentity === undefined ? {} : { workspaceIdentity })}
+        {...(remoteSessionId === undefined ? {} : { remoteSessionId })}
+        {...(workflowSessionModel === undefined ? {} : { workflowSessionModel })}
         provider={provider}
         responding={
           permissionResponse?.interactionId === pending.interactionId && permissionResponse.pending
@@ -343,14 +351,17 @@ export function V4InteractionDialogs({
             ? intl.formatMessage({ id: "chat.permission.responseFailed" })
             : undefined
         }
-        onRespond={(_requestId, option: CCbuddyPermissionOption, feedback?: string) => {
+        onRespond={(_requestId, option: CCbuddyPermissionOption, feedback, content) => {
           if (permissionResponseFlight.current === pending.interactionId) return;
           const interactionId = pending.interactionId;
           permissionResponseFlight.current = interactionId;
           setPermissionResponse({ interactionId, pending: true, failed: false });
+          // content：工作流确认窗里改过的设置，只在放行应答上（docs/dynamic-workflow/launch.md
+          // 「Adjusting the settings in the window」）。
           void resolveInteraction(interactionId, {
             optionId: option.optionId,
             ...(feedback ? { freeText: feedback } : {}),
+            ...(content === undefined ? {} : { content }),
           }).then((accepted) => {
             if (permissionResponseFlight.current !== interactionId) return;
             permissionResponseFlight.current = null;
@@ -410,7 +421,6 @@ export function V4InteractionDialogs({
             if (isExitPlanMode) {
               // Plan 回执 ACK 与 replayable pending 清场是两条异步路径。
               // 这里只上报已接受的 Plan interaction，由手机 pane 在仍读到旧权威状态时触发恢复。
-              onPlanInteractionAccepted?.(pending.interactionId);
             }
           });
         }}

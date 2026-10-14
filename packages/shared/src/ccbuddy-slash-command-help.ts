@@ -18,6 +18,23 @@ export const BUILTIN_CCBUDDY_SLASH_COMMAND_HELP_ENTRIES: readonly BuiltinCCbuddy
       usage: "/help [command]",
     },
     {
+      details: [
+        "Opens a Coding Plan setup picker when called without arguments.",
+        "Z.ai and BigModel browser login poll for authorization, then securely save credentials and refresh available models.",
+        "Manual API key variants accept the API key as an argument.",
+      ],
+      name: "login",
+      summary: "Set up a Coding Plan provider.",
+      usage:
+        "/login [zai-coding-plan|bigmodel-coding-plan|zai-coding-plan-api-key <api-key>|bigmodel-coding-plan-api-key <api-key>]",
+    },
+    {
+      details: ["Deletes Z.ai OAuth credentials from the shared CCbuddy credential store."],
+      name: "logout",
+      summary: "Remove the shared Z.ai login credentials.",
+      usage: "/logout",
+    },
+    {
       details: ["Runs the core manual compaction path and forwards optional summary instructions."],
       name: "compact",
       summary: "Compact the current conversation with optional instructions.",
@@ -107,12 +124,12 @@ export const BUILTIN_CCBUDDY_SLASH_COMMAND_HELP_ENTRIES: readonly BuiltinCCbuddy
       details: [
         "Shows the current permission mode when submitted without arguments.",
         "Interactive TUI composer input opens a local picker before submit.",
-        "Switchable modes are plan, build, edit, and yolo.",
+        "Switchable modes are plan, build, edit, yolo, and guarded.",
         "Picker rows and explicit input submit /mode <mode> commands.",
       ],
       name: "mode",
       summary: "Show or switch the current permission mode.",
-      usage: "/mode [plan|build|edit|yolo]",
+      usage: "/mode [plan|build|edit|yolo|guarded]",
     },
     {
       details: [

@@ -85,7 +85,7 @@ export function isPptxElementReferenceInWorkspaceScope(
   );
 }
 
-function isPptxElementReferencePayload(payload: unknown): payload is PptxElementReference {
+export function isPptxElementReferencePayload(payload: unknown): payload is PptxElementReference {
   if (!isRecord(payload) || !isRecord(payload.bounds)) {
     return false;
   }
@@ -135,7 +135,7 @@ function isPptxElementReferencePayload(payload: unknown): payload is PptxElement
   );
 }
 
-function createPptxElementReferenceId() {
+export function createPptxElementReferenceId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }

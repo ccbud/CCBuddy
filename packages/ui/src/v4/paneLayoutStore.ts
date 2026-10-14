@@ -35,7 +35,7 @@ export function hadPersistedPaneLayoutAtModuleLoad(): boolean {
 export * from "@/v4/paneLayoutTree.js";
 export * from "@/v4/paneLayoutPersistence.js";
 
-interface PaneLayoutStore extends PaneLayoutSnapshot {
+export interface PaneLayoutStore extends PaneLayoutSnapshot {
   /** 在 anchor pane 处拆分出 draft pane（绑 scope，首发 createSession 后原地绑定）。 */
   splitPane: (anchorPaneId: string, direction: SplitDirection, scope: PaneWorkspaceScope) => void;
   /** 在 anchor pane 四周拆出已绑定 session 的 pane（draft drop / 非 group 拖拽入口）。 */

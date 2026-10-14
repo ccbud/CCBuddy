@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { getAppConfigDir } from "@ccbuddy/services/node";
 
-type ElectronAppPathName = "appData" | "userData";
+export type ElectronAppPathName = "appData" | "userData";
 
 export function isElectronAppPackaged(): boolean {
   return (app as unknown as { isPackaged?: boolean } | undefined)?.isPackaged === true;

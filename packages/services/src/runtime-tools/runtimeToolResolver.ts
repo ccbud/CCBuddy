@@ -100,7 +100,7 @@ function joinUniquePathEntries(entries: readonly string[]): string {
   return nextEntries.join(delimiter);
 }
 
-function findRuntimeToolBinary(
+export function findRuntimeToolBinary(
   toolId: RuntimeToolId,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {

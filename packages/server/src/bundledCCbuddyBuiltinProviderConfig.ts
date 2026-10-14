@@ -2,7 +2,7 @@ import { materializeCCbuddyBuiltinProviderConfig } from "@ccbuddy/services/node"
 
 declare const __CCBUDDY_BUILTIN_PROVIDER_CONFIG_JSON__: string | undefined;
 
-interface MaterializeBundledCCbuddyBuiltinProviderConfigOptions {
+export interface MaterializeBundledCCbuddyBuiltinProviderConfigOptions {
   readonly environmentConfigRoot: string;
   readonly content: string;
 }

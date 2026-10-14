@@ -11,7 +11,7 @@ const TAR_END_BLOCK_BYTES = TAR_BLOCK_SIZE * 2;
 
 export const PLUGIN_SYNC_METADATA_ARCHIVE_PATH = ".ccbuddy-plugin-sync.json";
 
-type PluginSyncArchiveEntry =
+export type PluginSyncArchiveEntry =
   | {
       sourcePath: string;
       archivePath: string;
@@ -36,7 +36,7 @@ export interface PluginSyncArchiveMetadata {
   }>;
 }
 
-interface PluginSyncArchiveExtractOptions {
+export interface PluginSyncArchiveExtractOptions {
   maxExtractedBytes?: number;
 }
 

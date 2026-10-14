@@ -3,7 +3,7 @@ interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-const WORKSPACE_EXPANSION_STORAGE_KEY = "ccbuddy-workspace-expansion";
+export const WORKSPACE_EXPANSION_STORAGE_KEY = "ccbuddy-workspace-expansion";
 
 function getBrowserStorage(): StorageLike | null {
   if (typeof window === "undefined") {

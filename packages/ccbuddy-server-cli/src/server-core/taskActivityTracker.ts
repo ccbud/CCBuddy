@@ -6,7 +6,7 @@ import type {
 } from "@ccbuddy/services";
 import type { ConversationTelemetryFact } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 
-interface TaskActivityTracker extends IDisposable {
+export interface TaskActivityTracker extends IDisposable {
   readonly onDidChangeRunningTaskCount: Event<number>;
   readRunningTaskCount(): number;
 }

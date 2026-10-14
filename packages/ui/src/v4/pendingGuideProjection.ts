@@ -1,6 +1,6 @@
 import type { QueueItem, QueueState } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 
-interface PendingGuideQueueProjection {
+export interface PendingGuideQueueProjection {
   pendingGuides: readonly QueueItem[];
   visibleQueue: QueueState;
 }

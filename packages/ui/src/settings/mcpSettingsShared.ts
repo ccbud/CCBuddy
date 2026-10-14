@@ -3,6 +3,17 @@ import type { McpServerConfig, CCbuddyMcpServer } from "@ccbuddy/shared";
 export const MCP_SECTIONS = ["ccbuddyagentmcp"] as const;
 
 export type ServerScope = (typeof MCP_SECTIONS)[number];
+
+export const SOURCE_META: Record<
+  ServerScope,
+  { label: string; section: string; badgeClass: string }
+> = {
+  ccbuddyagentmcp: {
+    label: "CCbuddy Agent",
+    section: "CCbuddy Agent",
+    badgeClass: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400",
+  },
+};
 export type ConfigStorageLevel = "user" | "workspace";
 export type McpEditorMode = "form" | "json";
 

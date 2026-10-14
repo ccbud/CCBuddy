@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import type {
   CCbuddyAgentMcpServer,
   CCbuddySessionImportHistory,
@@ -14,14 +14,13 @@ import { claudeNativeSessionImportRepo } from "#src/session/claude-native/claude
 import { parseClaudeNativeSessionFile } from "#src/session/claude-native/claudeNativeSessionImportParser.js";
 import { safeParseLegacyTaskSessionFile } from "#src/session/legacyTaskSessionFile.js";
 
-interface ImportedClaudeHistoryRepairTarget {
+export interface ImportedClaudeHistoryRepairTarget {
   workspacePath: string;
   workspaceIdentity?: string;
   taskId: string;
 }
 
-interface ImportedClaudeHistoryRepairResult {
-  traceId?: string;
+export interface ImportedClaudeHistoryRepairResult {
   title?: string;
   createdAt?: number;
   updatedAt?: number;
@@ -29,11 +28,11 @@ interface ImportedClaudeHistoryRepairResult {
   source: "legacySnapshot" | "nativeJsonl";
 }
 
-interface ImportedClaudeSessionRepairTarget extends ImportedClaudeHistoryRepairTarget {
+export interface ImportedClaudeSessionRepairTarget extends ImportedClaudeHistoryRepairTarget {
   mcpServers?: CCbuddyAgentMcpServer[];
 }
 
-interface ImportedClaudeSessionRepairCreateParams {
+export interface ImportedClaudeSessionRepairCreateParams {
   workspacePath: string;
   workspaceIdentity?: string;
   sessionId: string;
@@ -61,7 +60,7 @@ function countAssistantMessages(messages: readonly CCbuddySessionImportMessage[]
   return messages.filter((message) => message.role === "assistant").length;
 }
 
-function shouldRepairImportedClaudeSnapshot(
+export function shouldRepairImportedClaudeSnapshot(
   snapshot: Pick<CCbuddySessionStateSnapshot, "messages" | "runtime" | "session">,
 ): boolean {
   if (snapshot.session.status === "running" || snapshot.runtime.activeTurnId) {
@@ -89,36 +88,30 @@ function shouldRepairImportedClaudeSnapshot(
   return hasLegacyFixedMessageIds;
 }
 
-export async function readLegacyImportedClaudeHistory(
+function readLegacyImportedClaudeHistory(
   target: ImportedClaudeHistoryRepairTarget,
-): Promise<ImportedClaudeHistoryRepairResult | null> {
-  const snapshotPaths = [
+): ImportedClaudeHistoryRepairResult | null {
+  const snapshotPath = [
     getLegacyTaskSessionSnapshotPath(target.workspacePath, target.taskId, target.workspaceIdentity),
     getLegacyDeletedTaskSessionSnapshotPath(
       target.workspacePath,
       target.taskId,
       target.workspaceIdentity,
     ),
-  ];
-  let raw: string | undefined;
-  for (const path of snapshotPaths) {
-    try {
-      raw = await readFile(path, "utf-8");
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+  ].find((path) => existsSync(path));
+  if (!snapshotPath) {
+    return null;
   }
-  if (raw === undefined) return null;
 
-  const parsed = safeParseLegacyTaskSessionFile(JSON.parse(raw) as unknown);
+  const parsed = safeParseLegacyTaskSessionFile(
+    JSON.parse(readFileSync(snapshotPath, "utf-8")) as unknown,
+  );
   if (!parsed.success || parsed.data.meta.migrationSource !== "claudeCode") {
     return null;
   }
   const messages = toImportMessages(parsed.data.messages);
   return messages.length > 0
     ? {
-        traceId: parsed.data.meta.traceId,
         title: parsed.data.meta.title,
         createdAt: parsed.data.meta.createdAt,
         updatedAt: parsed.data.meta.updatedAt,
@@ -161,10 +154,10 @@ async function readNativeImportedClaudeHistory(
     : null;
 }
 
-async function resolveImportedClaudeHistoryForRepair(
+export async function resolveImportedClaudeHistoryForRepair(
   target: ImportedClaudeHistoryRepairTarget,
 ): Promise<ImportedClaudeHistoryRepairResult | null> {
-  const legacyHistory = await readLegacyImportedClaudeHistory(target);
+  const legacyHistory = readLegacyImportedClaudeHistory(target);
   if (legacyHistory && countAssistantMessages(legacyHistory.messages) > 0) {
     return legacyHistory;
   }
@@ -200,7 +193,7 @@ export async function repairImportedClaudeSessionSnapshot<T>(params: {
   params.onRepair?.(history);
   // 早期导入可能已经创建了真实 CCbuddy session，但没有把 Claude 历史写入
   // ccbuddy-cli sessionStore，或用了全局 msg_import_* 导致串会话。这里统一用同名 sessionId
-  // 幂等回填 importedHistory，让 session/read、task snapshot 和远控恢复路径走同一套修复。
+  // 幂等回填 importedHistory，让 session/read、task snapshot 和普通 Web 恢复路径走同一套修复。
   return params.createSession({
     workspacePath: params.target.workspacePath,
     workspaceIdentity: params.target.workspaceIdentity,

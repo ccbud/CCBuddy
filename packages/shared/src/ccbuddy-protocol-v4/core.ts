@@ -68,7 +68,6 @@ export const PROTOCOL_V4_LIMITS = {
   logicalFrameAssemblyMaxConcurrent: 32,
   logicalFrameAssemblyMaxStagedBytes: 32 * 1024 * 1024,
   logicalFrameAssemblyTimeoutMs: 30_000,
-  transportEnvelopeIdMaxChars: 256,
   subscriberBufferMaxOps: 500,
   subscriberBufferMaxBytes: 1024 * 1024,
   eventRetentionPerSession: 2000,

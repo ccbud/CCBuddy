@@ -1,8 +1,13 @@
-import type { BackgroundBashOutputResult, SessionDebugSnapshot } from "@ccbuddy/shared";
+import type {
+  BackgroundBashOutputResult,
+  SessionDebugSnapshot,
+  CCbuddySessionContentProfile,
+} from "@ccbuddy/shared";
 /* eslint-disable max-lines -- CCbuddy agent service 接口集中声明 protocol/session/workspace 方法，拆分会增加 service descriptor 迁移成本。 */
 import type { Event, IDisposable } from "@ccbuddy/rpc";
 import { ServiceChannels } from "@ccbuddy/shared";
 import type { AppUsageRange, AppUsageSnapshot, CCbuddyTaskTokenUsageResult } from "@ccbuddy/shared";
+import type { DynamicWorkflowMode } from "@ccbuddy/shared";
 import type { CCbuddyAutomation, CCbuddyAutomationRun } from "@ccbuddy/shared";
 import type {
   CCbuddyStorageStartupState,
@@ -40,10 +45,12 @@ import type {
   CCbuddyMcpUiListResourceTemplatesResult,
   CCbuddyPluginsListUiSurfacesResult,
   CCbuddyWorkflowsDeleteResult,
+  CCbuddyWorkflowsForRunResult,
   CCbuddyWorkflowsGetResult,
   CCbuddyWorkflowsListResult,
   CCbuddyWorkflowsMoveResult,
   CCbuddyWorkflowsRunsResult,
+  CCbuddyWorkflowsSaveResult,
   CCbuddyWorkflowsUpdateMetaResult,
   CCbuddyPluginsUninstallResult,
   CCbuddyPluginsRestoreBuiltinResult,
@@ -53,6 +60,8 @@ import type {
   CCbuddyPluginsSetEnabledResult,
   CCbuddyPluginsCancelOperationResult,
   CCbuddyPluginOperationProgressNotification,
+  CCbuddyProviderRuntimeHeadersRequestParams,
+  CCbuddyProviderRuntimeHeadersCancelled,
   CCbuddyProviderTestModelConnectivityParams,
   CCbuddyProviderTestModelConnectivityResult,
   CCbuddyUserInputRequestParams,
@@ -154,10 +163,12 @@ import type {
 } from "./ccbuddyAgentPluginParams.js";
 import type {
   CCbuddyAgentDeleteSavedWorkflowParams,
+  CCbuddyAgentFindSavedWorkflowForRunParams,
   CCbuddyAgentGetSavedWorkflowParams,
   CCbuddyAgentListSavedWorkflowRunsParams,
   CCbuddyAgentListSavedWorkflowsParams,
   CCbuddyAgentMoveSavedWorkflowParams,
+  CCbuddyAgentSaveSavedWorkflowFromRunParams,
   CCbuddyAgentUpdateSavedWorkflowMetaParams,
 } from "./ccbuddyAgentWorkflowParams.js";
 
@@ -252,6 +263,8 @@ export interface CCbuddyAgentReadSessionParams extends CCbuddyAgentSessionTarget
   afterSeq?: number;
   /** 被动索引/观察者只能读取现有 runtime，禁止为了读快照拉起 session。 */
   runtimePolicy?: CCbuddyAgentRuntimePolicy;
+  /** "index" 仅供 task index：返回剥离大载荷的同结构 snapshot，禁止回写 UI 状态。 */
+  contentProfile?: CCbuddySessionContentProfile;
 }
 
 export interface CCbuddyAgentReadSessionMessagesParams extends CCbuddyAgentSessionTarget {
@@ -343,6 +356,16 @@ export interface CCbuddyAgentGenerateWorkspaceTextParams extends CCbuddyAgentWor
 export interface CCbuddyAgentTestModelConnectivityParams extends CCbuddyAgentWorkspaceTarget {
   selection: CCbuddyProviderTestModelConnectivityParams["selection"];
   signal?: AbortSignal;
+}
+
+// 合并时曾混用 Agent 完整鉴权响应；UI 只能回传请求校验，账号鉴权必须由 Host 合成。
+export type ProviderRuntimeHeadersUiResponse =
+  | { headersApplied: true; runtimeProviderHeaders: Record<string, string>; errorMessage?: string }
+  | { headersApplied: false; errorMessage?: string };
+
+export interface CCbuddyAgentRespondProviderRuntimeHeadersParams extends CCbuddyAgentSessionTarget {
+  requestId: string;
+  response: ProviderRuntimeHeadersUiResponse;
 }
 
 export interface CCbuddyAgentSessionRuntimePreferencesRequest extends CCbuddySessionRequestRuntimePreferencesParams {
@@ -566,6 +589,7 @@ export type CCbuddyAgentServiceEvent =
       requestId: string;
       response: CCbuddyUserInputResponse;
     }
+  | { type: "providerRuntimeHeaders.request"; request: CCbuddyProviderRuntimeHeadersRequestParams }
   | { type: "snapshot"; snapshot: CCbuddySessionStateSnapshot };
 
 export interface CCbuddyAgentAppRuntimePreferences {
@@ -600,6 +624,12 @@ export interface ICCbuddyAgentService {
    * 同步 App 全局运行时偏好到所有已活动 workspace；不得为此启动空闲 Agent。
    */
   syncAppRuntimePreferences(preferences: CCbuddyAgentAppRuntimePreferences): Promise<void>;
+  /**
+   * 动态工作流用户选择变化的信号（docs/dynamic-workflow/launch.md「The user's choice」）：Host 重新计算
+   * 生效模式并串行重发 workspace/updateDynamicWorkflowPolicy。有本机设置权威的 Host 以设置文件为准；
+   * desktop-attached remote Host 以传入值为准（缺席 = 跟随服务端）。不得为此启动空闲 Agent。
+   */
+  syncDynamicWorkflowUserMode(params: { mode?: DynamicWorkflowMode }): Promise<void>;
   getWorkspaceRuntimeIdentity(
     params: CCbuddyAgentWorkspaceTarget,
   ): Promise<CCbuddyAgentWorkspaceRuntimeIdentity>;
@@ -699,7 +729,7 @@ export interface ICCbuddyAgentService {
   listPluginUiSurfaces(
     params: CCbuddyAgentWorkspaceTarget,
   ): Promise<CCbuddyPluginsListUiSurfacesResult>;
-  // 已保存工作流的 GUI 中枢：workspace 级、无会话，每次调用扫描 CCbuddy workspace 配置目录。
+  // 已保存工作流的 GUI 中枢：workspace 级、无会话，每次调用现扫 `<cwd>/.ccbuddy/workflows/`。
   // 全局档传 `scope: "global"`：带 workspace 就用它当载体，不带则由 services 层自选本机载体运行时。
   listSavedWorkflows(
     params: CCbuddyAgentListSavedWorkflowsParams,
@@ -719,6 +749,15 @@ export interface ICCbuddyAgentService {
   moveSavedWorkflow(
     params: CCbuddyAgentMoveSavedWorkflowParams,
   ): Promise<CCbuddyWorkflowsMoveResult>;
+  // 完成卡的「直接保存」（docs/dynamic-workflow/transcript-and-notifications.md）：按 runId 从
+  // journal 取这次 run 实际跑过的脚本落盘，不经模型回合。两者都必带 workspace（journal 在那里）。
+  saveSavedWorkflowFromRun(
+    params: CCbuddyAgentSaveSavedWorkflowFromRunParams,
+  ): Promise<CCbuddyWorkflowsSaveResult>;
+  /** 这次 run 对应哪个已保存工作流（推导，不记忆）；顺带回 run 的实参供「再次运行」预填。 */
+  findSavedWorkflowForRun(
+    params: CCbuddyAgentFindSavedWorkflowForRunParams,
+  ): Promise<CCbuddyWorkflowsForRunResult>;
   resolveSuggestedPluginReference(
     params: CCbuddyAgentResolveSuggestedPluginReferenceParams,
   ): Promise<import("@ccbuddy/shared").CCbuddyPluginsResolveSuggestedReferenceResult>;
@@ -798,9 +837,34 @@ export interface ICCbuddyAgentService {
   setModel(params: CCbuddyAgentSetModelParams): Promise<CCbuddySessionStateSnapshot>;
   setThoughtLevel(params: CCbuddyAgentSetThoughtLevelParams): Promise<CCbuddySessionStateSnapshot>;
   setMode(params: CCbuddyAgentSetModeParams): Promise<CCbuddySessionStateSnapshot>;
+  respondProviderRuntimeHeaders(
+    params: CCbuddyAgentRespondProviderRuntimeHeadersParams,
+  ): Promise<void>;
   respondSessionRuntimePreferences(
     params: CCbuddyAgentRespondSessionRuntimePreferencesParams,
   ): Promise<void>;
+  /**
+   * v4 UI 的 Start Plan runtime-auth bridge 只需要本地 pending request 事件，
+   * 不能为此额外打开旧 `session/subscribe`，否则会把旧 replay/continuous 读路径
+   * 重新带回 v4 pane。
+   */
+  onDynamicProviderRuntimeHeadersRequest(
+    params: CCbuddyAgentSessionTarget,
+  ): Event<CCbuddyProviderRuntimeHeadersRequestParams>;
+  /**
+   * Start Plan runtime headers 的 workspace 级订阅入口（生产应答方使用）。
+   * Bug 原因（2026-08-16 workspace 请求滞留）：session 级入口只随桌面 pane 挂载订阅，
+   * 共享 Host 中由普通 Web 新建的会话在桌面没有 pane，runtime headers 请求滞留 pending，
+   * 任务永久「工作中」。桌面窗口用本入口为每个打开的 workspace tab 维持常驻应答方；
+   * 订阅时先注册 live listener 再按 workspaceKey 前缀补投 pending，与 session 级同语义。
+   */
+  onDynamicWorkspaceProviderRuntimeHeadersRequest(
+    params: CCbuddyAgentWorkspaceTarget,
+  ): Event<CCbuddyProviderRuntimeHeadersRequestParams>;
+  /** 只投递本 workspace 的校验取消，不属于 conversation stream。 */
+  onDynamicWorkspaceProviderRuntimeHeadersCancelled(
+    params: CCbuddyAgentWorkspaceTarget,
+  ): Event<CCbuddyProviderRuntimeHeadersCancelled>;
   onDynamicSessionRuntimePreferencesRequest(): Event<CCbuddyAgentSessionRuntimePreferencesRequest>;
   /**
    * CLI 进程级资源样本，带 services 打的 lane 标签（CLI 自己不知道 lane）。

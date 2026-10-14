@@ -124,6 +124,10 @@ function sortScoredItems<T>(
     .map((item) => item.item);
 }
 
+export function filterMentionItems(items: MentionItem[], query: string): MentionItem[] {
+  return filterMentionItemsWithOptions(items, query);
+}
+
 function applyMentionItemLimit(items: MentionItem[], limit?: number): MentionItem[] {
   if (!Number.isFinite(limit)) {
     return items;

@@ -6,7 +6,7 @@ import { logger } from "@/logger.js";
 const PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-interface SessionSubagentsViewState {
+export interface SessionSubagentsViewState {
   revision: number;
   ended: CCbuddySessionSubagentsResult["ended"];
   error: string | null;
@@ -22,7 +22,7 @@ function emptyState(): SessionSubagentsViewState {
   };
 }
 
-function mergeEndedSubagentPages(
+export function mergeEndedSubagentPages(
   current: readonly CCbuddySessionEndedSubagent[],
   incoming: readonly CCbuddySessionEndedSubagent[],
 ): CCbuddySessionEndedSubagent[] {
@@ -30,7 +30,7 @@ function mergeEndedSubagentPages(
   return [...current, ...incoming.filter((item) => !currentIds.has(item.childSessionId))];
 }
 
-function resolveEndedSubagentRefreshTargetCount(options: {
+export function resolveEndedSubagentRefreshTargetCount(options: {
   loadedItemCount: number;
   nextTotal: number;
   previousTotal: number;

@@ -11,7 +11,7 @@ import type { PendingCommandClientContext } from "@/v4/pendingCommandWorkspace.j
 import { pendingCommandReplayFor, type PendingCommandReplay } from "@/v4/pendingCommandReplay.js";
 export type { PendingCommandReplay } from "@/v4/pendingCommandReplay.js";
 
-const PENDING_COMMAND_TTL_MS = 24 * 60 * 60 * 1_000;
+export const PENDING_COMMAND_TTL_MS = 24 * 60 * 60 * 1_000;
 const STORAGE_KEY = "ccbuddy-v4-pending-commands:v1";
 
 interface StorageLike {
@@ -34,7 +34,7 @@ export interface PendingCommandEntry {
   recoveryDismissed?: boolean;
 }
 
-interface PendingCommandReplayRequest {
+export interface PendingCommandReplayRequest {
   type: "sendText" | "sendGoalCommand" | "compact" | "createSession";
   payload: Record<string, unknown>;
   sessionId: string | null;
@@ -42,7 +42,7 @@ interface PendingCommandReplayRequest {
   clientContext?: PendingCommandClientContext;
 }
 
-interface PendingCommandRegistryOptions {
+export interface PendingCommandRegistryOptions {
   storage?: StorageLike;
   now?: () => number;
 }
@@ -92,7 +92,7 @@ function isRuntimeLocalDiscard(ack: CommandAck): boolean {
  * UI 已清空但无法证明 CLI 是否 admission。这里把“待对账线索”先于上行持久化，并用
  * queue/guided/transcript sourceCommandId 或显式终态收口；registry 本身永远不产生权威事实。
  */
-class PendingCommandRegistry {
+export class PendingCommandRegistry {
   private readonly storage: StorageLike | undefined;
   private readonly now: () => number;
   private readonly entries = new Map<string, PendingCommandEntry>();

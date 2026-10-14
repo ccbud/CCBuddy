@@ -3,17 +3,17 @@ import { quotePosixPathArg } from "@ccbuddy/server/remote/posixShell.js";
 import type { TraceId, CCbuddyPromptAttachment } from "@ccbuddy/shared";
 import { randomUUID } from "node:crypto";
 
-const REMOTE_PROMPT_ATTACHMENT_ROOT = "~/.ccbuddy/tmp/prompt-attachments";
+export const REMOTE_PROMPT_ATTACHMENT_ROOT = "~/.ccbuddy/tmp/prompt-attachments";
 const REMOTE_PROMPT_ATTACHMENT_RELATIVE_ROOT = ".ccbuddy/tmp/prompt-attachments";
 
-interface RemotePromptAttachmentMaterializeInput {
+export interface RemotePromptAttachmentMaterializeInput {
   taskId?: string;
   content: string;
   traceId: TraceId | string;
   attachments?: CCbuddyPromptAttachment[];
 }
 
-interface RemotePromptAttachmentMaterializeResult {
+export interface RemotePromptAttachmentMaterializeResult {
   content: string;
   attachments?: CCbuddyPromptAttachment[];
   uploadedCount: number;
@@ -127,7 +127,7 @@ export async function cleanupStaleRemotePromptAttachments(
   );
 }
 
-function buildRemotePromptAttachmentPath(params: {
+export function buildRemotePromptAttachmentPath(params: {
   filename: string;
   index: number;
   nonce?: string;

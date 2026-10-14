@@ -31,7 +31,8 @@ export function createWindow(options: {
   spawnHostProcess: (
     win: BrowserWindow,
     label: string,
-    initMessage: HostInitMessage,
+    // Provider 路径由 Main 的装配回调补齐，窗口生命周期不解析 Electron 安装布局。
+    initMessage: Omit<HostInitMessage, "ccbuddyBuiltinProviderConfigFilePath">,
   ) => ElectronUtilityProcess;
   disposeHostProcess: (
     child: ElectronUtilityProcess,
@@ -116,7 +117,6 @@ export function createWindow(options: {
   }
 
   const wcId = win.webContents.id;
-  const browserWindowId = win.id;
   // 资源遥测据此把主窗口 renderer 归 renderer_main；辅助窗口与 DevTools 归 chromium_other。
   registerMainApplicationWindow(wcId);
   let domReadyGeneration = 0;
@@ -138,7 +138,7 @@ export function createWindow(options: {
     // 曾经无条件杀掉旧 host 进程再重建——host 连带 CLI agent 一起死，运行中的会话直接消失，
     // 这正是「会话身份易失」病根。host/CLI 的生命周期属于窗口而非
     // renderer 加载周期：reload 只需给存活的 host 补挂一条新 RPC MessagePort
-    // （复用 web 远控的 AttachServicePort 通道），renderer 重新订阅即可恢复投影。
+    // （复用现有 Host attachment 的 AttachServicePort 通道），renderer 重新订阅即可恢复投影。
     // 旧端口的 ChannelServer 会随 renderer 上下文销毁触发 close 自行回收。
     if (oldChild && oldChild.pid !== undefined) {
       try {
@@ -368,7 +368,13 @@ export function handleDesktopWindowCloseRequest(options: {
   platform: NodeJS.Platform;
   forceQuit: boolean;
   explicitQuitRequested?: boolean;
-  closeToTrayOnWindows?: boolean;
+  closeToTray?: boolean;
+  /**
+   * Linux 关闭驻留的托盘能力（spec：docs/desktop/linux-close-to-tray.md）。
+   * GNOME 等无 StatusNotifierWatcher 的桌面托盘不渲染且不报错，必须在隐藏前显式确认能力；
+   * 空值按"不可用"安全默认，走确认退出路径，避免窗口隐藏后失联。
+   */
+  closeToTraySupported?: boolean;
   isLastWindow: boolean;
   label: string;
   logger: { info: (...args: unknown[]) => void };
@@ -377,9 +383,15 @@ export function handleDesktopWindowCloseRequest(options: {
   requestQuit: () => void;
   hideWindow?: () => void;
 }) {
+  // CR 修复:win32 不能短路丢弃 closeToTraySupported——它承载 resolveCloseToTraySupported
+  // 的合并裁决(Windows=托盘实例创建成功)。托盘创建失败时隐藏窗口即失联,与 spec
+  // "关窗分支与设置页能力查询都读同一合并结果"保持一致。
+  const canHideToTray =
+    (options.platform === "win32" || options.platform === "linux") &&
+    options.closeToTraySupported === true;
   if (
-    options.platform === "win32" &&
-    options.closeToTrayOnWindows &&
+    canHideToTray &&
+    options.closeToTray &&
     !options.forceQuit &&
     !options.explicitQuitRequested
   ) {

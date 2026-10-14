@@ -23,7 +23,7 @@ export type CuaComposerEntryUiState =
   | "ready"
   | "error";
 
-interface CuaComposerEntryInputs {
+export interface CuaComposerEntryInputs {
   /** macOS 本地桌面且具备 CUA onboarding 能力（UA + preload capability 双判）。 */
   macLocalDesktop: boolean;
   /** Windows 本地桌面。 */
@@ -76,7 +76,6 @@ const BUSY_TOOLTIP_MESSAGE_ID = "chat.toolbar.computerUse.tooltip.sessionBusy";
  * 不可用场景下留一个灰按钮会误导用户以为「装了就能用」。
  */
 function isEntryVisible(inputs: CuaComposerEntryInputs): boolean {
-  // 平台门：remote workspace / linux 本地 / 普通 Web / 手机远控都不满足。
   if (!inputs.macLocalDesktop && !inputs.windowsLocalDesktop) return false;
   // 设置门：用户显式隐藏后不再渲染，且不因重启或版本更新自愈。
   if (inputs.hiddenBySettings) return false;

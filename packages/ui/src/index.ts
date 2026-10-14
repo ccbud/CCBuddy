@@ -3,12 +3,14 @@ export { AppErrorBoundary, ScopedErrorBoundary } from "./ErrorBoundary.js";
 export type { ScopedErrorBoundaryVariant } from "./ErrorBoundary.js";
 export { Button, buttonVariants } from "./components/ui/button.js";
 export { DesktopWindowFrame } from "./DesktopWindowFrame.js";
+
 export {
   AssistantCodeCommentFeatureProvider,
   useAssistantCodeCommentFeatureEnabled,
 } from "./AssistantCodeCommentFeatureProvider.js";
 export { Root } from "./Root.js";
 export { UpdateStatusWindowRoot } from "./UpdateStatusWindowRoot.js";
+
 export { ConfirmDialogHost } from "./ConfirmDialog.js";
 export { Terminal } from "./Terminal.js";
 export { GitGraphPane } from "./git-graph/GitGraphPane.js";
@@ -81,6 +83,7 @@ export {
 } from "./lib/fileDisplay.js";
 export type { FileDisplayDescriptor, FileDisplayOptions } from "./lib/fileDisplay.js";
 export { playTaskNotificationSound } from "./lib/taskNotificationSound.js";
+export { installDocumentHiddenMotionPause } from "./lib/documentHiddenMotionPause.js";
 export {
   applyUiFontSizePx,
   loadUiFontSizePx,

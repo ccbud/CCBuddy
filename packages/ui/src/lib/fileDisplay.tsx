@@ -52,7 +52,7 @@ function resolveMaterialIconBasePath(): string {
   return `${baseUrl.replace(/\/?$/, "/")}material-icons`;
 }
 
-function buildMaterialFileIconSrc(iconName: string): string {
+export function buildMaterialFileIconSrc(iconName: string): string {
   return `${resolveMaterialIconBasePath()}/${iconName}.svg`;
 }
 

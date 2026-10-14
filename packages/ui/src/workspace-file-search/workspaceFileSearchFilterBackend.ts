@@ -34,7 +34,7 @@ export interface WorkspaceFileSearchFilterBackend {
   dispose(): void;
 }
 
-function createSyncWorkspaceFileSearchFilterBackend(): WorkspaceFileSearchFilterBackend {
+export function createSyncWorkspaceFileSearchFilterBackend(): WorkspaceFileSearchFilterBackend {
   let candidates: ReturnType<typeof mapWorkspaceFileEntriesToSearchCandidates> = [];
   let byId: Map<string, WorkspaceFileEntry> = new Map();
   return {

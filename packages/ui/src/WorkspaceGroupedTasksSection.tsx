@@ -541,6 +541,7 @@ export function WorkspaceGroupedTasksSection({
   activeWorkspacePath: string;
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
+
   onSelectTask: (workspacePath: string, taskId: string, workspaceIdentity?: string) => void;
   onCreateTask: (request?: CreateTaskRequest) => void;
   onOpenFileTree?: (target: {

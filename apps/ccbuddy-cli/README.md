@@ -40,7 +40,7 @@ Run `npm run bootstrap` after cloning the repository. It checks the local Node.j
 
 ## Plugin Development
 
-ccbuddy plugins are local bundles that can contribute skills, custom commands, and MCP servers.
+ccbuddy plugins are local bundles that can contribute skills, custom commands, and MCP servers. The plugin surface is compatible with the Claude Code plugin layout, so existing plugin content can be reused with minimal changes.
 
 Plugin state lives under `~/.ccbuddy/cli/plugins`:
 
@@ -69,9 +69,16 @@ For local plugin development, put the plugin in any directory, then add it to th
 }
 ```
 
-### Plugin Manifest
+### Manifest Compatibility
 
-MCP config can live directly in `.ccbuddy-plugin/plugin.json` through `mcpServers`. A plugin may provide both `.mcp.json` and manifest `mcpServers`; when the same server name appears in both places, `mcpServers` from the selected manifest wins.
+ccbuddy discovers the first manifest that exists:
+
+1. `.ccbuddy-plugin/plugin.json`
+2. `.claude-plugin/plugin.json`
+
+`.ccbuddy-plugin/plugin.json` uses the same field names as Claude Code. Use it only when ccbuddy needs different metadata or runtime wiring. If the Claude manifest already works, a plugin can ship only `.claude-plugin/plugin.json`.
+
+MCP config can live directly in `.ccbuddy-plugin/plugin.json` through `mcpServers`. This is useful when the Claude-compatible `.mcp.json` points at a different runtime, such as Bun source files, while ccbuddy should run a built Node.js server from `dist/`. A plugin may provide both `.mcp.json` and manifest `mcpServers`; when the same server name appears in both places, `mcpServers` from the selected manifest wins.
 
 Supported fields in the current ccbuddy plugin surface:
 
@@ -109,13 +116,28 @@ Example `.ccbuddy-plugin/plugin.json` with inline MCP config:
 }
 ```
 
+ccbuddy also reads plugin `.mcp.json` using Claude Code's wrapper shape. Use this when the same MCP config should be shared by Claude Code and ccbuddy:
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"]
+    }
+  }
+}
+```
+
+Unsupported Claude plugin fields are ignored with diagnostics rather than executed. This includes `hooks`, `agents`, `outputStyles`, `lspServers`, `channels`, and `dependencies`.
+
 ### Variables
 
-Plugin MCP config can use these variable names:
+Plugin MCP config can use both ccbuddy and Claude-compatible variable names:
 
-- `${CCBUDDY_PLUGIN_ROOT}`
-- `${CCBUDDY_PLUGIN_DATA}`
-- `${CCBUDDY_PROJECT_DIR}`
+- `${CCBUDDY_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_ROOT}`
+- `${CCBUDDY_PLUGIN_DATA}` and `${CLAUDE_PLUGIN_DATA}`
+- `${CCBUDDY_PROJECT_DIR}` and `${CLAUDE_PROJECT_DIR}`
 - `${user_config.key}`
 - `${CCBUDDY_SOME_ENV}`
 
@@ -125,6 +147,7 @@ Only environment variables with the `CCBUDDY_` prefix are expanded. Missing vari
 
 ```txt
 my-plugin/
+  .claude-plugin/plugin.json
   .ccbuddy-plugin/plugin.json
   .mcp.json
   skills/
@@ -134,7 +157,7 @@ my-plugin/
   src/
 ```
 
-For MCP servers, prefer Node's normal package build and `bin` output when targeting ccbuddy-cli, and keep all process/file/network side effects inside the MCP server boundary.
+Keep reusable content in Claude-compatible locations. Add a `.ccbuddy-plugin/plugin.json` only for ccbuddy-specific package names, built artifacts, or command paths. For MCP servers, prefer Node's normal package build and `bin` output when targeting ccbuddy-cli, and keep all process/file/network side effects inside the MCP server boundary.
 
 ## MCP Configuration
 

@@ -10,8 +10,11 @@ import { dismissToast, toast, updateToast } from "@/components/ui/toast.js";
 import { matchesPrimaryShortcut } from "@/lib/keyboardShortcuts.js";
 import { isShortcutRecordingActive } from "@/shortcuts/bindings.js";
 import { isRendererReloadNavigation } from "@/lib/rendererNavigation.js";
+import {
+  buildConnectedRemoteWorkspaceSessionTargets,
+  shouldPublishCompleteWorkspaceSnapshot,
+} from "@/root/rootPlatformWorkspaceSync.js";
 import { useOptionalBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
-import { shouldPublishCompleteWorkspaceSnapshot } from "@/root/rootPlatformWorkspaceSync.js";
 import {
   createShareImportIntent,
   isShareImportIntentSame,
@@ -44,8 +47,6 @@ export function useRootPlatformEffects({
   tabs,
   activeWorkspacePath,
   activeWorkspaceIdentity,
-  reconnectingRemoteWorkspaceKeys = [],
-  remoteWorkspaceErrorByWorkspaceKey = {},
   totalUnreadTaskCount,
   hasCompletedFullTabRestore = true,
   intl,
@@ -80,6 +81,7 @@ export function useRootPlatformEffects({
   reconnectingRemoteWorkspaceKeys?: string[];
   remoteWorkspaceErrorByWorkspaceKey?: Record<string, string>;
   totalUnreadTaskCount: number;
+
   hasCompletedFullTabRestore?: boolean;
   intl: ReturnType<typeof import("@/i18n/IntlProvider.js").useCCbuddyIntl>["intl"];
   isRestoringOAuthSession: boolean;
@@ -508,6 +510,12 @@ export function useRootPlatformEffects({
       .filter((tab) => !tab.remoteSessionId && !tab.workspaceIdentity && !tab.remoteTarget)
       .map((tab) => tab.workspacePath);
     platform.syncWindowTabs(paths);
+  }, [hasCompletedFullTabRestore, isDesktop, platform, tabs]);
+
+  useEffect(() => {
+    if (!isDesktop || !shouldPublishCompleteWorkspaceSnapshot(hasCompletedFullTabRestore)) return;
+    // 修复原因：Bot 的远程身份绑定是普通会话职责，不能随已移除的窄屏 Web能力开关停止。
+    platform.syncRemoteWorkspaceSessions?.(buildConnectedRemoteWorkspaceSessionTargets({ tabs }));
   }, [hasCompletedFullTabRestore, isDesktop, platform, tabs]);
 
   useEffect(() => {

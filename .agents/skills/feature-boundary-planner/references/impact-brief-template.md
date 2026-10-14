@@ -1,6 +1,6 @@
 # Impact Brief Template
 
-Use this template for every feature-impact scan. Keep it compact enough to search and compare. Complete sections relevant to the request and explicitly identify unavailable evidence.
+Use this template for every feature-impact scan. Keep it compact enough to search and compare. Replace empty cells; do not delete a section merely because the result is “none”.
 
 ## Feature Summary
 
@@ -48,17 +48,23 @@ Use this template for every feature-impact scan. Keep it compact enough to searc
 | --------- | -------------- | ------------ | -------- |
 |           |                |              |          |
 
-## Source Evidence
+## Codegraph Evidence
 
-| File / symbol | Inspection method                                 | Direct callers / key path | Interpretation |
-| ------------- | ------------------------------------------------- | ------------------------- | -------------- |
-|               | source / dep:refs / available codegraph / runtime |                           |                |
+| Seed | Query                                                 | Direct callers / key path | Depth | Interpretation |
+| ---- | ----------------------------------------------------- | ------------------------- | ----- | -------------- |
+|      | explore / callers / callees / impact / affected tests |                           | 1-3   |                |
 
-## Evidence Gaps
+## Graph Drift Candidates
 
-| Unresolved behavior | Available evidence | Missing evidence | Next verification |
-| ------------------- | ------------------ | ---------------- | ----------------- |
-| none or item        |                    |                  |                   |
+| Candidate    | Live-code evidence | Missing/stale graph relation | Proposed follow-up        |
+| ------------ | ------------------ | ---------------------------- | ------------------------- |
+| none or item |                    |                              | confirm / update / ignore |
+
+## Graph Delta
+
+| Status                      | Node/edge | Semantic reason | Evidence               | Action                                       |
+| --------------------------- | --------- | --------------- | ---------------------- | -------------------------------------------- |
+| none / proposed / confirmed |           |                 | code/doc/user decision | impact-only: report / planning: update graph |
 
 ## Unresolved Questions
 

@@ -1,5 +1,10 @@
+import {
+  RequestSecurityHost,
+  RequestSecurityWorkspaceBridge,
+  setRequestSecurityReporter,
+} from "@/request-security-edition/index.js";
 /* eslint-disable max-lines -- Root 当前集中编排启动和 workspace shell wiring，先保持入口收口避免跨层状态拆散。 */
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LucideProvider, RefreshCw } from "lucide-react";
 import {
   APP_RUNTIME_PREFERENCES_CHANGED_BROADCAST_CHANNEL,
@@ -11,6 +16,10 @@ import { TooltipProvider } from "@/components/ui/tooltip.js";
 import { Button } from "@/components/ui/button.js";
 import { PlatformProvider } from "@/hooks/usePlatform.js";
 import { ServiceProvider } from "@/hooks/useServices.js";
+import {
+  useDynamicWorkflowAvailabilityLoader,
+  useDynamicWorkflowUserModeSync,
+} from "@/hooks/useDynamicWorkflowAvailability.js";
 import { DirectoryBrowser } from "@/DirectoryBrowser.js";
 import { useTabPersistence } from "@/hooks/useTabPersistence.js";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh.js";
@@ -19,6 +28,7 @@ import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { SSHDialog } from "@/SSHDialog.js";
 import { SettingsPage } from "@/SettingsPage.js";
 import { CodingPlanUpgradeDialogProvider } from "@/settings/CodingPlanUpgradeDialogProvider.js";
+import { RewardsProvider } from "@/rewards/RewardsProvider.js";
 import { WelcomeScreen, type LoginCompleteReason } from "@/WelcomeScreen.js";
 import { setDefaultFileDisplayBasePath } from "@/lib/fileDisplay.js";
 import { readRendererLaunchTimings, shouldReportLaunchToInput } from "@/lib/launchToInputReport.js";
@@ -35,7 +45,7 @@ import { StoreProvider, useCCbuddyStore } from "@/store/StoreProvider.js";
 import { setMcpStorePlatform } from "@/store/mcpStore.js";
 import { useCCbuddySessionStore } from "@/store/ccbuddySessionStore.js";
 import { TabStoreProvider, useTabStore, useTabStoreApi } from "@/store/TabStoreProvider.js";
-import { isSettingsTab, isWorkspaceTab, type WorkspaceTabState } from "@/store/tabStore.js";
+import { isSettingsTab, isWorkspaceTab } from "@/store/tabStore.js";
 import { logger } from "@/logger.js";
 import { RootShell } from "@/root/RootShell.js";
 import { RootWorkspaceContent } from "@/root/RootWorkspaceContent.js";
@@ -55,9 +65,11 @@ import { useBotBroadcastEffects } from "@/root/useBotBroadcastEffects.js";
 import { registerBaseWorkspaceServices } from "@/store/remoteWorkspaceSessionStore.js";
 import type { RootProps } from "@/root/types.js";
 import { DiffsWorkerPoolProvider } from "@/root/DiffsWorkerPoolProvider.js";
-import { useGlobalTaskList } from "@/hooks/useGlobalTaskList.js";
+
 import { ScopedErrorBoundary } from "@/ErrorBoundary.js";
+
 import { useRemoteConnectionLogs } from "@/hooks/useRemoteConnectionLogs.js";
+
 import {
   CODE_COMMENT_REMOVE_BROADCAST_CHANNEL,
   CODE_COMMENT_PREVIEW_RESTORE_BROADCAST_CHANNEL,
@@ -66,6 +78,7 @@ import {
   markCodeCommentRemoved,
 } from "@/lib/codeCommentContext.js";
 import { useCodeCommentPreviewStore } from "@/store/codeCommentPreviewStore.js";
+import { MarketingTouchProvider } from "@/components/marketing-touch/MarketingTouchProvider.js";
 import { setUiPerfArmsReporter } from "@/lib/uiPerfArmsTelemetry.js";
 import { setSessionOpenArmsReporter } from "@/lib/sessionOpenArmsTelemetry.js";
 import { setSendFunnelArmsReporter } from "@/lib/sendFunnelArmsTelemetry.js";
@@ -80,6 +93,7 @@ import {
   disposeConversationTelemetrySupervisors,
   reconcileConversationTelemetryWorkspaceScopes,
 } from "@/v4/telemetry/ConversationTelemetryAttachment.js";
+import { installConversationTelemetryParityE2EBridge } from "@/v4/telemetry/conversationTelemetryParityE2E.js";
 
 const DEFAULT_LUCIDE_STROKE_WIDTH = 1.5;
 interface RemoteConnectionOpenPreference {
@@ -125,7 +139,12 @@ export function Root(props: RootProps) {
                     enabled={props.assistantCodeCommentCardsEnabled}
                   >
                     <CodingPlanUpgradeDialogProvider>
-                      <RootInner {...props} />
+                      <RewardsProvider desktop={props.isDesktop === true}>
+                        <RequestSecurityHost />
+                        <MarketingTouchProvider desktop={props.isDesktop === true}>
+                          <RootInner {...props} />
+                        </MarketingTouchProvider>
+                      </RewardsProvider>
                     </CodingPlanUpgradeDialogProvider>
                   </AssistantCodeCommentFeatureProvider>
                 </DiffsWorkerPoolProvider>
@@ -155,9 +174,9 @@ function RootInner({
   preferDirectoryBrowser,
   supportsEmbeddedBrowser: explicitSupportsEmbeddedBrowser,
   allowRemoteWorkspace = true,
-  initialWorkspaceLoadingFallback,
 }: RootProps) {
   useEffect(() => {
+    setRequestSecurityReporter(platform);
     setMcpStorePlatform(platform);
     // 对话 UI perf 只属于 desktop-continuous；Web/mobile 即使能看到权威状态也不装 reporter。
     setUiPerfArmsReporter(isDesktop ? platform : null);
@@ -165,6 +184,7 @@ function RootInner({
     // 发送漏斗同理：只在 Electron 桌面端上报，Web/mobile 的 reportArmsCustomEvent 是空实现。
     setSendFunnelArmsReporter(isDesktop ? platform : null);
     return () => {
+      setRequestSecurityReporter(null);
       setMcpStorePlatform(null);
       setUiPerfArmsReporter(null);
       setSessionOpenArmsReporter(null);
@@ -173,11 +193,25 @@ function RootInner({
   }, [isDesktop, platform]);
 
   useEffect(
+    () =>
+      installConversationTelemetryParityE2EBridge({
+        platform,
+        isDesktop: isDesktop === true,
+      }),
+    [isDesktop, platform],
+  );
+
+  useEffect(
     () => () => {
       disposeConversationTelemetrySupervisors();
     },
     [],
   );
+
+  // 动态工作流灰度快照的唯一取数点：
+  // 放在 app 级 ServiceProvider 这一层取一次，自动化页与 run 面板只读。消费方可能位于
+  // 工作区级 ServiceProvider 内（远程 Host 的 accessor），由它们取数会拿到另一台 Host 的答案。
+  useDynamicWorkflowAvailabilityLoader(services.codingPlanSubscriptionService);
 
   const { intl, locale } = useCCbuddyIntl();
   const theme = useCCbuddyStore((state) => state.theme);
@@ -194,8 +228,14 @@ function RootInner({
     refresh: refreshAppSettings,
     update: updateAppSettings,
   } = useSettings();
-  // CCbuddy only uses user-configured model services; inherited cloud JWT state
-  // must never open the account sign-in screen at startup.
+  // docs/dynamic-workflow/launch.md「The user's choice」：设置里的动态工作流选择变化后，通知本窗口
+  // 的 Host 重发 CLI 策略（并转发给远程 Host），再重读灰度快照。
+  useDynamicWorkflowUserModeSync({
+    settingsLoaded: Boolean(appSettings),
+    userMode: appSettings?.dynamicWorkflowMode,
+    ccbuddyAgentService: services.ccbuddyAgentService,
+    codingPlanSubscriptionService: services.codingPlanSubscriptionService,
+  });
   const [welcomeScreenOpenReason, setWelcomeScreenOpenReason] =
     useState<WelcomeScreenOpenReason | null>(null);
   const [providerFamilyDomainMigrationComplete, setProviderFamilyDomainMigrationComplete] =
@@ -376,6 +416,7 @@ function RootInner({
   const addTab = useTabStore((state) => state.addTab);
   const activateTabByPath = useTabStore((state) => state.activateTabByPath);
   const tabStoreApi = useTabStoreApi();
+
   const refreshProviderState = useRootProviderStateRefresh(services);
   useRootProviderSettingsSnapshot(services);
   useEffect(() => {
@@ -419,6 +460,7 @@ function RootInner({
     modelSelectionViewHydrated:
       rootProviderAvailability.hydrated || rootModelSelectionRead.state.status === "error",
   });
+
   const providerAvailabilityLoginEntryGuardEnabled = false;
   const { startupCheckCompleted: providerAvailabilityStartupCheckCompleted } =
     useProviderAvailabilityLoginEntryGuard({
@@ -474,7 +516,7 @@ function RootInner({
     setDirectoryBrowserOpen(true);
   }, []);
   const handleReauthenticationRequired = useCallback(() => {
-    // A stale cloud-auth callback cannot turn a BYOK workspace into a login gate.
+    // 修复原因：已禁用的账户回调不能把本地 BYOK 工作区切到登录屏幕。
   }, []);
   const {
     setWorkspaceActionError,
@@ -509,6 +551,7 @@ function RootInner({
     onProviderFamilyDomainClearedAfterLogout: () => {},
     userId: user?.id,
     onOpenRemoteConnection: allowRemoteWorkspace ? handleOpenRemoteConnection : undefined,
+    workbenchGroupClientMode: "desktop-continuous",
   });
   const handleRemoteWorkspaceActivated = useCallback(
     ({
@@ -553,7 +596,7 @@ function RootInner({
   });
 
   useEffect(() => {
-    // fileDisplay 默认不传 basePath 时需要落到“当前激活 workspace”。
+    // Bugfix: fileDisplay 默认不传 basePath 时需要落到“当前激活 workspace”。
     // 之前纯工具层拿不到窗口内的 workspace 上下文，只能退回绝对路径，导致 mention / 文件展示在输入框里不够简洁。
     // 这里由 Root 在 workspace 切换时同步一份当前上下文，既保留工具层复用性，也不把 Zustand 依赖硬塞进工具函数。
     setDefaultFileDisplayBasePath(activeWorkspacePath);
@@ -590,10 +633,15 @@ function RootInner({
     );
   }, [hasCompletedFullRestore, isDesktop, windowWorkspaceTabs]);
 
+  // headers 请求永远滞留 pending，任务永久「工作中」。应答方必须常驻桌面窗口、
+  // 覆盖每个打开的 workspace tab，与展示状态解耦；Web 端保持零订阅，桌面仍是唯一权威。
+  const requestSecurityBridgeNode = isDesktop ? (
+    <RequestSecurityWorkspaceBridge workspaceTabs={windowWorkspaceTabs} />
+  ) : null;
+
   const { tryRefresh, clearCredentials } = useTokenRefresh();
   void tryRefresh;
   void clearCredentials;
-  // 启动阻塞是桌面窗口保护期，手机 Web 远控在进入 Root 前已有配对/加载页。
   // Web 端继续使用该 gate 会在 workspace tab 注入前渲染空 RootShell，露出浏览器白底。
   const isStartupRenderBlocked = shouldShowRootStartupLoading({
     isDesktop,
@@ -944,9 +992,11 @@ function RootInner({
     return (
       <RootShell>
         {rootModelSelectionErrorNode}
+
+        {requestSecurityBridgeNode}
         {remoteConnectionDialog}
         {directoryBrowserDialog}
-        {/* HTML 启动壳已经展示 CCbuddy SVG，但 React 接管 root 后旧壳会被整棵替换。
+        {/* 修复原因：HTML 启动壳已经展示 CCbuddy SVG，但 React 接管 root 后旧壳会被整棵替换。
             之前阻塞恢复 tab / 初始 workspace 注入时重新渲染纯文字“加载中...”，所以启动被拆成两套 loading。
             这里复用同一套 SVG 启动画面，只把文案保留到 aria-label，保证视觉始终连续且不牺牲可访问性。 */}
         <RootStartupLoading label={loadingLabel} />
@@ -958,6 +1008,8 @@ function RootInner({
     return (
       <RootShell>
         {rootModelSelectionErrorNode}
+
+        {requestSecurityBridgeNode}
         {remoteConnectionDialog}
         {directoryBrowserDialog}
         <WelcomeScreen onComplete={handleWelcomeScreenComplete} />
@@ -965,26 +1017,11 @@ function RootInner({
     );
   }
 
-  if (
-    !workspaceShellPath &&
-    !isDesktop &&
-    initialWorkspaceAbsPath &&
-    initialWorkspaceLoadingFallback
-  ) {
-    // 非桌面入口的 workspace tab 由 effect 注入，首帧不能返回 null。
-    // 这里延续入口 loading，等任务列表有 workspaceShellPath 后再切换，避免露出浏览器白底。
-    return (
-      <RootShell>
-        {rootModelSelectionErrorNode}
-        {initialWorkspaceLoadingFallback}
-        {directoryBrowserDialog}
-      </RootShell>
-    );
-  }
-
   return (
     <RootShell>
       {rootModelSelectionErrorNode}
+
+      {requestSecurityBridgeNode}
       {remoteConnectionDialog}
       {directoryBrowserDialog}
       <OccupationOnboarding
@@ -1031,8 +1068,6 @@ function RootInner({
             remoteWorkspaceSessions={remoteWorkspaceSessions}
             allowRemoteWorkspace={allowRemoteWorkspace}
             handleBackFromSettings={handleBackFromSettings}
-            handleLogout={undefined}
-            onLogin={undefined}
             user={null}
             reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
             remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}

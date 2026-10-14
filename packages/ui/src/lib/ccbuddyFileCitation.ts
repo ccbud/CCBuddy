@@ -5,9 +5,9 @@ import {
   findUnclosedAssistantDirectiveStart,
 } from "@/lib/assistantDirectiveParser.js";
 
-type CCbuddyFileCitationPreviewKind = "docx" | "xlsx" | "pptx" | "pdf" | "video" | "audio";
+export type CCbuddyFileCitationPreviewKind = "docx" | "xlsx" | "pptx" | "pdf" | "video" | "audio";
 
-interface CCbuddyFileCitation {
+export interface CCbuddyFileCitation {
   artifactKind?: string;
   end: number;
   path: string;
@@ -16,7 +16,7 @@ interface CCbuddyFileCitation {
   start: number;
 }
 
-interface CCbuddyFileCitationDirective {
+export interface CCbuddyFileCitationDirective {
   artifactKind?: string;
   end: number;
   path?: string;
@@ -25,7 +25,7 @@ interface CCbuddyFileCitationDirective {
   start: number;
 }
 
-interface CCbuddyFileCitationProjection {
+export interface CCbuddyFileCitationProjection {
   visibleText: string;
 }
 

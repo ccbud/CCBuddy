@@ -21,7 +21,7 @@ npx ai-elements@latest add tool
 
 ## Usage in AI SDK
 
-Build a simple stateful weather app that renders the last message in a tool using `useChat`.
+Build a simple stateful weather app that renders the last message in a tool using [`useChat`](/docs/reference/ai-sdk-ui/use-chat).
 
 Add the following component to your frontend:
 

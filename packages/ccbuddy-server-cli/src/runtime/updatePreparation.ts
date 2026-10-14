@@ -9,7 +9,7 @@ import { fetchReleaseCatalog, fetchReleaseJson, ReleaseDownloader } from "./rele
 import { ReleaseInstaller } from "./releaseInstaller.js";
 import { ReleaseManager } from "./releaseManager.js";
 
-type UpdatePreparation =
+export type UpdatePreparation =
   | { status: "up-to-date"; version: string }
   | { status: "prepared"; version: string; discard: () => Promise<void> }
   | { status: "prepared-offline"; version: string };

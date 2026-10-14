@@ -64,7 +64,7 @@ export type OffPeakStatusIconKind =
   | "warning"
   | "stopped";
 
-interface OffPeakStatusFooterPresentation {
+export interface OffPeakStatusFooterPresentation {
   icon: OffPeakStatusIconKind;
   className: string;
   labelId: string;

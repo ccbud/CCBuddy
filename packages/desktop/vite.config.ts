@@ -1,16 +1,23 @@
 import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import {
-  resolveCCbuddyEndpointOrigin,
-  pickProductEndpointEnv,
-} from "@ccbuddy/shared/ccbuddyEndpoint";
+import { resolveCCbuddyEndpointOrigin } from "@ccbuddy/shared/ccbuddyEndpoint";
 import { pdfJsCMapsPlugin } from "../ui/vite/pdfJsCMapsPlugin.js";
 import { getBuildMetadata } from "./scripts/build-metadata.mjs";
 import { resolveDesktopProductFlavor } from "./scripts/desktop-product-identity.mjs";
+
+// 动态加载仓库根的构建工具，避免配置打包后其 import.meta.dirname 被重定位到 desktop。
+// 构建期可选能力（ARMS、事件上报、自动更新），见 docs/desktop/build-time-optional-capabilities.md
+const { resolveBuildTimeConfig, createBuildTimeConfigDefines } = await import(
+  pathToFileURL(resolve(__dirname, "../../scripts/build-time-config.mjs")).href
+);
+const buildTimeConfigDefines = createBuildTimeConfigDefines(
+  await resolveBuildTimeConfig(process.env),
+);
 
 const buildMetadata = getBuildMetadata();
 const desktopRequire = createRequire(import.meta.url);
@@ -145,7 +152,7 @@ function stripViteRequestQuery(id: string) {
 
 export default defineConfig(({ mode }) => {
   // `.env*` 只提供链接常量；当前产品环境由启动脚本或 CI 注入 CCBUDDY_ENV。
-  const env = { ...loadEnv(mode, "../..", ""), ...process.env };
+  const env = loadEnv(mode, "../..", "");
   const repoRoot = resolve(__dirname, "../..");
   const ccbuddyEnv = resolveCCbuddyEnv(env.CCBUDDY_ENV);
   // 安装包身份与后端环境分轴；renderer 用它决定是否展示更新入口。
@@ -160,7 +167,10 @@ export default defineConfig(({ mode }) => {
     env.VITE_CCBUDDY_E2E_STORE_BRIDGE === "1" || process.env.VITE_CCBUDDY_E2E_STORE_BRIDGE === "1";
   const ccbuddyEndpointOrigin = resolveCCbuddyEndpointOrigin({
     env: ccbuddyEnv,
-    envBaseOrigin: env.CCBUDDY_BASE_URL ?? env.CCBUDDY_ENDPOINT_ORIGIN,
+    envBaseOrigin:
+      env.CCBUDDY_BASE_URL ??
+      env.CCBUDDY_ENDPOINT_ORIGIN ??
+      (ccbuddyEnv === "production" ? env.CCBUDDY_PRODUCTION_BASE_URL : env.CCBUDDY_TEST_BASE_URL),
   });
   const codingPlanWebviewOrigin =
     env.VITE_CODING_PLAN_WEBVIEW_ORIGIN ?? process.env.VITE_CODING_PLAN_WEBVIEW_ORIGIN ?? "";
@@ -191,12 +201,12 @@ export default defineConfig(({ mode }) => {
     },
     server: { port: 5174, strictPort: true },
     define: {
-      __CCBUDDY_ENDPOINT_ENV__: JSON.stringify(pickProductEndpointEnv(env)),
       __CCBUDDY_VERSION__: JSON.stringify(buildMetadata.appVersion),
       __CCBUDDY_COMMIT__: JSON.stringify(buildMetadata.buildCommitId),
       __CCBUDDY_BUILD_TIME__: JSON.stringify(buildMetadata.buildTime),
       __CCBUDDY_ENV__: JSON.stringify(ccbuddyEnv),
       __CCBUDDY_PRODUCT_FLAVOR__: JSON.stringify(ccbuddyProductFlavor),
+      ...buildTimeConfigDefines,
       __CCBUDDY_LOCAL_DEVELOPMENT_RUNTIME__: JSON.stringify(mode !== "production"),
       "import.meta.env.VITE_CCBUDDY_BASE_URL": JSON.stringify(ccbuddyEndpointOrigin),
       // 兼容旧 renderer 读取名；新代码统一读 VITE_CCBUDDY_BASE_URL。
@@ -205,7 +215,7 @@ export default defineConfig(({ mode }) => {
       "import.meta.env.VITE_REWARDS_WEBVIEW_ORIGIN": JSON.stringify(
         env.VITE_REWARDS_WEBVIEW_ORIGIN ?? process.env.VITE_REWARDS_WEBVIEW_ORIGIN ?? "",
       ),
-      // E2E store bridge 只能由 WDIO 专用变量打开，避免把 CCBUDDY_ENV=test 产品环境误当成测试运行态。
+      // Bugfix: E2E store bridge 只能由 WDIO 专用变量打开，避免把 CCBUDDY_ENV=test 产品环境误当成测试运行态。
       "import.meta.env.VITE_CCBUDDY_E2E_STORE_BRIDGE": JSON.stringify(
         e2eStoreBridgeEnabled ? "1" : "",
       ),

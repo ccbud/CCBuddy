@@ -9,8 +9,8 @@ import { PlatformChannels } from "@ccbuddy/shared";
 import { BrowserWindow, dialog, ipcMain } from "electron";
 import { Agent, fetch as undiciFetch } from "undici";
 
-const MAX_SAVE_FILE_BYTES = 50 * 1024 * 1024;
-const REMOTE_DOWNLOAD_TIMEOUT_MS = 30_000;
+export const MAX_SAVE_FILE_BYTES = 50 * 1024 * 1024;
+export const REMOTE_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_REMOTE_REDIRECTS = 5;
 
 const blockedRemoteAddresses = new BlockList();

@@ -48,6 +48,8 @@ test("remote workspace cannot reopen account APIs, OAuth, or sharing", async () 
     } as unknown as IServiceAccessor;
     const services = createRemoteWorkspaceServiceCollection({
       clientConfigService: stub as never,
+      // 上游新增：远端集合需要本地 onboarding 记录服务（本地事实，不下发远端）。
+      localOnboardingRecordService: stub as never,
       connectionServices,
       parentPort: null,
       createReportingRemoteCCbuddyTaskService: (service) => service,

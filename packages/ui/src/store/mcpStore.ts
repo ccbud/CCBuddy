@@ -103,6 +103,18 @@ interface McpStoreState {
     projectPath?: string,
   ) => void;
   deleteCCbuddyAgentMcpServer: (name: string, projectPath?: string) => void;
+  addClaudeCliMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  updateClaudeCliMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  deleteClaudeCliMcpServer: (name: string, projectPath?: string) => void;
+  addGeminiCliMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  updateGeminiCliMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  deleteGeminiCliMcpServer: (name: string, projectPath?: string) => void;
+  addCodexCliMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  updateCodexCliMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  deleteCodexCliMcpServer: (name: string, projectPath?: string) => void;
+  addOpenCodeMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  updateOpenCodeMcpServer: (name: string, config: McpServerConfig, projectPath?: string) => void;
+  deleteOpenCodeMcpServer: (name: string, projectPath?: string) => void;
   toggleServer: (id: string, enabled: boolean) => Promise<void>;
   updateServerStatus: (
     id: string,
@@ -396,7 +408,7 @@ export const useMcpStore = create<McpStoreState>((set, get) => {
     updateScopedMcpServer: async (source, name, config, projectPath) => {
       invalidateStatusListRequests();
       const targetSource: CliMcpSource = source === "mcp" ? "ccbuddyagentmcp" : source;
-      // 本地状态变化会驱动健康状态刷新，必须在磁盘配置更新后发生。
+      // 修复原因同新增：本地状态变化会驱动健康状态刷新，必须在磁盘配置更新后发生。
       await persistScopedChange(targetSource, {
         action: "upsert",
         source: targetSource,
@@ -428,6 +440,30 @@ export const useMcpStore = create<McpStoreState>((set, get) => {
         }),
       );
     },
+    addClaudeCliMcpServer: (name, config, projectPath) =>
+      get().addScopedMcpServer("claudeclimcp", name, config, projectPath),
+    updateClaudeCliMcpServer: (name, config, projectPath) =>
+      get().updateScopedMcpServer("claudeclimcp", name, config, projectPath),
+    deleteClaudeCliMcpServer: (name, projectPath) =>
+      get().deleteScopedMcpServer("claudeclimcp", name, projectPath),
+    addGeminiCliMcpServer: (name, config, projectPath) =>
+      get().addScopedMcpServer("geminiclimcp", name, config, projectPath),
+    updateGeminiCliMcpServer: (name, config, projectPath) =>
+      get().updateScopedMcpServer("geminiclimcp", name, config, projectPath),
+    deleteGeminiCliMcpServer: (name, projectPath) =>
+      get().deleteScopedMcpServer("geminiclimcp", name, projectPath),
+    addCodexCliMcpServer: (name, config, projectPath) =>
+      get().addScopedMcpServer("codexclimcp", name, config, projectPath),
+    updateCodexCliMcpServer: (name, config, projectPath) =>
+      get().updateScopedMcpServer("codexclimcp", name, config, projectPath),
+    deleteCodexCliMcpServer: (name, projectPath) =>
+      get().deleteScopedMcpServer("codexclimcp", name, projectPath),
+    addOpenCodeMcpServer: (name, config, projectPath) =>
+      get().addScopedMcpServer("opencodemcp", name, config, projectPath),
+    updateOpenCodeMcpServer: (name, config, projectPath) =>
+      get().updateScopedMcpServer("opencodemcp", name, config, projectPath),
+    deleteOpenCodeMcpServer: (name, projectPath) =>
+      get().deleteScopedMcpServer("opencodemcp", name, projectPath),
     addCCbuddyAgentMcpServer: (name, config, projectPath) =>
       get().addScopedMcpServer("ccbuddyagentmcp", name, config, projectPath),
     updateCCbuddyAgentMcpServer: (name, config, projectPath) =>
@@ -559,7 +595,7 @@ export const useMcpStore = create<McpStoreState>((set, get) => {
         return {
           statusSnapshots: nextStatusSnapshots,
           servers: mergeMcpServerStatusSnapshots(state.servers, nextStatusSnapshots, {
-            // OAuth 轮询的 status-only 响应可能只包含 pending 子集。
+            // Bugfix：OAuth 轮询的 status-only 响应可能只包含 pending 子集。
             // 缺失项不能按全量 mcp/list 处理，否则会把其他 MCP 误标为 agent 未返回。
             markMissingConnectingAsError: mode !== "status",
           }),

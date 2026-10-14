@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-interface BuildAgentTelemetrySpawnEnvInput {
+export interface BuildAgentTelemetrySpawnEnvInput {
   telemetryEnv: Record<string, string>;
   deviceMid?: string;
   userId?: string;

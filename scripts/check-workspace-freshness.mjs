@@ -69,7 +69,7 @@ try {
     } else {
       console.warn(
         `[freshness] 警告：${message}。这是特性/MR 分支（ahead ${aheadMain}），` +
-          `分叉本身正常；若要跟主线对齐请先确认 MR 状态（有未合并的草稿变更时不要盲目 rebase）。`,
+          `分叉本身正常；若要跟主线对齐请先确认 MR 状态（冻结中的 Draft MR 不要盲目 rebase）。`,
       );
     }
   }

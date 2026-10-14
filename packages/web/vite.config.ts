@@ -6,11 +6,10 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { pdfJsCMapsPlugin } from "../ui/vite/pdfJsCMapsPlugin.js";
 import { thirdPartyNoticesVitePlugin } from "../../scripts/third-party-notices.mjs";
-// Vite 配置在 Node 加载期执行，不能导入 @ccbuddy/shared 根入口。
+// Bugfix: Vite 配置在 Node 加载期执行，不能导入 @ccbuddy/shared 根入口。
 // 根入口包含 NodeNext 风格的源码 re-export，Node 会按真实文件查找 .js 并在 bootstrap 阶段失败。
 import {
   resolveRuntimeCCbuddyEndpointOrigin,
-  pickProductEndpointEnv,
   resolveZaiOAuthClientId,
   resolveZaiOAuthOrigin,
 } from "@ccbuddy/shared/ccbuddyEndpoint";
@@ -82,7 +81,6 @@ export default defineConfig(({ mode }) => {
       },
     },
     define: {
-      __CCBUDDY_ENDPOINT_ENV__: JSON.stringify(pickProductEndpointEnv(env)),
       __CCBUDDY_VERSION__: JSON.stringify(version),
       __CCBUDDY_COMMIT__: JSON.stringify(env.CCBUDDY_COMMIT || "unknown"),
       __CCBUDDY_ENV__: JSON.stringify(ccbuddyEnv),

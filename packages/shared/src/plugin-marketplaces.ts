@@ -9,24 +9,19 @@ export interface DefaultPluginMarketplace {
 
 export const CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE_ID = "ccbuddy-plugins-official";
 
+/**
+ * Claude Code 官方市场（GitHub git 源）。它不是 CCbuddy 的强依赖：GitHub 不可达时刷新必然失败，
+ * 该失败不应作为错误提示打扰用户，UI 侧按此 id 静默处理其刷新失败（任何原因）。
+ */
+export const CLAUDE_OFFICIAL_PLUGIN_MARKETPLACE_ID = "claude-plugins-official";
+
 /** Settings 三类资源发现共用；Bootstrap 单测与官方 definition 的 defaultEnabled 机械对照。 */
+// 内置默认启用集合与 CLI/SEA 实际随包发布清单一致，不为已移除的上游插件声明默认状态。
 export const DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS: ReadonlySet<string> = new Set([
   "browser-use@ccbuddy-plugins-official",
-  "image-search@ccbuddy-plugins-official",
-  "documents@ccbuddy-plugins-official",
-  "pdf@ccbuddy-plugins-official",
-  "presentations@ccbuddy-plugins-official",
-  "spreadsheets@ccbuddy-plugins-official",
-  // node_repl 宿主：不进市场、不对用户露出，也不贡献任何 skill/command/subagent，但必须
-  // 始终可用 —— node_repl 的注册门禁是「Browser Use 或 Computer Use 任一启用」，宿主自己
-  // 不参与那个判断。Browser Use 默认开着，宿主若默认关就等于它上来就没有宿主。
+  // node_repl 宿主无商店 listing，默认启用保证 Browser Use 有可执行宿主。
   "node-repl-host@ccbuddy-plugins-official",
-  "skill-creator@ccbuddy-plugins-official",
-  "plugin-creator@ccbuddy-plugins-official",
-  "ccbuddy-guide@ccbuddy-plugins-official",
-  // 电脑控制回退为默认关闭，故 computer-use 不在此名单内。
-  // 该集合必须与 official-plugin-definitions.ts 里标了 defaultEnabled 的插件逐一对应，
-  // bootstrap 的「Settings 默认启用集合与 CLI 的官方插件声明一致」单测机械对照两者。
+  "visualize@ccbuddy-plugins-official",
 ]);
 
 export const DEFAULT_PLUGIN_MARKETPLACES: DefaultPluginMarketplace[] = [
@@ -37,6 +32,15 @@ export const DEFAULT_PLUGIN_MARKETPLACES: DefaultPluginMarketplace[] = [
     source: "bundled:ccbuddy",
     name: "CCbuddy built-in plugins",
     description: "Plugins bundled with CCbuddy.",
+    pluginCount: 0,
+  },
+  {
+    id: CLAUDE_OFFICIAL_PLUGIN_MARKETPLACE_ID,
+    source: "anthropics/claude-plugins-official",
+    name: CLAUDE_OFFICIAL_PLUGIN_MARKETPLACE_ID,
+    description:
+      "Directory of popular Claude Code extensions including development tools, productivity plugins, and MCP integrations",
+    // 只内置官方 catalog 来源，不把远端 manifest 快照打包进仓库；首次刷新前数量未知。
     pluginCount: 0,
   },
 ];

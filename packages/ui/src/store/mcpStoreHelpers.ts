@@ -6,12 +6,17 @@ import type {
   CCbuddyMcpServer,
 } from "@ccbuddy/shared";
 
-const MCP_CONFIG_KEY = "ccbuddy-mcp-config";
+export const MCP_CONFIG_KEY = "ccbuddy-mcp-config";
+export const MCP_ENABLED_STATES_KEY = "ccbuddy-mcp-enabled-states";
 export const MCP_DELETED_PRELOAD_KEY = "ccbuddy-mcp-deleted-preload";
 
 export const DEFAULT_MCP_CONFIG: McpConfig = {
   mcp: { mcpServers: {} },
   ccbuddyagentmcp: { mcpServers: {}, projects: {} },
+  claudeclimcp: { mcpServers: {}, projects: {} },
+  geminiclimcp: { mcpServers: {}, projects: {} },
+  codexclimcp: { mcpServers: {}, projects: {} },
+  opencodemcp: { mcpServers: {}, projects: {} },
 };
 
 export function safeReadJson<T>(key: string, fallback: T): T {

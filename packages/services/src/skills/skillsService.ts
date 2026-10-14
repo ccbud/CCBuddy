@@ -834,7 +834,7 @@ async function resolvePluginSkillRootDescriptors(): Promise<SkillRootDescriptor[
     }
     // agent runtime 已经从 plugin manifest 注入 skillRoots，但 UI 的 skillsService
     // 之前只扫描内置官方 cache/手动目录，漏掉 marketplace installed_plugins.json 中的
-    // Claude 官方和自建市场插件，导致插件详情页只有技能数量、没有技能名。
+    // 个人来源市场（claude-plugins-official、自建市场等）插件，导致插件详情页只有技能数量、没有技能名。
     for (const rootPath of resolvePluginSkillRoots({ manifest, rootPath: candidate.rootPath })) {
       descriptors.push({
         scope: "plugin",
@@ -1245,3 +1245,10 @@ export function createSkillsService(options?: SkillsServiceOptions): ISkillsServ
     },
   };
 }
+
+// 仅供测试/调试，便于在 vitest 里直接 fixture 出诊断结果。
+export const __INTERNAL__ = {
+  discoverSkills,
+  readFrontmatter,
+  MAX_DESCRIPTION_LENGTH,
+};

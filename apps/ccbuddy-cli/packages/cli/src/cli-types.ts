@@ -6,8 +6,10 @@ import type {
   ManagedCdpBrowserRuntimeOptions,
 } from "@ccbuddy/adapters/browser";
 import type {
+  createDefaultProviderEndpointRoutingPort,
   createModelAdapter,
   createCCbuddyApp,
+  CreateDefaultProviderEndpointRoutingPortOptions,
   CreateModelAdapterOptions,
   configureCodingPlanApiKey,
   ConfigureCodingPlanApiKeyOptions,
@@ -55,6 +57,9 @@ export interface RunDependencies extends PluginsCommandOverrides {
   createModelAdapter?: (
     options?: CreateModelAdapterOptions,
   ) => ReturnType<typeof createModelAdapter>;
+  createProviderEndpointRoutingPort?: (
+    options: CreateDefaultProviderEndpointRoutingPortOptions,
+  ) => ReturnType<typeof createDefaultProviderEndpointRoutingPort>;
   createCCbuddyApp?: (
     options?: CCbuddyAppOptions,
   ) => Awaited<ReturnType<typeof createCCbuddyApp>> | ReturnType<typeof createCCbuddyApp>;
@@ -114,7 +119,7 @@ export interface RunDependencies extends PluginsCommandOverrides {
   shutdownCCbuddyTelemetry?: typeof shutdownCCbuddyTelemetry;
 }
 
-export type CliPermissionMode = "build" | "plan" | "edit" | "yolo";
+export type CliPermissionMode = "build" | "plan" | "edit" | "yolo" | "guarded";
 export type CliRuntimeMode = CliPermissionMode | "auto";
 
 export interface CliModeState {

@@ -6,7 +6,7 @@ import {
 } from "@ccbuddy/shared";
 
 /** 采样周期与 app 侧聚合共用 shared 的同一个常量，避免两侧节拍各自漂移。 */
-const CCBUDDY_PROCESS_RESOURCE_SAMPLE_INTERVAL_MS = CCBUDDY_CLI_RESOURCE_SAMPLE_INTERVAL_MS;
+export const CCBUDDY_PROCESS_RESOURCE_SAMPLE_INTERVAL_MS = CCBUDDY_CLI_RESOURCE_SAMPLE_INTERVAL_MS;
 
 let processInstanceToken: string | undefined;
 
@@ -28,7 +28,7 @@ interface CpuUsageSnapshot {
 }
 
 /** 与 Node `process.memoryUsage()` 同形；本地内存诊断日志需要 heap 细分，协议样本只取 rss。 */
-interface ProcessMemoryUsageSnapshot {
+export interface ProcessMemoryUsageSnapshot {
   rss: number;
   heapTotal: number;
   heapUsed: number;

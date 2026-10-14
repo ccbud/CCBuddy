@@ -14,7 +14,7 @@ function storageKey(workspaceKey: string): string {
   return `${STORAGE_PREFIX}${workspaceKey}`;
 }
 
-function readPersistedPaneSession(workspaceKey: string): string | null {
+export function readPersistedPaneSession(workspaceKey: string): string | null {
   try {
     return localStorage.getItem(storageKey(workspaceKey));
   } catch {
@@ -22,7 +22,7 @@ function readPersistedPaneSession(workspaceKey: string): string | null {
   }
 }
 
-function persistPaneSession(workspaceKey: string, sessionId: string | null): void {
+export function persistPaneSession(workspaceKey: string, sessionId: string | null): void {
   try {
     if (sessionId) {
       localStorage.setItem(storageKey(workspaceKey), sessionId);
@@ -34,18 +34,18 @@ function persistPaneSession(workspaceKey: string, sessionId: string | null): voi
   }
 }
 
-interface UsePaneSessionPersistenceParams {
+export interface UsePaneSessionPersistenceParams {
   workspaceKey: string;
   activeSessionId: string | null;
   /** startDraft 的显式用户意图代次；大于 0 时 null 表示草稿，不是待恢复。 */
   draftFocusVersion: number;
-  /** 手机 /remote 不消费 desktop pane 的本地恢复状态。 */
+
   enabled?: boolean;
   /** 恢复入口：与用户点击任务列表同一条选择路径，保证副作用（已读清理等）一致。 */
   selectSession: (sessionId: string) => void;
 }
 
-function shouldRestorePersistedPaneSession(params: {
+export function shouldRestorePersistedPaneSession(params: {
   activeSessionId: string | null;
   draftFocusVersion: number;
   enabled: boolean;

@@ -54,5 +54,6 @@
       "types": "./broker-helper-health.d.ts",
       "import": "./broker-helper-health.js"
     }
-  }
+  },
+  "ccbuddyCuaPlaceholder": true
 }

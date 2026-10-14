@@ -57,6 +57,7 @@ export function WorkspacePinnedTasksSection({
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
   taskSortBy: "created" | "updated";
+
   onSelectTask: (
     targetWorkspacePath: string,
     taskId: string,

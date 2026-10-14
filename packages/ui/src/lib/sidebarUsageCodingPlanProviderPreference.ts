@@ -38,13 +38,20 @@ function getLocalStorage(): Storage | null {
   try {
     return window.localStorage;
   } catch (error) {
-    // WebView 隐私模式或移动端远控容器可能禁用 localStorage。
+    // WebView 或浏览器隐私模式可能禁用 localStorage。
     // 这里只影响 footer 的 provider 选择记忆，失败时降级为本次默认选择即可。
     logger.warn("[sidebarUsageCodingPlanProviderPreference] localStorage 不可用", {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
   }
+}
+
+export function readSidebarUsageCodingPlanProviderPreference():
+  | SidebarUsageCodingPlanProviderId
+  | undefined {
+  const value = readSidebarUsageCodingPlanSourcePreference();
+  return isSidebarUsageCodingPlanProviderId(value) ? value : undefined;
 }
 
 export function readSidebarUsageCodingPlanSourcePreference():

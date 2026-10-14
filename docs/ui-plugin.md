@@ -16,7 +16,7 @@ UI Plugin 给普通插件增加可交互页面。Agent 调用工具创建或修�
 | 模型调用页面工具   | 操作只有活页面才拥有的编辑器状态             | `registerTool()` 或 `onlisttools` + `oncalltool` |
 | 页面状态与资源更新 | 切换位置保留页面，重建恢复视图，订阅服务变化 | 活页面保留、widgetState、资源订阅                |
 
-交互页面只用于 **CCbuddy Desktop 的本地工作区**。Web、手机和远程工作区保留普通 MCP 工具记录。插件页面与 Gen UI 的加载和通信协议不同，不能混用两者的 API。
+交互页面只用于 **CCbuddy Desktop 的本地工作区**。Web 和远程工作区保留普通 MCP 工具记录。插件页面与 Gen UI 的加载和通信协议不同，不能混用两者的 API。
 
 ## Gen UI：按需生成可交互的回答
 

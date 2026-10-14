@@ -39,7 +39,7 @@ export interface GitGraphLayoutEdge {
   truncated: boolean;
 }
 
-interface GitGraphLayoutLaneSegment {
+export interface GitGraphLayoutLaneSegment {
   id: string;
   hash: string;
   laneIndex: number;

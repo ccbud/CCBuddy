@@ -1,3 +1,4 @@
+import type { Memory, MemoryConfig } from "@ccbuddy/shared";
 import { ServiceChannels } from "@ccbuddy/shared";
 import { createServiceDescriptor } from "../descriptors.js";
 
@@ -22,6 +23,35 @@ export interface ProjectMemoryWorkspaceSummary {
 }
 
 export interface IMemoryService {
+  /**
+   * 加载指定 agent 的 memory 文件
+   * @param workspacePath workspace 路径
+   * @param agentId agent ID (如 'claude', 'gemini' 等)
+   */
+  loadMemory(params: {
+    workspacePath: string;
+    agentId: string;
+  }): Promise<{ memory: Memory | null }>;
+
+  /**
+   * 保存 memory 配置
+   */
+  saveMemory(params: {
+    workspacePath: string;
+    agentId: string;
+    config: MemoryConfig;
+  }): Promise<void>;
+
+  /**
+   * 清除 memory 内容
+   */
+  clearMemory(params: { workspacePath: string; agentId: string }): Promise<void>;
+
+  /**
+   * 获取用户级 memory 目录路径，并确保目录存在
+   */
+  getUserMemoryDirectory(): Promise<{ path: string }>;
+
   /** 列出当前本地 profile 中可查看的 Project Memory。 */
   listProjectMemories(): Promise<ProjectMemoryWorkspaceSummary[]>;
 

@@ -3,9 +3,9 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { BrowserViewportSize } from "@ccbuddy/shared";
 
-const BROWSER_TAB_PAGE_STATE_MAX_RECORDS = 100;
-const BROWSER_TAB_PAGE_STATE_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
-const BROWSER_TAB_PAGE_STATE_MAX_HISTORY_ENTRIES = 500;
+export const BROWSER_TAB_PAGE_STATE_MAX_RECORDS = 100;
+export const BROWSER_TAB_PAGE_STATE_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+export const BROWSER_TAB_PAGE_STATE_MAX_HISTORY_ENTRIES = 500;
 
 export interface BrowserTabShellRecord {
   schemaVersion: 1;
@@ -44,7 +44,7 @@ export interface BrowserTabPageStateRecord {
   updatedAt: number;
 }
 
-interface BrowserTabRecoverySnapshot {
+export interface BrowserTabRecoverySnapshot {
   schemaVersion: 1;
   shells: BrowserTabShellRecord[];
   pageStates: BrowserTabPageStateRecord[];
@@ -162,9 +162,11 @@ export class BrowserTabRecoveryStore {
 
   private async mutate(mutation: (snapshot: BrowserTabRecoverySnapshot) => void): Promise<void> {
     const task = this.mutationQueue.then(async () => {
-      const snapshot = await this.ensureLoaded();
+      // 写盘失败不能提前污染缓存：在副本上修改，原子写成功后才提交内存事实。
+      const snapshot = cloneSnapshot(await this.ensureLoaded());
       mutation(snapshot);
       await this.writeSnapshot(snapshot);
+      this.snapshot = snapshot;
     });
     this.mutationQueue = task.catch(() => undefined);
     await task;

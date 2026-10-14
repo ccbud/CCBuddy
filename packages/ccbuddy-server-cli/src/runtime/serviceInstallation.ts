@@ -176,7 +176,7 @@ function descriptorNameFromContent(
   return entry.endsWith(".service") ? entry.slice(0, -".service".length) : null;
 }
 
-function serviceDescriptorBelongsToRoot(
+export function serviceDescriptorBelongsToRoot(
   content: string,
   platform: ServicePlatform,
   serverRoot: string,

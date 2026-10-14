@@ -14,7 +14,6 @@ import {
 import {
   Archive,
   Blocks,
-  CalendarDays,
   CalendarClock,
   Clock3,
   Cloud,
@@ -22,7 +21,6 @@ import {
   FolderOpen,
   Hash,
   ListFilter,
-  List,
   Maximize2,
   MessageCircleCheck,
   MessageCirclePlus,
@@ -58,6 +56,7 @@ import {
   TID_SIDEBAR,
   TID_WORKSPACE_LIST,
 } from "@ccbuddy/shared";
+
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { Button } from "@/components/ui/button.js";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
@@ -82,6 +81,7 @@ import { useCCbuddyStore } from "@/store/StoreProvider.js";
 import { useTabStore } from "@/store/TabStoreProvider.js";
 import { isWorkspaceReadOnly, isWorkspaceTab, type WorkspaceTabState } from "@/store/tabStore.js";
 import { useWorkspaceTaskLists } from "@/hooks/useWorkspaceTaskLists.js";
+
 import {
   persistSidebarTaskPreferences,
   readSidebarTaskPreferences,
@@ -116,12 +116,16 @@ import type { RemoteConnectionLogEntry } from "@/hooks/useRemoteConnectionLogs.j
 import type { CodeViewerSource } from "@/lib/codeViewer.js";
 import { WorkspaceFileTree } from "@/WorkspaceFileTree.js";
 import { WorkspaceArchivedTasksFlatSection } from "@/WorkspaceArchivedTasksFlatSection.js";
+
 import { WorkspaceSidebarFooter } from "@/WorkspaceSidebarFooter.js";
+import { HistorySidebarButton } from "@/history/HistorySidebarButton.js";
+import { SidebarBottomActivity } from "@/sidebar-activity/SidebarBottomActivity.js";
 import { WorkspacePinnedTasksSection } from "@/WorkspacePinnedTasksSection.js";
 import { WorkspaceTimelineTasksSection } from "@/WorkspaceTimelineTasksSection.js";
 import { WorkspaceGroupedTasksSection } from "@/WorkspaceGroupedTasksSection.js";
 import { StickyGroupHeaderSlot } from "@/workspace-grouped-tasks/sticky-group-header-slot.js";
 import type { CreateTaskRequest } from "@/app-shell/types.js";
+
 import {
   SortableWorkspaceSidebarItem,
   restrictVerticalDragWithinContainer,
@@ -132,7 +136,6 @@ import {
 } from "@/WorkspaceSidebar/taskGroupTogglePresentation.js";
 import { WorkspacePurposeSection } from "@/WorkspaceSidebar/WorkspacePurposeSection.js";
 import { cn } from "@/components/lib/utils.js";
-import { useCodingPlanUpgradeDialog } from "@/settings/CodingPlanUpgradeDialogProvider.js";
 import {
   resolveWorkspaceDragGlobalIndices,
   resolveWorkspaceDragExpanded,
@@ -147,6 +150,7 @@ function WorkspaceNewTaskTooltip({
   children: ReactNode;
   disabledReason?: string;
 }) {
+  // 正常状态下按钮已带“新建任务”文案和快捷键，再挂 tooltip 只是重复；仅禁用时才解释原因。
   if (!disabledReason) return children;
   return (
     <ControlHintTooltip title={disabledReason}>
@@ -154,7 +158,6 @@ function WorkspaceNewTaskTooltip({
     </ControlHintTooltip>
   );
 }
-
 export { applyWorkspaceTriggerSelection } from "@/WorkspaceSidebar/workspaceSidebarSelection.js";
 export { WorkspaceSidebarCollapsedRail } from "@/WorkspaceSidebar/WorkspaceSidebarCollapsedRail.js";
 
@@ -190,7 +193,7 @@ function WorkspaceDragOverlay({ tab, width }: { tab: WorkspaceTabState; width: n
       className="pointer-events-none flex cursor-grabbing items-center rounded-lg border border-border bg-background text-ui-base text-foreground shadow-lg h-8 px-2.5 gap-2 [&_svg]:pointer-events-none [&_svg]:size-3.5 [&_svg]:shrink-0"
       style={width ? { width } : undefined}
     >
-      {/* 项目列表图标位于 Button 内，运行态会被按钮 SVG 规则收敛为 14px；
+      {/* Bugfix：项目列表图标位于 Button 内，运行态会被按钮 SVG 规则收敛为 14px；
           overlay 脱离 Button 后不再继承该规则，因此显式使用相同尺寸，避免 preview 图标放大。 */}
       {isRemote ? (
         <Cloud className="size-3.5 shrink-0 text-foreground-subtle" />
@@ -286,6 +289,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   onCreateConversationTask: () => void;
   onOpenFolderFromWorkspaceMenu: () => void;
   onOpenRemoteWorkspace?: () => void;
+
   theme: Theme;
   onConnectRemote: (options: RemoteTarget, requestId?: string) => Promise<string>;
   onSelectRemoteProject: (
@@ -302,6 +306,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   remoteWorkspaceErrorByWorkspaceKey: Record<string, string>;
   reconnectingRemoteWorkspaceLogsByWorkspaceKey?: Record<string, RemoteConnectionLogEntry[]>;
   isDesktop?: boolean;
+
   isMacDesktop?: boolean;
   isWindowsDesktop?: boolean;
   isSidebarVisible?: boolean;
@@ -342,7 +347,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     },
     [onSelectTask],
   );
-  const { openCodingPlanUpgrade } = useCodingPlanUpgradeDialog();
+
   const workspaceIdentity = useTabStore((state) => {
     if (!state.activeTabId) {
       return undefined;
@@ -415,6 +420,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     useState<WorkspaceTaskVisibleLimitByKey>({});
   const [activeWorkspaceDragId, setActiveWorkspaceDragId] = useState<string | null>(null);
   const [activeWorkspaceDragWidth, setActiveWorkspaceDragWidth] = useState<number | null>(null);
+
   const [groupedTaskGroupIds, setGroupedTaskGroupIds] = useState<string[]>([]);
   const [groupedTaskGroupIdsHydrated, setGroupedTaskGroupIdsHydrated] = useState(false);
   const [lastNonEmptyGroupedTaskGroupIds, setLastNonEmptyGroupedTaskGroupIds] = useState<string[]>(
@@ -568,6 +574,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
       setWorkspaceTaskOrganizeBy(taskOrganizeBy);
     }
   }, [taskOrganizeBy]);
+
   const taskViewMode = resolveSidebarTaskViewMode({
     showArchivedTasks,
     taskOrganizeBy,
@@ -601,6 +608,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
       setGroupedStickyHeader(null);
     }
   }, [taskViewMode]);
+
   const [createGroupedTaskGroupAction, setCreateGroupedTaskGroupAction] = useState<
     (() => void) | null
   >(null);
@@ -614,11 +622,11 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     setCreateGroupedTaskDraftAction(() => action);
   }, []);
   const shouldShowPinnedTasks =
-    // grouped 主体会主动过滤 pinned task；如果同页不渲染全局置顶区，
-    // 从 Header 置顶当前任务后整条 row 会无处展示，看起来像 session 被删除。
     taskViewMode === "workspace" ||
     taskViewMode === "timeline" ||
     taskViewMode === "archived" ||
+    // Bugfix: grouped 主体会主动过滤 pinned task；如果同页不渲染全局置顶区，
+    // 从 Header 置顶当前任务后整条 row 会无处展示，看起来像 session 被删除。
     taskViewMode === "grouped";
   const workspaceScrollRef = useRef<HTMLDivElement | null>(null);
   const [showWorkspaceTopMask, setShowWorkspaceTopMask] = useState(false);
@@ -641,6 +649,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     visibleLimitByWorkspaceKey: workspaceTaskVisibleLimitByKey,
     defaultVisibleLimit: WORKSPACE_TASK_PAGE_SIZE,
   });
+
   const workspaceTaskGroupByKey = useMemo(
     () =>
       new Map(
@@ -660,6 +669,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     setFileTreeTarget(target);
     setIsFileTreeOpen(true);
   }, []);
+
   const workspaceScrollMaskStyle = useMemo<CSSProperties>(() => {
     const baseStyle: CSSProperties = { overflowAnchor: "none" };
     if (!showWorkspaceTopMask && !showWorkspaceBottomMask) {
@@ -761,26 +771,13 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   const handleOpenAutomationsMain = useCallback(() => {
     onOpenAutomations?.();
   }, [onOpenAutomations]);
-  const handleOpenCodingPlanUpgrade = useCallback(
-    (
-      providerId: string,
-      funnelContext?: import("@/lib/codingPlanFunnelTelemetry.js").CodingPlanFunnelContext,
-    ) => {
-      openCodingPlanUpgrade({
-        providerId,
-        funnelContext,
-      });
-    },
-    [openCodingPlanUpgrade],
-  );
   const activeTaskId = useCCbuddySessionStore(
     (state) =>
-      // Web 远程控制从全局 task 入口进入远端 workspace 时，会先按
       // workspaceIdentity 写入 activeTaskId；如果侧栏仍然只读 path-only 桶，
       // 当前任务高亮会丢失，也会把后续选择误判成未激活。
       selectWorkspaceCCbuddyState(state, workspacePath, workspaceIdentity).activeTaskId,
   );
-  // 主区域切到其他视图时，任务仍在 store 中保持激活，但侧栏只高亮当前导航入口。
+  // 修复原因：历史视图属于独立导航目标，保留底层 task 选择但不同时高亮会话行。
   const showActiveTask = historyViewActive === null && !automationsActive && !pluginStoreActive;
   const displayActiveTaskId = showActiveTask ? activeTaskId : null;
 
@@ -921,6 +918,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     if (!canToggleAllTaskGroups) {
       return;
     }
+
     if (taskOrganizeBy === "grouped") {
       if (toggleableGroupedTaskGroupIds.length === 0) {
         return;
@@ -1022,61 +1020,63 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     // 图标语义与文案不一致。打开态统一改成 Close，同时同步 aria-label。
     id: showArchivedTasks ? "common.close" : "workspaceSidebar.toggleArchivedTasks",
   });
-  // 性能修复：workspaceTaskToolbar 会随 chat streaming 被重复创建并传给远控任务索引。
+  // 性能修复：workspaceTaskToolbar 会随 chat streaming 被重复创建并传给侧栏任务区。
   // 这里把 render prop 稳定在真正影响工具栏展示的状态上，避免消息流更新污染侧栏任务区。
   const workspaceTaskToolbar = useCallback(
     () => (
-      <div className="pl-2.5 pr-3">
+      <div className={cn("pl-2.5 pr-3")}>
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 shrink-0 items-center gap-1">
-            <Tabs
-              value={activePrimaryTaskMode}
-              onValueChange={handlePrimaryTaskModeChange}
-              className="w-fit shrink-0"
-              aria-label={intl.formatMessage({
-                id: "workspaceSidebar.organize",
-              })}
-            >
-              {/* TabsList 默认横向态是 h-8；这里同步覆盖 variant，避免实际 Radix 横向态把外壳撑高。 */}
-              <TabsList
-                ref={primaryTaskTabsListRef}
-                className="relative h-7 w-fit overflow-hidden rounded-full bg-surface p-0.5 group-data-horizontal/tabs:h-7"
+            {
+              <Tabs
+                value={activePrimaryTaskMode}
+                onValueChange={handlePrimaryTaskModeChange}
+                className="w-fit shrink-0"
+                aria-label={intl.formatMessage({
+                  id: "workspaceSidebar.organize",
+                })}
               >
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-y-0.5 left-0 rounded-full bg-background transition-[opacity,transform,width] duration-200 ease-out"
-                  style={primaryTaskIndicatorStyle}
-                />
-                <TabsTrigger
-                  ref={(node) => {
-                    primaryTaskTabTriggerRefs.current.grouped = node;
-                  }}
-                  value="grouped"
-                  className="relative z-10 h-6 flex-none gap-1 rounded-full border-transparent bg-transparent py-0 pl-1.5 pr-2 text-ui-sm font-medium text-foreground-subtle transition-colors data-active:border-transparent data-active:bg-transparent data-active:text-foreground data-active:shadow-none dark:data-active:border-transparent dark:data-active:bg-transparent"
+                {/* TabsList 默认横向态是 h-8；这里同步覆盖 variant，避免实际 Radix 横向态把外壳撑高。 */}
+                <TabsList
+                  ref={primaryTaskTabsListRef}
+                  className="relative h-7 w-fit overflow-hidden rounded-full bg-surface p-0.5 group-data-horizontal/tabs:h-7"
                 >
-                  <Hash aria-hidden="true" className="size-3 shrink-0" />
-                  <span>
-                    {intl.formatMessage({
-                      id: "workspaceSidebar.organizeGrouped",
-                    })}
-                  </span>
-                </TabsTrigger>
-                <TabsTrigger
-                  ref={(node) => {
-                    primaryTaskTabTriggerRefs.current.workspace = node;
-                  }}
-                  value="workspace"
-                  className="relative z-10 h-6 flex-none gap-1 rounded-full border-transparent bg-transparent py-0 pl-1.5 pr-2 text-ui-sm font-medium text-foreground-subtle transition-colors data-active:border-transparent data-active:bg-transparent data-active:text-foreground data-active:shadow-none dark:data-active:border-transparent dark:data-active:bg-transparent"
-                >
-                  <Folder aria-hidden="true" className="size-3 shrink-0" />
-                  <span>
-                    {intl.formatMessage({
-                      id: "workspaceSidebar.organizeByProject",
-                    })}
-                  </span>
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-y-0.5 left-0 rounded-full bg-background transition-[opacity,transform,width] duration-200 ease-out"
+                    style={primaryTaskIndicatorStyle}
+                  />
+                  <TabsTrigger
+                    ref={(node) => {
+                      primaryTaskTabTriggerRefs.current.grouped = node;
+                    }}
+                    value="grouped"
+                    className="relative z-10 h-6 flex-none gap-1 rounded-full border-transparent bg-transparent py-0 pl-1.5 pr-2 text-ui-sm font-medium text-foreground-subtle transition-colors data-active:border-transparent data-active:bg-transparent data-active:text-foreground data-active:shadow-none dark:data-active:border-transparent dark:data-active:bg-transparent"
+                  >
+                    <Hash aria-hidden="true" className="size-3 shrink-0" />
+                    <span>
+                      {intl.formatMessage({
+                        id: "workspaceSidebar.organizeGrouped",
+                      })}
+                    </span>
+                  </TabsTrigger>
+                  <TabsTrigger
+                    ref={(node) => {
+                      primaryTaskTabTriggerRefs.current.workspace = node;
+                    }}
+                    value="workspace"
+                    className="relative z-10 h-6 flex-none gap-1 rounded-full border-transparent bg-transparent py-0 pl-1.5 pr-2 text-ui-sm font-medium text-foreground-subtle transition-colors data-active:border-transparent data-active:bg-transparent data-active:text-foreground data-active:shadow-none dark:data-active:border-transparent dark:data-active:bg-transparent"
+                  >
+                    <Folder aria-hidden="true" className="size-3 shrink-0" />
+                    <span>
+                      {intl.formatMessage({
+                        id: "workspaceSidebar.organizeByProject",
+                      })}
+                    </span>
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            }
             {toggleAllTaskGroupsPresentation ? (
               <ControlHintTooltip
                 title={intl.formatMessage({
@@ -1257,13 +1257,16 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     ],
   );
 
+  // Bugfix：Footer 使用 memo，内联 JSX 会让无关的侧栏更新也穿透其稳定引用边界。
+  const sidebarBottomActivity = useMemo(() => <SidebarBottomActivity />, []);
+
   return (
     <aside
       data-testid={TID_SIDEBAR}
       // 这里用设计系统的结构面 token 固定侧栏层级，避免不同合成器把左侧容器混成异常灰块。
       className="flex h-full flex-col overflow-hidden"
     >
-      <div className="h-12 [app-region:drag]"></div>
+      <div className={cn("h-12 [app-region:drag]")}></div>
       <div className="relative flex-1 min-h-0 overflow-hidden">
         <div
           className={cn(
@@ -1274,28 +1277,19 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
         >
           <div className={cn("flex flex-col gap-1 px-2", isWindowsDesktop ? "py-2" : "py-3")}>
             {onOpenHistoryView ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="lg"
-                data-icon="inline-start"
-                data-testid="history-timeline-sidebar-open"
-                aria-pressed={historyViewActive === "timeline"}
-                className={cn(
-                  "w-full justify-start gap-2 text-foreground hover:bg-surface-hover hover:text-foreground",
-                  historyViewActive === "timeline" && "bg-selected text-foreground",
-                )}
-                onClick={() => onOpenHistoryView("timeline")}
-              >
-                <CalendarDays className="size-4" />
-                {intl.formatMessage({ id: "workspace.openHistoryTimeline" })}
-              </Button>
+              <HistorySidebarButton
+                view="timeline"
+                activeView={historyViewActive}
+                onOpen={onOpenHistoryView}
+              />
             ) : null}
             <WorkspaceNewTaskTooltip disabledReason={workspaceReadOnlyReason}>
               <NewTaskButtonGroup
                 disabled={workspaceReadOnly}
                 onCreateTask={() => {
-                  if (workspaceReadOnly) return;
+                  if (workspaceReadOnly) {
+                    return;
+                  }
                   if (taskViewMode === "grouped") {
                     if (createGroupedTaskDraftAction) {
                       createGroupedTaskDraftAction();
@@ -1323,7 +1317,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                 {commandCenterShortcutLabel}
               </span>
             </Button>
-            {/* 远程入口展示策略统一走 useRemoteConnectionEntryVisibility，避免与其他入口出现分叉。*/}
+            {/* Bugfix: 远程入口展示策略统一走 useRemoteConnectionEntryVisibility，避免与其他入口出现分叉。 */}
             {/* {showRemoteConnectionEntry ? (
               <SSHDialog
                 onConnect={onConnectRemote}
@@ -1341,21 +1335,23 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                 }
               />
             ) : null} */}
-            <Button
-              variant="ghost"
-              onClick={handleOpenAutomationsMain}
-              data-icon="inline-start"
-              data-testid={TID_AUTOMATIONS_OPEN}
-              size="lg"
-              aria-pressed={automationsActive}
-              className={cn(
-                "w-full justify-start gap-2 text-foreground hover:bg-surface-hover hover:text-foreground",
-                automationsActive && "bg-selected text-foreground",
-              )}
-            >
-              <CalendarClock className="size-4" />
-              {intl.formatMessage({ id: "workspace.openScheduledSettings" })}
-            </Button>
+            {
+              <Button
+                variant="ghost"
+                onClick={handleOpenAutomationsMain}
+                data-icon="inline-start"
+                data-testid={TID_AUTOMATIONS_OPEN}
+                size="lg"
+                aria-pressed={automationsActive}
+                className={cn(
+                  "w-full justify-start gap-2 text-foreground hover:bg-surface-hover hover:text-foreground",
+                  automationsActive && "bg-selected text-foreground",
+                )}
+              >
+                <CalendarClock className="size-4" />
+                {intl.formatMessage({ id: "workspace.openScheduledSettings" })}
+              </Button>
+            }
             <Button
               variant="ghost"
               onClick={handleOpenPluginStoreMain}
@@ -1377,10 +1373,10 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
             <StickyGroupHeaderSlot header={groupedStickyHeader} />
             <div
               ref={workspaceScrollRef}
-              className={
-                // grouped task 拖拽预览会改变列表高度，禁用 scroll anchoring 避免浏览器自动锚定把 dnd-kit 测量放大成抖动。
-                "flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto"
-              }
+              className={cn(
+                // Bugfix: grouped task 拖拽预览会改变列表高度，禁用 scroll anchoring 避免浏览器自动锚定把 dnd-kit 测量放大成抖动。
+                "flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto",
+              )}
               style={workspaceScrollMaskStyle}
             >
               {workspaceTaskToolbar()}
@@ -1670,33 +1666,22 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
 
           {onOpenHistoryView ? (
             <div className="border-t border-border px-2 py-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="lg"
-                data-icon="inline-start"
-                data-testid="history-list-sidebar-open"
-                aria-pressed={historyViewActive === "list"}
-                className={cn(
-                  "w-full justify-start gap-2 text-foreground hover:bg-surface-hover hover:text-foreground",
-                  historyViewActive === "list" && "bg-selected text-foreground",
-                )}
-                onClick={() => onOpenHistoryView("list")}
-              >
-                <List className="size-4" />
-                {intl.formatMessage({ id: "workspace.openHistorySessions" })}
-              </Button>
+              <HistorySidebarButton
+                view="list"
+                activeView={historyViewActive}
+                onOpen={onOpenHistoryView}
+              />
             </div>
           ) : null}
           <WorkspaceSidebarFooter
             className="pr-3"
+            banner={sidebarBottomActivity}
             theme={theme}
             localeMenuValue={localeMenuValue}
             onLocaleChange={handleLocaleChange}
             onThemeChange={handleThemeChange}
             onSettingsButtonClick={openSettingsTab}
             onUsageClick={openSettingsTab}
-            onUpgradeClick={handleOpenCodingPlanUpgrade}
             onLogin={onLogin}
             onLogout={onLogout}
             user={user}

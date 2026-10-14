@@ -145,3 +145,22 @@ export function buildWorkspacePrepareUiError(
     detail: buildWorkspacePrepareDetail(context),
   };
 }
+
+export function buildCachedWorkspacePrepareUiError(
+  message: string,
+  cachedError: (CCbuddyError & { detail?: string }) | null | undefined,
+  context: WorkspacePrepareErrorContext,
+): CCbuddyError & { detail?: string } {
+  if (cachedError?.message === message) {
+    // Bugfix: workspaceInit 目前只缓存纯 message；页面返回命中 failed 短路时，
+    // 必须复用上一轮 prepare 的结构化 code，否则模型配置缺失会重新显示 CLI 原文。
+    return cachedError.detail
+      ? cachedError
+      : {
+          ...cachedError,
+          detail: buildWorkspacePrepareDetail(context),
+        };
+  }
+
+  return buildWorkspacePrepareUiError(new Error(message), context);
+}

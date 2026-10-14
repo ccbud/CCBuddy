@@ -1,5 +1,6 @@
 import type {
   BackgroundResultOriginMeta,
+  HighspeedMessageMetadata,
   ModelStreamingPayload,
   SessionEvent,
   SyntheticUserMessageSource,
@@ -9,9 +10,10 @@ import type {
   WorkflowLaunchMeta,
 } from "@ccbuddy/contracts";
 import { SessionEventType } from "@ccbuddy/contracts";
+import type { AttachmentRef } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 
-type CanonicalConversationVisibility = "visible" | "modelOnly" | "stateOnly";
-type CanonicalConversationOrigin =
+export type CanonicalConversationVisibility = "visible" | "modelOnly" | "stateOnly";
+export type CanonicalConversationOrigin =
   | "realUser"
   | "backgroundResult"
   | "goalContinuation"
@@ -21,7 +23,7 @@ type CanonicalConversationOrigin =
   | "assistant"
   | "system";
 
-interface CanonicalConversationPlacement {
+export interface CanonicalConversationPlacement {
   lane: "trigger" | "assistantWork" | "stateOnly";
   relation: "withinProductTurn" | "none";
 }
@@ -46,6 +48,9 @@ interface CanonicalConversationFactBase {
 }
 
 export interface CanonicalUserIntentFact extends CanonicalConversationFactBase {
+  inputOrigin?: "desktop" | "mobile";
+  conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
+  botGroupSource?: import("@ccbuddy/shared").BotGroupInputSource;
   semanticKind: "userIntent";
   visibility: "visible" | "modelOnly";
   origin:
@@ -77,6 +82,7 @@ export interface CanonicalUserIntentFact extends CanonicalConversationFactBase {
   sourceCommandId?: string;
   foregroundExecutionId?: string;
   clientId?: string;
+  highspeed?: HighspeedMessageMetadata;
   attachments?: readonly CanonicalTurnAttachment[];
   queueItemId?: string;
   admissionSeq?: number;
@@ -96,12 +102,8 @@ export interface CanonicalUserIntentFact extends CanonicalConversationFactBase {
   source?: TurnInputIntentMetadata["source"];
 }
 
-export interface CanonicalTurnAttachment {
+export interface CanonicalTurnAttachment extends Omit<AttachmentRef, "ref"> {
   ref?: string;
-  fileName: string;
-  mime: string;
-  bytes: number;
-  previewRef?: string;
 }
 
 export interface CanonicalModelStream {
@@ -133,7 +135,7 @@ export type CanonicalConversationFact =
   | CanonicalAssistantSegmentFact
   | CanonicalPassthroughFact;
 
-interface NormalizeConversationEventContext {
+export interface NormalizeConversationEventContext {
   productTurnId?: string;
   openAssistantSegments?: Partial<Record<"text" | "reasoning", CanonicalOpenSegmentIdentity>>;
 }
@@ -264,6 +266,7 @@ function normalizeTurnStarted(
       ? { foregroundExecutionId: payload.foregroundExecutionId }
       : {}),
     ...(payload.intent?.clientId ? { clientId: payload.intent.clientId } : {}),
+    ...(payload.intent?.highspeed ? { highspeed: payload.intent.highspeed } : {}),
     ...(payload.intent?.queueItemId ? { queueItemId: payload.intent.queueItemId } : {}),
     ...(payload.intent?.admissionSeq !== undefined
       ? { admissionSeq: payload.intent.admissionSeq }
@@ -286,6 +289,11 @@ function normalizeTurnStarted(
     ...(payload.intent?.planEnabled !== undefined
       ? { planEnabled: payload.intent.planEnabled }
       : {}),
+    ...(payload.intent?.inputOrigin ? { inputOrigin: payload.intent.inputOrigin } : {}),
+    ...(payload.intent?.conversationQuotes
+      ? { conversationQuotes: payload.intent.conversationQuotes }
+      : {}),
+    ...(payload.intent?.botGroupSource ? { botGroupSource: payload.intent.botGroupSource } : {}),
     ...(payload.intent?.provenance ? { provenance: payload.intent.provenance } : {}),
     ...(payload.intent?.source ? { source: payload.intent.source } : {}),
     ...normalizeAttachments(payload),

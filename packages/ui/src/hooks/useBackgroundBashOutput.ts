@@ -4,7 +4,7 @@ import { useCCbuddyAgentService } from "@/hooks/useCCbuddyAgentService.js";
 import { ensureAgentV4ConnectionHandshake } from "@/v4/agentV4ConnectionHandshake.js";
 import { logger } from "@/logger.js";
 
-interface BackgroundBashOutputTarget {
+export interface BackgroundBashOutputTarget {
   workspacePath: string;
   workspaceIdentity?: string;
   remoteSessionId?: string;

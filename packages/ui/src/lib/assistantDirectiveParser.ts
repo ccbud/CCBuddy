@@ -1,4 +1,4 @@
-interface ParsedAssistantDirective {
+export interface ParsedAssistantDirective {
   end: number;
   name: string;
   parameters: Readonly<Record<string, string>> | null;
@@ -8,13 +8,13 @@ interface ParsedAssistantDirective {
 
 export type AssistantTextRange = readonly [start: number, end: number];
 
-interface AssistantDirectiveSyntaxOptions {
+export interface AssistantDirectiveSyntaxOptions {
   allowSmartQuotes?: boolean;
   allowSingleColon?: boolean;
   allowTripleColon?: boolean;
 }
 
-interface AssistantDirectivePrefixOptions {
+export interface AssistantDirectivePrefixOptions {
   minimumSingleColonPrefixLength?: number;
   singleColonDirectiveNames?: readonly string[];
   tripleColonDirectiveNames?: readonly string[];

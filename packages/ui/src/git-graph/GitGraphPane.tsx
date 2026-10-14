@@ -7,7 +7,7 @@ import { GitGraphCommitDetail } from "./GitGraphCommitDetail.js";
 import { formatCommitTime, getRefIcon, getShortHash } from "./GitGraphDisplay.js";
 import { type GitGraphCommit, type GitGraphLayoutPath, layoutGitGraph } from "./layout.js";
 
-interface GitGraphPaneProps {
+export interface GitGraphPaneProps {
   commits: readonly GitGraphCommit[];
   hasMore?: boolean;
   loadingMore?: boolean;

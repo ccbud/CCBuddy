@@ -6,6 +6,7 @@ import type {
   CCbuddyMessageWithParts,
   ModelSelection,
   CCbuddyPermissionRequestParams,
+  CCbuddyProviderRuntimeHeadersRequestParams,
   CCbuddyUserInputRequestParams,
   CCbuddyUserInputResponse,
   CCbuddySessionInfo,
@@ -18,6 +19,7 @@ import type {
   CCbuddyWorkspacePresentation,
 } from "@ccbuddy/shared";
 import { createServiceDescriptor } from "#src/descriptors.js";
+import type { ProviderRuntimeHeadersUiResponse } from "#src/ccbuddy-agent/ccbuddyAgent.js";
 
 export interface CCbuddySessionWorkspaceTarget {
   workspacePath: string;
@@ -93,6 +95,11 @@ export interface CCbuddySessionSetModeParams extends CCbuddyTaskTarget {
   expectedRevision?: number;
 }
 
+export interface CCbuddySessionRespondProviderRuntimeHeadersParams extends CCbuddyTaskTarget {
+  requestId: string;
+  response: ProviderRuntimeHeadersUiResponse;
+}
+
 export interface CCbuddySessionSubscribeParams extends CCbuddyTaskTarget {
   deliveryKind: CCbuddyDeliveryKind;
   afterSeq?: number;
@@ -113,6 +120,7 @@ export type CCbuddySessionServiceEvent =
       requestId: string;
       response: CCbuddyUserInputResponse;
     }
+  | { type: "providerRuntimeHeaders.request"; request: CCbuddyProviderRuntimeHeadersRequestParams }
   | { type: "snapshot"; snapshot: CCbuddySessionStateSnapshot };
 
 export interface CCbuddySessionInitializeResult {
@@ -156,7 +164,12 @@ export interface ICCbuddySessionService {
     params: CCbuddySessionSetThoughtLevelParams,
   ): Promise<CCbuddySessionStateSnapshot>;
   setMode(params: CCbuddySessionSetModeParams): Promise<CCbuddySessionStateSnapshot>;
-  // renderer 订阅面走 agentService 的 conversation/sessions-index 帧通道。
+  respondProviderRuntimeHeaders(
+    params: CCbuddySessionRespondProviderRuntimeHeadersParams,
+  ): Promise<void>;
+  // M5 删波次 2：onDynamicSessionEvent（旧 session/subscribe 词表的 renderer 订阅面）
+  // 已删除——v4 UI 走 agentService 的 conversation/sessions-index 帧通道，
+  // 该方法在 renderer 侧已无任何调用者（grep packages/ui packages/desktop 为零）。
 }
 
 export const ICCbuddySessionService = createServiceDescriptor<ICCbuddySessionService>(

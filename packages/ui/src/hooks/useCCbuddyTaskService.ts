@@ -38,7 +38,7 @@ uiMemoryDiagnosticsRegistry.register("taskSnapshotCache", () => ({
   persisted: persistedSnapshotCache.size,
 }));
 
-function buildSnapshotDedupeKey(params: GetTaskSnapshotParams): string {
+export function buildSnapshotDedupeKey(params: GetTaskSnapshotParams): string {
   return [
     params.workspacePath,
     params.workspaceIdentity ?? "",
@@ -46,13 +46,13 @@ function buildSnapshotDedupeKey(params: GetTaskSnapshotParams): string {
     typeof params.messageLimit === "number" ? String(params.messageLimit) : "",
     typeof params.byteBudget === "number" ? String(params.byteBudget) : "",
     typeof params.toolLimit === "number" ? String(params.toolLimit) : "",
-    // desktop continuous 和手机 remote replayable 的 snapshot 可能经过不同恢复逻辑。
+    // desktop continuous 和普通 Web replayable 的 snapshot 可能经过不同恢复逻辑。
     // 缓存 key 必须区分 clientMode，否则会把某一端的快照复用到另一端。
     params.clientMode ?? "desktop-continuous",
-    // 手机只读恢复会刻意跳过 task-index 模型回填。
+    // Web 只读恢复会刻意跳过 task-index 模型回填。
     // 策略不同代表 host 端恢复语义不同，不能共用同一份 snapshot cache。
     params.resumeModelPolicy ?? "task-index",
-    // 手机首屏恢复会用历史模型 hint 激活 session。
+    // Web 首屏恢复会用历史模型 hint 激活 session。
     // 同一 task 若模型 hint 不同，context window 也可能不同，缓存必须隔离。
     params.model ?? "",
     // replayable snapshot 现在会携带 session settings 投影出的 configOptions。
@@ -238,8 +238,8 @@ function createCCbuddyTaskServiceProxy(service: ICCbuddyTaskService): ICCbuddyTa
           snapshotCache.set(requestKey, cachedSnapshotEntry);
         }
 
-        // 远控首屏恢复时，多个 hook 会并发请求同一 task snapshot，
-        // 导致 host 连续执行多次 getTaskSnapshot，并把超大快照重复回传到 relay。
+        // 多个 hook 会并发请求同一 task snapshot，导致 Host 连续执行多次 getTaskSnapshot，
+        // 并重复传输同一份大快照。
         // 这里按“同一 service + 同一参数”做并发去重，命中时复用同一个 Promise，
         // 保证同一时刻只发起一次 RPC；同时携带 if-none-match，未变化时复用本地缓存快照，
         // 避免重复下发大 JSON。

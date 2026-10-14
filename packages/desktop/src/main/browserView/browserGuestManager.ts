@@ -159,6 +159,8 @@ interface ManagedTab {
   /** 同一 guest 的 replacement teardown 只允许一个 flight，重复 ACK 共享结果。 */
   guestTeardownFlight?: Promise<boolean>;
   lifecycle: TabLifecycle;
+  /** durable close 的唯一屏障；删除恢复记录期间禁止转移所有权或迟到持久化。 */
+  closeFlight?: Promise<void>;
   origin: "agent" | "user";
   /** human IAB tab 在同 window/workspace 首次操作前可被任一 session 发现。 */
   claimable: boolean;
@@ -271,7 +273,7 @@ type BrowserTabRecoveryStorePort = Pick<
 > &
   Partial<Pick<BrowserTabRecoveryStore, "whenIdle">>;
 
-interface BrowserGuestManagerResidencyOptions {
+export interface BrowserGuestManagerResidencyOptions {
   tabLimit?: number;
   suspendAckTimeoutMs?: number;
   now?: () => number;
@@ -325,6 +327,19 @@ function scopeKey(context: InternalExecutionContext): string {
     context.sessionId,
     context.clientMode,
   ].join("\u0000");
+}
+
+/** tab 归属的 session 身份：不含 browserId / generation，释放回 user-tab 集合的 tab 仍然匹配。 */
+function ownedBySession(
+  owner: InternalExecutionContext,
+  context: InternalExecutionContext,
+): boolean {
+  return (
+    owner.windowId === context.windowId &&
+    owner.workspaceKey === context.workspaceKey &&
+    (owner.remoteSessionId ?? "") === (context.remoteSessionId ?? "") &&
+    owner.sessionId === context.sessionId
+  );
 }
 
 function sameScope(left: InternalExecutionContext, right: InternalExecutionContext): boolean {
@@ -996,6 +1011,7 @@ export class BrowserGuestManager {
     }
     if (command.method === "closeSession") {
       this.closeSession(context);
+      if (command.closeTabs === true) await this.closeSessionTabs(context);
       return this.withMeta({ ok: true, elapsedMs: 0 }, context);
     }
 
@@ -1026,7 +1042,20 @@ export class BrowserGuestManager {
     }
 
     if (command.method === "list") {
-      const tabs = await Promise.all(this.ownedTabs(context).map((tab) => this.summary(tab)));
+      const candidates = this.ownedTabs(context);
+      const summaries = await Promise.all(candidates.map((tab) => this.summary(tab)));
+      // 修复原因：一个摘要读取结束后，其 tab 仍可能在其它 viewport 查询期间关闭或离开当前 scope。
+      // 按最终 owner 状态过滤，不能把 tombstone 当成仍可寻址的 tab 返回给 Agent。
+      const tabs = summaries.filter((summary, index): summary is BrowserTabSummary => {
+        const tab = candidates[index]!;
+        return (
+          summary !== null &&
+          this.tabs.get(tab.tabId) === tab &&
+          tab.lifecycle !== "closed" &&
+          !tab.closeFlight &&
+          sameScope(tab.owner, context)
+        );
+      });
       return this.withMeta({ ok: true, tabs, elapsedMs: Date.now() - startedAt }, context);
     }
 
@@ -1141,6 +1170,10 @@ export class BrowserGuestManager {
       running.tabId = tab.tabId;
       this.refreshRuntimeProtection(tab.tabId);
       const guest = await this.ensureGuest(tab, running.controller.signal);
+      // 恢复等待期间 finalizeTabs 可将 tab 交还用户；先复核 scope，避免旧请求选中新 owner 的页面。
+      if (running.controller.signal.aborted || this.resolveTab(context, tab.tabId) !== tab) {
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
+      }
       if (!guest || safeBool(() => guest.isDestroyed(), true)) {
         return this.withMeta(
           {
@@ -1159,10 +1192,20 @@ export class BrowserGuestManager {
       // 激活必须先原子更新 main selected 状态，再通知 origin renderer；renderer 仅在该 scope
       // 正处前台时展开对应 view，后台对话只能记录激活态，不能抢用户当前会话。
       this.selectTab(tab, true);
+      const summary = await this.summary(tab);
+      // summary 的 Promise 完成后仍会让出微任务；回包前必须再次确认原对象与完整 scope，
+      // 否则期间关闭或转移所有权的 tab 会带着旧摘要被误报为成功。
+      if (
+        !summary ||
+        running.controller.signal.aborted ||
+        this.resolveTab(context, tab.tabId) !== tab
+      ) {
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
+      }
       return this.withMeta(
         {
           ok: true,
-          tab: await this.summary(tab),
+          tab: summary,
           elapsedMs: Date.now() - startedAt,
         },
         context,
@@ -1186,10 +1229,18 @@ export class BrowserGuestManager {
         );
       }
       const tab = this.claimTab(candidate, context);
+      const summary = await this.summary(tab);
+      if (
+        !summary ||
+        running.controller.signal.aborted ||
+        this.resolveTab(context, tab.tabId) !== tab
+      ) {
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
+      }
       return this.withMeta(
         {
           ok: true,
-          tab: await this.summary(tab),
+          tab: summary,
           elapsedMs: Date.now() - startedAt,
         },
         context,
@@ -1224,17 +1275,31 @@ export class BrowserGuestManager {
       running.tabId = tab.tabId;
       this.refreshRuntimeProtection(tab.tabId);
       const guest = await this.ensureGuest(tab, running.controller.signal);
+      // 创建失败的清理也必须属于原命令 scope，不能关闭恢复等待期间已交还用户的 tab。
+      if (this.resolveTab(context, tab.tabId) !== tab) {
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
+      }
       if (!guest) {
-        const result = this.cancelledOrUnavailable(context, running, startedAt, tab);
         // newTab 在 ready ack 前失败时不能留下无 guest 的 provisional tab；否则后续 list/attach
         // 会把一次已取消的创建误当成仍存活的 tab。close 同时给 renderer 发卸载请求并留下 tombstone。
         await this.closeTabDurably(tab);
-        return this.withMeta(result, context, tab, "closed");
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
+      }
+      if (running.controller.signal.aborted) {
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
+      }
+      const summary = await this.summary(tab);
+      if (
+        !summary ||
+        running.controller.signal.aborted ||
+        this.resolveTab(context, tab.tabId) !== tab
+      ) {
+        return this.cancelledOrUnavailable(context, running, startedAt, tab);
       }
       return this.withMeta(
         {
           ok: true,
-          tab: await this.summary(tab),
+          tab: summary,
           elapsedMs: Date.now() - startedAt,
         },
         context,
@@ -1242,7 +1307,11 @@ export class BrowserGuestManager {
       );
     }
 
-    const tab = this.resolveTab(context, "tabId" in command ? command.tabId : undefined);
+    const tab = this.resolveTab(
+      context,
+      "tabId" in command ? command.tabId : undefined,
+      command.method === "close",
+    );
     if (!tab) {
       return this.withMeta(
         {
@@ -2497,10 +2566,16 @@ export class BrowserGuestManager {
   private resolveTab(
     context: InternalExecutionContext,
     explicitTabId?: string,
+    includeClosing = false,
   ): ManagedTab | undefined {
     if (explicitTabId) {
       const explicit = this.tabs.get(explicitTabId);
-      if (!explicit || explicit.lifecycle === "closed" || !sameScope(explicit.owner, context)) {
+      if (
+        !explicit ||
+        explicit.lifecycle === "closed" ||
+        (!includeClosing && explicit.closeFlight) ||
+        !sameScope(explicit.owner, context)
+      ) {
         return undefined;
       }
       return explicit;
@@ -2508,12 +2583,19 @@ export class BrowserGuestManager {
     const key = scopeKey(context);
     const activeId = this.activeTabByScope.get(key);
     const active = activeId ? this.tabs.get(activeId) : undefined;
-    if (active && active.lifecycle !== "closed" && sameScope(active.owner, context)) return active;
+    if (
+      active &&
+      active.lifecycle !== "closed" &&
+      (includeClosing || !active.closeFlight) &&
+      sameScope(active.owner, context)
+    )
+      return active;
     const defaultId = this.defaultTabByScope.get(key);
     const existingDefault = defaultId ? this.tabs.get(defaultId) : undefined;
     if (
       existingDefault &&
       existingDefault.lifecycle !== "closed" &&
+      (includeClosing || !existingDefault.closeFlight) &&
       sameScope(existingDefault.owner, context)
     ) {
       return existingDefault;
@@ -2521,8 +2603,10 @@ export class BrowserGuestManager {
     // 后台会话（renderer 只上报 active:false）且 tab 由显式 newTab 创建时，activeTabByScope 与
     // defaultTabByScope 都是空的。这里必须复用该 scope 最近存活的 tab，否则不带 tabId 的命令会
     // 凭空再开一个空 tab，也会让 tabs.list() 报的 active 与实际落点不一致。
-    const recent = this.ownedTabs(context).at(-1);
+    const recent = this.ownedTabs(context, includeClosing).at(-1);
     if (recent) return recent;
+    // scope 内仅有 closing tab 时不能走 legacy preferredId 复用，避免在旧 close 下替换同 ID 对象。
+    if (this.ownedTabs(context, true).some((tab) => tab.closeFlight)) return undefined;
     return this.createTab(context, context.legacy ? context.sessionId : undefined, true);
   }
 
@@ -2635,9 +2719,12 @@ export class BrowserGuestManager {
     return null;
   }
 
-  private ownedTabs(context: InternalExecutionContext): ManagedTab[] {
+  private ownedTabs(context: InternalExecutionContext, includeClosing = false): ManagedTab[] {
     return [...this.tabs.values()].filter(
-      (tab) => tab.lifecycle !== "closed" && sameScope(tab.owner, context),
+      (tab) =>
+        tab.lifecycle !== "closed" &&
+        (includeClosing || !tab.closeFlight) &&
+        sameScope(tab.owner, context),
     );
   }
 
@@ -2646,10 +2733,8 @@ export class BrowserGuestManager {
       tab.origin === "user" &&
       tab.claimable &&
       tab.lifecycle !== "closed" &&
-      tab.owner.windowId === context.windowId &&
-      tab.owner.workspaceKey === context.workspaceKey &&
-      (tab.owner.remoteSessionId ?? "") === (context.remoteSessionId ?? "") &&
-      tab.owner.sessionId === context.sessionId
+      !tab.closeFlight &&
+      ownedBySession(tab.owner, context)
     );
   }
 
@@ -2704,6 +2789,20 @@ export class BrowserGuestManager {
   }
 
   private releaseToUser(tab: ManagedTab): void {
+    if (tab.closeFlight) {
+      const owner = tab.owner;
+      // close 先删除 recovery 再销毁 guest；等待同一屏障，失败后才允许原对象继续释放。
+      void tab.closeFlight.catch(() => {
+        if (
+          this.tabs.get(tab.tabId) === tab &&
+          tab.lifecycle !== "closed" &&
+          sameScope(tab.owner, owner)
+        )
+          this.releaseToUser(tab);
+      });
+      return;
+    }
+    if (tab.lifecycle === "closed") return;
     if (tab.claimable) return;
     if (!tab.userOwner) {
       tab.userOwner = {
@@ -2760,29 +2859,61 @@ export class BrowserGuestManager {
     const key = scopeKey(owner);
     const activeId = this.activeTabByScope.get(key);
     const activeTab = activeId ? this.tabs.get(activeId) : undefined;
-    if (activeTab && activeTab.lifecycle !== "closed") return activeId;
+    if (activeTab && activeTab.lifecycle !== "closed" && !activeTab.closeFlight) return activeId;
     // human tab 在 claim 前只置 tab.active、不进 activeTabByScope；这种自报 active 优先于回退，
     // 且一旦命中就不再往下走，保证同 scope 只有一个 active=true。
     for (const tab of this.tabs.values()) {
-      if (tab.active && tab.lifecycle !== "closed" && sameScope(tab.owner, owner)) return tab.tabId;
+      if (
+        tab.active &&
+        tab.lifecycle !== "closed" &&
+        !tab.closeFlight &&
+        sameScope(tab.owner, owner)
+      ) {
+        return tab.tabId;
+      }
     }
     return this.ownedTabs(owner).at(-1)?.tabId;
   }
 
-  private async summary(tab: ManagedTab): Promise<BrowserTabSummary> {
+  private async summary(tab: ManagedTab): Promise<BrowserTabSummary | null> {
+    if (
+      this.tabs.get(tab.tabId) !== tab ||
+      this.tabs.get(tab.tabId)?.lifecycle === "closed" ||
+      tab.closeFlight
+    ) {
+      return null;
+    }
     // guest 重绑恢复尚未完成时，替代 guest 仍可能报告 about:blank；各状态读取点
     // 都必须保留 logical cache，不能让临时 guest URL 覆盖后续恢复事实。
     if (tab.guest && !this.guestRecoveryFlights.has(tab.tabId)) {
       tab.cachedUrl = safeStr(() => tab.guest!.getURL(), tab.cachedUrl);
       tab.cachedTitle = safeStr(() => tab.guest!.getTitle(), tab.cachedTitle);
     }
+    let viewport: BrowserViewportSize;
+    try {
+      viewport = await this.readTabViewport(tab);
+    } catch (error) {
+      // 修复原因：关闭 guest 会让尚未结束的 viewport 查询拒绝；关闭事实优先于该失效读取。
+      if (
+        this.tabs.get(tab.tabId) !== tab ||
+        this.tabs.get(tab.tabId)?.lifecycle === "closed" ||
+        tab.closeFlight
+      ) {
+        return null;
+      }
+      throw error;
+    }
+    // viewport 的 await 会让出控制权，关闭事件可在期间把 lifecycle 改成 closed。
+    // 重新读取 registry 的状态；closed 只出现在结果 metadata，不能扩展开放 tab 的 schema。
+    const current = this.tabs.get(tab.tabId);
+    if (current !== tab || current.lifecycle === "closed" || tab.closeFlight) return null;
     return {
       tabId: tab.tabId,
       url: tab.cachedUrl,
       title: tab.cachedTitle,
-      viewport: await this.readTabViewport(tab),
+      viewport,
       ...(this.effectiveActiveTabId(tab.owner) === tab.tabId ? { active: true } : {}),
-      ...(tab.lifecycle !== "active" ? { lifecycle: tab.lifecycle } : {}),
+      ...(current.lifecycle !== "active" ? { lifecycle: current.lifecycle } : {}),
     };
   }
 
@@ -2869,11 +3000,19 @@ export class BrowserGuestManager {
     startedAt: number,
     tab: ManagedTab,
   ): BrowserCommandResult {
+    const registered = this.tabs.get(tab.tabId);
+    // closeTab 会删除 registry，但同 scope 且未被复用的 closed 对象仍可提供关闭元数据。
+    // 转移或替换后的对象不能向旧请求泄漏新所有者的 URL、tabId 与生命周期。
+    const metadataTab =
+      sameScope(tab.owner, context) &&
+      (registered === tab || (!registered && tab.lifecycle === "closed"))
+        ? tab
+        : undefined;
     if (running.controller.signal.aborted) {
       return this.withMeta(
         this.cancelledResult(context, running.dispatched, startedAt),
         context,
-        tab,
+        metadataTab,
       );
     }
     return this.withMeta(
@@ -2886,7 +3025,7 @@ export class BrowserGuestManager {
         elapsedMs: Date.now() - startedAt,
       },
       context,
-      tab,
+      metadataTab,
     );
   }
 
@@ -3043,6 +3182,20 @@ export class BrowserGuestManager {
     this.visibilityByScope.delete(scopeKey(context));
   }
 
+  /**
+   * `closeSession({ closeTabs: true })`：真正关闭该 session 名下的全部 tab。按 session 归属而非完整
+   * browser scope 匹配——finalize / deliverable 已释放回该 session 的 tab 换到了 `unclaimed-iab` scope，
+   * 仍归它。只给永不回来认领的 session 用（dwf 子代理，
+   * docs/browser-use/2026-07-14-browser-tab-conversation-isolation-spec.md §2.3）：它的 sessionId 不是任何
+   * 对话，closeSession 保留的 view 无人可见、无人可认领，只会一直挂着 guest。
+   */
+  private async closeSessionTabs(context: InternalExecutionContext): Promise<void> {
+    const owned = [...this.tabs.values()].filter(
+      (tab) => tab.lifecycle !== "closed" && ownedBySession(tab.owner, context),
+    );
+    for (const tab of owned) await this.closeTabDurably(tab);
+  }
+
   closeWindow(windowId: number): void {
     this.abortRecordings((entry) => entry.context.windowId === windowId, "window closed");
     for (const request of this.runningRequests.values()) {
@@ -3071,10 +3224,20 @@ export class BrowserGuestManager {
 
   private async closeTabDurably(tab: ManagedTab, notifyRenderer = true): Promise<void> {
     if (tab.lifecycle === "closed") return;
+    if (tab.closeFlight) return await tab.closeFlight;
     // 旧 close 先回命令/通知 renderer，再 fire-and-forget 删除恢复仓库；紧接着退出时
     // 已关闭 tab 会从旧 shell 复活。先完成持久删除，失败时保留当前 logical tab 供调用方重试。
-    await this.removeTabRecovery(tab);
-    this.closeTab(tab, notifyRenderer);
+    // 屏障必须先同步挂到对象，再启动 IO；finalize/release/claim 与重复 close 共用这一个 owner。
+    const flight = Promise.resolve().then(async () => {
+      await this.removeTabRecovery(tab);
+      this.closeTab(tab, notifyRenderer);
+    });
+    tab.closeFlight = flight;
+    try {
+      await flight;
+    } finally {
+      if (tab.closeFlight === flight) tab.closeFlight = undefined;
+    }
   }
 
   private closeTab(tab: ManagedTab, notifyRenderer = true): void {
@@ -3869,6 +4032,8 @@ export class BrowserGuestManager {
     tab.cachedUrl = safeStr(() => guest.getURL(), tab.cachedUrl);
     tab.cachedTitle = safeStr(() => guest.getTitle(), tab.cachedTitle);
     await this.persistShell(tab);
+    // snapshot 的 shell await 可跨过 close 删除屏障；不能把迟到 pageState 再写回已删恢复数据。
+    if (this.tabs.get(tab.tabId) !== tab || tab.lifecycle === "closed" || tab.closeFlight) return;
     try {
       const entries = guest.navigationHistory.getAllEntries().map((entry) => ({ ...entry }));
       if (entries.length === 0) return;
@@ -3888,7 +4053,14 @@ export class BrowserGuestManager {
 
   private async persistShell(tab: ManagedTab): Promise<void> {
     const store = this.residencyOptions.recoveryStore;
-    if (!store || tab.lifecycle === "closed") return;
+    if (
+      !store ||
+      this.tabs.get(tab.tabId) !== tab ||
+      tab.lifecycle === "closed" ||
+      tab.closeFlight
+    ) {
+      return;
+    }
     const residency = this.residencyCoordinator.get(tab.tabId);
     const record: BrowserTabShellRecord = {
       schemaVersion: 1,
@@ -4622,7 +4794,7 @@ function normalizeDialogType(type: string | undefined): BrowserDialog["type"] {
 }
 
 /** Browser response meta 会进入模型轨迹和调试日志；只保留 origin/path，绝不携带 credential/query/hash。 */
-function sanitizeBrowserMetaUrl(value: string): string | undefined {
+export function sanitizeBrowserMetaUrl(value: string): string | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);

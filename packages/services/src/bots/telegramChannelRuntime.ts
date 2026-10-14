@@ -37,6 +37,7 @@ interface TelegramChannelRuntimeDeps {
     provider: "telegram",
     payload: unknown,
   ): Promise<BotProviderCallbackResult>;
+  acquirePollingLock?: typeof acquireTelegramPollingLock;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,7 +95,7 @@ export function createTelegramChannelRuntime(deps: TelegramChannelRuntimeDeps) {
     while (!signal.aborted) {
       let lock: Awaited<ReturnType<typeof acquireTelegramPollingLock>>;
       try {
-        lock = await acquireTelegramPollingLock(token, bot.id);
+        lock = await (deps.acquirePollingLock ?? acquireTelegramPollingLock)(token, bot.id);
       } catch (error) {
         if (signal.aborted) {
           return;

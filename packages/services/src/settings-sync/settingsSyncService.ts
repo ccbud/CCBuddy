@@ -561,13 +561,13 @@ async function importSkillDirectory(
   });
 }
 
-function getSkillDirectorySymlinkType(
+export function getSkillDirectorySymlinkType(
   platform: NodeJS.Platform | string = process.platform,
 ): "dir" | "junction" {
   return platform === "win32" ? "junction" : "dir";
 }
 
-function getCommandFileSymlinkType(): "file" {
+export function getCommandFileSymlinkType(): "file" {
   return "file";
 }
 

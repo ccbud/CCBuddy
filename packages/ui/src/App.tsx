@@ -2,7 +2,11 @@ import { PluginUiWorkspaceProvider } from "@/plugin-ui/index.js";
 /* eslint-disable max-lines -- App 当前集中编排 workspace 级状态、导航、Git 派生数据和 shell wiring；已将新增 side pane memory 桥接抽出，剩余拆分需要按 shell 边界单独重构。 */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { GitChangeSourceId, WorkspacePurpose } from "@ccbuddy/shared";
+import {
+  resolveWorkspaceKey,
+  type GitChangeSourceId,
+  type WorkspacePurpose,
+} from "@ccbuddy/shared";
 import { useCCbuddyStore } from "@/store/StoreProvider.js";
 import { getVisibleTaskMetas, useCCbuddySessionStore } from "@/store/ccbuddySessionStore.js";
 import { useTaskQueryCacheStore } from "@/store/taskQueryCacheStore.js";
@@ -11,6 +15,7 @@ import { useGitAutoRefresh } from "@/hooks/useGitAutoRefresh.js";
 import { useGitRepository } from "@/hooks/useGitRepository.js";
 import { useAppKeyboard } from "@/hooks/useAppKeyboard.js";
 import { usePlatform } from "@/hooks/usePlatform.js";
+import { useWorkspaceProviderConfigFile } from "@/hooks/useWorkspaceProviderConfigFile.js";
 import { useWorkspaceActiveTaskState } from "@/hooks/useWorkspaceActiveTaskState.js";
 import { useEnsureWorkspaceMcpLoaded } from "@/hooks/useEnsureWorkspaceMcpLoaded.js";
 import { useTabStore } from "@/store/TabStoreProvider.js";
@@ -48,9 +53,11 @@ import {
 } from "@/lib/settingsNavigation.js";
 import { runWorkspaceVisibleCommand } from "@/lib/workspaceVisibleCommand.js";
 import { CCBUDDY_PRODUCT_DOCS_URL } from "@/lib/productDocs.js";
+import appLogoUrl from "@/assets/ccbuddy-icon.png";
 import { resolveTheme } from "@/useTheme.js";
 import { WorkspaceShellLayout } from "@/app-shell/WorkspaceShellLayout.js";
 import { useAppChromeState } from "@/app-shell/useAppChromeState.js";
+import { useHistoryMainViewNavigation } from "@/app-shell/useHistoryMainViewNavigation.js";
 import { useWorkspaceSessionReload } from "@/app-shell/useWorkspaceSessionReload.js";
 import { useWorkspaceShellLifecycle } from "@/app-shell/useWorkspaceShellLifecycle.js";
 import { useWorkspaceShellCCbuddyState } from "@/app-shell/useWorkspaceShellCCbuddyState.js";
@@ -63,6 +70,7 @@ import { useTaskSidePaneMemoryBridge } from "@/app-shell/useTaskSidePaneMemoryBr
 import { resolveAppWorkspaceRpcTarget } from "@/app-shell/workspaceRpcTarget.js";
 import { useWorkspaceServicesResolution } from "@/hooks/useWorkspaceServices.js";
 import { useWorkspaceTerminalTaskNotifications } from "@/hooks/useTaskNotifications.js";
+import { useMarketingTaskCompletionRefresh } from "@/components/marketing-touch/useMarketingTaskCompletionRefresh.js";
 import { useOffPeakTaskNotifications } from "@/hooks/useOffPeakTaskNotifications.js";
 import type { AppProps, WorkspaceMainView } from "@/app-shell/types.js";
 import type {
@@ -79,6 +87,8 @@ import {
 } from "@/lib/closeActiveContext.js";
 import { usePaneLayoutStore } from "@/v4/paneLayoutStore.js";
 import { useWorkbenchGroupStore } from "@/v4/workbenchGroupStore.js";
+import type { SavedWorkflowHubTarget } from "@/v4/savedWorkflowHubContext.js";
+import type { SavedWorkflowsOpenTarget } from "@/settings/saved-workflows/SavedWorkflowsSection.js";
 import type { AssistantPreviewCardsAutoOpenRequest } from "@/lib/assistantPreviewCards.js";
 import { startMemoryDiagnosticsLogger } from "@/lib/memoryDiagnostics.js";
 
@@ -226,6 +236,7 @@ export function App({
     handleOpenBrowserUrl,
     handleToggleBrowser,
     handleOpenBrowserTab,
+    handleOpenBrowserPermissionSettings,
     handleToggleGit,
     handleOpenGit,
     handleOpenTreemapping,
@@ -273,6 +284,12 @@ export function App({
   });
   const workspaceKey = workspaceIdentity?.trim() || workspaceAbsPath;
   const notificationEnabled = useCCbuddyStore((s) => s.notificationEnabled);
+  useMarketingTaskCompletionRefresh({
+    workspacePath: workspaceAbsPath,
+    ...(workspaceIdentity ? { workspaceIdentity } : {}),
+    ...(workspaceRemoteSessionId ? { endpointKey: workspaceRemoteSessionId } : {}),
+    rpcReady: workspaceRpcReady,
+  });
   useWorkspaceTerminalTaskNotifications({
     workspacePath: workspaceAbsPath,
     ...(workspaceIdentity ? { workspaceIdentity } : {}),
@@ -317,7 +334,7 @@ export function App({
     }
 
     // 新建任务只会把 activeTaskId 切到 draft，不会触发 side pane 的 workspace 级内存切换。
-    // 因此用 startDraft 递增的版本号统一收起右侧面板，覆盖按钮、菜单、快捷键和远控入口。
+    // 因此用 startDraft 递增的版本号统一收起右侧面板，覆盖按钮、菜单、快捷键和Web 入口。
     const sidePaneTabCount = sidePaneState?.tabs.length ?? 0;
     if (!isSidePaneCollapsed) {
       logger.info(
@@ -380,6 +397,7 @@ export function App({
     activeTraceId,
     activeSessionId,
     activeTaskProvider,
+    workspaceHeaderProvider,
     activeTaskChangeSummary,
     activeTaskTitle,
     taskNativeSessionLogFile,
@@ -392,6 +410,12 @@ export function App({
     selectedProvider: workspaceShellCCbuddyState.selectedProvider,
     intl,
   });
+  const providerConfigFile = useWorkspaceProviderConfigFile(
+    workspaceAbsPath,
+    workspaceHeaderProvider,
+    workspaceRemoteSessionId,
+    workspaceIdentity,
+  );
   const workspaceTabs = useMemo(
     () =>
       tabs.filter(isWorkspaceTab).map((tab) => ({
@@ -757,11 +781,12 @@ export function App({
       ) {
         addTab(targetWorkspacePath, targetTabOptions);
       }
-      // workspace 行“新建对话”以前由叶子组件直接 activateTab + startDraft，
-      // 没有退出重启恢复的 workbench group/pane。group primary binding 因而仍可覆盖草稿。
-      // 所有显式新建入口统一先回到单 primary pane。
-      useWorkbenchGroupStore.getState().deactivateActiveGroup();
-      usePaneLayoutStore.getState().resetToPrimaryPane();
+      {
+        // 修复原因：workspace 行“新建对话”以前由叶子组件直接 activateTab + startDraft，
+        // 没有退出重启恢复的 workbench group/pane。group primary binding 因而仍可覆盖草稿。
+        useWorkbenchGroupStore.getState().deactivateActiveGroup();
+        usePaneLayoutStore.getState().resetToPrimaryPane();
+      }
       store.startDraft(
         targetWorkspacePath,
         targetSelectedProvider,
@@ -804,6 +829,12 @@ export function App({
   const testActions = useMemo<TestActions>(
     () => ({
       ...taskListE2EActions,
+      sendBotMessage: (message) => services.botsService.handleInboundMessage(message),
+      submitBotGroupInput: (params) => {
+        const submit = services.ccbuddyTaskService.submitBotGroupInput;
+        if (!submit) throw new Error("Task material admission unavailable");
+        return submit.call(services.ccbuddyTaskService, params);
+      },
       getTheme: () => theme,
       setTheme,
       getLocale: () => locale,
@@ -821,7 +852,16 @@ export function App({
       getPluginReferenceCatalog: (params) =>
         services.ccbuddyAgentService.getPluginReferenceCatalog(params),
     }),
-    [locale, services.ccbuddyAgentService, setLocale, theme, setTheme, testMessages],
+    [
+      locale,
+      services.botsService,
+      services.ccbuddyTaskService,
+      services.ccbuddyAgentService,
+      setLocale,
+      theme,
+      setTheme,
+      testMessages,
+    ],
   );
   useTestActions(testActions);
   const [workspaceMainView, setWorkspaceMainView] = useState<WorkspaceMainView>("chat");
@@ -839,21 +879,12 @@ export function App({
     workspaceMainView,
     onExitSettings: handleNavigateToTaskMain,
   });
-  const handleOpenHistoryViewFromMenu = useCallback(
-    (view: "list" | "timeline") => {
-      // 设置层可能覆盖仍挂载的工作区；显式菜单导航先保留目标，再返回工作区。
-      // 即使目标与进入设置时的视图相同，也不能让退出设置的默认逻辑改回 chat。
-      preserveNextSettingsExit();
-      runVisibleWorkspaceCommand(() => {
-        setWorkspaceMainView(view === "list" ? "history-list" : "history-timeline");
-      });
-    },
-    [preserveNextSettingsExit, runVisibleWorkspaceCommand],
-  );
-  useEffect(
-    () => platform.onOpenHistoryViewRequested?.(handleOpenHistoryViewFromMenu),
-    [handleOpenHistoryViewFromMenu, platform],
-  );
+  useHistoryMainViewNavigation({
+    platform,
+    preserveNextSettingsExit,
+    runVisibleWorkspaceCommand,
+    onWorkspaceMainViewChange: setWorkspaceMainView,
+  });
   const handleNavigateToAutomationsMain = useCallback((target: AutomationsNavigationTarget) => {
     setOpenAutomationId(target.automationId ?? null);
     setOpenAutomationTab(target.automationTab ?? null);
@@ -871,6 +902,9 @@ export function App({
     setOpenAutomationId(null);
     setOpenAutomationTab(null);
   }, []);
+  // 中枢深链（「已保存」芯片 → 那个工作流的详情页）：中枢定位后由它回调清空。
+  const [openWorkflow, setOpenWorkflow] = useState<SavedWorkflowsOpenTarget | null>(null);
+  const handleOpenWorkflowConsumed = useCallback(() => setOpenWorkflow(null), []);
   const {
     handleSelectTask,
     handleOpenAutomations,
@@ -890,6 +924,29 @@ export function App({
     onNavigateToAutomations: handleNavigateToAutomationsMain,
     onNavigateToPluginStore: handleNavigateToPluginStoreMain,
   });
+  // 完成卡「已保存」芯片的落点（docs/dynamic-workflow/transcript-and-notifications.md「Saving the
+  // run, and running it again」）：走「自动化」入口的同一条导航（进历史、切主视图），落在「工作流」
+  // 标签，再由深链把中枢定位到那一页。项目档按 workspaceKey 找组，全局档只要名字。
+  const handleOpenSavedWorkflowInHub = useCallback(
+    (target: SavedWorkflowHubTarget) => {
+      setOpenWorkflow(
+        target.scope === "global"
+          ? { scope: "global", name: target.name }
+          : {
+              scope: "project",
+              name: target.name,
+              workspaceKey: resolveWorkspaceKey({
+                workspacePath: target.workspacePath,
+                ...(target.workspaceIdentity
+                  ? { workspaceIdentity: target.workspaceIdentity }
+                  : {}),
+              }),
+            },
+      );
+      handleOpenAutomations(undefined, "workflow");
+    },
+    [handleOpenAutomations],
+  );
   const handleOpenPluginStoreForScope = useCallback(
     (_target: PluginStoreOpenTarget = {}) => {
       // Workspace Marketplace 已收敛为全局入口。兼容旧事件中的 Workspace key，但返回
@@ -1135,7 +1192,7 @@ export function App({
         onSearchResultHighlightRequest={handleSearchResultHighlightRequest}
         onOpenCodeViewer={handleOpenCodeViewerIfWritable}
       />
-      {/* 反馈是应用级能力，必须固定走本机 base host；SSH session 连接中或断开时，
+      {/* Bugfix: 反馈是应用级能力，必须固定走本机 base host；SSH session 连接中或断开时，
           workspace-scoped services 会切成断连代理，不能让反馈提交跟随远程 session 失效。 */}
       <FeedbackHost feedbackService={baseFeedbackService} platform={platform} />
       <PluginUiWorkspaceProvider onOpenSidePane={handleOpenPluginUi}>
@@ -1146,6 +1203,9 @@ export function App({
           pluginStoreOpenVersion={pluginStoreOpenVersion}
           openAutomationId={openAutomationId}
           openAutomationTab={openAutomationTab}
+          openWorkflow={openWorkflow}
+          onOpenWorkflowConsumed={handleOpenWorkflowConsumed}
+          onOpenSavedWorkflowInHub={handleOpenSavedWorkflowInHub}
           onWorkspaceMainViewChange={setWorkspaceMainView}
           onOpenAutomationConsumed={handleOpenAutomationConsumed}
           handleOpenAutomations={handleOpenAutomations}
@@ -1227,6 +1287,7 @@ export function App({
           gitState={gitState}
           browserNavigationRequest={browserNavigationRequest}
           browserRestoreUrls={browserRestoreUrls}
+          providerConfigFile={providerConfigFile}
           taskNativeSessionLogFile={taskNativeSessionLogFile}
           taskSessionFile={taskSessionFile}
           testMessages={testMessages}
@@ -1240,6 +1301,7 @@ export function App({
           fileChangeFindNavigationRequestId={fileChangeFindState.navigationRequestId}
           fileChangeFindQuery={fileChangeFindState.query}
           onFileChangeFindMatchCountChange={setFileChangeFindMatchCount}
+          appLogoUrl={appLogoUrl}
           platform={platform}
           reloadSessionDisabled={reloadSessionDisabled}
           reloadSessionPending={reloadSessionPending}
@@ -1257,6 +1319,7 @@ export function App({
           handleToggleTerminal={handleToggleTerminalIfWritable}
           handleToggleBrowser={handleToggleBrowser}
           handleOpenBrowserTab={handleOpenBrowserTab}
+          handleOpenBrowserPermissionSettings={handleOpenBrowserPermissionSettings}
           handleOpenTreemapping={handleOpenTreemappingIfWritable}
           handleOpenWhiteboard={handleOpenWhiteboard}
           handleOpenDeveloperTools={handleOpenDeveloperTools}

@@ -1,14 +1,18 @@
 import { databaseStartupControlSchema, databaseStartupStateSchema } from "./database-startup.js";
 import { mcpAppInstanceSchema } from "./mcp-apps/instance.js";
 import { automationSessionCreateTelemetrySchema } from "./sessionCreateTelemetry.js";
-/* eslint-disable max-lines -- 运行时 schema 当前集中在共享包入口，外部 relay payload 校验加入后先保持单一导出面。 */
+/* eslint-disable max-lines -- 跨进程运行时 schema 集中在共享包入口，保持单一校验与导出面。 */
 import { z } from "zod";
+import { networkCaptureControlSchema, networkCaptureBatchSchema } from "./networkCapture.js";
 import { browserCommandSchema } from "./browser-use/commands.js";
 import { browserCommandResultSchema } from "./browser-use/result.js";
 import { modelSelectionSchema } from "./model-selection.js";
 import { ccbuddyProcessDiagnosticSchema } from "./process-diagnostic.js";
 import { PROCESS_RESOURCE_CLI_LANES } from "./processResourceTelemetry.js";
-import { providerProvisioningTriggerSchema } from "./provider-provisioning.js";
+import {
+  providerProvisioningErrorCodeSchema,
+  providerProvisioningTriggerSchema,
+} from "./provider-provisioning.js";
 import { ccbuddyProviderSchema } from "./providers.js";
 import { REMOTE_ASSET_INSTALL_MODES } from "./remoteAssetInstallMode.js";
 import { isKnownRemoteResourcePackageId } from "./remoteResourcePackages.js";
@@ -26,7 +30,7 @@ import {
   taskStreamMirrorTargetSchema,
 } from "./task-realtime-core.js";
 import { wslUserSchema } from "./wslUserValidation.js";
-import { ccbuddyAgentProviderSchema } from "./ccbuddy-agent-policy.js";
+import { legacyCCbuddyProviderSchema } from "./ccbuddy-agent-policy.js";
 import { errorAttributionSchema } from "./ccbuddy-protocol-v4/snapshot.js";
 import {
   ccbuddyMcpResourceSamplesSchema,
@@ -57,6 +61,16 @@ export function formatZodError(error: z.ZodError): string {
 
 export const nonEmptyStringSchema = z.string().trim().min(1);
 export const stringArraySchema = z.array(z.string());
+// 普通 SSH/Bot 绑定只负责会话与 workspace 身份，不能将展示字段混入 registry 协议。
+export const remoteWorkspaceSessionTargetSchema = z
+  .object({
+    workspacePath: nonEmptyStringSchema,
+    workspaceIdentity: nonEmptyStringSchema.optional(),
+    remoteSessionId: nonEmptyStringSchema,
+  })
+  .strict();
+export const remoteWorkspaceSessionTargetsSchema = z.array(remoteWorkspaceSessionTargetSchema);
+
 export const credentialRecordSchema = z.record(z.string(), z.string());
 export const credentialKeySchema = nonEmptyStringSchema;
 export const credentialValueSchema = z.string();
@@ -89,10 +103,20 @@ export const dockerConnectOptionsSchema = z.object({
   container: nonEmptyStringSchema,
 });
 
+export const serverConnectOptionsSchema = z.object({
+  kind: z.literal("server"),
+  url: z.string().url(),
+  name: nonEmptyStringSchema.optional(),
+  token: z.string().optional(),
+  workspacePath: z.string().optional(),
+  serverId: nonEmptyStringSchema.optional(),
+});
+
 export const remoteTargetSchema = z.discriminatedUnion("kind", [
   sshConnectOptionsSchema,
   wslConnectOptionsSchema,
   dockerConnectOptionsSchema,
+  serverConnectOptionsSchema,
 ]);
 
 export const helloMessageSchema = z.object({
@@ -182,7 +206,8 @@ export const hostInitLocalMessageSchema = z.object({
   feedbackApiBase: z.string().url().optional(),
   workspacePath: nonEmptyStringSchema.optional(),
   workspaceIdentity: nonEmptyStringSchema.optional(),
-  agentWarmupTargets: z.array(hostAgentWarmupTargetSchema).max(3).optional(),
+  // 启动只预热 active workspace（desktop STARTUP_AGENT_WARMUP_LIMIT = 1），协议层同步收紧上限。
+  agentWarmupTargets: z.array(hostAgentWarmupTargetSchema).max(1).optional(),
   agentSpawnFallbackCwd: nonEmptyStringSchema.optional(),
   ccbuddyBuiltinProviderConfigFilePath: nonEmptyStringSchema,
   runtimeProcessEnvPatch: z
@@ -256,7 +281,7 @@ export const hostAttachServicePortMessageSchema = z
   .object({
     type: z.literal("attach-service-port"),
     // main 只能声明 attachment 来源；connectionId 仍由 host process 分配。
-    // desktop reload/remote reattach 必须显式 continuous，手机 shared-host 必须 replayable。
+    // desktop reload/remote reattach 必须显式 continuous，普通 Web/Bot attachment 保留 replayable。
     requestId: nonEmptyStringSchema,
     attachmentId: nonEmptyStringSchema,
     clientMode: z.enum(["desktop-continuous", "web-remote-replayable"]),
@@ -495,6 +520,7 @@ export type HostResourceUsageSnapshotRequestMessage = z.infer<
 >;
 
 export const hostIncomingMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("network-capture"), control: networkCaptureControlSchema }).strict(),
   z
     .object({ type: z.literal("database-startup-control"), control: databaseStartupControlSchema })
     .strict(),
@@ -576,6 +602,7 @@ export const hostLogResponseSchema = z.object({
 
 export { ccbuddyProviderSchema };
 
+// externalHistory：历史查看里"在 CCbuddy 继续"导入的外部会话；类型见 ccbuddy-task-types-core。
 export const ccbuddyTaskMigrationSourceSchema = z.enum(["claudeCode", "externalHistory"]);
 
 export const hostAgentProcessSpawnedResponseSchema = z.object({
@@ -1034,6 +1061,7 @@ export const hostProviderProvisioningExecutionResultResponseSchema = z
     environmentKey: nonEmptyStringSchema,
     status: z.enum(["applied", "already-applied", "unsupported", "failed", "rollback_failed"]),
     error: z.string().optional(),
+    errorCode: providerProvisioningErrorCodeSchema.optional(),
   })
   .strict();
 
@@ -1062,6 +1090,7 @@ export type HostResourceUsageSnapshotResultResponse = z.infer<
 >;
 
 export const hostResponseMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("network-capture-batch"), batch: networkCaptureBatchSchema }).strict(),
   z
     .object({ type: z.literal("database-startup-state"), state: databaseStartupStateSchema })
     .strict(),
@@ -1301,7 +1330,8 @@ export const ccbuddyTaskMetaSchema = z.object({
   model: z.string().optional(),
   thoughtLevel: nonEmptyStringSchema.optional(),
   runtimeEpoch: z.number().int().nonnegative().optional(),
-  provider: ccbuddyAgentProviderSchema.optional(),
+  // meta 直接解析自 tasks-index/旧 session 文件；历史 provider 值在此归一为 glm。
+  provider: legacyCCbuddyProviderSchema.optional(),
   migrationSource: ccbuddyTaskMigrationSourceSchema.optional(),
   forkedFromTaskId: nonEmptyStringSchema.optional(),
   // cron automation 身份：随 meta_json 一起持久化（单一来源），同时在写入时投影到 tasks 表
@@ -1323,6 +1353,12 @@ export const ccbuddyTaskMetaSchema = z.object({
       attribution: errorAttributionSchema.optional(),
     })
     .optional(),
+  repairState: z
+    .object({
+      claudeNativeSnapshotAssistantContentVersion: z.number().int().nonnegative().optional(),
+      codexNativeSnapshotSubagentToolsVersion: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
   changeSummary: z
     .object({
       fileCount: z.number().int().nonnegative(),
@@ -1340,6 +1376,23 @@ export const ccbuddyTaskMetaSchema = z.object({
     })
     .optional(),
   target: ccbuddyTaskGoalSchema.nullable().optional(),
+});
+
+export const ccbuddyTaskSessionBindingStateSchema = z.enum([
+  "idle",
+  "syncing",
+  "ready",
+  "stale",
+  "failed",
+]);
+
+export const ccbuddyTaskSessionBindingSchema = z.object({
+  // 绑定状态由 services 从持久化数据投影；旧绑定残留的历史 provider 值在此归一为 glm。
+  provider: legacyCCbuddyProviderSchema,
+  sessionId: nonEmptyStringSchema,
+  // 绑定锚点需要支持空 task 的 -1，所以这里不能套 nonnegative。
+  lastSyncedTurnIndex: z.number().int(),
+  state: ccbuddyTaskSessionBindingStateSchema,
 });
 
 export const ccbuddyTaskIndexEntrySchema = z.object({

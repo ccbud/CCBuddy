@@ -3,8 +3,8 @@ import { z } from "zod";
 export type SessionCreateSource = "group" | "project" | "session";
 export type SessionCreateClientKind = "desktop" | "mobile" | "web";
 
-/** 手机转发只开放本事件；公共用户/设备身份仍由桌面 TelemetryCore 注入。 */
-export const sessionCreateTelemetrySchema = z
+/** 自动化由执行 Host 报告；来源和公共身份由桌面 TelemetryCore 校验并注入。 */
+export const automationSessionCreateTelemetrySchema = z
   .object({
     elementName: z.literal("session_create"),
     eventRegion: z.literal("app"),
@@ -20,8 +20,8 @@ export const sessionCreateTelemetrySchema = z
       .strict(),
     eventExtraDetail: z
       .object({
-        create_source: z.enum(["group", "project", "session"]),
-        client_kind: z.literal("mobile"),
+        create_source: z.enum(["automation_idle", "automation_scheduled"]),
+        client_kind: z.literal("desktop"),
         workspace_kind: z.enum(["local", "remote"]),
         remote_kind: z.enum(["", "ssh", "wsl", "docker", "server"]),
       })
@@ -29,15 +29,6 @@ export const sessionCreateTelemetrySchema = z
   })
   .strict();
 
-export type MobileSessionCreateTelemetry = z.infer<typeof sessionCreateTelemetrySchema>;
-
-/** 自动化由执行 Host 报告；手机不得冒充无人值守派发来源。 */
-export const automationSessionCreateTelemetrySchema = sessionCreateTelemetrySchema.extend({
-  eventExtraDetail: sessionCreateTelemetrySchema.shape.eventExtraDetail.extend({
-    create_source: z.enum(["automation_idle", "automation_scheduled"]),
-    client_kind: z.literal("desktop"),
-  }),
-});
 export type AutomationSessionCreateTelemetry = z.infer<
   typeof automationSessionCreateTelemetrySchema
 >;

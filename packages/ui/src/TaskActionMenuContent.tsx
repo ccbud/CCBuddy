@@ -19,11 +19,11 @@ export function TaskActionMenuContent({
   taskSessionFile,
   activeSessionId,
   taskNativeSessionLogFile,
+  providerConfigFile,
   disableTaskActions = false,
   disableTaskTargetActions = false,
   disablePinTaskAction = false,
   disabledReason,
-  hideMobileUnsupportedActions = false,
   Item,
   Separator,
   onTogglePinTask,
@@ -39,6 +39,7 @@ export function TaskActionMenuContent({
   onCopyTaskLogPath,
   onCopySessionId,
   onViewModelTrajectory,
+  onOpenProviderConfig,
 }: {
   intl: {
     formatMessage: (desc: { id: string }, values?: Record<string, string>) => string;
@@ -52,18 +53,19 @@ export function TaskActionMenuContent({
     path: string | null;
     exists: boolean;
   };
+  providerConfigFile: { loading: boolean; path: string | null; exists: boolean };
   disableTaskActions?: boolean;
   disableTaskTargetActions?: boolean;
   disablePinTaskAction?: boolean;
   disabledReason?: string;
-  hideMobileUnsupportedActions?: boolean;
+
   Item: React.ComponentType<TaskActionMenuItemProps>;
   Separator: React.ComponentType<TaskActionMenuSeparatorProps>;
   onTogglePinTask: () => void;
   onStartRenameTask: () => void;
   onArchiveTask: () => void;
   onMarkTaskAsUnread: () => void;
-  /** 「在分屏打开」（仅桌面 shell 传入；手机远控不显示该入口）。 */
+
   onOpenInSplitPane?: () => void;
   /** 当前 session 或 pane 数达上限且目标无已有归属时禁用（保留布局与层级）。 */
   openInSplitPaneDisabled?: boolean;
@@ -74,6 +76,7 @@ export function TaskActionMenuContent({
   onCopyTaskLogPath: () => void;
   onCopySessionId?: () => void;
   onViewModelTrajectory?: () => void;
+  onOpenProviderConfig: () => void;
 }) {
   const taskTargetActionsDisabled = disableTaskActions || disableTaskTargetActions;
 
@@ -133,7 +136,7 @@ export function TaskActionMenuContent({
         </Item>
       ) : null}
       <Separator />
-      {!hideMobileUnsupportedActions ? (
+      {
         <Item
           disabled={disableTaskActions}
           title={disableTaskActions ? disabledReason : undefined}
@@ -145,7 +148,7 @@ export function TaskActionMenuContent({
         >
           {fileManagerLabel}
         </Item>
-      ) : null}
+      }
       <Item
         disabled={disableTaskActions}
         title={disableTaskActions ? disabledReason : undefined}
@@ -169,7 +172,7 @@ export function TaskActionMenuContent({
         title={taskTargetActionsDisabled ? disabledReason : undefined}
         onSelect={onCopyTaskLogPath}
       >
-        {/* CCbuddy Agent 的日志路径可能先按运行时约定得出，当前日期文件尚未落盘。
+        {/* Bugfix: CCbuddy Agent 的日志路径可能先按运行时约定得出，当前日期文件尚未落盘。
             复制动作只依赖路径字符串，不能把 exists=false 当成不可复制，否则菜单会表现成“不能点”。 */}
         {intl.formatMessage({ id: "appHeader.copyLogPath" })}
       </Item>
@@ -182,6 +185,21 @@ export function TaskActionMenuContent({
           {intl.formatMessage({ id: "appHeader.copySessionId" })}
         </Item>
       ) : null}
+      {
+        <Item
+          disabled={disableTaskActions || providerConfigFile.loading || !providerConfigFile.path}
+          title={disableTaskActions ? disabledReason : undefined}
+          onSelect={() => {
+            if (!disableTaskActions) {
+              onOpenProviderConfig();
+            }
+          }}
+        >
+          <span className="truncate">
+            {intl.formatMessage({ id: "appHeader.goToProviderConfig" })}
+          </span>
+        </Item>
+      }
       {onViewModelTrajectory ? (
         <>
           <Separator />
@@ -200,7 +218,7 @@ export function TaskActionMenuContent({
         <>
           <Separator />
           <Item disabled={taskTargetActionsDisabled} onSelect={onOpenTaskFeedback}>
-            {/* 任务菜单之前只有复制日志/路径，用户遇到任务问题时还要手动回到反馈中心。
+            {/* Bugfix: 任务菜单之前只有复制日志/路径，用户遇到任务问题时还要手动回到反馈中心。
                 “反馈问题”不是任务管理动作，单独放在菜单底部更符合兜底求助入口的层级。 */}
             {intl.formatMessage({ id: "taskList.feedback" })}
           </Item>

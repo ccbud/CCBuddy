@@ -20,7 +20,7 @@ interface WatcherInstance {
   hasUnknownChangedPath: boolean;
 }
 
-function resolveFileWatchChangedPath(
+export function resolveFileWatchChangedPath(
   watchedDirectoryPath: string,
   fileName: string | Buffer | null,
 ): string | undefined {

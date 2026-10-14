@@ -1,12 +1,6 @@
-/**
- * 草稿态空态问候：时间问候语 + CCbuddy Logo。
- * 自旧版 ChatView/ChatViewEmptyState.tsx 恢复（该组件随旧 ChatView 删除，
- * i18n key `chat.empty.greeting.*` 一直保留）；边界时刻自动换档逻辑保真。
- * 手机远控复用同一组件，但继续保留 20px 紧凑标题；桌面草稿首页才按标题自身宽度适配。
- */
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { cn } from "@/components/lib/utils.js";
 import { CCbuddyAboutLogo } from "@/components/ui/CCbuddyAboutLogo.js";
+import { cn } from "@/components/lib/utils.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { useIsOfficeMode } from "@/hooks/useInterfaceMode.js";
 import { logger } from "@/logger.js";
@@ -15,7 +9,7 @@ const GREETING_BOUNDARY_HOURS = [5, 9, 12, 14, 18, 23] as const;
 const GREETING_MIN_FONT_SIZE_PX = 20;
 const GREETING_MAX_FONT_SIZE_PX = 30;
 
-type ChatEmptyGreetingMessageId =
+export type ChatEmptyGreetingMessageId =
   | "chat.empty.greeting.morningEarly"
   | "chat.empty.greeting.morning"
   | "chat.empty.greeting.noon"
@@ -23,7 +17,7 @@ type ChatEmptyGreetingMessageId =
   | "chat.empty.greeting.evening"
   | "chat.empty.greeting.lateNight";
 
-function getChatEmptyGreetingMessageId(date: Date = new Date()): ChatEmptyGreetingMessageId {
+export function getChatEmptyGreetingMessageId(date: Date = new Date()): ChatEmptyGreetingMessageId {
   const hour = date.getHours();
 
   if (hour >= 5 && hour < 9) return "chat.empty.greeting.morningEarly";
@@ -35,7 +29,7 @@ function getChatEmptyGreetingMessageId(date: Date = new Date()): ChatEmptyGreeti
   return "chat.empty.greeting.lateNight";
 }
 
-function getNextChatEmptyGreetingDelayMs(date: Date = new Date()) {
+export function getNextChatEmptyGreetingDelayMs(date: Date = new Date()) {
   const candidates = GREETING_BOUNDARY_HOURS.map((hour) => {
     const boundary = new Date(date);
     boundary.setHours(hour, 0, 0, 0);
@@ -51,13 +45,18 @@ function getNextChatEmptyGreetingDelayMs(date: Date = new Date()) {
   return Math.max(1, nextBoundary.getTime() - date.getTime());
 }
 
-function resolveGreetingFontSizePx({
+export function resolveGreetingFontSizePx({
   availableWidthPx,
   naturalTextWidthPx,
+  compactLayout = false,
 }: {
   availableWidthPx: number;
   naturalTextWidthPx: number;
+  compactLayout?: boolean;
 }) {
+  if (compactLayout) {
+    return GREETING_MIN_FONT_SIZE_PX;
+  }
   if (
     !Number.isFinite(availableWidthPx) ||
     !Number.isFinite(naturalTextWidthPx) ||
@@ -77,7 +76,13 @@ function resolveGreetingFontSizePx({
   );
 }
 
-export function ConversationDraftEmptyState({ className }: { className?: string }) {
+export function ConversationDraftEmptyState({
+  className,
+  compactLayout = false,
+}: {
+  className?: string;
+  compactLayout?: boolean;
+}) {
   const { intl } = useCCbuddyIntl();
   const isOfficeMode = useIsOfficeMode();
   const [greetingDate, setGreetingDate] = useState(() => new Date());
@@ -99,6 +104,10 @@ export function ConversationDraftEmptyState({ className }: { className?: string 
   }, [greetingDate]);
 
   useLayoutEffect(() => {
+    if (compactLayout) {
+      setGreetingFontSizePx(GREETING_MIN_FONT_SIZE_PX);
+      return;
+    }
     const container = greetingContainerRef.current;
     const measurement = greetingMeasurementRef.current;
     if (!container || !measurement) {
@@ -165,7 +174,7 @@ export function ConversationDraftEmptyState({ className }: { className?: string 
       }
       observer.disconnect();
     };
-  }, [greeting]);
+  }, [compactLayout, greeting]);
 
   return (
     <div
@@ -193,7 +202,9 @@ export function ConversationDraftEmptyState({ className }: { className?: string 
         }
         className={cn(
           "relative z-10 w-full px-4 text-center font-medium text-foreground",
-          "text-[length:var(--v4-draft-greeting-font-size)]/[1.2]",
+          compactLayout
+            ? "text-xl/[1.2]"
+            : "text-[length:var(--v4-draft-greeting-font-size)]/[1.2]",
         )}
       >
         <span
@@ -210,11 +221,12 @@ export function ConversationDraftEmptyState({ className }: { className?: string 
 }
 
 function CCbuddyEmptyStateLogo({ className }: { className?: string }) {
+  // 修复原因：迁入的 Z 图形及 Z.svg 引用不属于 CCbuddy；沿用现有自有图标与渐隐材质。
   return (
     <CCbuddyAboutLogo
       className={cn(
         className,
-        "opacity-70",
+        "object-contain opacity-70",
         "[-webkit-mask-image:linear-gradient(to_bottom,black_0%,transparent_70%,transparent_100%)]",
         "[-webkit-mask-repeat:no-repeat] [-webkit-mask-size:100%_100%]",
         "[mask-image:linear-gradient(to_bottom,black_0%,transparent_70%,transparent_100%)]",

@@ -23,7 +23,7 @@ import {
 
 type Step = "loading" | "selection" | "preflighting" | "syncing" | "complete";
 
-interface RemoteMcpSyncRow {
+export interface RemoteMcpSyncRow {
   candidate: McpSyncCandidate;
   exists: boolean;
 }
@@ -39,7 +39,7 @@ interface RemoteMcpSyncDialogProps {
   onSynced: () => Promise<void> | void;
 }
 
-function buildRemoteMcpSyncRows(
+export function buildRemoteMcpSyncRows(
   candidates: readonly McpSyncCandidate[],
   statuses: readonly McpSyncRemoteStatus[],
 ): RemoteMcpSyncRow[] {
@@ -50,18 +50,20 @@ function buildRemoteMcpSyncRows(
   }));
 }
 
-function resolveDefaultRemoteMcpSyncSelection(rows: readonly RemoteMcpSyncRow[]): Set<string> {
+export function resolveDefaultRemoteMcpSyncSelection(
+  rows: readonly RemoteMcpSyncRow[],
+): Set<string> {
   return new Set(rows.filter((row) => !row.exists).map((row) => row.candidate.id));
 }
 
-function filterRemoteMcpSyncRows(
+export function filterRemoteMcpSyncRows(
   rows: readonly RemoteMcpSyncRow[],
   showExistingRemoteMcp: boolean,
 ): RemoteMcpSyncRow[] {
   return showExistingRemoteMcp ? [...rows] : rows.filter((row) => !row.exists);
 }
 
-function buildRemoteMcpSyncImportParams(params: {
+export function buildRemoteMcpSyncImportParams(params: {
   exported: McpSyncExportResult;
   localHomeDir: string;
   localWorkspacePath?: string;
@@ -89,7 +91,7 @@ function resolveMcpTypeLabel(config: McpServerConfig): string {
   return "unknown";
 }
 
-function RemoteMcpSyncTitle() {
+export function RemoteMcpSyncTitle() {
   const { intl } = useCCbuddyIntl();
   const [warningTooltipOpen, setWarningTooltipOpen] = useState(false);
   const warningTitle = intl.formatMessage({
@@ -124,7 +126,7 @@ function RemoteMcpSyncTitle() {
   );
 }
 
-function RemoteMcpSyncExistingFilterCheckbox({
+export function RemoteMcpSyncExistingFilterCheckbox({
   checked,
   onCheckedChange,
 }: {
@@ -146,7 +148,7 @@ function RemoteMcpSyncExistingFilterCheckbox({
   );
 }
 
-function RemoteMcpSyncTargetRow({
+export function RemoteMcpSyncTargetRow({
   targetLabel,
   showExistingRemoteMcp,
   showExistingFilter,
@@ -176,7 +178,7 @@ function RemoteMcpSyncTargetRow({
   );
 }
 
-function RemoteMcpSyncBulkSelectionCheckbox({
+export function RemoteMcpSyncBulkSelectionCheckbox({
   selectedCount,
   totalSelectable,
   onSelectAll,
@@ -225,7 +227,7 @@ function RemoteMcpSyncBulkSelectionCheckbox({
   );
 }
 
-function RemoteMcpSyncSelectionList({
+export function RemoteMcpSyncSelectionList({
   rows,
   selectedIds,
   emptyMessageId = "settings.mcp.remoteSync.empty",

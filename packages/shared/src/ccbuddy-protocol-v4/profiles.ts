@@ -14,7 +14,7 @@ export function filterConversationRowsForProfile(
   rows: readonly ConversationRow[],
   _profile: DeliveryProfile,
 ): ConversationRow[] {
-  // HookInvocationRow 已收敛为 desktop/mobile 共用的 client-safe summary；当前没有
+  // HookInvocationRow 已收敛为 Desktop/Web 共用的 client-safe summary；当前没有
   // profile-specific 完整行，仍保留纯函数边界供未来受控 row 使用。
   return [...rows];
 }

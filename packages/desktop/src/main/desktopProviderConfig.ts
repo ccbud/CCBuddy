@@ -17,7 +17,8 @@ export function resolveCCbuddyBuiltinProviderConfigFilePath(options?: {
       "config/provider/ccbuddy-builtin.json",
     );
   }
-  // 开发态与打包共用唯一线上配置源。
+  // 修复：CCbuddy 只提供一份本地 BYOK 模板；按上游环境选 test 文件会使真实 Host 模型配置加载失败。
+  // 与构建和正式包共用已有文件，环境身份不能改变配置来源。
   const filename = "ccbuddy-builtin.json";
   return join(options?.appPath ?? app.getAppPath(), "../../config/provider", filename);
 }

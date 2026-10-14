@@ -8,7 +8,7 @@ export interface CodingPlanUpgradeDialogTarget {
   funnelContext?: import("@/lib/codingPlanFunnelTelemetry.js").CodingPlanFunnelContext;
 }
 
-interface PendingCodingPlanUpgradeAfterLogin {
+export interface PendingCodingPlanUpgradeAfterLogin {
   loginAttemptId: number;
   target: CodingPlanUpgradeDialogTarget;
 }

@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input.js";
 import type { V4UserInputViewModel } from "@/v4/pendingInteractionAdapter.js";
 import { runUserAction } from "@/lib/userActionTelemetry.js";
 
-interface V4UserInputDialogProps {
+export interface V4UserInputDialogProps {
   model: V4UserInputViewModel;
   onSubmit: (answer: { optionId?: string; freeText?: string }) => void;
 }

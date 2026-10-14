@@ -3,7 +3,7 @@ import type { CCbuddyTaskMeta } from "@ccbuddy/shared";
 import { useCCbuddySessionService } from "@/hooks/useCCbuddySessionService.js";
 import { ccbuddySessionSnapshotToTaskMeta } from "@/lib/ccbuddySessionProjection.js";
 
-function resolveImmediateActiveTaskSnapshotMeta(
+export function resolveImmediateActiveTaskSnapshotMeta(
   previousSnapshotMeta: CCbuddyTaskMeta | null,
   taskId: string | null,
   taskMetaFromLists?: CCbuddyTaskMeta | null,

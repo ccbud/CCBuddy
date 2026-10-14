@@ -28,7 +28,7 @@ function buildProvisionalResolutionKey(target: WslTarget): string {
   return `${distro}\0${user}`;
 }
 
-function createCanonicalWslTargetResolver(
+export function createCanonicalWslTargetResolver(
   options: CanonicalWslTargetResolverOptions = {},
 ): (target: WslTarget) => Promise<WslTarget> {
   const createBackend = options.createBackend ?? ((target: WslTarget) => new WSLBackend(target));

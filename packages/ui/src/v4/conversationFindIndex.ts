@@ -16,7 +16,7 @@ export interface ConversationFindMatch {
   sourceText: string;
 }
 
-interface ConversationFindIndex {
+export interface ConversationFindIndex {
   query: string;
   matches: ConversationFindMatch[];
   matchCount: number;
@@ -36,7 +36,7 @@ interface ConversationFindTarget {
   text: string;
 }
 
-function normalizeConversationFindQuery(query: string): string {
+export function normalizeConversationFindQuery(query: string): string {
   return query.trim().toLocaleLowerCase();
 }
 
@@ -171,6 +171,14 @@ export function resolveConversationFindActiveIndex(
     return preferredIndex;
   }
   return 0;
+}
+
+export function resolveConversationFindActiveMatch(
+  index: ConversationFindIndex,
+  preferredIndex: number,
+): ConversationFindMatch | null {
+  const activeIndex = resolveConversationFindActiveIndex(index, preferredIndex);
+  return activeIndex >= 0 ? (index.matches[activeIndex] ?? null) : null;
 }
 
 function normalizeSearchResultProbeText(text: string): string {

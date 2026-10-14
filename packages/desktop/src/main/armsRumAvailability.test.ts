@@ -6,15 +6,15 @@ import ts from "typescript";
 import { isArmsRumEnabled } from "./armsRumAvailability.js";
 
 test("unconfigured ARMS keeps local crash capture available", () => {
-  assert.equal(isArmsRumEnabled(true, ""), false);
+  assert.equal(isArmsRumEnabled(""), false);
 });
 
-test("configured ARMS owns remote crash capture when telemetry is enabled", () => {
-  assert.equal(isArmsRumEnabled(true, "https://example.invalid/rum"), true);
+test("configured ARMS owns remote crash capture with the optional endpoint", () => {
+  assert.equal(isArmsRumEnabled("https://example.invalid/rum"), true);
 });
 
-test("disabled telemetry keeps local crash capture even with an endpoint", () => {
-  assert.equal(isArmsRumEnabled(false, "https://example.invalid/rum"), false);
+test("a blank optional endpoint keeps local crash capture available", () => {
+  assert.equal(isArmsRumEnabled(" \t "), false);
 });
 
 test("crash bootstrap passes the selected ARMS mode to Electron crash capture", async () => {

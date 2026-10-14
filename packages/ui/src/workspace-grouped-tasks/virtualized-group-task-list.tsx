@@ -65,6 +65,7 @@ export function VirtualizedGroupedTaskList({
   activeWorkspacePath: string;
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
+
   getTaskRemoteSessionId: (task: CCbuddyTaskMeta) => string | undefined;
   getTaskWorkspaceLabel: (task: CCbuddyTaskMeta) => string;
   onSelectTask: (workspacePath: string, taskId: string, workspaceIdentity?: string) => void;
@@ -233,9 +234,9 @@ export function VirtualizedGroupedTaskList({
         overflowAnchor: "none",
       }}
     >
-      {/* 大 group 以前一次渲染所有 task 行，2000 条会制造数万 DOM 节点并拖高
+      {/* Bugfix: 大 group 以前一次渲染所有 task 行，2000 条会制造数万 DOM 节点并拖高
           JS/布局 CPU。这里只挂载滚动窗口内的行，保持点击和菜单操作可用。 */}
-      {/* group 内虚拟行会在滚动时不断挂载/卸载，浏览器滚动锚点可能误把
+      {/* Bugfix: group 内虚拟行会在滚动时不断挂载/卸载，浏览器滚动锚点可能误把
           这些绝对定位行当成稳定锚点，测量回写时就可能把 scrollTop 拉回顶部。
           禁用虚拟列表子树的锚点选择，避免和 react-virtual 的定位计算打架。 */}
       {renderedVirtualTasks}

@@ -9,12 +9,12 @@ export interface ServiceDescriptor {
   content: string;
 }
 
-interface ServiceCommandExecutor {
+export interface ServiceCommandExecutor {
   run(command: string, args: readonly string[]): Promise<void>;
   runResult?: (command: string, args: readonly string[]) => Promise<ServiceCommandResult>;
 }
 
-interface ServiceCommandResult {
+export interface ServiceCommandResult {
   exitCode: number;
   stderr: string;
 }

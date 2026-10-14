@@ -27,7 +27,7 @@ interface CodeCommentPreviewBucketParams {
   sourcePath: string;
 }
 
-function buildCodeCommentPreviewBucketKey({
+export function buildCodeCommentPreviewBucketKey({
   workspacePath,
   workspaceIdentity,
   sourcePath,

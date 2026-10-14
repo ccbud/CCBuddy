@@ -1,3 +1,8 @@
+import { requestVerificationReasons } from "../request-security-edition/verification-policy.js";
+import { ccbuddyProtocolTraceSchema } from "./trace.js";
+// Bot 反向回复的名字解析/待澄清结果与 App、CLI 使用同一严格 schema。
+export { channelReplyRequestSchema, channelReplyResultSchema } from "../channel-mention.js";
+export { ccbuddyProtocolTraceSchema, type CCbuddyProtocolTrace } from "./trace.js";
 import {
   databaseMigrationFactsSchema,
   databaseStartupErrorCodeSchema,
@@ -12,6 +17,7 @@ import {
 } from "../mcp-apps/appTools.js";
 import { mcpAppsSamplingParamsSchema, mcpAppsSamplingResultSchema } from "../mcp-apps/sampling.js";
 import { mcpAppInstanceSchema } from "../mcp-apps/instance.js";
+export { conversationQuoteSchema, conversationQuotesSchema } from "../conversationSelection.js";
 /* oxlint-disable eslint(max-lines) -- CCbuddy Protocol schema 需要单文件导出，方便 app 与 agent 共享同一份协议契约。 */
 // ── 旧协议删除边界──────────────────────
 // 剩余 ~257 个导出：旧 CCbuddy Protocol 方法契约、请求/响应/事件 schema、
@@ -34,10 +40,42 @@ import { completeModelPropertiesDataSchema } from "../model-config.js";
 import { modelExecutionSchema } from "../model-execution.js";
 import { modelSelectionSchema } from "../model-selection.js";
 import { APP_USAGE_RANGES, appUsageSnapshotSchema } from "../usage-stats.js";
+import { DYNAMIC_WORKFLOW_MODES } from "../dynamic-workflow-feature.js";
 import { errorAttributionSchema } from "../ccbuddy-protocol-v4/snapshot.js";
 // 后台详情共享精简的只读响应 schema，不携带命令或计时元数据。
 export * from "../background-bash-output.js";
 export * from "../process-diagnostic.js";
+export { attachmentSourceKindSchema, type AttachmentSourceKind } from "../attachment-source.js";
+import { PROTOCOL_V4_LIMITS } from "../ccbuddy-protocol-v4/core.js";
+
+export const ccbuddyTopicResourceReadParamsSchema = z
+  .object({
+    requestId: z.string().min(1).max(256),
+    taskId: z.string().min(1).max(256),
+    inputId: z.string().min(1).max(256),
+    authorizationId: z.string().min(1).max(256),
+    messageId: z.string().min(1).max(256),
+    resourceIndex: z.number().int().nonnegative(),
+  })
+  .strict();
+export const ccbuddyTopicResourceReadResultSchema = z
+  .object({
+    ref: z.string().min(1),
+    fileName: z.string().min(1).max(1024),
+    mime: z.string().min(1).max(256),
+    bytes: z.number().int().min(0).max(PROTOCOL_V4_LIMITS.attachmentMaxBytes),
+  })
+  .strict();
+export const ccbuddyTopicResourceCancelParamsSchema = z
+  .object({ requestId: z.string().min(1).max(256), taskId: z.string().min(1).max(256) })
+  .strict();
+export const ccbuddyTopicResourceCancelResultSchema = z.object({ cancelled: z.boolean() }).strict();
+export type CCbuddyTopicResourceReadParams = z.infer<typeof ccbuddyTopicResourceReadParamsSchema>;
+export type CCbuddyTopicResourceReadResult = z.infer<typeof ccbuddyTopicResourceReadResultSchema>;
+export {
+  activeWorkSummarySchema,
+  type ActiveWorkSummary,
+} from "../ccbuddy-protocol-v4/snapshot.js";
 // browser-use 命令/结果契约单一来源：agent 构造、协议校验和 main executor 共用同一 schema。
 import {
   browserBackendListResultSchema,
@@ -152,7 +190,8 @@ const ccbuddyCreateWorkflowCausalityGraphDisplaySchema = z
         z
           .object({
             id: z.string().min(1).max(64),
-            kind: z.enum(["ask", "world-read"]),
+            // `hole`：开着的留白自己的站点（docs/dynamic-workflow/presentation.md「Holes on the timeline」）；镜像 v4。
+            kind: z.enum(["ask", "world-read", "hole"]),
             label: z.string().min(1).max(128),
             // 内联 `agent()` receiver 让 label 落到兜底串时，那个名字的静态形状。
             labelPattern: ccbuddyWorkflowNamePatternSchema.optional(),
@@ -167,6 +206,8 @@ const ccbuddyCreateWorkflowCausalityGraphDisplaySchema = z
             // 与图的 phases / phaseEdges / exits 同进同退：全在场或全缺席。
             phase: z.string().min(1).max(64).optional(),
             repeat: z.enum(["stack", "serial"]).optional(),
+            // 这个站点是某次补全写进来的：值是那个留白的站点 id；镜像 v4。
+            fill: z.string().min(1).max(64).optional(),
           })
           .strict(),
       )
@@ -225,12 +266,35 @@ const ccbuddyCreateWorkflowCausalityGraphDisplaySchema = z
             // 为空时缺席。是节点事实而不是边——控制没有从那里转移过来，所以不进 phaseEdges。
             // 时间轴据此把相邻阶段折成一条分叉的「带」，侧栏迷你轨道画成双线段。
             alongside: z.array(z.string().min(1).max(64)).min(1).max(32).optional(),
+            // 这个阶段是某次补全写进来的：值是那个留白的站点 id；镜像 v4。
+            fill: z.string().min(1).max(64).optional(),
           })
           .strict(),
       )
       .max(32)
       .optional(),
     phaseEdges: z.array(ccbuddyWorkflowEdgeSchema).max(128).optional(),
+    // 阶段流（docs/dynamic-workflow/presentation.md「Streams」）：两端互为 alongside 的 data 边，
+    // 只有 {from, to}——不是 runs after，不进 phaseEdges、不带 back。与词汇表同进同退。
+    phaseStreams: z
+      .array(z.object({ from: z.string().min(1).max(64), to: z.string().min(1).max(64) }).strict())
+      .max(128)
+      .optional(),
+    // 还开着的留白，源码序（docs/dynamic-workflow/authoring.md「Holes」）；镜像 v4。
+    holes: z
+      .array(
+        z
+          .object({
+            siteId: z.string().min(1).max(64),
+            name: z.string().min(1).max(128),
+            type: z.string().min(1).max(128),
+            phase: z.string().min(1).max(64).optional(),
+            tail: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .max(32)
+      .optional(),
     // 控制流可在其后正常完成的阶段（阶段视图的「阶段 → 返回物」箭头）；组内可为空数组。
     exits: z.array(z.string().min(1).max(64)).max(32).optional(),
     sink: z.array(z.string().min(1).max(64)).max(64).optional(),
@@ -257,6 +321,18 @@ export const ccbuddyCreateWorkflowToolResultDisplaySchema = z
       .max(100),
     causalityGraph: ccbuddyCreateWorkflowCausalityGraphDisplaySchema.optional(),
     truncated: z.boolean().optional(),
+    // FillWorkflowHole 行补的是哪处留白（docs/dynamic-workflow/presentation.md「The fill row」）；镜像 v4。
+    // 修复原因：dwf-recursive 只给 contracts 与 v4 加了留白字段，v3 的 .strict() 拒掉整条 tool.updated，
+    // 桌面端 v3 订阅于是把含留白的 CreateWorkflow / FillWorkflowHole 结果当无效事件丢掉。
+    fill: z
+      .object({
+        siteId: z.string().min(1).max(64),
+        name: z.string().min(1).max(128),
+        draftPath: z.string().min(1).max(1_024).optional(),
+        line: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -283,15 +359,44 @@ const ccbuddyToolResultObjectSchema = jsonObjectSchema.superRefine((result, cont
 export const ccbuddyProtocolRequestIdSchema = z.union([z.string(), z.number().int()]);
 export type CCbuddyProtocolRequestId = z.infer<typeof ccbuddyProtocolRequestIdSchema>;
 
-export const ccbuddyProtocolTraceSchema = z
-  .object({
-    traceparent: nonEmptyString.optional(),
-    traceId: nonEmptyString.optional(),
-    parentId: nonEmptyString.optional(),
-    spanId: nonEmptyString.optional(),
+// 远程历史附件仅通过现有连接的私有反向频道传输，单块保持在 RPC 帧预算内。
+export const TOPIC_RESOURCE_RELAY_CHUNK_BYTES = 384 * 1024;
+export const TOPIC_RESOURCE_RELAY_CHANNEL = "host-topic-resource";
+export const ccbuddyTopicResourceRelayRequestSchema = ccbuddyTopicResourceReadParamsSchema
+  .extend({
+    workspacePath: z.string().min(1).max(4096),
+    workspaceIdentity: z.string().min(1).max(4096),
+    remoteSessionId: z.string().min(1).max(256),
+    trace: ccbuddyProtocolTraceSchema.optional(),
   })
   .strict();
-export type CCbuddyProtocolTrace = z.infer<typeof ccbuddyProtocolTraceSchema>;
+export type CCbuddyTopicResourceRelayRequest = z.infer<
+  typeof ccbuddyTopicResourceRelayRequestSchema
+>;
+export const ccbuddyTopicResourceRelayKeySchema = ccbuddyTopicResourceCancelParamsSchema;
+export const ccbuddyTopicResourceRelayChunkRequestSchema = ccbuddyTopicResourceRelayKeySchema
+  .extend({
+    index: z.number().int().nonnegative(),
+  })
+  .strict();
+export const ccbuddyTopicResourceRelayMetadataSchema = z
+  .object({
+    fileName: z.string().min(1).max(1024),
+    mime: z.string().min(1).max(256),
+    bytes: z.number().int().min(0).max(PROTOCOL_V4_LIMITS.attachmentMaxBytes),
+    totalChunks: z
+      .number()
+      .int()
+      .min(0)
+      .max(Math.ceil(PROTOCOL_V4_LIMITS.attachmentMaxBytes / TOPIC_RESOURCE_RELAY_CHUNK_BYTES)),
+    checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+export const ccbuddyTopicResourceRelayChunkSchema = z
+  .object({
+    dataBase64: z.string().max((TOPIC_RESOURCE_RELAY_CHUNK_BYTES / 3) * 4),
+  })
+  .strict();
 
 export const ccbuddyProtocolRequestSchema = z
   .object({
@@ -350,6 +455,7 @@ export const ccbuddyProtocolNotifications = {
   toolExecResource: "process/toolExecResource",
   pluginOperationProgress: "plugins/operationProgress",
   processResourceSample: "process/resourceSample",
+  processNetworkRequests: "process/networkRequests",
 } as const;
 
 /** 启动控制面独立于 task stream；数据库身份不可携带路径/凭据。 */
@@ -593,6 +699,7 @@ export type CCbuddyProcessChildProcessesResult = z.infer<
 export type CCbuddyDeliveryKind = z.infer<typeof ccbuddyDeliveryKindSchema>;
 // TurnStarted 与持久 message 必须共用同一来源词表；否则 live event 能通过而 cold
 // message 在 app/agent 边界被拒绝，造成 continuous/replayable 语义分叉。
+// 持久消息与输入沿用同一 source schema；agent_listing_delta 只作 provider context，不触发新 turn。
 const ccbuddyTurnInputSourceSchema = legacyCCbuddySyntheticUserMessageSourceSchema;
 export const ccbuddySessionPersistenceSchema = z.enum(["immediate", "deferred"]);
 export type CCbuddySessionPersistence = z.infer<typeof ccbuddySessionPersistenceSchema>;
@@ -1107,7 +1214,15 @@ export const ccbuddyProviderAccountAccessSchema = z
   .object({
     type: z.literal("zhipu-account"),
     accountType: z.enum(["zai", "bigmodel"]),
-    mode: z.enum(["start-plan", "individual-coding-plan", "team-coding-plan", "off-peak"]),
+    // `highspeed` 指加速卡这一账号访问类别（隐藏 Provider + 免签网关），与模型名
+    // GLM-5.1-Highspeed 无关，仅字面重合。见 docs/highspeed/highspeed-access-mode-migration.md。
+    mode: z.enum([
+      "start-plan",
+      "individual-coding-plan",
+      "team-coding-plan",
+      "off-peak",
+      "highspeed",
+    ]),
     entitled: z.boolean(),
   })
   .strict();
@@ -1438,6 +1553,8 @@ export const ccbuddySessionTitleUpdatedEventPayloadSchema = z
   .strict();
 export const ccbuddyTurnStartedEventPayloadSchema = z
   .object({
+    // CLI 的高精度执行时间可含小数；漏声明会使 strict 校验丢弃整条开始事件，Bot 因此无法清空上一轮回复。
+    executionStartedAt: z.number().nonnegative().optional(),
     turnNumber: z.number().int().nonnegative(),
     input: z.string(),
     inputId: nonEmptyString.optional(),
@@ -1662,6 +1779,7 @@ export const ccbuddyPermissionRequestedEventPayloadSchema = z
     reason: z.string(),
     input: z.unknown(),
     suggestedPermissionUpdates: z.array(ccbuddyPermissionUpdateSchema).optional(),
+    approvalMode: z.literal("user-once").optional(),
     origin: ccbuddyInteractionRequestOriginSchema.optional(),
     options: z.array(ccbuddyPermissionOptionSchema).min(1),
     childSessionId: nonEmptyString.optional(),
@@ -1838,6 +1956,9 @@ export const ccbuddySessionSubagentsResultSchema = z
   })
   .strict();
 export type CCbuddySessionSubagentsResult = z.infer<typeof ccbuddySessionSubagentsResultSchema>;
+/** 服务端 feature key 的取值域在协议里的 zod 形态（packages/shared/src/dynamic-workflow-feature.ts）。 */
+export const ccbuddyDynamicWorkflowModeSchema = z.enum(DYNAMIC_WORKFLOW_MODES);
+
 export const ccbuddySessionCreateParamsSchema = z
   .object({
     sessionId: nonEmptyString.optional(),
@@ -1858,6 +1979,9 @@ export const ccbuddySessionCreateParamsSchema = z
     // 动态工作流灰度：与 offPeakToolEnabled 同一
     // 模式——host 裁决后下发，缺省不下发 = 不注册工作流工具簇（fail-closed）。
     dynamicWorkflowEnabled: z.boolean().optional(),
+    // 灰度 mode 随布尔同行下发（launch.md「On demand: activation」）：`onDemand` 让 CLI 把十个
+    // 工具推迟到会话首次 `/workflow` 才注册；缺席 = 按布尔行事（alwaysOn），供旧 Host 配对。
+    dynamicWorkflowMode: ccbuddyDynamicWorkflowModeSchema.optional(),
   })
   .strict();
 export type CCbuddySessionCreateParams = z.infer<typeof ccbuddySessionCreateParamsSchema>;
@@ -1876,6 +2000,7 @@ export const ccbuddySessionResumeParamsSchema = z
     offPeakToolEnabled: z.boolean().optional(),
     // 与 create 同语义；resume 不带会导致冷恢复丢工作流工具簇。
     dynamicWorkflowEnabled: z.boolean().optional(),
+    dynamicWorkflowMode: ccbuddyDynamicWorkflowModeSchema.optional(),
   })
   .strict();
 export type CCbuddySessionResumeParams = z.infer<typeof ccbuddySessionResumeParamsSchema>;
@@ -1934,6 +2059,9 @@ export const ccbuddySessionReadParamsSchema = z
     deliveryKind: ccbuddyDeliveryKindSchema.optional(),
     messageLimit: z.number().int().positive().optional(),
     afterSeq: z.number().int().nonnegative().optional(),
+    // "index"：仅 task index resync 使用，返回剥离 tool/reasoning/data URL 大载荷的同结构 snapshot，
+    // 结果禁止回写 UI 状态；缺省等同 "full"。
+    contentProfile: z.enum(["full", "index"]).optional(),
   })
   .strict();
 export type CCbuddySessionReadParams = z.infer<typeof ccbuddySessionReadParamsSchema>;
@@ -1964,6 +2092,15 @@ export type CCbuddySessionRuntimePreferencesScope = z.infer<
   typeof ccbuddySessionRuntimePreferencesScopeSchema
 >;
 
+// subagents/readRuntimeConfig 返回 Host 已解析的完整快照或显式内置回退，不再传 Markdown。
+export {
+  subagentRuntimeConfigSchema,
+  type SubagentRuntimeConfig,
+} from "../subagent-runtime-config.js";
+export const ccbuddySubagentsReadRuntimeConfigParamsSchema = z
+  .object({ sessionId: nonEmptyString })
+  .strict();
+
 export const CCBUDDY_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS = 15_000;
 
 export const ccbuddySessionRequestRuntimePreferencesParamsSchema = z
@@ -1987,6 +2124,7 @@ export type CCbuddyModelContextBudgetStrategy = z.infer<
 export const ccbuddySessionRuntimePreferencesResultSchema = z
   .object({
     nativeSearchEnhancementsEnabled: z.boolean(),
+    subagentRuntimeConfigEnabled: z.boolean().optional(),
     memoryEnabled: z.boolean().default(false),
     askUserQuestionAutoResolutionEnabled: z.boolean().default(true),
     integratedTerminalShell: integratedTerminalShellSelectionSchema.optional(),
@@ -2544,6 +2682,8 @@ export const ccbuddyWorkspaceUpdateDynamicWorkflowPolicyParamsSchema = z
   .object({
     workspace: ccbuddyWorkspaceRefSchema,
     enabled: z.boolean(),
+    // launch.md「On demand: activation」：mode 与布尔同行；缺席时 CLI 按布尔行事（alwaysOn）。
+    mode: ccbuddyDynamicWorkflowModeSchema.optional(),
   })
   .strict();
 export type CCbuddyWorkspaceUpdateDynamicWorkflowPolicyParams = z.infer<
@@ -2662,7 +2802,7 @@ export const ccbuddyUserInputResponseSchema = z
   .strict();
 export type CCbuddyUserInputResponse = z.infer<typeof ccbuddyUserInputResponseSchema>;
 
-export const ccbuddyProviderRuntimeHeadersRequestReasonSchema = z.enum(["model-request"]);
+export const ccbuddyProviderRuntimeHeadersRequestReasonSchema = z.enum(requestVerificationReasons);
 export const ccbuddyProviderRuntimeHeadersRequestParamsSchema = z
   .object({
     requestId: nonEmptyString,
@@ -2672,6 +2812,14 @@ export const ccbuddyProviderRuntimeHeadersRequestParamsSchema = z
     modelSelection: modelSelectionSchema,
     providerId: nonEmptyString,
     accountAccess: ccbuddyProviderAccountAccessSchema.optional(),
+    expectedAccountScope: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    rejectedProjectTokenFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     reason: ccbuddyProviderRuntimeHeadersRequestReasonSchema,
   })
   .strict();
@@ -2699,6 +2847,11 @@ export const ccbuddyProviderRuntimeHeadersResponseSchema = z.discriminatedUnion(
       requestAuth: z
         .object({
           apiKey: nonEmptyString.optional(),
+          apiKeyId: z.string().trim().min(1).optional(),
+          accountScope: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
           headers: z.record(nonEmptyString, nonEmptyString).optional(),
         })
         .strict(),
@@ -3266,6 +3419,99 @@ export const ccbuddyWorkflowsMoveResultSchema = z.union([
     .strict(),
 ]);
 export type CCbuddyWorkflowsMoveResult = z.infer<typeof ccbuddyWorkflowsMoveResultSchema>;
+
+// ── 从一次 run 保存工作流（docs/dynamic-workflow/transcript-and-notifications.md「Saving the
+// run, and running it again」）──
+// 完成卡的「直接保存」走这条：**不收脚本，只收 runId**——要写的那份正文是这次 run 实际执行的
+// 脚本，agent 从 journal 记录（`scriptText`）里读。脚本不经 GUI 走一圈有两个后果值得写下来：
+// 修订过的 run 存下的是**结算它的**那一份，而工具行入参被快照裁成预览的老对话也照样存得出
+// 同样的字节。名字合法性、覆盖、遮蔽与类型检查全部复用 SaveWorkflow 的同一套实现（不变式 3）。
+/** 另一档已有同名定义（遮蔽事实）；与 contracts 的 SavedWorkflowShadowing 逐字对齐。 */
+export const ccbuddySavedWorkflowShadowingSchema = z.enum(["hides_global", "hidden_by_project"]);
+export type CCbuddySavedWorkflowShadowing = z.infer<typeof ccbuddySavedWorkflowShadowingSchema>;
+
+export const ccbuddyWorkflowsSaveParamsSchema = z
+  .object({
+    // 两用：既是载体运行时，也是这次 run 的项目——journal 在它那里，项目根也在它那里。
+    // 全局档同样带它（与 list/get 的「全局只当载体」不同）：脚本必须从这个 agent 的 journal 读。
+    workspace: ccbuddyWorkspaceRefSchema,
+    runId: nonEmptyString,
+    name: nonEmptyString,
+    meta: ccbuddySavedWorkflowMetaSchema,
+    // 缺省 `project`。
+    scope: ccbuddySavedWorkflowScopeSchema.optional(),
+    // 只有 GUI 已经把覆盖警告摆给用户看过时才为 true；缺省即「目标已存在就拒绝」——
+    // 覆盖是用户的决定，不是一次保存的副作用（与 `workflows/move` 不覆盖同一条纪律）。
+    overwrite: z.boolean().optional(),
+  })
+  .strict();
+export type CCbuddyWorkflowsSaveParams = z.infer<typeof ccbuddyWorkflowsSaveParamsSchema>;
+export const ccbuddyWorkflowsSaveResultSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true),
+      name: nonEmptyString,
+      scope: ccbuddySavedWorkflowScopeSchema,
+      path: nonEmptyString,
+      /** 写的那一刻重新判定，不回抄入参里的 `overwrite`（与 SaveWorkflow 的 `overwritten` 同源）。 */
+      overwritten: z.boolean(),
+      shadowing: ccbuddySavedWorkflowShadowingSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      // run_not_found：journal 里没有这条 run；script_missing：老记录没存脚本原文；
+      // target_exists：目标已存在而调用方没说覆盖；compile_failed：类型检查没过，一个字节都没写。
+      reason: z.enum([
+        "invalid_name",
+        "run_not_found",
+        "script_missing",
+        "target_exists",
+        "compile_failed",
+        "write_error",
+      ]),
+      path: z.string().optional(),
+      detail: z.string().optional(),
+    })
+    .strict(),
+]);
+export type CCbuddyWorkflowsSaveResult = z.infer<typeof ccbuddyWorkflowsSaveResultSchema>;
+
+// ── 一次 run 对应哪个已保存工作流 ──
+// 完成卡的「已保存」芯片与「再次运行」都问这一个问题，而答案**推导得来、不记在卡上**：重开
+// 会话、换一个窗口保存、在对话里保存，都走同一条判定。判定住在 agent 一侧，因为两份事实
+// （run 的 journal 记录与磁盘上的定义）都在那里；返回解析好的 entry，用户后来删掉的那一份
+// 因此会自动不再算数。
+/** 转写自对话的候选：模型用 `SaveWorkflow` 存过、并在入参里认领了这次 run。 */
+export const ccbuddyWorkflowsForRunCandidateSchema = z
+  .object({ name: nonEmptyString, scope: ccbuddySavedWorkflowScopeSchema.optional() })
+  .strict();
+export type CCbuddyWorkflowsForRunCandidate = z.infer<typeof ccbuddyWorkflowsForRunCandidateSchema>;
+/** 候选上界：一次 run 在一段对话里被存过的次数远小于它。 */
+export const CCBUDDY_WORKFLOWS_FOR_RUN_MAX_CANDIDATES = 8;
+export const ccbuddyWorkflowsForRunParamsSchema = z
+  .object({
+    workspace: ccbuddyWorkspaceRefSchema,
+    runId: nonEmptyString,
+    candidates: z
+      .array(ccbuddyWorkflowsForRunCandidateSchema)
+      .max(CCBUDDY_WORKFLOWS_FOR_RUN_MAX_CANDIDATES)
+      .optional(),
+  })
+  .strict();
+export type CCbuddyWorkflowsForRunParams = z.infer<typeof ccbuddyWorkflowsForRunParamsSchema>;
+export const ccbuddyWorkflowsForRunResultSchema = z
+  .object({
+    /** 命中的定义；缺席即这次 run 还没有对应的已保存工作流。 */
+    entry: ccbuddySavedWorkflowEntrySchema.optional(),
+    /** 命中的是哪一条规则（诊断与测试用；UI 只看 entry 在不在）。 */
+    match: z.enum(["candidate", "script", "name"]).optional(),
+    /** 这次 run 跑时用的实参（journal 原样），供「再次运行」预填实参窗。 */
+    runArgs: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export type CCbuddyWorkflowsForRunResult = z.infer<typeof ccbuddyWorkflowsForRunResultSchema>;
 
 // 推荐 Prompt 的可信插件解析：UI 不拆解 stableId，也不从旧目录快照推断可安装性。
 export const ccbuddyPluginSuggestedReferenceStatusSchema = z.enum([
@@ -3842,8 +4088,14 @@ export type CCbuddyAutomationDeleteProtocolResult = z.infer<
 // ---- Off-Peak（闲时任务）会话内创建协议----
 // 与 automation 兄弟并列（独立域，禁止互相复用标记/表）。workspace 由 host 端从
 // 当前 session 注入，不进协议参数（对称 automation/create）。permissionMode 只开放产品
-// 四档词表；缺省解析在 host 端（yolo / allowed_models 末位 / 最高推理档）。
-export const ccbuddyOffPeakPermissionModeSchema = z.enum(["build", "edit", "plan", "yolo"]);
+// 四档词表（D29-4）；缺省解析在 host 端（D49-4：yolo / allowed_models 末位 / 最高推理档）。
+export const ccbuddyOffPeakPermissionModeSchema = z.enum([
+  "build",
+  "edit",
+  "plan",
+  "yolo",
+  "guarded",
+]);
 export type CCbuddyOffPeakProtocolPermissionMode = z.infer<
   typeof ccbuddyOffPeakPermissionModeSchema
 >;
@@ -3913,6 +4165,7 @@ export const ccbuddyProtocolMethods = {
   sessionList: "session/list",
   sessionSubagents: "session/subagents",
   sessionRequestRuntimePreferences: "session/requestRuntimePreferences",
+  subagentsReadRuntimeConfig: "subagents/readRuntimeConfig",
   sessionRead: "session/read",
   sessionMessages: "session/messages",
   sessionEvents: "session/events",
@@ -3990,6 +4243,10 @@ export const ccbuddyProtocolMethods = {
   workflowsRuns: "workflows/runs",
   // 在项目档 / 全局档之间移动同名文件。
   workflowsMove: "workflows/move",
+  // 完成卡的「直接保存」与「已保存」判定（docs/dynamic-workflow/transcript-and-notifications.md）：
+  // 前者按 runId 从 journal 取脚本落盘，后者回答「这次 run 对应哪个已保存工作流」。
+  workflowsSave: "workflows/save",
+  workflowsForRun: "workflows/forRun",
   pluginsResolveSuggestedReference: "plugins/resolveSuggestedReference",
   pluginsSetEnabled: "plugins/setEnabled",
   pluginsOverview: "plugins/overview",
@@ -4006,6 +4263,9 @@ export const ccbuddyProtocolMethods = {
   pluginsValidate: "plugins/validate",
   pluginsDescribe: "plugins/describe",
   automationCreate: "automation/create",
+  topicResourceRead: "topic/resource/read",
+  channelReply: "bot/channel/reply",
+  topicResourceCancel: "topic/resource/cancel",
   automationUpdate: "automation/update",
   automationCheckTaskBinding: "automation/checkTaskBinding",
   automationList: "automation/list",
@@ -4021,6 +4281,7 @@ export const ccbuddyProtocolMethods = {
   sessionUsage: "session/usage",
   // 资源管理器：CLI 回报其 MCP 子进程 pid 与插件归属（纯内存，无 I/O），采样在 Host 侧完成。
   processChildProcesses: "process/childProcesses",
+  processNetworkCapture: "process/networkCapture",
   interactionRequestPermission: "interaction/requestPermission",
   interactionRequestUserInput: "interaction/requestUserInput",
   interactionRequestProviderRuntimeHeaders: "interaction/requestProviderRuntimeHeaders",
@@ -4150,3 +4411,16 @@ export const ccbuddyStoragePathReadySchema = z
 
 // 桌面本地 TTFT 的严格事实合同；检查点不能替代实际内容帧。
 export { localTtftFactsSchema } from "../localTtft.js";
+// 群来源由可信 Host 注入，V4 命令与持久化输入使用相同运行时校验。
+export {
+  botIdentitySchema,
+  botTopicInputMessageSchema,
+  botGroupInputSourceSchema,
+  type BotGroupInputSource,
+} from "../bots.js";
+export {
+  botTopicContextSchema,
+  botTopicMessageSchema,
+  type BotTopicHistoryBatch,
+  type BotTopicMessage,
+} from "../bots.js";

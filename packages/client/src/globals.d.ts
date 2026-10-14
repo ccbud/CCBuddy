@@ -23,6 +23,11 @@ import type {
   ChromeBrowserDataImportResult,
   DockerContainerInfo,
   EmbeddedBrowserOpenUrlRequest,
+  EmbeddedBrowserPermissionPromptEvent,
+  EmbeddedBrowserPermissionResolveRequest,
+  EmbeddedBrowserSitePermissionUpdateRequest,
+  EmbeddedBrowserSitePermissionResetRequest,
+  EmbeddedBrowserSitePermissionsSnapshot,
   EditorInfo,
   ApplicationIconInfo,
   ApplicationIconRequest,
@@ -31,6 +36,7 @@ import type {
   PostUpdateReleaseNotesPayload,
   RemoteConnectionRuntimeLog,
   RemoteSessionClosedEvent,
+  RemoteWorkspaceSessionTarget,
   BotRemoteWorkspaceReconnectedEvent,
   RemoteTarget,
   SSHConfigAliasOption,
@@ -109,6 +115,10 @@ declare global {
       printPageToPdf?(): Promise<import("@ccbuddy/shared").PrintPageToPdfResult>;
       /** 从系统拖拽/文件输入得到的 Web File 解析真实本地路径 */
       getPathForFile?(file: File): string | null;
+      /** dwf 产物「作为文件打开」：把某一版的字节落成本机副本，返回其路径 */
+      materializeWorkflowArtifactFile(
+        payload: import("@ccbuddy/shared").MaterializeWorkflowArtifactFileRequest,
+      ): Promise<import("@ccbuddy/shared").MaterializeWorkflowArtifactFileResult>;
       /** 订阅当前窗口内远程连接过程日志，返回 disposer */
       onRemoteConnectionLog(handler: (entry: RemoteConnectionRuntimeLog) => void): () => void;
       /** 订阅远程 workspace session 关闭事件，返回 disposer */
@@ -121,17 +131,41 @@ declare global {
       activateOrSetWorkspace?(path: string): Promise<{ activated: boolean }>;
       /** 同步当前窗口所有 tab 的 workspace 路径到 main 进程 */
       syncWindowTabs(paths: string[]): void;
+      /** 同步当前窗口已连接的远程 workspace 身份到宿主 registry。 */
+      syncRemoteWorkspaceSessions?(targets: RemoteWorkspaceSessionTarget[]): void;
       /** 同步当前窗口的未读 task 数到 main 进程 */
       syncWindowUnreadCount(count: number): void;
       syncActiveTaskSession(sessionId: string | null): void;
       /** 同步需要 main 进程即时感知的应用设置 */
       syncAppSettings?(patch: Partial<AppSettings>): void;
+      /** 查询关闭驻留托盘能力（Linux 置灰判断；spec：docs/desktop/linux-close-to-tray.md） */
+      getCloseToTrayCapability?(): Promise<import("@ccbuddy/shared").DesktopCloseToTrayCapability>;
       /** 注册 main 进程要求聚焦指定 workspace tab 的回调，返回 disposer */
       onFocusTab(handler: (path: string) => void): () => void;
       /** 注册 main 进程触发新建 tab 的回调，返回 disposer */
       onNewTab(handler: () => void): () => void;
       /** 注册内置浏览器 webview 请求打开新页面的回调，返回 disposer */
       onOpenBrowserUrl?(handler: (request: EmbeddedBrowserOpenUrlRequest) => void): () => void;
+      /** 注册内置浏览器网页权限/源选择/设备选择弹窗请求，返回 disposer */
+      onEmbeddedBrowserPermissionPrompt?(
+        handler: (event: EmbeddedBrowserPermissionPromptEvent) => void,
+      ): () => void;
+      /** 回传用户对内置浏览器权限弹窗的决策 */
+      resolveEmbeddedBrowserPermissionPrompt?(
+        request: EmbeddedBrowserPermissionResolveRequest,
+      ): void;
+      /** 读取内置浏览器站点权限记录（设置页「网站权限」） */
+      getEmbeddedBrowserSitePermissions?(): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
+      /** 修改/删除单条站点权限 */
+      setEmbeddedBrowserSitePermission?(
+        request: EmbeddedBrowserSitePermissionUpdateRequest,
+      ): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
+      /** 清空全部站点权限记录 */
+      clearEmbeddedBrowserSitePermissions?(): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
+      /** 重置单个站点的全部权限记录 */
+      resetEmbeddedBrowserSitePermission?(
+        request: EmbeddedBrowserSitePermissionResetRequest,
+      ): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
       onBrowserViewReady?(
         handler: (payload: {
           workspaceKey: string;

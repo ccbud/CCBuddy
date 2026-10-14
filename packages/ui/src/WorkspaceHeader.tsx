@@ -43,15 +43,16 @@ export function WorkspaceHeader({
   nativeSessionLogPath,
   nativeSessionLogExists,
   nativeSessionLogLoading,
+  providerWorkspaceConfigPath,
+  providerWorkspaceConfigExists,
+  providerWorkspaceConfigLoading,
   workspaceHeaderState,
   gitSummary,
   gitDirtyFileCount,
   isMacDesktop,
   isMacFullscreen,
   isWindowsDesktop,
-
   isDesktop,
-  simplifyForNarrowRemote = false,
   isSidebarVisible,
   isTerminalOpen,
   isSidePaneOpen,
@@ -86,6 +87,9 @@ export function WorkspaceHeader({
   nativeSessionLogPath: string | null;
   nativeSessionLogExists: boolean;
   nativeSessionLogLoading: boolean;
+  providerWorkspaceConfigPath: string | null;
+  providerWorkspaceConfigExists: boolean;
+  providerWorkspaceConfigLoading: boolean;
   workspaceHeaderState: WorkspaceHeaderState;
   gitSummary: GitRepositorySummary;
   gitDirtyFileCount: number;
@@ -93,9 +97,10 @@ export function WorkspaceHeader({
   isMacFullscreen?: boolean;
   isWindowsDesktop?: boolean;
   reserveWindowControls?: boolean;
+
   windowsWindowControlsRightPaddingPx?: number;
   isDesktop?: boolean;
-  simplifyForNarrowRemote?: boolean;
+
   isSidebarVisible: boolean;
   isTerminalOpen: boolean;
   isSidePaneOpen: boolean;
@@ -183,11 +188,13 @@ export function WorkspaceHeader({
             nativeSessionLogPath={nativeSessionLogPath}
             nativeSessionLogExists={nativeSessionLogExists}
             nativeSessionLogLoading={nativeSessionLogLoading}
+            providerWorkspaceConfigPath={providerWorkspaceConfigPath}
+            providerWorkspaceConfigExists={providerWorkspaceConfigExists}
+            providerWorkspaceConfigLoading={providerWorkspaceConfigLoading}
             workspaceHeaderState={workspaceHeaderState}
             isMacDesktop={isMacDesktop}
             isMacFullscreen={isMacFullscreen}
             isWindowsDesktop={isWindowsDesktop}
-            simplifyForNarrowRemote={simplifyForNarrowRemote}
             selectedEditor={selectedEditor}
             onReloadSession={onReloadSession}
             reloadSessionDisabled={reloadSessionDisabled}
@@ -212,7 +219,6 @@ export function WorkspaceHeader({
           onToggleTerminal={onToggleTerminal}
           onToggleSidePane={onToggleSidePane}
           toggleSidePaneShortcutLabel={toggleSidePaneShortcutLabel}
-          simplifyForNarrowRemote={simplifyForNarrowRemote}
           hideHelpMenu={false}
           showWindowControls={usesInlineWindowControls}
           // 面板操作按钮沿用 macOS 紧凑样式，Windows/Linux 窗控跟随最右侧 Header。

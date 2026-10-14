@@ -2,7 +2,7 @@
 // 消费者并行订阅的地基：同一 endpoint 同一 workspace 的多个消费者共享一条 sessions-index 订阅
 // （侧栏切数据源时，useGlobalTaskList 这类处理 workspace scope 数组、无法逐 scope 调 hook 的
 // 消费者走这里）。与 SessionDataLayer 的 per-session acquire/release 同构。
-// 复用键加 endpoint 维度——remote shard（web/手机远控/SSH workspace）的 sessions-index
+// 复用键加 endpoint 维度——remote shard（Web/SSH workspace）的 sessions-index
 // 走各自 endpoint 的 agentService proxy，同 workspaceKey 不同 endpoint 不能共用 store。
 import type { ICCbuddyAgentService } from "@ccbuddy/services";
 import { logger } from "@/logger.js";
@@ -73,6 +73,10 @@ function reportScopeEndpointMismatch(
     workspaceKey: scope.workspaceKey,
     workspacePath: scope.workspacePath,
   });
+}
+
+export function resetSessionsIndexScopeEndpointMismatchReportsForTest(): void {
+  reportedScopeEndpointMismatches.clear();
 }
 
 function createSessionsIndexTransport(
@@ -171,4 +175,9 @@ export function releaseSessionsIndex(
     entriesByStore.delete(entry.store);
     if (registry.get(entryKey) === entry) registry.delete(entryKey);
   }
+}
+
+/** 仅测试/诊断用：当前注册的 endpoint+workspaceKey 条目数。 */
+export function sessionsIndexRegistrySize(): number {
+  return registry.size;
 }

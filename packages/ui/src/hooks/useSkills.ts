@@ -3,7 +3,7 @@ import type { CCbuddySkillReferenceCatalogEntry } from "@ccbuddy/shared";
 import { useWorkspaceServicesResolution } from "@/hooks/useWorkspaceServices.js";
 import { logger } from "@/logger.js";
 
-interface ConversationSkillCatalogState {
+export interface ConversationSkillCatalogState {
   skills: CCbuddySkillReferenceCatalogEntry[];
   authority: "session" | "workspace" | null;
   loading: boolean;
@@ -27,7 +27,7 @@ const EMPTY_SCOPED_STATE: ScopedConversationSkillCatalogState = {
   value: EMPTY_STATE,
 };
 
-interface UseSkillsOptions {
+export interface UseSkillsOptions {
   workspacePath: string;
   workspaceIdentity?: string;
   sessionId: string | null;

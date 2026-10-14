@@ -56,12 +56,13 @@ function areResolvedTaskMetasEqual(left: CCbuddyTaskMeta | null, right: CCbuddyT
     left.unreadAt === right.unreadAt &&
     left.status === right.status &&
     areTaskMetaJsonFieldsEqual(left.lastError, right.lastError) &&
+    areTaskMetaJsonFieldsEqual(left.repairState, right.repairState) &&
     areTaskMetaJsonFieldsEqual(left.changeSummary, right.changeSummary) &&
     areTaskMetaJsonFieldsEqual(left.target, right.target)
   );
 }
 
-function useStableResolvedActiveTaskMeta(taskMeta: CCbuddyTaskMeta | null) {
+export function useStableResolvedActiveTaskMeta(taskMeta: CCbuddyTaskMeta | null) {
   const stableTaskMetaRef = useRef<CCbuddyTaskMeta | null>(null);
   const stableTaskMeta = stableTaskMetaRef.current;
   // stream chunk 只更新消息流时，active task meta 经列表/乐观层重新合成后可能字段相同但引用变了。

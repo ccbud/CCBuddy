@@ -52,6 +52,7 @@ export const SortableWorkspaceSidebarItem = memo(function SortableWorkspaceSideb
   taskListHasMore: boolean;
   taskListHasUnread?: boolean;
   taskListLiveWorkflowCount?: number;
+
   workspaceKey: string;
   onShowMoreWorkspaceTasks: (workspaceKey: string) => void;
   reconnectingRemoteWorkspaceKeys: string[];

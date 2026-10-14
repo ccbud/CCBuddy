@@ -122,6 +122,7 @@ interface PluginsSectionProps {
   isDesktop?: boolean;
   isMacDesktop?: boolean;
   isWindowsDesktop?: boolean;
+
   initialTab?: PluginTabTarget;
   initialScopeKey?: string;
   mode?: "plugin" | "mcp" | "skill" | "command";
@@ -156,6 +157,7 @@ function PluginList({
   isDesktop: boolean;
   isMacDesktop: boolean;
   isWindowsDesktop: boolean;
+
   onAdd?: () => void;
   onCreateTask?: (request?: CreateTaskRequest) => void;
   onDetailOpenChange?: (open: boolean) => void;
@@ -205,7 +207,7 @@ function PluginList({
     shouldShowRemoteSyncActions({
       remoteSessionId: target?.remoteSessionId,
       remoteTarget: target?.remoteTarget,
-      clientMode: "desktop-continuous" as const,
+      clientMode: "desktop-continuous",
       hasLocalSourceService: Boolean(baseServices.pluginSyncService),
     }) &&
     target?.workspacePath

@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import type { CCbuddyTaskMigrationSource, CCbuddyTaskMode } from "./ccbuddy-task-types-core.js";
-import { ccbuddyAgentProviderSchema } from "./ccbuddy-agent-policy.js";
+import { legacyCCbuddyProviderSchema } from "./ccbuddy-agent-policy.js";
 import { ccbuddyPermissionResponseSchema } from "./ccbuddy-protocol-legacy-types.js";
 // merge 冲突解决：两侧分别在相邻行新增独立 import（本分支 hook trust review
 // 决策 schema、staging telemetry error attribution schema），二者无语义交集，均保留。
@@ -15,10 +15,15 @@ import { errorAttributionSchema } from "./ccbuddy-protocol-v4/snapshot.js";
 
 const nonEmptyString = z.string().trim().min(1);
 const ccbuddyTaskModeRealtimeValues = [
+  "default",
   "yolo",
+  "guarded",
   "plan",
   "edit",
+  "acceptEdits",
   "auto",
+  "dontAsk",
+  "bypassPermissions",
   "autoEdit",
   "build",
 ] as const satisfies readonly CCbuddyTaskMode[];
@@ -58,7 +63,8 @@ const taskMetaRealtimeSchema = z.object({
   mode: z.enum(ccbuddyTaskModeRealtimeValues),
   model: z.string().optional(),
   runtimeEpoch: z.number().int().nonnegative().optional(),
-  provider: ccbuddyAgentProviderSchema.optional(),
+  // relay payload 可能由旧版本桌面投影；历史 provider 值在此归一为 glm。
+  provider: legacyCCbuddyProviderSchema.optional(),
   migrationSource: z.enum(ccbuddyTaskMigrationSourceRealtimeValues).optional(),
   forkedFromTaskId: nonEmptyString.optional(),
   unreadAt: z.number().int().nonnegative().optional(),
@@ -69,7 +75,7 @@ const taskMetaRealtimeSchema = z.object({
       message: z.string().min(1),
       traceId: nonEmptyString.optional(),
       taskId: nonEmptyString.optional(),
-      // 旧 realtime schema 会静默剥离 lastError.attribution，导致手机 replayable
+      // 旧 realtime schema 会静默剥离 lastError.attribution，导致Web replayable
       // task meta 与桌面 snapshot 的归因不一致；这里沿用共享 schema 保持 wire 约束一致。
       attribution: errorAttributionSchema.optional(),
     })
@@ -179,7 +185,7 @@ const ccbuddyPromptAttachmentSchema = z.discriminatedUnion("kind", [
       localPath: z.string().optional(),
     })
     .strict(),
-  // 附件类型新增 video 后，replayable schema 未同步，手机远控会拒绝合法附件。
+  // 附件类型新增 video 后，replayable schema 也必须接受合法附件。
   z
     .object({
       kind: z.literal("video"),

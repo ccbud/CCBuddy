@@ -26,7 +26,7 @@ import { useAssistantCodeCommentFeatureEnabled } from "@/AssistantCodeCommentFea
 const FIND_AUTO_LOAD_ROW_LIMIT = 1200;
 const SEARCH_RESULT_HIGHLIGHT_DURATION_MS = 3000;
 
-interface UseConversationTimelineFindOptions {
+export interface UseConversationTimelineFindOptions {
   rootRef: React.RefObject<HTMLElement | null>;
   renderUnits: readonly ConversationTurnRenderUnit[];
   rows: readonly ConversationRow[];
@@ -92,7 +92,7 @@ export function useConversationTimelineFind({
     }
     const matches: ConversationFindMatch[] = [];
     let loadedRowCount = 0;
-    // streaming delta 只会改变当前 running turn；稳定 turn 的全文索引可复用，
+    // 修复原因：streaming delta 只会改变当前 running turn；稳定 turn 的全文索引可复用，
     // 避免每个 token 都扫描整段历史，导致长会话 renderer 主线程被持续占满。
     renderUnits.forEach((unit, unitIndex) => {
       const cacheKey = `${normalizedQuery}:${codeCommentCardsEnabled}:${unit.key}`;

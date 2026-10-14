@@ -23,9 +23,9 @@ export const V4_PRIMARY_PANE_ID = "workspace-main";
 export const MAX_WORKBENCH_PANES = 4;
 
 /** 分割占比边界：first 子树占比最小 25% / 最大 75%（拖拽与持久化共用同一 clamp）。 */
-const SPLIT_RATIO_MIN = 0.25;
-const SPLIT_RATIO_MAX = 0.75;
-const DEFAULT_SPLIT_RATIO = 0.5;
+export const SPLIT_RATIO_MIN = 0.25;
+export const SPLIT_RATIO_MAX = 0.75;
+export const DEFAULT_SPLIT_RATIO = 0.5;
 
 export function clampSplitRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) {

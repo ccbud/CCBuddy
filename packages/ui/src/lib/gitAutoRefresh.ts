@@ -1,6 +1,6 @@
 import type { GitRepositorySummary, SystemInfo } from "@ccbuddy/shared";
 
-interface GitAutoRefreshWatchPath {
+export interface GitAutoRefreshWatchPath {
   path: string;
   recursive: boolean;
 }

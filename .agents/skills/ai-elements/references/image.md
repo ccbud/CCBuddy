@@ -9,7 +9,7 @@ See THIRD-PARTY-NOTICES.md in the repository root for license and provenance.
 
 Displays AI-generated images from the AI SDK.
 
-The `Image` component displays AI-generated images from the AI SDK. It accepts a `Experimental_GeneratedImage` object from the AI SDK's `generateImage` function and automatically renders it as an image.
+The `Image` component displays AI-generated images from the AI SDK. It accepts a [`Experimental_GeneratedImage`](/docs/reference/ai-sdk-core/generate-image) object from the AI SDK's `generateImage` function and automatically renders it as an image.
 
 See `scripts/image.tsx` for this example.
 

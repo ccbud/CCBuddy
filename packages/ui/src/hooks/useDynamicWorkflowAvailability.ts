@@ -1,5 +1,7 @@
-import { useEffect, useMemo } from "react";
-import type { ICodingPlanSubscriptionService } from "@ccbuddy/services";
+import { useEffect, useMemo, useRef } from "react";
+import type { ICodingPlanSubscriptionService, ICCbuddyAgentService } from "@ccbuddy/services";
+import type { DynamicWorkflowMode } from "@ccbuddy/shared";
+import { logger } from "@/logger.js";
 import {
   useDynamicWorkflowAvailabilityStore,
   type DynamicWorkflowAvailabilitySnapshot,
@@ -18,10 +20,6 @@ export function useDynamicWorkflowAvailability(): DynamicWorkflowAvailabilitySna
   return useMemo(() => ({ status, enabled, config }), [config, enabled, status]);
 }
 
-/**
- * app 会话级取数，挂在 Root 里一次。service 换了（手机 `/remote` 完成工作区桥接）会重试，
- * 取数与失败重试的规则见 dynamicWorkflowAvailabilityStore。
- */
 export function useDynamicWorkflowAvailabilityLoader(
   service: ICodingPlanSubscriptionService,
 ): void {
@@ -29,4 +27,40 @@ export function useDynamicWorkflowAvailabilityLoader(
   useEffect(() => {
     void ensureLoaded(service);
   }, [ensureLoaded, service]);
+}
+
+/**
+ * 用户选择变化后的同步（docs/dynamic-workflow/launch.md「The user's choice」），挂在 Root 里一次。
+ * 设置文件是选择的唯一来源；任何窗口写入后，共享设置广播让每个窗口的 Root 都读到新值，
+ * 各自通知本窗口的 Host（重发 CLI 策略、转发给远程 Host），Host 处理完再重读快照。
+ *   - 首次读到的值只是基线：启动时 Host 自己会读设置文件，不需要信号；
+ *   - 多次变化串行：上一轮「信号 → 重读」完成后才开始下一轮，慢的重读不会盖掉新结果；
+ *   - Host 同步失败仍重读：快照以 Host 当前算出的结果为准。
+ */
+export function useDynamicWorkflowUserModeSync(params: {
+  settingsLoaded: boolean;
+  userMode: DynamicWorkflowMode | undefined;
+  ccbuddyAgentService: Pick<ICCbuddyAgentService, "syncDynamicWorkflowUserMode">;
+  codingPlanSubscriptionService: ICodingPlanSubscriptionService;
+}): void {
+  const { settingsLoaded, userMode, ccbuddyAgentService, codingPlanSubscriptionService } = params;
+  const reload = useDynamicWorkflowAvailabilityStore((state) => state.reload);
+  const observedRef = useRef<{ userMode: DynamicWorkflowMode | undefined } | null>(null);
+  const chainRef = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const observed = observedRef.current;
+    observedRef.current = { userMode };
+    if (observed === null || observed.userMode === userMode) return;
+    chainRef.current = chainRef.current.then(async () => {
+      try {
+        await ccbuddyAgentService.syncDynamicWorkflowUserMode(userMode ? { mode: userMode } : {});
+      } catch (error) {
+        logger.warn("[dynamic-workflow] 用户选择同步到 Host 失败", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      await reload(codingPlanSubscriptionService);
+    });
+  }, [codingPlanSubscriptionService, reload, settingsLoaded, userMode, ccbuddyAgentService]);
 }

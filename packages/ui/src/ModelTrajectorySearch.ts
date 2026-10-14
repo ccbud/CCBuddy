@@ -23,7 +23,7 @@ export interface TrajectorySearchMatch {
   sourceText: string;
 }
 
-interface TrajectorySearchIndex {
+export interface TrajectorySearchIndex {
   query: string;
   matches: TrajectorySearchMatch[];
 }
@@ -152,7 +152,7 @@ export function findTrajectoryTextMatches(
   return matches;
 }
 
-function normalizeTrajectorySearchText(source: string): {
+export function normalizeTrajectorySearchText(source: string): {
   text: string;
   starts: number[];
   ends: number[];

@@ -12,7 +12,7 @@ import {
 import { desktopRuntimeEnv } from "./desktopRuntimeEnv.js";
 
 /** 与资源指标对齐：开发 1min、生产 5min 聚合上报 */
-const NETWORK_REPORT_INTERVAL_MS = desktopRuntimeEnv === "development" ? 60_000 : 300_000;
+export const NETWORK_REPORT_INTERVAL_MS = desktopRuntimeEnv === "development" ? 60_000 : 300_000;
 
 interface NetworkLogger {
   info: (...args: unknown[]) => void;

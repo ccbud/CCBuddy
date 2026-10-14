@@ -11,7 +11,7 @@ import {
   type HostResourceUsageSnapshotResultResponse,
 } from "@ccbuddy/shared";
 
-interface CreateHostResourceUsageResponderOptions {
+export interface CreateHostResourceUsageResponderOptions {
   getAgentService: () =>
     | Pick<ICCbuddyAgentService, "collectLocalRuntimeChildProcesses">
     | undefined;
@@ -23,7 +23,7 @@ interface CreateHostResourceUsageResponderOptions {
   now?: () => number;
 }
 
-interface HostResourceUsageResponder {
+export interface HostResourceUsageResponder {
   handleRequest(message: HostResourceUsageSnapshotRequestMessage): Promise<void>;
   cancelRequest(requestId: string): void;
 }

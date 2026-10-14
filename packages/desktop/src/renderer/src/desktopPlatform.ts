@@ -8,12 +8,6 @@ import {
 import { desktopBrowserPlatformBridge } from "./desktopBrowserPlatformBridge.js";
 import { createDesktopPluginSandboxPlatform } from "./plugin-sandbox/desktopPluginSandboxPlatform.js";
 
-declare global {
-  interface Window {
-    ccbuddyHistory?: NonNullable<IPlatformService["historyReview"]>;
-  }
-}
-
 export function createDesktopPlatform(options: {
   isLocalDevelopmentRuntime: boolean;
 }): IPlatformService {
@@ -26,6 +20,8 @@ export function createDesktopPlatform(options: {
     selectFile: () => window.ccbuddy.selectFile(),
     selectFiles: () => window.ccbuddy.selectFiles?.() ?? Promise.resolve([]),
     createTempTextAttachment: (payload) => window.ccbuddy.createTempTextAttachment(payload),
+    materializeWorkflowArtifactFile: (payload) =>
+      window.ccbuddy.materializeWorkflowArtifactFile(payload),
     onRemoteConnectionLog: (handler) => window.ccbuddy.onRemoteConnectionLog(handler),
     onRemoteSessionClosed: (handler) => window.ccbuddy.onRemoteSessionClosed(handler),
     onBotRemoteWorkspaceReconnected: (handler) =>
@@ -90,15 +86,32 @@ export function createDesktopPlatform(options: {
       : undefined,
     showTaskNotification: (payload) => window.ccbuddy.showTaskNotification(payload),
     syncWindowTabs: (paths) => window.ccbuddy.syncWindowTabs(paths),
+    syncRemoteWorkspaceSessions: (targets) => window.ccbuddy.syncRemoteWorkspaceSessions?.(targets),
     syncWindowUnreadCount: (count) => window.ccbuddy.syncWindowUnreadCount(count),
     syncActiveTaskSession: (sessionId) => window.ccbuddy.syncActiveTaskSession(sessionId),
     syncAppSettings: (patch) => window.ccbuddy.syncAppSettings?.(patch),
+    // 桥缺失（旧 preload 升级窗口）时按 supported 兜底，与 Windows 现状一致，设置开关可用。
+    getCloseToTrayCapability: () =>
+      window.ccbuddy.getCloseToTrayCapability?.() ??
+      Promise.resolve({ supported: true, gnomeLikeWithoutTray: false }),
     setShortcutRecordingActive: (active) => window.ccbuddy.setShortcutRecordingActive?.(active),
     onFocusTab: (handler) => window.ccbuddy.onFocusTab(handler),
     onNewTab: (handler) => window.ccbuddy.onNewTab(handler),
     onCloseActiveContextRequest: (handler) =>
       window.ccbuddy.onCloseActiveContextRequest?.(handler) ?? (() => {}),
     onOpenBrowserUrl: (handler) => window.ccbuddy.onOpenBrowserUrl?.(handler) ?? (() => {}),
+    onEmbeddedBrowserPermissionPrompt: (handler) =>
+      window.ccbuddy.onEmbeddedBrowserPermissionPrompt?.(handler) ?? (() => {}),
+    resolveEmbeddedBrowserPermissionPrompt: (request) =>
+      window.ccbuddy.resolveEmbeddedBrowserPermissionPrompt?.(request),
+    getEmbeddedBrowserSitePermissions: () =>
+      window.ccbuddy.getEmbeddedBrowserSitePermissions?.() ?? Promise.resolve({}),
+    setEmbeddedBrowserSitePermission: (request) =>
+      window.ccbuddy.setEmbeddedBrowserSitePermission?.(request) ?? Promise.resolve({}),
+    clearEmbeddedBrowserSitePermissions: () =>
+      window.ccbuddy.clearEmbeddedBrowserSitePermissions?.() ?? Promise.resolve({}),
+    resetEmbeddedBrowserSitePermission: (request) =>
+      window.ccbuddy.resetEmbeddedBrowserSitePermission?.(request) ?? Promise.resolve({}),
     onBrowserViewScreenshotSurfacePrepare: (handler) =>
       window.ccbuddy.onBrowserViewScreenshotSurfacePrepare?.(handler) ?? (() => {}),
     onBrowserViewScreenshotSurfaceRelease: (handler) =>
@@ -144,18 +157,6 @@ export function createDesktopPlatform(options: {
     downloadUpdate: () => window.ccbuddy.downloadUpdate?.() ?? Promise.resolve(),
     cancelUpdateDownload: () => window.ccbuddy.cancelUpdateDownload?.() ?? Promise.resolve(),
     openUpdateStatusWindow: () => window.ccbuddy.openUpdateStatusWindow?.() ?? Promise.resolve(),
-    onOpenHistoryViewRequested: (listener) =>
-      window.ccbuddy.onOpenHistoryViewRequested?.(listener) ?? (() => {}),
-    historyReview: window.ccbuddyHistory
-      ? {
-          protocolVersion: 1,
-          list: () => window.ccbuddyHistory!.list(),
-          load: (id) => window.ccbuddyHistory!.load(id),
-          refresh: () => window.ccbuddyHistory!.refresh(),
-          onRefreshEvent: (listener) =>
-            window.ccbuddyHistory!.onRefreshEvent((event) => listener(event)),
-        }
-      : undefined,
     getAutoUpdatePreferences: () =>
       window.ccbuddy.getAutoUpdatePreferences?.() ??
       Promise.resolve({ autoDownloadAndInstallUpdates: false }),

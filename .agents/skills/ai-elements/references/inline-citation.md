@@ -21,7 +21,7 @@ npx ai-elements@latest add inline-citation
 
 ## Usage with AI SDK
 
-Build citations for AI-generated content using `experimental_generateObject`.
+Build citations for AI-generated content using [`experimental_generateObject`](/docs/reference/ai-sdk-ui/use-object).
 
 Add the following component to your frontend:
 

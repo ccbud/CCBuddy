@@ -19,7 +19,7 @@ function getBrowserStorage(): StorageLike | null {
   }
 }
 
-function getPromptHistoryStorageKey(workspacePath: string) {
+export function getPromptHistoryStorageKey(workspacePath: string) {
   return `${PROMPT_HISTORY_STORAGE_KEY_PREFIX}${workspacePath}`;
 }
 

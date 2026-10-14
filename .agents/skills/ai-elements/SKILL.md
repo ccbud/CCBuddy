@@ -152,4 +152,4 @@ If none of these answers help, open an [issue on GitHub](https://github.com/verc
 
 ## Available Components
 
-See the `references/` folder for detailed documentation on each component. Paths beginning with `scripts/` in those references are examples relative to this skill directory, not repository-root scripts. They are component examples, not installed application features.
+See the `references/` folder for detailed documentation on each component.

@@ -7,7 +7,7 @@ import type { WorkspaceCCbuddyUIState } from "@/store/ccbuddySessionStoreTypes.j
 import { useTabStore } from "@/store/TabStoreProvider.js";
 import { isWorkspaceTab } from "@/store/tabStore.js";
 
-function resolveChatViewActiveTaskProvider(
+export function resolveChatViewActiveTaskProvider(
   taskId: string | null,
   workspaceState: Pick<
     WorkspaceCCbuddyUIState,

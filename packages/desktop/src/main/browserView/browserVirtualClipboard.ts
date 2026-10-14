@@ -7,7 +7,7 @@ import {
 
 export { IAB_INPUT_TARGET_TOKEN_PROPERTY } from "./browserVirtualClipboardPageScript.js";
 
-interface BrowserInputExecutionTarget {
+export interface BrowserInputExecutionTarget {
   contextId?: number;
   sessionId?: string;
 }

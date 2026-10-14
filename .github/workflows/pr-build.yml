@@ -35,9 +35,10 @@ jobs:
           pnpm lint
           pnpm fmt:check
           pnpm architecture:check --changed
-      - name: Test desktop update, release manifest, and main release allocation policy
+      - name: Test desktop packaging, update, release manifest, and main release allocation policy
         run: >-
           pnpm exec tsx --test
+          packages/desktop/test/packaged-cua-koffi.test.mjs
           packages/desktop/test/ccbuddy-update-policy.test.mjs
           packages/desktop/test/finalize-macos-release.test.mjs
           packages/desktop/test/legacy-native-update.test.mjs

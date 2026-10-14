@@ -42,7 +42,7 @@ function startOfWeek(timestamp: number, locale: Locale): number {
   return date.getTime();
 }
 
-function resolveTaskTimelineGroupKey(
+export function resolveTaskTimelineGroupKey(
   timestamp: number,
   now: number,
   locale: Locale,

@@ -4,7 +4,7 @@ import { WORKSPACE_FILE_TREE_VIRTUAL_ROW_HEIGHT_PX } from "@/workspace-file-tree
 import type { WorkspaceFileTreeRow } from "@/workspace-file-tree/model.js";
 import type { WorkspaceFileTreeStickyFolderItem } from "@/workspace-file-tree/types.js";
 
-function getWorkspaceFileTreeStickyFolders({
+export function getWorkspaceFileTreeStickyFolders({
   rows,
   virtualItems,
   scrollOffset,

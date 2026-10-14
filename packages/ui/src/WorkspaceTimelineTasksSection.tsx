@@ -57,6 +57,7 @@ export function WorkspaceTimelineTasksSection({
   groupByDate?: boolean;
   taskRowVariant?: "default" | "timeline";
   emptyMessage?: string;
+
   onSelectTask: (
     targetWorkspacePath: string,
     taskId: string,
@@ -704,7 +705,7 @@ export function WorkspaceTimelineTasksSection({
                           isPinned={false}
                           variant={taskRowVariant}
                           isActive={
-                            // timeline 是跨 workspace 视图，active 判断必须使用 workspaceKey，避免同路径远端串高亮。
+                            // Bugfix: timeline 是跨 workspace 视图，active 判断必须使用 workspaceKey，避免同路径远端串高亮。
                             buildTaskWorkspaceKey(item.workspacePath, item.workspaceIdentity) ===
                               activeWorkspaceKey && item.taskId === activeTaskId
                           }

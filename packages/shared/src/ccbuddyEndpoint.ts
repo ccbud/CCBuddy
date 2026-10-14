@@ -1,36 +1,16 @@
 import type { CCbuddyEnv } from "./env.js";
 
 export const DEFAULT_CCBUDDY_ENDPOINT_ORIGIN = "https://ccbuddy.z.ai";
+export const TEST_CCBUDDY_ENDPOINT_ORIGIN = "https://ccbuddy.z.ai";
+export const CODING_PLAN_LOCAL_WEBVIEW_ORIGIN = "http://localhost:3000";
 export const DEFAULT_BIGMODEL_API_ORIGIN = "https://bigmodel.cn";
+export const TEST_BIGMODEL_API_ORIGIN = "https://bigmodel.cn";
 export const DEFAULT_ZAI_OAUTH_ORIGIN = "https://chat.z.ai";
+export const TEST_ZAI_OAUTH_ORIGIN = "https://chat.z.ai";
 export const DEFAULT_ZAI_BUSINESS_BASE_URL = "https://api.z.ai";
+export const TEST_ZAI_BUSINESS_BASE_URL = "https://api.z.ai";
 export const DEFAULT_ZAI_OAUTH_CLIENT_ID = "client_P8X5CMWmlaRO9gyO-KSqtg";
-
-// 构建仅注入公开链接；Node 调用方仍可显式传 env，避免读取另一进程的配置。
-declare const __CCBUDDY_ENDPOINT_ENV__: Record<string, string | undefined> | undefined;
-export function pickProductEndpointEnv(
-  env: Record<string, string | undefined>,
-): Record<string, string> {
-  const keys = [
-    "CCBUDDY_BASE_URL",
-    "CCBUDDY_ENDPOINT_ORIGIN",
-    "BIGMODEL_API_BASE_URL",
-    "ZAI_OAUTH_ORIGIN",
-    "ZAI_BUSINESS_BASE_URL",
-    "ZAI_OAUTH_CLIENT_ID",
-    "ZAI_OAUTH_APP_ID",
-  ];
-  return Object.fromEntries(
-    keys.flatMap((key) => (env[key]?.trim() ? [[key, env[key]!.trim()]] : [])),
-  );
-}
-export function readProductEndpointEnv(): Record<string, string | undefined> {
-  return {
-    ...(typeof __CCBUDDY_ENDPOINT_ENV__ === "undefined" ? {} : __CCBUDDY_ENDPOINT_ENV__),
-    ...pickProductEndpointEnv(typeof process === "undefined" ? {} : process.env),
-  };
-}
-
+export const TEST_ZAI_OAUTH_CLIENT_ID = "client_P8X5CMWmlaRO9gyO-KSqtg";
 export interface CCbuddyEndpointUrls {
   origin: string;
   apiBaseUrl: string;
@@ -46,20 +26,30 @@ export interface RuntimeCCbuddyEndpointEnv {
   CCBUDDY_ENV?: string;
   CCBUDDY_BASE_URL?: string;
   CCBUDDY_ENDPOINT_ORIGIN?: string;
+  CCBUDDY_TEST_BASE_URL?: string;
+  CCBUDDY_PRODUCTION_BASE_URL?: string;
 }
 
 export interface RuntimeBigModelApiEnv {
   [key: string]: string | undefined;
   CCBUDDY_ENV?: string;
   BIGMODEL_API_BASE_URL?: string;
+  BIGMODEL_TEST_API_BASE_URL?: string;
+  BIGMODEL_PRODUCTION_API_BASE_URL?: string;
 }
 
 export interface RuntimeZaiEndpointEnv {
   [key: string]: string | undefined;
   CCBUDDY_ENV?: string;
   ZAI_OAUTH_ORIGIN?: string;
+  ZAI_TEST_OAUTH_ORIGIN?: string;
+  ZAI_PRODUCTION_OAUTH_ORIGIN?: string;
   ZAI_BUSINESS_BASE_URL?: string;
+  ZAI_TEST_BUSINESS_BASE_URL?: string;
+  ZAI_PRODUCTION_BUSINESS_BASE_URL?: string;
   ZAI_OAUTH_CLIENT_ID?: string;
+  ZAI_TEST_OAUTH_CLIENT_ID?: string;
+  ZAI_PRODUCTION_OAUTH_CLIENT_ID?: string;
   ZAI_OAUTH_APP_ID?: string;
 }
 
@@ -82,6 +72,15 @@ function readRuntimeEnvValue(
 ): string | undefined {
   const value = env[key]?.trim();
   return value ? value : undefined;
+}
+
+function readRuntimeCCbuddyEnvScopedValue(
+  env: Record<string, string | undefined>,
+  ccbuddyEnv: CCbuddyEnv,
+  testKey: string,
+  productionKey: string,
+): string | undefined {
+  return readRuntimeEnvValue(env, ccbuddyEnv === "production" ? productionKey : testKey);
 }
 
 export function normalizeCCbuddyEndpointOrigin(value: string): string {
@@ -112,7 +111,8 @@ export function isTrustedCodingPlanWebviewOrigin(
     const origin = normalizeCCbuddyEndpointOrigin(value);
     if (
       origin === DEFAULT_CCBUDDY_ENDPOINT_ORIGIN ||
-      origin === resolveRuntimeCCbuddyEndpointOrigin()
+      origin === TEST_CCBUDDY_ENDPOINT_ORIGIN ||
+      origin === CODING_PLAN_LOCAL_WEBVIEW_ORIGIN
     ) {
       return true;
     }
@@ -128,95 +128,140 @@ export function resolveCCbuddyEndpointOrigin(options?: {
   envBaseOrigin?: string | null;
   overrideOrigin?: string | null;
 }): string {
-  const origin = options?.overrideOrigin?.trim() || options?.envBaseOrigin?.trim();
-  return origin ? normalizeCCbuddyEndpointOrigin(origin) : DEFAULT_CCBUDDY_ENDPOINT_ORIGIN;
+  const env = options?.env ?? "test";
+  const envBaseOrigin = options?.envBaseOrigin?.trim();
+  if (env === "production") {
+    return envBaseOrigin
+      ? normalizeCCbuddyEndpointOrigin(envBaseOrigin)
+      : DEFAULT_CCBUDDY_ENDPOINT_ORIGIN;
+  }
+
+  const overrideOrigin = options?.overrideOrigin?.trim();
+  if (overrideOrigin) {
+    return normalizeCCbuddyEndpointOrigin(overrideOrigin);
+  }
+
+  return envBaseOrigin
+    ? normalizeCCbuddyEndpointOrigin(envBaseOrigin)
+    : TEST_CCBUDDY_ENDPOINT_ORIGIN;
 }
 
-export function resolveRuntimeCCbuddyEnv(
-  env: RuntimeCCbuddyEndpointEnv = readProductEndpointEnv(),
-): CCbuddyEnv {
-  // 产品身份仅用于既有展示与安装标识，不参与地址解析。
+export function resolveRuntimeCCbuddyEnv(env: RuntimeCCbuddyEndpointEnv = {}): CCbuddyEnv {
+  // 独立 CLI / 服务测试未注入 CCBUDDY_ENV 时默认生产域；桌面测试包会显式下发 CCBUDDY_ENV=test。
   return env.CCBUDDY_ENV?.trim().toLowerCase() === "test" ? "test" : "production";
 }
 
 export function resolveRuntimeCCbuddyEndpointOrigin(
-  env: RuntimeCCbuddyEndpointEnv = readProductEndpointEnv(),
+  env: RuntimeCCbuddyEndpointEnv = {},
   options?: { overrideOrigin?: string | null },
 ): string {
+  const ccbuddyEnv = resolveRuntimeCCbuddyEnv(env);
+  const scopedBaseOrigin =
+    ccbuddyEnv === "production"
+      ? readRuntimeEnvValue(env, "CCBUDDY_PRODUCTION_BASE_URL")
+      : readRuntimeEnvValue(env, "CCBUDDY_TEST_BASE_URL");
+
   return resolveCCbuddyEndpointOrigin({
+    env: ccbuddyEnv,
     envBaseOrigin:
       readRuntimeEnvValue(env, "CCBUDDY_BASE_URL") ??
-      readRuntimeEnvValue(env, "CCBUDDY_ENDPOINT_ORIGIN"),
+      readRuntimeEnvValue(env, "CCBUDDY_ENDPOINT_ORIGIN") ??
+      scopedBaseOrigin,
     overrideOrigin: options?.overrideOrigin,
   });
 }
 
 export function buildRuntimeCCbuddyEndpointUrls(
-  env: RuntimeCCbuddyEndpointEnv = readProductEndpointEnv(),
+  env: RuntimeCCbuddyEndpointEnv = {},
 ): CCbuddyEndpointUrls {
   return buildCCbuddyEndpointUrls(resolveRuntimeCCbuddyEndpointOrigin(env));
 }
 
 export function buildRuntimeCCbuddyApiUrl(
-  env: RuntimeCCbuddyEndpointEnv = readProductEndpointEnv(),
+  env: RuntimeCCbuddyEndpointEnv = {},
   path: string,
 ): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${resolveRuntimeCCbuddyEndpointOrigin(env)}${normalizedPath}`;
 }
 
-export function resolveBigModelApiOrigin(
-  env: RuntimeBigModelApiEnv = readProductEndpointEnv(),
-): string {
+export function resolveBigModelApiOrigin(env: RuntimeBigModelApiEnv = {}): string {
+  const ccbuddyEnv = resolveRuntimeCCbuddyEnv(env);
+  const scopedBaseOrigin =
+    ccbuddyEnv === "production"
+      ? readRuntimeEnvValue(env, "BIGMODEL_PRODUCTION_API_BASE_URL")
+      : readRuntimeEnvValue(env, "BIGMODEL_TEST_API_BASE_URL");
+  const fallbackOrigin =
+    ccbuddyEnv === "production" ? DEFAULT_BIGMODEL_API_ORIGIN : TEST_BIGMODEL_API_ORIGIN;
+
   return normalizeCCbuddyEndpointOrigin(
-    readRuntimeEnvValue(env, "BIGMODEL_API_BASE_URL") ?? DEFAULT_BIGMODEL_API_ORIGIN,
+    readRuntimeEnvValue(env, "BIGMODEL_API_BASE_URL") ?? scopedBaseOrigin ?? fallbackOrigin,
   );
 }
 
-export function buildBigModelApiUrl(
-  env: RuntimeBigModelApiEnv = readProductEndpointEnv(),
-  path: string,
-): string {
+export function buildBigModelApiUrl(env: RuntimeBigModelApiEnv = {}, path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${resolveBigModelApiOrigin(env)}${normalizedPath}`;
 }
 
-export function buildBigModelCodingPlanPersonalManageUrl(
-  env: RuntimeBigModelApiEnv = readProductEndpointEnv(),
-): string {
-  // 管理页与业务 API 共用显式 origin，避免把已登录账号带到另一个部署。
+export function buildBigModelCodingPlanPersonalManageUrl(env: RuntimeBigModelApiEnv = {}): string {
+  // 修复原因：BigModel Coding Plan 管理页要跟随 CCBUDDY_ENV；
+  // 测试环境如果继续写死 bigmodel.cn，会把测试账号带到生产套餐页。
   return buildBigModelApiUrl(env, "/coding-plan/personal/overview");
 }
 
-export function buildBigModelCodingPlanTeamManageUrl(
-  env: RuntimeBigModelApiEnv = readProductEndpointEnv(),
-): string {
+export function buildBigModelCodingPlanTeamManageUrl(env: RuntimeBigModelApiEnv = {}): string {
   return buildBigModelApiUrl(env, "/coding-plan/team/plans");
 }
 
-export function resolveZaiOAuthOrigin(
-  env: RuntimeZaiEndpointEnv = readProductEndpointEnv(),
-): string {
+export function resolveZaiOAuthOrigin(env: RuntimeZaiEndpointEnv = {}): string {
+  const ccbuddyEnv = resolveRuntimeCCbuddyEnv(env);
+  const scopedOrigin = readRuntimeCCbuddyEnvScopedValue(
+    env,
+    ccbuddyEnv,
+    "ZAI_TEST_OAUTH_ORIGIN",
+    "ZAI_PRODUCTION_OAUTH_ORIGIN",
+  );
+  const fallbackOrigin =
+    ccbuddyEnv === "production" ? DEFAULT_ZAI_OAUTH_ORIGIN : TEST_ZAI_OAUTH_ORIGIN;
+
   return normalizeCCbuddyEndpointOrigin(
-    readRuntimeEnvValue(env, "ZAI_OAUTH_ORIGIN") ?? DEFAULT_ZAI_OAUTH_ORIGIN,
+    readRuntimeEnvValue(env, "ZAI_OAUTH_ORIGIN") ?? scopedOrigin ?? fallbackOrigin,
   );
 }
 
-export function resolveZaiBusinessBaseUrl(
-  env: RuntimeZaiEndpointEnv = readProductEndpointEnv(),
-): string {
+export function resolveZaiBusinessBaseUrl(env: RuntimeZaiEndpointEnv = {}): string {
+  const ccbuddyEnv = resolveRuntimeCCbuddyEnv(env);
+  const scopedOrigin = readRuntimeCCbuddyEnvScopedValue(
+    env,
+    ccbuddyEnv,
+    "ZAI_TEST_BUSINESS_BASE_URL",
+    "ZAI_PRODUCTION_BUSINESS_BASE_URL",
+  );
+  const fallbackOrigin =
+    ccbuddyEnv === "production" ? DEFAULT_ZAI_BUSINESS_BASE_URL : TEST_ZAI_BUSINESS_BASE_URL;
+
   return normalizeCCbuddyEndpointOrigin(
-    readRuntimeEnvValue(env, "ZAI_BUSINESS_BASE_URL") ?? DEFAULT_ZAI_BUSINESS_BASE_URL,
+    readRuntimeEnvValue(env, "ZAI_BUSINESS_BASE_URL") ?? scopedOrigin ?? fallbackOrigin,
   );
 }
 
-export function resolveZaiOAuthClientId(
-  env: RuntimeZaiEndpointEnv = readProductEndpointEnv(),
-): string {
+export function resolveZaiOAuthClientId(env: RuntimeZaiEndpointEnv = {}): string {
+  const ccbuddyEnv = resolveRuntimeCCbuddyEnv(env);
+  const scopedClientId = readRuntimeCCbuddyEnvScopedValue(
+    env,
+    ccbuddyEnv,
+    "ZAI_TEST_OAUTH_CLIENT_ID",
+    "ZAI_PRODUCTION_OAUTH_CLIENT_ID",
+  );
+  const fallbackClientId =
+    ccbuddyEnv === "production" ? DEFAULT_ZAI_OAUTH_CLIENT_ID : TEST_ZAI_OAUTH_CLIENT_ID;
+
   return (
     readRuntimeEnvValue(env, "ZAI_OAUTH_CLIENT_ID") ??
+    scopedClientId ??
     readRuntimeEnvValue(env, "ZAI_OAUTH_APP_ID") ??
-    DEFAULT_ZAI_OAUTH_CLIENT_ID
+    fallbackClientId
   );
 }
 
@@ -225,23 +270,17 @@ export function buildZaiOAuthUrl(origin: string, path: string): string {
   return `${normalizeCCbuddyEndpointOrigin(origin)}${normalizedPath}`;
 }
 
-export function buildRuntimeZaiOAuthUrl(
-  env: RuntimeZaiEndpointEnv = readProductEndpointEnv(),
-  path: string,
-): string {
+export function buildRuntimeZaiOAuthUrl(env: RuntimeZaiEndpointEnv = {}, path: string): string {
   return buildZaiOAuthUrl(resolveZaiOAuthOrigin(env), path);
 }
 
-export function buildRuntimeZaiBusinessUrl(
-  env: RuntimeZaiEndpointEnv = readProductEndpointEnv(),
-  path: string,
-): string {
+export function buildRuntimeZaiBusinessUrl(env: RuntimeZaiEndpointEnv = {}, path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${resolveZaiBusinessBaseUrl(env)}${normalizedPath}`;
 }
 
 export function resolveRuntimeProductEndpointConfig(
-  env: RuntimeProductEndpointEnv = readProductEndpointEnv(),
+  env: RuntimeProductEndpointEnv = {},
 ): RuntimeProductEndpointConfig {
   const ccbuddyEnv = resolveRuntimeCCbuddyEnv(env);
   const ccbuddyEndpointOrigin = resolveRuntimeCCbuddyEndpointOrigin(env);

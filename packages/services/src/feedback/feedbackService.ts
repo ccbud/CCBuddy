@@ -87,7 +87,7 @@ export function createFeedbackService(options: CreateFeedbackServiceOptions): IF
     getAuthHeaders: async () => {
       const headers: Record<string, string> = {};
       const deviceMid = getHostDeviceMid();
-      // feedback 的 device_mid 必须复用宿主 deviceMid（与 provider 请求头、远控同一身份）；
+      // feedback 的 device_mid 必须复用宿主 deviceMid，与 provider 请求头保持同一设备身份；
       // 不单独生成 fb_ 身份，否则同一台机器在不同系统里会被拆成两个设备。
       if (deviceMid) {
         headers["X-Device-Mid"] = deviceMid;

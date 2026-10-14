@@ -1,9 +1,11 @@
+import type { Memory, MemoryConfig } from "@ccbuddy/shared";
 import {
   type IMemoryService,
   type ProjectMemoryFileSummary,
   type ProjectMemoryWorkspaceSummary,
 } from "./memory.js";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { readProjectMemoryFileFromStableHandle } from "#src/memory/projectMemoryStableRead.js";
 import { getCCbuddyDataRootDir } from "#src/paths.js";
@@ -109,7 +111,107 @@ function compareProjectMemoryFiles(
   return left.name.localeCompare(right.name, "en");
 }
 
+function resolveUserHomeDir(): string {
+  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+  return envHome && envHome.length > 0 ? envHome : homedir();
+}
+
+function getUserMemoryDir(): string {
+  return join(resolveUserHomeDir(), ".claude", "memory");
+}
+
+/**
+ * 获取 agent 对应的 memory 文件名
+ */
+function getMemoryFileName(_agentId: string): string {
+  // 目前只支持 MEMORY.md，后续可以根据 agent 类型扩展
+  return "MEMORY.md";
+}
+
+/**
+ * 创建 Memory 服务实例
+ */
 export function createMemoryService(): IMemoryService {
+  async function loadMemory(params: {
+    workspacePath: string;
+    agentId: string;
+  }): Promise<{ memory: Memory | null }> {
+    const { agentId } = params;
+
+    try {
+      const fileName = getMemoryFileName(agentId);
+      const memoryDir = getUserMemoryDir();
+
+      // 直接从用户级 ~/.claude/memory 目录读取
+      const filePath = join(memoryDir, fileName);
+      try {
+        const content = await readFile(filePath, "utf-8");
+        return {
+          memory: {
+            content: content || "",
+            enabled: true,
+          },
+        };
+      } catch {
+        // 文件不存在，返回 null
+        return { memory: null };
+      }
+    } catch (error) {
+      console.error("Failed to load memory:", error);
+      return { memory: null };
+    }
+  }
+
+  async function saveMemory(params: {
+    workspacePath: string;
+    agentId: string;
+    config: MemoryConfig;
+  }): Promise<void> {
+    const { agentId, config } = params;
+
+    try {
+      // 直接保存到用户级 ~/.claude/memory 目录
+      const memoryDir = getUserMemoryDir();
+      await mkdir(memoryDir, { recursive: true });
+
+      const fileName = getMemoryFileName(agentId);
+      const filePath = join(memoryDir, fileName);
+      await writeFile(filePath, config.content, "utf-8");
+    } catch (error) {
+      console.error("Failed to save memory:", error);
+      throw error;
+    }
+  }
+
+  async function clearMemory(params: { workspacePath: string; agentId: string }): Promise<void> {
+    const { agentId } = params;
+
+    try {
+      const fileName = getMemoryFileName(agentId);
+      const memoryDir = getUserMemoryDir();
+      const filePath = join(memoryDir, fileName);
+
+      try {
+        await writeFile(filePath, "", "utf-8");
+      } catch {
+        // 文件不存在，忽略错误
+      }
+    } catch (error) {
+      console.error("Failed to clear memory:", error);
+      throw error;
+    }
+  }
+
+  async function getUserMemoryDirectory(): Promise<{ path: string }> {
+    const memoryDir = getUserMemoryDir();
+    try {
+      await mkdir(memoryDir, { recursive: true });
+    } catch {
+      // 目录已存在
+    }
+    return { path: memoryDir };
+  }
+
   async function listProjectMemories(): Promise<ProjectMemoryWorkspaceSummary[]> {
     let projectsRoot: string;
     let projectEntries;
@@ -216,7 +318,7 @@ export function createMemoryService(): IMemoryService {
     await requirePlainDirectory(workspaceRoot);
     await requirePlainDirectory(memoryRoot);
 
-    // 大小写不敏感文件系统会让请求名称命中不同大小写的磁盘文件，绕过 catalog 白名单。
+    // Bugfix：大小写不敏感文件系统会让请求名称命中不同大小写的磁盘文件，绕过 catalog 白名单。
     const filePath = await requireExactProjectMemoryFile(memoryRoot, params.fileName);
     return readProjectMemoryFileFromStableHandle({
       fileName: params.fileName,
@@ -232,6 +334,10 @@ export function createMemoryService(): IMemoryService {
   }
 
   return {
+    loadMemory,
+    saveMemory,
+    clearMemory,
+    getUserMemoryDirectory,
     listProjectMemories,
     readProjectMemoryFile,
   };

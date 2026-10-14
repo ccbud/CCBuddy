@@ -7,17 +7,20 @@ import {
 
 export { CCBUDDY_DESKTOP_CONTEXT_PROMPT_ENABLED_ENV };
 
-type DesktopContextPromptRolloutLogger = SingleFeatureRolloutLogger;
+export type DesktopContextPromptRolloutLogger = SingleFeatureRolloutLogger;
+export const DESKTOP_CONTEXT_PROMPT_REQUEST_TIMEOUT_MS = 3_000;
 export const DESKTOP_CONTEXT_PROMPT_CACHE_TTL_MS = 60 * 60 * 1_000;
 
-interface DesktopContextPromptConfig {
+export interface DesktopContextPromptConfig {
   enabled: boolean;
   configVersion?: string;
 }
 
-type DesktopContextPromptRollout = SingleFeatureRollout<DesktopContextPromptConfig>;
+export type DesktopContextPromptRollout = SingleFeatureRollout<DesktopContextPromptConfig>;
 
-function resolveDesktopContextPromptConfig(payload: unknown): DesktopContextPromptConfig | null {
+export function resolveDesktopContextPromptConfig(
+  payload: unknown,
+): DesktopContextPromptConfig | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
   }

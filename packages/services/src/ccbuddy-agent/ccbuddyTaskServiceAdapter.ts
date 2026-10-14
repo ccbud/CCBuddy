@@ -1,8 +1,16 @@
+import { createBotTopicAdmission } from "#src/ccbuddy-agent/botTopicAdmission.js";
+import {
+  readBotGroupRuntimeSnapshot,
+  waitBotGroupExecutionEnd,
+} from "#src/ccbuddy-agent/groupRuntimeSnapshot.js";
+import { uploadBotGroupAttachments } from "./groupAttachmentUpload.js";
 /* oxlint-disable eslint(max-lines) -- 迁移期需要在一个门面里集中维护旧 task projection 到 CCbuddy session 的协议适配。 */
-import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createCCbuddyAgentConnectionScope } from "#src/ccbuddy-agent/ccbuddyAgentConnectionScope.js";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { getCCbuddyDataRootDir } from "../paths.js";
 import { join } from "node:path";
-import { getLegacyTaskSessionSnapshotPath, getCCbuddyDataRootDir } from "../paths.js";
 import {
   Emitter,
   Event,
@@ -52,6 +60,7 @@ import {
   type CCbuddyBackgroundTurnAttribution,
   type CCbuddyAutomationBotDeliveryTarget,
   type CCbuddyCancelTaskCommandResult,
+  type CCbuddyCodexConnectivityCheckResult,
   type CCbuddyConfigOption,
   type CCbuddyEnqueueTaskCommandResult,
   type CCbuddyError,
@@ -73,6 +82,8 @@ import {
   type CCbuddyPlanStep,
   type CCbuddySlashCommand,
   type CCbuddyStreamEvent,
+  type CCbuddySwitchAgentResult,
+  type CCbuddySyncTaskSessionBindingResult,
   type CCbuddyTaskCreateResult,
   type CCbuddyTaskMeta,
   type CCbuddyTaskClientMode,
@@ -152,14 +163,16 @@ import {
   createHostCommandEnvelope,
   sendHostCasCommandV4,
 } from "./ccbuddyV4HostCommand.js";
+import {
+  getLegacyDeletedTaskSessionSnapshotPath,
+  getLegacyTaskSessionSnapshotPath,
+} from "#src/paths.js";
 import { claudeNativeSessionImportRepo } from "#src/session/claude-native/claudeNativeSessionImportRepo.js";
 import { buildImportedHistoryTaskId } from "#src/session/history-import/historyImportTaskId.js";
 import { importClaudeNativeSessions } from "#src/session/claude-native/claudeNativeSessionImportService.js";
 import { buildImportedClaudeTaskId } from "#src/session/claude-native/buildImportedClaudeTaskFile.js";
-import {
-  readLegacyImportedClaudeHistory,
-  repairImportedClaudeSessionSnapshot,
-} from "#src/session/claude-native/importedClaudeHistoryRepair.js";
+import { repairImportedClaudeSessionSnapshot } from "#src/session/claude-native/importedClaudeHistoryRepair.js";
+import { safeParseLegacyTaskSessionFile } from "#src/session/legacyTaskSessionFile.js";
 import {
   MODEL_CONFIG_ID,
   MODE_CONFIG_ID,
@@ -257,21 +270,43 @@ function resolveCCbuddyAgentCurrentLogFilePath(now = new Date()): string {
 export function createCCbuddyTaskServiceAdapter(
   options: CreateCCbuddyTaskServiceAdapterOptions,
 ): ICCbuddyTaskService {
+  // Bot 原来绕过连接 facade，导致真实附件 admission 缺少可信身份；复用既有 scope，
+  // 同一 Bot 接入的附件、命令及对账共用连接，不改变桌面与Web 客户端各自的传输模式。
+  const botConnectionScopes = new Map<
+    string,
+    ReturnType<typeof createCCbuddyAgentConnectionScope>
+  >();
+  function botAgent(workspace: CCbuddyAgentWorkspaceTarget) {
+    const key = JSON.stringify([resolveWorkspaceKey(workspace), workspace.remoteSessionId ?? ""]);
+    let scope = botConnectionScopes.get(key);
+    if (!scope) {
+      scope = createCCbuddyAgentConnectionScope(options.ccbuddyAgentService, {
+        connectionId: `bot-${randomUUID()}`,
+        clientMode: "desktop-continuous",
+        role: "trusted-host-relay",
+      });
+      botConnectionScopes.set(key, scope);
+    }
+    return scope.service;
+  }
   const errorEmitter = new Emitter<CCbuddyError>();
   const taskEmitters = new Map<string, Emitter<CCbuddyStreamEvent>>();
   const globalTaskEmitters = new Map<string, Emitter<CCbuddyStreamEvent>>();
   const overlays = new Map<string, TaskOverlay>();
   const taskTargets = new Map<string, TaskTarget>();
+  const topicAdmission = createBotTopicAdmission();
   const runtimeCommands = new Map<string, CCbuddyTaskRuntimeCommand[]>();
   const runtimeCommandDrains = new Map<string, Promise<void>>();
   const apiRetryByTaskKey = new Map<string, CCbuddyApiRetryStatus | null>();
   const backgroundTaskControlsByTaskKey = new Map<string, CCbuddyBackgroundTaskControlItem[]>();
-  const streamedTurnKeys = new Set<string>();
+  const streamedTurnText = new Map<string, { messageId?: string; text: string }>();
   const activePromptInputIds = new Map<string, InputId>();
   const toolProjectionMemoryByTaskKey = new Map<string, CCbuddyToolProjectionMemory>();
   const liveToolProjectionsByTaskKey = new Map<string, Map<string, LiveToolProjection>>();
   let liveToolProjectionOrder = 0;
-  // 内存诊断计数器：只读各 per-task 表的 size。
+  const legacySnapshotTaskKeys = new Set<string>();
+  // 内存诊断计数器（docs/monitoring/memory-diagnostics-log.md）：对应审计里 closeTask/deleteTask
+  // 不清理的 per-task 表，只读 size。
   const memoryDiagnostics = registerMemoryDiagnosticsProvider("task", () => ({
     runtimeCommands: runtimeCommands.size,
     toolMemoryTasks: toolProjectionMemoryByTaskKey.size,
@@ -368,12 +403,12 @@ export function createCCbuddyTaskServiceAdapter(
     const key = taskKey(params);
     const activeRunId = activePromptInputIds.get(key);
     if (!activeRunId) {
-      // 手机端 owner command 到达 host 时，task 可能已经终态收口。
+      // Web 客户端 owner command 到达 host 时，task 可能已经终态收口。
       // 没有 active run 时不能再把旧 command 写入 host 队列，否则会在桌面 shared host 上误发旧输入。
       throw createTaskOwnerCommandError("No active task owner.", "NO_ACTIVE_TASK_OWNER");
     }
     if (activeRunId !== ownerRunId) {
-      // ownerRunId 是远控请求的 stale 防护边界。
+      // ownerRunId 是跨连接 owner 请求的 stale 防护边界。
       // 旧 run 的 enqueue/promote 不能修改当前 task command queue。
       throw createTaskOwnerCommandError("Stale task owner command.", "STALE_TASK_OWNER_COMMAND");
     }
@@ -420,7 +455,7 @@ export function createCCbuddyTaskServiceAdapter(
       if (params.attachments?.length) {
         // 遗留（附件命令面）：v4 sendText 的 attachments 是 attachmentRef 引用模型，
         // 上传/寄存命令面尚未建模（CLI 侧 fork-edit-retry.ts 同款裁决“附件命令面后续”）。
-        // 带附件输入保留旧 session/send，避免手机 replayable 图片/文件输入回归；
+        // 带附件输入保留旧 session/send，避免Web replayable 图片/文件输入回归；
         // 过渡归宿 = v4 附件命令面（届时由 v4 sendText 承接）。
         await options.ccbuddyAgentService.sendPrompt({
           workspacePath: target.workspacePath,
@@ -582,8 +617,8 @@ export function createCCbuddyTaskServiceAdapter(
     if (!command) {
       return;
     }
-    // 手机 host command 在 sendPrompt ACK 后仍要保持 running，
-    // 否则手机刷新拿不到“已开始发送”的 pendingCommands。只有真实终态到达后才能从 host 队列移除。
+    // Web host command 在 sendPrompt ACK 后仍要保持 running，
+    // 否则Web 客户端刷新拿不到“已开始发送”的 pendingCommands。只有真实终态到达后才能从 host 队列移除。
     removeRuntimeCommand(params, command.commandId);
     logger.info(command.traceId, "CCbuddy task command 终态收口", {
       commandId: command.commandId,
@@ -639,7 +674,7 @@ export function createCCbuddyTaskServiceAdapter(
         ...turnAttributionOf(
           runningCommand.automationId ? { automationId: runningCommand.automationId } : {},
         ),
-        // v4 sendText 信封保留手机提交端 clientId（pendingCommands 展示与幂等表按提交端区分）。
+        // v4 sendText 信封保留Web 提交端 clientId（pendingCommands 展示与幂等表按提交端区分）。
         clientId: runningCommand.clientId,
         logReason: "host-command-drain",
       });
@@ -1157,7 +1192,7 @@ export function createCCbuddyTaskServiceAdapter(
       workspacePath: params.workspacePath,
       workspaceIdentity: params.workspaceIdentity,
       sessionId: params.taskId,
-      // replayable 手机端恢复仍经 task adapter，但 stale model guard 在
+      // replayable Web 客户端恢复仍经 task adapter，但 stale model guard 在
       // session resume 内执行；这里带上当前 UI 模型，避免只保护 desktop continuous 主链路。
       model: params.model ? parseModelPickerValue(params.model) : undefined,
       ...(thoughtLevel ? { thoughtLevel } : {}),
@@ -1247,41 +1282,141 @@ export function createCCbuddyTaskServiceAdapter(
     return /\bSession (not found|is not active):/i.test(message);
   }
 
-  async function resumeTaskSnapshot(
-    params: TaskTargetWithMcpServers,
-  ): Promise<CCbuddySessionStateSnapshot> {
-    let snapshot: CCbuddySessionStateSnapshot;
-    try {
-      snapshot = await resumeSnapshot(params);
-    } catch (error) {
-      if (!isSessionMissingError(error)) throw error;
-      // 早期原生历史导入只保存了带 migrationSource 的快照，仍需升级成真实 CCbuddy session。
-      // 复用导入模块的严格来源校验，避免清理 ACP 时误删这条独立的数据迁移路径。
-      const history = await readLegacyImportedClaudeHistory(params);
-      if (!history) throw error;
-      const mcpServers = await resolveProductMcpServers(params.mcpServers);
-      const restored = await options.ccbuddyAgentService.createSession({
-        workspacePath: params.workspacePath,
-        workspaceIdentity: params.workspaceIdentity,
-        sessionId: params.taskId,
-        sessionTraceId: history.traceId ?? createSessionTraceId(),
-        persistence: "immediate",
-        model: params.model ? parseModelPickerValue(params.model) : undefined,
-        ...(mcpServers ? { mcpServers } : {}),
-        ...(params.toolDenylist ? { toolDenylist: params.toolDenylist } : {}),
-        importedHistory: {
-          source: "claudeCode",
-          title: history.title,
-          createdAt: history.createdAt,
-          updatedAt: history.updatedAt,
-          messages: history.messages,
-        },
-      });
-      const meta = await syncTaskIndexSnapshot(restored);
-      await syncTaskIndexMeta({ ...meta, migrationSource: "claudeCode" });
-      return restored;
+  async function readLegacyTaskSnapshot(params: TaskTarget): Promise<CCbuddyTaskSnapshot | null> {
+    const paths = [
+      getLegacyTaskSessionSnapshotPath(
+        params.workspacePath,
+        params.taskId,
+        params.workspaceIdentity,
+      ),
+      getLegacyDeletedTaskSessionSnapshotPath(
+        params.workspacePath,
+        params.taskId,
+        params.workspaceIdentity,
+      ),
+    ];
+    const snapshotPath = paths.find((path) => existsSync(path));
+    if (!snapshotPath) {
+      return null;
     }
-    return repairEmptyImportedClaudeSnapshot(params, snapshot);
+
+    try {
+      const rawSnapshot = JSON.parse(readFileSync(snapshotPath, "utf-8")) as unknown;
+      const parsed = safeParseLegacyTaskSessionFile(rawSnapshot);
+      if (!parsed.success) {
+        logger.warn(
+          undefined,
+          `读取 legacy task snapshot 非法 taskId=${params.taskId}`,
+          parsed.error.flatten(),
+        );
+        return null;
+      }
+
+      const legacyFile = parsed.data;
+      const indexedMeta = await taskIndexRepo.getTaskMeta(params).catch(() => null);
+      const legacyMeta: CCbuddyTaskMeta = {
+        ...legacyFile.meta,
+        // Bugfix: 旧 ACP task 只落在 ~/.ccbuddy/v2/sessions/*.json，没有写入
+        // ccbuddy-cli 的 sqlite session 表。新协议 resume 会把 taskId 当 sessionId
+        // 直接报 Session not found；这里按旧快照恢复只读历史内容，并用 task index
+        // 补齐用户改名、归档状态和终态 status，避免把旧 task 误当成可订阅的新 session。
+        taskId: params.taskId,
+        workspacePath: params.workspacePath,
+        workspaceIdentity: params.workspaceIdentity ?? legacyFile.meta.workspaceIdentity,
+        title: indexedMeta?.title ?? legacyFile.meta.title,
+        updatedAt: indexedMeta?.updatedAt ?? legacyFile.meta.updatedAt,
+        mode: legacyFile.meta.mode ?? indexedMeta?.mode ?? "default",
+        provider: legacyFile.meta.provider ?? indexedMeta?.provider ?? GLM_PROVIDER,
+        status: legacyFile.meta.status ?? indexedMeta?.status ?? "completed",
+        lastError: legacyFile.meta.lastError ?? indexedMeta?.lastError,
+      };
+      const snapshot: CCbuddyTaskSnapshot = {
+        ...legacyFile,
+        meta: applyOverlayToMeta(legacyMeta, getOverlay(params)),
+        runtime: {
+          apiRetry: apiRetryByTaskKey.get(taskKey(params)) ?? null,
+          pendingCommands: runtimeCommands.get(taskKey(params)) ?? [],
+        },
+      };
+      rememberIndexedTaskMeta(snapshot.meta);
+      return snapshot;
+    } catch (error) {
+      logger.warn(undefined, `读取 legacy task snapshot 失败 taskId=${params.taskId}`, error);
+      return null;
+    }
+  }
+
+  async function resumeSnapshotOrLegacy(
+    params: TaskTargetWithMcpServers,
+  ): Promise<
+    | { kind: "session"; snapshot: CCbuddySessionStateSnapshot }
+    | { kind: "legacy"; snapshot: CCbuddyTaskSnapshot }
+  > {
+    try {
+      const snapshot = await resumeSnapshot(params);
+      // 只读保护只属于没有 CLI session 的历史；真实 owner 恢复成功后必须允许继续订阅。
+      legacySnapshotTaskKeys.delete(taskKey(params));
+      return {
+        kind: "session",
+        snapshot: await repairEmptyImportedClaudeSnapshot(params, snapshot),
+      };
+    } catch (error) {
+      if (!isSessionMissingError(error)) {
+        throw error;
+      }
+      const legacySnapshot = await readLegacyTaskSnapshot(params);
+      if (!legacySnapshot) {
+        throw error;
+      }
+      if (legacySnapshot.meta.migrationSource === "claudeCode") {
+        try {
+          const mcpServers = await resolveProductMcpServers(params.mcpServers);
+          const snapshot = await options.ccbuddyAgentService.createSession({
+            workspacePath: params.workspacePath,
+            workspaceIdentity: params.workspaceIdentity,
+            sessionId: params.taskId,
+            sessionTraceId: legacySnapshot.meta.traceId ?? createSessionTraceId(),
+            persistence: "immediate",
+            model: params.model ? parseModelPickerValue(params.model) : undefined,
+            ...(mcpServers ? { mcpServers } : {}),
+            ...(params.toolDenylist ? { toolDenylist: params.toolDenylist } : {}),
+            importedHistory: {
+              source: "claudeCode",
+              title: legacySnapshot.meta.title,
+              createdAt: legacySnapshot.meta.createdAt,
+              updatedAt: legacySnapshot.meta.updatedAt,
+              messages: legacySnapshot.messages.map((message) => ({
+                role: message.role,
+                content: message.content,
+                timestamp: message.timestamp,
+              })),
+            },
+          });
+          // 旧快照升级成功后已有真实 CLI owner。若保留只读标记，桌面/Web继续执行会丢失正文和终态。
+          legacySnapshotTaskKeys.delete(taskKey(params));
+          const meta = await syncTaskIndexSnapshot(snapshot);
+          await syncTaskIndexMeta({ ...meta, migrationSource: "claudeCode" });
+          logger.info(
+            undefined,
+            `legacy Claude 导入 task 已升级为 CCbuddy session taskId=${params.taskId}`,
+          );
+          return { kind: "session", snapshot };
+        } catch (upgradeError) {
+          logger.warn(
+            undefined,
+            `legacy Claude 导入 task 升级为 CCbuddy session 失败，继续只读恢复 taskId=${params.taskId}`,
+            upgradeError,
+          );
+        }
+      }
+      logger.warn(
+        undefined,
+        `CCbuddy Protocol session 缺失，已按 legacy task snapshot 恢复 taskId=${params.taskId}`,
+        error,
+      );
+      legacySnapshotTaskKeys.add(taskKey(params));
+      return { kind: "legacy", snapshot: legacySnapshot };
+    }
   }
 
   function snapshotToMeta(snapshot: CCbuddySessionStateSnapshot): CCbuddyTaskMeta {
@@ -1311,7 +1446,7 @@ export function createCCbuddyTaskServiceAdapter(
               ...(snapshot.projection.lastError.detail
                 ? { detail: snapshot.projection.lastError.detail }
                 : {}),
-              // service snapshot 是 mobile replayable/cold task meta 的来源，不能
+              // service snapshot 是 Web replayable/cold task meta 的来源，不能
               // 让它与 UI 直接投影的 lastError 产生归因漂移。
               ...(snapshot.projection.lastError.attribution
                 ? { attribution: snapshot.projection.lastError.attribution }
@@ -1582,7 +1717,7 @@ export function createCCbuddyTaskServiceAdapter(
           undefined,
         pendingPermissions,
         backgroundBashJobs: backgroundTaskControls,
-        // 手机 replayable 快照需要用空数组表达“用户输入队列已清空”。
+        // Web replayable 快照需要用空数组表达“用户输入队列已清空”。
         // desktop-continuous 主链路仍保持原投影形态，避免把 replayable 的集合恢复语义扩散过去。
         ...(pendingElicitations.length > 0 || options?.includeEmptyPendingElicitations
           ? { pendingElicitations }
@@ -1642,6 +1777,10 @@ export function createCCbuddyTaskServiceAdapter(
       return;
     }
 
+    if (event.type === "providerRuntimeHeaders.request") {
+      return;
+    }
+
     if (event.type === "session.event") {
       recordAgentModelNetworkTelemetry(event.event);
       if (event.event.type === "turn.started") {
@@ -1659,7 +1798,7 @@ export function createCCbuddyTaskServiceAdapter(
     const streamEvents = mapSessionEvent(
       params,
       event.event,
-      streamedTurnKeys,
+      streamedTurnText,
       activePromptInputId,
       getToolProjectionMemory(params),
       backgroundTaskControlsByTaskKey,
@@ -1721,7 +1860,7 @@ export function createCCbuddyTaskServiceAdapter(
     const activeInputId = activePromptInputIds.get(key);
     completeRuntimeCommandByInputId(params, activeInputId, event.reason);
     // prompt_completed/prompt_failed 由 agent server 在释放 activeAbortController 后发出。
-    // 手机 host command queue 以它作为“下一条可以发送”的 ready 边界，避免 fixed delay 重试，
+    // Web host command queue 以它作为“下一条可以发送”的 ready 边界，避免 fixed delay 重试，
     // 也不改变桌面 continuous 的 renderer-local queue。
     activePromptInputIds.delete(key);
     scheduleRuntimeCommandDrain(params, "session-ready");
@@ -1745,6 +1884,7 @@ export function createCCbuddyTaskServiceAdapter(
     taskEmitters.clear();
     globalTaskEmitters.clear();
     runtimeCommandDrains.clear();
+    streamedTurnText.clear();
   }
 
   async function disposeCCbuddyAgentServiceAndWait(): Promise<void> {
@@ -1778,6 +1918,10 @@ export function createCCbuddyTaskServiceAdapter(
       await options.ccbuddyAgentService.disposeWorkspace(normalizeWorkspaceParams(params));
     },
 
+    async checkCodexConnectivity(): Promise<CCbuddyCodexConnectivityCheckResult> {
+      return { target: "ccbuddy-agent", reachable: true };
+    },
+
     async createTask(params): Promise<CCbuddyTaskCreateResult> {
       const target = normalizeWorkspaceParams(params);
       const requestedSelection =
@@ -1800,7 +1944,7 @@ export function createCCbuddyTaskServiceAdapter(
           if (requestedSelection) {
             if (!sameModelSelection(snapshot.settings.model.current, requestedSelection)) {
               // replayable 首发复用 draft session 时，draft 可能仍停在预热时的旧模型。
-              // 复用前必须同步 UI 当前模型，否则手机远控首发会显示新模型但真实请求仍用旧模型。
+              // 复用前必须同步 UI 当前模型，否则普通 Web 首发会显示新模型但真实请求仍用旧模型。
               snapshot = await options.ccbuddyAgentService.setModel({
                 ...target,
                 sessionId: draftSessionId,
@@ -1813,7 +1957,7 @@ export function createCCbuddyTaskServiceAdapter(
             snapshot.settings.thoughtLevel.current !== requestedSelection.options.reasoningLevel
           ) {
             // replayable 首发复用 draft session 时也必须以 UI 当前 thought_level 为准。
-            // 否则手机远控可能复用旧 draft session，导致首发请求沿用过期推理强度。
+            // 否则普通 Web 可能复用旧 draft session，导致首发请求沿用过期推理强度。
             snapshot = await options.ccbuddyAgentService.setThoughtLevel({
               ...target,
               sessionId: draftSessionId,
@@ -1824,9 +1968,9 @@ export function createCCbuddyTaskServiceAdapter(
           if (!isSessionMissingError(error)) {
             throw error;
           }
-          // 手机端草稿 session 和桌面一样只存在 agent runtime 内存里。
+          // Web 客户端草稿 session 和桌面一样只存在 agent runtime 内存里。
           // 远端重连/agent 重启后旧 draftSessionId 可能失效；首发消费点降级新建，避免用户卡死。
-          logger.warn(undefined, "手机 replayable draft session 已失效，降级创建新 task", {
+          logger.warn(undefined, "Web replayable draft session 已失效，降级创建新 task", {
             draftSessionId,
             workspaceIdentity: target.workspaceIdentity ?? null,
             workspacePath: target.workspacePath,
@@ -1848,6 +1992,7 @@ export function createCCbuddyTaskServiceAdapter(
                 sessionId: null,
                 payload: {
                   workspaceId: target.workspaceIdentity?.trim() || target.workspacePath,
+                  ...(params.permissionScope ? { permissionScope: params.permissionScope } : {}),
                   config: {
                     ...(model ? { provider: model.providerId, model: model.modelId } : {}),
                     ...(model?.options?.reasoningLevel
@@ -1890,7 +2035,7 @@ export function createCCbuddyTaskServiceAdapter(
                 }
               : {}),
             // Bugfix: replayable task facade 创建 session 时同样会启动 runtime；
-            // 之前这里丢掉 mcpServers，导致手机远控路径和 desktop-continuous 的 MCP 行为不一致。
+            // 之前这里丢掉 mcpServers，导致普通 Web 路径和 desktop-continuous 的 MCP 行为不一致。
             mcpServers,
           });
         }
@@ -1913,14 +2058,241 @@ export function createCCbuddyTaskServiceAdapter(
         workspaceIdentity: meta.workspaceIdentity,
       });
       emitWorkspaceConfig(target, snapshot.settings);
-      // 手机端通过 shared-host 创建 task 时，桌面 renderer 没有本地乐观插入。
-      // create 事件必须保留 task_created 语义，否则 UI 会按普通 meta 事件只重排已存在项，远控首页就拿不到新任务。
+      // Web 客户端通过 shared-host 创建 task 时，桌面 renderer 没有本地乐观插入。
+      // create 事件必须保留 task_created 语义，否则 UI 会按普通 meta 事件只重排已存在项，普通 Web 列表就拿不到新任务。
       emitWorkspaceTaskListChanged(target, meta, "task_created");
       // task 创建结果需要携带 agent 协议快照里的命令列表；否则 replayable 首屏会覆盖为空。
       return {
         ...meta,
         initialSlashCommands: snapshot.slashCommands ?? EMPTY_SLASH_COMMANDS,
       };
+    },
+
+    async readBotTopicSummaries(params) {
+      const target = taskTargets.get(params.taskId);
+      if (target && taskKey(target) !== taskKey(params))
+        throw new Error("Topic task workspace mismatch");
+      const messages = await options.ccbuddyAgentService.readSessionMessages({
+        workspacePath: params.workspacePath,
+        workspaceIdentity: params.workspaceIdentity,
+        remoteSessionId: params.remoteSessionId ?? target?.remoteSessionId,
+        sessionId: params.taskId,
+        limit: 200,
+      });
+      return messages
+        .flatMap(({ info, parts }) => {
+          if (info.role !== "user" || info.source !== "bot_topic_context") return [];
+          return [
+            {
+              checkpoint: String(info.metadata?.checkpoint ?? ""),
+              text:
+                typeof info.metadata?.displayText === "string"
+                  ? info.metadata.displayText
+                  : textFromParts(parts),
+            },
+          ];
+        })
+        .slice(-20);
+    },
+
+    async invalidateBotTopicInputs(params) {
+      const target = getTaskTarget(params.taskId);
+      if (taskKey(target) !== taskKey(params)) throw new Error("Group task workspace mismatch");
+      const key = JSON.stringify([
+        taskKey(params),
+        params.remoteSessionId ?? target.remoteSessionId ?? null,
+      ]);
+      await topicAdmission.invalidate(key);
+    },
+    async readBotTopicExecution(params) {
+      const target = getTaskTarget(params.taskId);
+      if (taskKey(target) !== taskKey(params)) throw new Error("Group task workspace mismatch");
+      const workspace = {
+        ...params,
+        remoteSessionId: params.remoteSessionId ?? target.remoteSessionId,
+      };
+      const snapshot = await readBotGroupRuntimeSnapshot(botAgent(workspace), {
+        ...workspace,
+        sessionId: params.taskId,
+      });
+      if (snapshot.control.stopState === "idle") return undefined;
+      const execution = snapshot.control.activeWorks.find((work) => work.foregroundExecutionId);
+      if (!execution?.foregroundExecutionId)
+        throw new Error("Topic execution identity is unavailable");
+      return {
+        executionId: execution.foregroundExecutionId,
+        sourceCommandId: execution.sourceCommandId,
+      };
+    },
+    async stopBotTopicExecution(params) {
+      const target = getTaskTarget(params.taskId);
+      if (taskKey(target) !== taskKey(params)) throw new Error("Group task workspace mismatch");
+      const workspace = {
+        workspacePath: params.workspacePath,
+        workspaceIdentity: params.workspaceIdentity,
+        remoteSessionId: params.remoteSessionId ?? target.remoteSessionId,
+      };
+      const agent = botAgent(workspace);
+      // 先注册终态监听再停止，避免快速结束发生在 ACK 与订阅之间。
+      const observation = new AbortController();
+      const ended = waitBotGroupExecutionEnd(
+        agent,
+        { ...workspace, sessionId: params.taskId },
+        params.executionId,
+        observation.signal,
+      );
+      void ended.catch(() => undefined);
+      try {
+        const ack = await agent.sendConversationCommandV4({
+          ...workspace,
+          envelope: createHostCommandEnvelope({
+            type: "stop",
+            sessionId: params.taskId,
+            payload: { expectedForegroundExecutionId: params.executionId },
+          }),
+        });
+        assertV4CommandAckOk("stop", ack, `session=${params.taskId}`);
+        await ended;
+      } finally {
+        observation.abort();
+      }
+    },
+
+    async getBotGroupTaskBlockReason(params) {
+      const target = taskTargets.get(params.taskId);
+      if (target && taskKey(target) !== taskKey({ ...params, taskId: params.taskId }))
+        throw new Error("Group task workspace mismatch");
+      const snapshot = await readBotGroupRuntimeSnapshot(botAgent(params), {
+        ...params,
+        ...((params.remoteSessionId ?? target?.remoteSessionId)
+          ? { remoteSessionId: params.remoteSessionId ?? target?.remoteSessionId }
+          : {}),
+        sessionId: params.taskId,
+      });
+      if (snapshot.pendingInteractions.length > 0) return "interaction";
+      if (snapshot.control.phase === "running" || snapshot.control.phase === "prewarming")
+        return "running";
+      if (snapshot.queue.items.length > 0) return "queued";
+      return null;
+    },
+    async cancelBotGroupInput(params) {
+      const target = getTaskTarget(params.taskId);
+      if (
+        params.workspacePath &&
+        taskKey(target) !== taskKey({ ...params, workspacePath: params.workspacePath })
+      )
+        throw new Error("Group task workspace mismatch");
+      const workspace = {
+        workspacePath: params.workspacePath ?? target.workspacePath,
+        workspaceIdentity: params.workspaceIdentity ?? target.workspaceIdentity,
+        ...((params.remoteSessionId ?? target.remoteSessionId)
+          ? { remoteSessionId: params.remoteSessionId ?? target.remoteSessionId }
+          : {}),
+      };
+      const snapshot = await readBotGroupRuntimeSnapshot(botAgent(workspace), {
+        ...workspace,
+        sessionId: target.taskId,
+      });
+      const item = snapshot.queue.items.find(
+        (entry) => entry.sourceCommandId === params.sourceCommandId,
+      );
+      if (!item || item.dispatch.state !== "queued") throw new Error("Input is no longer queued");
+      const source = item.botGroupSource;
+      if (
+        !source ||
+        source.botId !== params.botId ||
+        source.chatId !== params.chatId ||
+        (params.actorId !== params.ownerId && source.senderId !== params.actorId)
+      )
+        throw new Error("Queue cancellation is not authorized");
+      return botAgent(workspace).sendConversationCommandV4({
+        ...workspace,
+        envelope: createHostCommandEnvelope({
+          type: "deleteQueueItem",
+          sessionId: target.taskId,
+          commandId: params.commandId,
+          baseRevision: snapshot.revision,
+          payload: { queueItemId: item.queueItemId },
+        }),
+      });
+    },
+
+    async submitBotGroupInput(params) {
+      const target = getTaskTarget(params.taskId);
+      if (
+        params.workspacePath &&
+        taskKey(target) !== taskKey({ ...params, workspacePath: params.workspacePath })
+      )
+        throw new Error("Group task workspace mismatch");
+      const workspace = {
+        workspacePath: params.workspacePath ?? target.workspacePath,
+        workspaceIdentity: params.workspaceIdentity ?? target.workspaceIdentity,
+        ...((params.remoteSessionId ?? target.remoteSessionId)
+          ? { remoteSessionId: params.remoteSessionId ?? target.remoteSessionId }
+          : {}),
+      };
+      const admissionKey = JSON.stringify([
+        taskKey({ ...workspace, taskId: target.taskId }),
+        workspace.remoteSessionId ?? null,
+      ]);
+      const version = topicAdmission.capture(admissionKey);
+      // Bug 原因：Host 重启后任务索引仍在，但 CLI 尚未加载原会话；直接 admission
+      // 会返回 sessionNotFound。复用后台订阅的冷恢复屏障，不依赖 Desktop 打开任务。
+      await readBotGroupRuntimeSnapshot(botAgent(workspace), {
+        ...workspace,
+        sessionId: target.taskId,
+      });
+      const attachments = await uploadBotGroupAttachments(
+        botAgent(workspace),
+        { ...workspace, sessionId: target.taskId },
+        params.attachments ?? [],
+      );
+      // 停止可以发生在附件上传期间；完成上传不代表旧输入仍允许被接受。
+      if (params.source.threadId && version !== topicAdmission.capture(admissionKey)) {
+        throw new Error("Topic input was cancelled during preparation");
+      }
+      const envelope = createHostCommandEnvelope({
+        type: "sendText",
+        sessionId: target.taskId,
+        commandId: params.commandId,
+        clientId: `bot:${params.source.botId}:${params.source.chatId}:${params.source.senderId}`,
+        payload: {
+          text: params.content,
+          attachments,
+          requestedDelivery: params.source.threadId ? "startNow" : "queue",
+          botGroupSource: params.source,
+          conversationQuotes: params.conversationQuotes,
+          botDeliveryTarget: {
+            provider: params.source.provider,
+            botId: params.source.botId,
+            providerUserId: params.source.chatId,
+            chatType: "group",
+            ...(params.source.threadId
+              ? { threadId: params.source.threadId, rootMessageId: params.source.rootMessageId }
+              : {}),
+          },
+        },
+      });
+      const send = async () => {
+        try {
+          return await botAgent(workspace).sendConversationCommandV4({
+            ...workspace,
+            envelope,
+          });
+        } catch (error) {
+          // ACK 丢失时查询同一个命令，不能生成新 ID 重发输入。
+          const query = await botAgent(workspace)
+            .queryConversationCommandsV4({
+              ...workspace,
+              commands: [{ sessionId: target.taskId, commandId: params.commandId }],
+            })
+            .catch(() => null);
+          const result = query?.results[0]?.result;
+          if (result && result !== "unknown") return result;
+          throw error;
+        }
+      };
+      return params.source.threadId ? topicAdmission.run(admissionKey, version, send) : send();
     },
 
     async sendPrompt(params): Promise<void> {
@@ -1974,13 +2346,13 @@ export function createCCbuddyTaskServiceAdapter(
         type: "send_prompt",
         content: params.content,
         attachments: params.attachments,
-        // manual run / 手机 replayable 的 prompt 可能先进入 host command queue；
+        // manual run / Web replayable 的 prompt 可能先进入 host command queue；
         // 若这里丢 automationId，drain 时会按普通用户输入发送，CronCreate 会重新暴露。
         automationId: params.automationId,
       };
       const key = taskKey(params);
       runtimeCommands.set(key, [...(runtimeCommands.get(key) ?? []), command]);
-      // 手机 replayable host command 被 accepted 后，前端本地 drain 会主动跳过 hostCommand。
+      // Web replayable host command 被 accepted 后，前端本地 drain 会主动跳过 hostCommand。
       // 因此 host 需要在当前 task 已空闲时自行触发消费；桌面 continuous 不调用该入口，不会受影响。
       scheduleRuntimeCommandDrain(params, "enqueue");
       return { accepted: true, command };
@@ -2043,7 +2415,7 @@ export function createCCbuddyTaskServiceAdapter(
           status: command.status,
         };
       }
-      // 手机 replayable 队列的事实源在 host runtime command queue。
+      // Web replayable 队列的事实源在 host runtime command queue。
       // 删除按钮不能只清 renderer 本地 store，否则下一次 snapshot 会把已 accepted 的命令恢复回来。
       setRuntimeCommands(
         params,
@@ -2087,7 +2459,10 @@ export function createCCbuddyTaskServiceAdapter(
         workspaceIdentity: target.workspaceIdentity,
         envelope: createHostCommandEnvelope({
           type: "stop",
-          payload: {},
+          // 话题停止必须保留已观察到的执行身份；日志 traceId 不能替代 CLI 执行身份。
+          payload: params.expectedForegroundExecutionId
+            ? { expectedForegroundExecutionId: params.expectedForegroundExecutionId }
+            : {},
           sessionId: params.taskId,
         }),
       });
@@ -2268,7 +2643,7 @@ export function createCCbuddyTaskServiceAdapter(
       assertV4CommandAckOk("resolveInteraction", ack, `elicitation ${params.requestId}`);
       if (params.clientMode === "web-remote-replayable") {
         // 语义保真（原 agentService.respondUserInput 的 web-remote-replayable 分支）：
-        // 手机远控应答后，桌面/其它 observer 需要显式响应事件清理同一 requestId 的弹窗；
+        // 普通 Web 应答后，桌面/其它 observer 需要显式响应事件清理同一 requestId 的弹窗；
         // v4 命令路径不再经过旧 respondUserInput，这里由 adapter 本地补投同一事件。
         emitTaskEvent(
           target,
@@ -2309,7 +2684,7 @@ export function createCCbuddyTaskServiceAdapter(
           : await resolveTaskIndexResumeHints(params, "resume_task");
       const model = explicitModel || indexHints.model;
       const thoughtLevel = explicitThoughtLevel || indexHints.thoughtLevel;
-      const snapshot = await resumeTaskSnapshot({
+      const restored = await resumeSnapshotOrLegacy({
         taskId: params.taskId,
         workspacePath: params.workspacePath,
         workspaceIdentity: params.workspaceIdentity,
@@ -2317,6 +2692,18 @@ export function createCCbuddyTaskServiceAdapter(
         thoughtLevel,
         mcpServers: params.mcpServers,
       });
+      if (restored.kind === "legacy") {
+        const meta = await syncTaskIndexMeta({
+          ...restored.snapshot.meta,
+          ...(params.automationId ? { cronAutomationId: params.automationId } : {}),
+          // D48：pre-打点会话被闲时续跑恢复时补写归属；backfill 之外的双保险。
+          ...(params.offPeakTaskId ? { offPeakTaskId: params.offPeakTaskId } : {}),
+        });
+        // 打开/恢复任务是快照收敛，不涉及归属，与 resumeSession 广播同语义。
+        emitWorkspaceTaskListChanged(params, meta, "task_status_changed");
+        return meta;
+      }
+      const snapshot = restored.snapshot;
       emitWorkspaceConfig(params, snapshot.settings);
       const snapshotMeta = await syncTaskIndexSnapshot(snapshot);
       const meta =
@@ -2514,17 +2901,42 @@ export function createCCbuddyTaskServiceAdapter(
         : {};
       const model = explicitModel || indexHints.model;
       const thoughtLevel = explicitThoughtLevel || indexHints.thoughtLevel;
-      const snapshot = await resumeTaskSnapshot({
+      const restored = await resumeSnapshotOrLegacy({
         taskId: params.taskId,
         workspacePath: params.workspacePath,
         workspaceIdentity: params.workspaceIdentity,
-        // 手机 replayable 首屏 snapshot 会先于后续 resumeTask 读取。
+        // Web replayable 首屏 snapshot 会先于后续 resumeTask 读取。
         // 这里必须把 task meta 解析出的历史模型和 thoughtLevel 传进 session/resume，
         // 避免冷恢复用 workspace/draft 默认配置污染 context window 与思考强度。
         model,
         thoughtLevel,
       });
       const resumeDurationMs = Date.now() - resumeStartedAt;
+      if (restored.kind === "legacy") {
+        const limitStartedAt = Date.now();
+        const legacySnapshot = limitTaskSnapshotMessages(restored.snapshot, params.messageLimit);
+        const limitDurationMs = Date.now() - limitStartedAt;
+        const indexStartedAt = Date.now();
+        const indexedMeta =
+          (await taskIndexRepo.getTaskMeta(params)) ??
+          (await syncTaskIndexMeta(legacySnapshot.meta));
+        const indexDurationMs = Date.now() - indexStartedAt;
+        logger.info(undefined, "[ccbuddy-task-service] 历史快照读取完成", {
+          clientMode: params.clientMode ?? "unknown",
+          durationMs: Date.now() - startedAt,
+          indexDurationMs,
+          limitDurationMs,
+          messageLimit: params.messageLimit ?? null,
+          resumeDurationMs,
+          snapshotKind: "legacy",
+          stats: getTaskSnapshotMessageDiagnostics(legacySnapshot),
+          taskId: params.taskId,
+          workspaceIdentity: params.workspaceIdentity ?? null,
+          workspacePath: params.workspacePath,
+        });
+        return { ...legacySnapshot, meta: indexedMeta };
+      }
+      const snapshot = restored.snapshot;
       const projectionStartedAt = Date.now();
       const ccbuddySnapshot = limitTaskSnapshotMessages(
         snapshotToCCbuddy(snapshot, {
@@ -2639,6 +3051,14 @@ export function createCCbuddyTaskServiceAdapter(
         targetMessage.feedback = params.feedback as CCbuddyAssistantMessageFeedback | undefined;
       }
       return snapshot;
+    },
+
+    async syncTaskSessionBinding(): Promise<CCbuddySyncTaskSessionBindingResult> {
+      unsupported("syncTaskSessionBinding");
+    },
+
+    async switchAgent(): Promise<CCbuddySwitchAgentResult> {
+      unsupported("switchAgent");
     },
 
     async scanImportableClaudeSessions(params: {
@@ -2884,6 +3304,14 @@ export function createCCbuddyTaskServiceAdapter(
       return settingsToConfigOptions(snapshot.settings);
     },
 
+    async getWorkspaceProviderConfigFile(params) {
+      return {
+        provider: GLM_PROVIDER,
+        path: params.workspacePath,
+        exists: false,
+      };
+    },
+
     async getTaskNativeSessionLogFile() {
       const path = resolveCCbuddyAgentCurrentLogFilePath();
       // 返回 CCbuddy Agent 的结构化日志 JSONL；日志行中的 sessionId 用于按当前任务排查。
@@ -2902,7 +3330,7 @@ export function createCCbuddyTaskServiceAdapter(
 
     async getTaskTokenUsage(params): Promise<CCbuddyTaskTokenUsageResult> {
       // 摘要面板需要展示 task 的累计模型消耗，不能复用 usage_update 的 context window。
-      // 这里通过 CCbuddy Protocol 读 agent SQLite 的 model_usage 聚合，保持桌面和远控同一事实源。
+      // 这里通过 CCbuddy Protocol 读 agent SQLite 的 model_usage 聚合，保持桌面和普通 Web 同一事实源。
       return options.ccbuddyAgentService.getTaskTokenUsage({
         workspacePath: params.workspacePath,
         workspaceIdentity: params.workspaceIdentity,
@@ -2912,11 +3340,7 @@ export function createCCbuddyTaskServiceAdapter(
 
     async getTaskSessionFilePath(params) {
       return {
-        path: getLegacyTaskSessionSnapshotPath(
-          params.workspacePath,
-          params.taskId,
-          params.workspaceIdentity,
-        ),
+        path: `${params.workspacePath}/${params.taskId}.ccbuddy-session`,
         exists: false,
       };
     },
@@ -2931,7 +3355,7 @@ export function createCCbuddyTaskServiceAdapter(
       // task_meta_changed 只会重拉普通 membership，不能表达持久删除语义；
       // sessions-index 后续仍会返回 CLI 中保留的 session，必须用 task_deleted 让 UI
       // 立即移除缓存并换代 deleted tombstone join，避免重启或 live upsert 后复活。
-      // 同时携带 meta，让桌面/远控的重复订阅能按同一事件去重 membership bump。
+      // 同时携带 meta，让桌面/普通 Web 的重复订阅能按同一事件去重 membership bump。
       emitWorkspaceTaskListChanged(params, meta, "task_deleted");
     },
 
@@ -3079,7 +3503,7 @@ export function createCCbuddyTaskServiceAdapter(
           workspaceIdentity: params.workspaceIdentity,
           expectedUnreadAt: params.expectedUnreadAt,
         });
-        // 旧手机点击可能晚于新的终态未读到达。CAS 未命中时必须把
+        // 旧 Web 客户端点击可能晚于新的终态未读到达。CAS 未命中时必须把
         // service overlay 对账到当前 meta，不能先乐观清除后留下 renderer-only 已读状态。
         setOverlay(params, { unreadAt: result.meta.unreadAt });
         if (result.cleared) {
@@ -3162,12 +3586,18 @@ export function createCCbuddyTaskServiceAdapter(
       rememberTaskTarget(target);
       return (listener) => {
         const localDisposable = getTaskEmitter(target).event(listener);
-        // 这里仍是 services/ 内旧 session/subscribe 词表的
-        // 最后消费点（replayable 的 stream 投影源）。写路径（send/stop/交互回执）
-        // 已收敛 v4 命令；读路径消费方是
-        // host 镜像 taskRealtimePort（词表同为 CCbuddyStreamEvent），镜像换 v4 帧 = relay
-        // 协议与手机 store 整链重做。
-        // 过渡归宿 = replayable 读路径 v4 store，与 host/index.ts 镜像、
+        if (legacySnapshotTaskKeys.has(taskKey(target))) {
+          // Bugfix: legacy ACP task 没有 ccbuddy-cli sqlite session，恢复后只能作为只读历史。
+          // 若继续向 CCbuddy Protocol 建 desktop-continuous/replayable 订阅，会反复触发
+          // Session is not active 并刷爆日志；本地 emitter 已足够承接 rename/archive 等元数据事件。
+          return localDisposable;
+        }
+        // M5 ③-2 复核（2026-07-06）：这里仍是 services/ 内旧 session/subscribe 词表的
+        // 最后消费点（replayable/bots 的 stream 投影源）。写路径（send/stop/交互回执）
+        // 本波已收敛 v4 命令；读路径消费方是 bots handleStreamEvent（10 种事件词表）与
+        // host 镜像 taskRealtimePort（词表同为 CCbuddyStreamEvent），二者换 v4 帧 = relay
+        // 协议 + Web store + bots 投影整波重做（且 ui/store 本波由并行 agent 主修，避让）。
+        // 死期改判 = replayable 读路径 v4 store 波次（波次 3），与 host/index.ts 镜像、
         // mapStateUpdated/mapServiceEvent、agentService.onDynamicSessionEvent 同批摘除。
         const upstreamDisposable = options.ccbuddyAgentService.onDynamicSessionEvent({
           workspacePath: params.workspacePath,
@@ -3201,6 +3631,8 @@ export function createCCbuddyTaskServiceAdapter(
       // 必须在 agentService.disposeAll 前释放，否则 emitter dispose 时仍会回调到已失效的 syncer。
       // workspaceEmitters 已下沉到 syncer，由 syncer.disposeAll 统一回收。
       taskIndexSyncer.disposeAll();
+      for (const scope of botConnectionScopes.values()) void scope.dispose();
+      botConnectionScopes.clear();
       options.ccbuddyAgentService.disposeAll();
       disposeLocalTaskState();
     },
@@ -3213,6 +3645,8 @@ export function createCCbuddyTaskServiceAdapter(
       // app 退出必须先断开 task index syncer 的订阅，再等待 agent 进程树完成清理；
       // 否则 host 退出时会把 ccbuddy-cli 的 SIGKILL 兜底 timer 一起带走。
       taskIndexSyncer.disposeAll();
+      await Promise.all([...botConnectionScopes.values()].map((scope) => scope.dispose()));
+      botConnectionScopes.clear();
       await disposeCCbuddyAgentServiceAndWait();
       disposeLocalTaskState();
     },
@@ -3316,7 +3750,7 @@ function limitTaskSnapshotMessages(
   return {
     ...snapshot,
     messages: history.truncatedBefore ? snapshot.messages.slice(-limit) : snapshot.messages,
-    // 手机 replayable 首屏为了性能只拿尾部窗口。
+    // Web replayable 首屏为了性能只拿尾部窗口。
     // UI 不能再用“返回条数是否等于 limit”猜测是否还有更早历史，因为短尾部终态快照也可能是裁剪窗口。
     history,
   };
@@ -3344,11 +3778,17 @@ function toCCbuddyMode(mode: CCbuddyTaskMode | undefined): CCbuddySessionMode | 
       // automation UI 保存的“自动编辑”使用 canonical edit。旧映射漏掉该值，
       // 调用方的 ?? build 会把权限模式静默降级成“变更前确认”。
       return "edit";
+    case "guarded":
+      return "guarded";
     case "yolo":
+    case "bypassPermissions":
+    case "dontAsk":
       return "yolo";
     case "auto":
       return "auto";
     case "build":
+    case "default":
+    case "acceptEdits":
     case "autoEdit":
       return "build";
     default:
@@ -3553,7 +3993,7 @@ function backgroundTaskNotificationToolUpdateFromInput(params: {
     status,
     content: parsed.notification.result ?? parsed.notification.summary,
     // replayable 动态事件也必须把 notification error 放到标准 tool error，
-    // 否则手机远控与桌面 continuous 的失败详情会产生分叉。
+    // 否则普通 Web 与桌面 continuous 的失败详情会产生分叉。
     ...(status === "failed" && parsed.notification.error
       ? { error: parsed.notification.error }
       : {}),
@@ -3801,7 +4241,7 @@ function mapToolPart(
   const state = part.state;
   const taskNotification = backgroundTaskNotifications?.get(part.callId);
   // CCbuddy Protocol 的 part.callId 是实时流和终态 snapshot 共同的工具身份。
-  // 以前只保存 metadata 会丢掉 toolCallId，手机 replayable 里 result-only 临时工具就无法被终态快照覆盖。
+  // 以前只保存 metadata 会丢掉 toolCallId，Web replayable 里 result-only 临时工具就无法被终态快照覆盖。
   const raw = attachCCbuddyBackgroundTaskNotificationToRaw(
     attachToolCallIdToRaw("metadata" in state ? (state.metadata ?? state) : state, part.callId),
     taskNotification,
@@ -3996,7 +4436,7 @@ function mapStateUpdated(
 function mapSessionEvent(
   params: TaskTarget,
   event: CCbuddySessionEvent,
-  streamedTurnKeys: Set<string>,
+  streamedTurnText: Map<string, { messageId?: string; text: string }>,
   activePromptInputId?: InputId,
   toolProjectionMemory?: CCbuddyToolProjectionMemory,
   backgroundTaskControlsByTaskKey?: Map<string, CCbuddyBackgroundTaskControlItem[]>,
@@ -4016,11 +4456,13 @@ function mapSessionEvent(
       `对齐 CCbuddy prompt inputId eventType=${event.type} protocolTrace=${protocolTraceId}`,
     );
   }
-  const turnKey = `${event.sessionId}:${event.turnId ?? eventInputId ?? traceId}`;
+  const turnKey = `${resolveWorkspaceKey(params)}:${event.sessionId}:${event.turnId ?? eventInputId ?? traceId}`;
 
   if (event.type === "turn.started") {
-    streamedTurnKeys.delete(turnKey);
+    streamedTurnText.delete(turnKey);
+    const inputOrigin = asRecord(payload.intent).inputOrigin;
     const runStartedEvent: CCbuddyStreamEvent = {
+      ...(inputOrigin === "desktop" || inputOrigin === "mobile" ? { inputOrigin } : {}),
       type: "task_run_started",
       taskId: params.taskId,
       traceId,
@@ -4058,7 +4500,6 @@ function mapSessionEvent(
 
   const compactTimeline = mapCompactTimelinePayload(params.taskId, traceId, eventInputId, payload);
   if (compactTimeline) {
-    streamedTurnKeys.add(turnKey);
     return [compactTimeline];
   }
 
@@ -4069,7 +4510,6 @@ function mapSessionEvent(
     payload,
   );
   if (partTimeline) {
-    streamedTurnKeys.add(turnKey);
     return [partTimeline];
   }
 
@@ -4088,8 +4528,14 @@ function mapSessionEvent(
     payload,
   );
   if (modelStreaming) {
-    if (modelStreaming.type === "agent_message_chunk") {
-      streamedTurnKeys.add(turnKey);
+    if (modelStreaming.type === "agent_message_chunk" && !modelStreaming.parentToolUseId) {
+      const previous = streamedTurnText.get(turnKey);
+      const messageId = modelStreaming.messageId;
+      const sameMessage = !messageId || !previous?.messageId || messageId === previous.messageId;
+      streamedTurnText.set(turnKey, {
+        messageId: messageId ?? previous?.messageId,
+        text: (sameMessage ? (previous?.text ?? "") : "") + modelStreaming.content,
+      });
     }
     return apiRetryClearEvent ? [apiRetryClearEvent, modelStreaming] : [modelStreaming];
   }
@@ -4098,6 +4544,10 @@ function mapSessionEvent(
   }
 
   if (event.type === "tool.updated") {
+    // 工具调用前的前言不是最终回答；下一条模型消息需要独立核对已接收正文。
+    if (payload.kind === "scheduled" && !parentToolUseIdFromToolPayload(payload)) {
+      streamedTurnText.delete(turnKey);
+    }
     return mapToolUpdated(params.taskId, traceId, eventInputId, payload, toolProjectionMemory);
   }
 
@@ -4170,13 +4620,19 @@ function mapSessionEvent(
   if (event.type === "turn.completed") {
     const events: CCbuddyStreamEvent[] = [];
     const response = stringValue(payload.response);
-    if (response && !streamedTurnKeys.has(turnKey)) {
+    // Bugfix: 只记录“本轮收到过文字”会让工具前言屏蔽最终回答兜底。
+    // 在终态之前补齐当前模型消息缺少的后缀；完整正文已到达时不重复投递。
+    const streamed = streamedTurnText.get(turnKey)?.text ?? "";
+    const missingResponse = response?.startsWith(streamed)
+      ? response.slice(streamed.length)
+      : response;
+    if (missingResponse) {
       events.push({
         type: "agent_message_chunk",
         taskId: params.taskId,
         traceId,
         ...(eventInputId ? { inputId: eventInputId } : {}),
-        content: response,
+        content: missingResponse,
       });
     }
     events.push({
@@ -4188,13 +4644,13 @@ function mapSessionEvent(
       usage: usageFromPayload(payload.usage),
     });
     toolProjectionMemory?.streamingToolInputById?.clear();
-    streamedTurnKeys.delete(turnKey);
+    streamedTurnText.delete(turnKey);
     return events;
   }
 
   if (event.type === "turn.failed") {
     toolProjectionMemory?.streamingToolInputById?.clear();
-    streamedTurnKeys.delete(turnKey);
+    streamedTurnText.delete(turnKey);
     const errorPayload = asRecord(payload.error);
     if (stringValue(payload.turnPhase) === "compact") {
       return [
@@ -4893,7 +5349,17 @@ function isSubagentDispatchToolName(toolName: string | undefined): boolean {
 function parentToolUseIdFromToolPayload(payload: Record<string, unknown>): string | null {
   // CCbuddy Protocol 发送的父级字段叫 parentToolCallId；
   // UI stream 模型统一消费 parentToolUseId，必须在服务投影层完成一次性归一。
-  return stringValue(payload.parentToolUseId) ?? stringValue(payload.parentToolCallId) ?? null;
+  return (
+    stringValue(payload.parentToolUseId) ??
+    stringValue(payload.parentToolCallId) ??
+    rawClaudeParentToolUseId(payload)
+  );
+}
+
+function rawClaudeParentToolUseId(raw: unknown): string | null {
+  const meta = asRecord(raw)._meta;
+  const claudeCode = asRecord(meta).claudeCode;
+  return stringValue(asRecord(claudeCode).parentToolUseId) ?? null;
 }
 
 function normalizeToolResultContent(

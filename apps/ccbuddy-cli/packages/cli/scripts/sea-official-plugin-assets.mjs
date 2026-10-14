@@ -17,6 +17,7 @@ const browserUseRequiredRuntimePaths = [
   "skills/web-gui-tester/SKILL.md",
 ];
 
+// 修复原因：SEA 对资产进行严格校验，不能登记已移除的上游插件，否则正常构建也会因缺包失败。
 export const officialSeaPlugins = [
   {
     marketplace: "ccbuddy-plugins-official",
@@ -61,9 +62,10 @@ export const officialSeaPlugins = [
     requiresRuntime: true,
     requiredRuntimePaths: ["dist/mcp/server.js"],
     rootPath: join("packages", "node-repl-host"),
-    version: "0.6.0",
+    version: "0.6.1",
   },
   {
+    // browser-use 使用真实 node_repl MCP runtime，SEA 必须校验并嵌入 server.js。
     marketplace: "ccbuddy-plugins-official",
     name: "browser-use",
     packageName: "@ccbuddy/browser-use-plugin",

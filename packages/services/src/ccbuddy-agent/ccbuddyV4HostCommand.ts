@@ -35,19 +35,23 @@ export function uuidv7(now: number = Date.now()): string {
 /** host services 进程稳定 clientId；pendingCommands 展示与幂等表以它区分提交端。 */
 const hostV4ClientId = `host-services-${uuidv7()}`;
 
-interface CreateHostCommandEnvelopeInput<T extends CommandType> {
+export function getHostV4ClientId(): string {
+  return hostV4ClientId;
+}
+
+export interface CreateHostCommandEnvelopeInput<T extends CommandType> {
   type: T;
   payload: CommandPayloadMap[T];
   /** createSession 时为 null。 */
   sessionId: string | null;
   /**
-   * 幂等键。手机 replayable 的 send_prompt 用 inputId（=traceId）作 commandId：
+   * 幂等键。Web replayable 的 send_prompt 用 inputId（=traceId）作 commandId：
    * CLI 侧 sendText 以 commandId 为 inputId 起 turn，终态事件的 inputId 才能与
    * host command queue 的 traceId 对账收口（inputId→commandId 对齐）。
    * 缺省生成 uuid v7（stop/resolveInteraction 等一次性命令）。
    */
   commandId?: string;
-  /** 手机 replayable 保留原提交端 clientId；缺省用 host 进程稳定 id。 */
+  /** 普通 Web replayable 保留原提交端 clientId；缺省用 Host 进程稳定 id。 */
   clientId?: string;
   baseRevision?: number;
   baseLogEpoch?: string;
@@ -58,7 +62,9 @@ export function createHostCommandEnvelope<T extends CommandType>(
   input: CreateHostCommandEnvelopeInput<T>,
 ): CommandEnvelope {
   if (COMMANDS_REQUIRING_BASE_REVISION.has(input.type) && input.baseRevision === undefined) {
-    throw new Error(`command ${input.type} 是 CAS 命令，必须携带 baseRevision`);
+    throw new Error(
+      `command ${input.type} 是 CAS 命令，必须携带 baseRevision（10-protocol-spec §6.4）`,
+    );
   }
   if (ROW_TARGETING_COMMANDS.has(input.type) && !input.baseLogEpoch) {
     throw new Error(`command ${input.type} 是 row target 命令，必须携带 baseLogEpoch`);
@@ -76,7 +82,7 @@ export function createHostCommandEnvelope<T extends CommandType>(
 }
 
 /** v4 命令被服务端否决（rejected/stale/failed）。code 供调用方结构化分流，不匹配错误文案。 */
-class CCbuddyV4CommandRejectedError extends Error {
+export class CCbuddyV4CommandRejectedError extends Error {
   readonly code = "CCBUDDY_V4_COMMAND_REJECTED";
 
   constructor(

@@ -1,7 +1,7 @@
 const SETTINGS_WRITE_QUEUE_TIMEOUT_MS = 30_000;
 const SETTINGS_WRITE_QUEUE_TIMEOUT_ENV = "CCBUDDY_SETTING_WRITE_QUEUE_TIMEOUT_MS";
 
-function getSettingsWriteQueueTimeoutMs(): number {
+export function getSettingsWriteQueueTimeoutMs(): number {
   const rawValue = process.env[SETTINGS_WRITE_QUEUE_TIMEOUT_ENV]?.trim();
   if (!rawValue) {
     return SETTINGS_WRITE_QUEUE_TIMEOUT_MS;
@@ -10,6 +10,10 @@ function getSettingsWriteQueueTimeoutMs(): number {
   return Number.isFinite(parsedValue) && parsedValue > 0
     ? parsedValue
     : SETTINGS_WRITE_QUEUE_TIMEOUT_MS;
+}
+
+export function buildSettingsTempFile(settingsFile: string): string {
+  return `${settingsFile}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function withSettingsWriteQueueTimeout(

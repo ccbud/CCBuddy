@@ -21,7 +21,7 @@ npx ai-elements@latest add conversation
 
 ## Usage with AI SDK
 
-Build a simple conversational UI with `Conversation` and [`PromptInput`](prompt-input.md):
+Build a simple conversational UI with `Conversation` and [`PromptInput`](/components/prompt-input):
 
 Add the following component to your frontend:
 

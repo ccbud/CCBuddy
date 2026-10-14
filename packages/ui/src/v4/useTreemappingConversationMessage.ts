@@ -23,7 +23,9 @@ const ASSISTANT_TURN_ROW_KINDS = new Set<ConversationRow["kind"]>([
 ]);
 
 /** 从 rows 窗口选出最后一个 assistant 轮，并适配为旧 TaskChatMessage 形态。 */
-function buildTreemappingMessageFromRows(rows: readonly ConversationRow[]): TaskChatMessage | null {
+export function buildTreemappingMessageFromRows(
+  rows: readonly ConversationRow[],
+): TaskChatMessage | null {
   let lastAssistantTurnId: string | null = null;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;

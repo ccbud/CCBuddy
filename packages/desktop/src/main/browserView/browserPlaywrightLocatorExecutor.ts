@@ -116,7 +116,7 @@ type ActionProbeExecution =
   | { kind: "timeout" }
   | { kind: "cancelled" };
 
-type IabLocatorExecution =
+export type IabLocatorExecution =
   | { kind: "done"; value?: unknown }
   | { kind: "timeout"; reason: string }
   | { kind: "cancelled" };
@@ -595,7 +595,7 @@ class IabPlaywrightLocatorSession {
         let stableFrames = 0;
         for (let index = 0; index < 10 && stableFrames < 2; index += 1) {
           await waitForAnimationFrame();
-          // el-table 等页面会在 rAF 间用同 locator、同几何的新 DOM node 替换旧 node。
+          // Bug 根因：el-table 等页面会在 rAF 间用同 locator、同几何的新 DOM node 替换旧 node。
           // locator 描述当前匹配目标，不绑定首次 node identity；detach 后应重解析再比较几何。
           const currentElement = element.isConnected ? element : resolveCurrentElement();
           if (!currentElement) return { count: 0, actionable: false };

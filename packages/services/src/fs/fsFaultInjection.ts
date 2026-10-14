@@ -201,7 +201,7 @@ function hasRemainingMatches(rule: NormalizedFsFaultRule): boolean {
   return rule.maxMatches === 0 || rule.matchedCount < rule.maxMatches;
 }
 
-function createInjectedFsFaultError(input: {
+export function createInjectedFsFaultError(input: {
   code: string;
   id: string;
   message?: string;
@@ -301,7 +301,7 @@ export function parseFsFaultRulesFromEnvValue(rawValue: string): FsFaultRuleConf
   });
 }
 
-function createFsFaultInjectorFromEnv(
+export function createFsFaultInjectorFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): FsFaultInjector {
   const rawValue = env[CCBUDDY_E2E_FS_FAULTS_ENV]?.trim();

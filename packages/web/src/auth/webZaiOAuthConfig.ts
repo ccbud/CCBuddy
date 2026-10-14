@@ -13,7 +13,7 @@ interface WebImportMetaEnv {
   VITE_BIGMODEL_OAUTH_APP_ID?: string;
   VITE_CCBUDDY_BASE_URL?: string;
   VITE_CCBUDDY_ENDPOINT_ORIGIN?: string;
-  VITE_WEB_REMOTE_ALLOW_DEV_RETURN_TO?: string;
+  VITE_WEB_AUTH_ALLOW_DEV_RETURN_TO?: string;
 }
 
 export interface WebZaiOAuthConfig extends WebZaiOAuthProviderConfig {
@@ -42,7 +42,7 @@ function buildBigModelAuthorizeUrl(origin: string | undefined): string {
   return `${trimmed ? new URL(trimmed).origin : resolveBigModelApiOrigin({})}/login`;
 }
 
-function createWebZaiOAuthConfig(env: WebImportMetaEnv = {}): WebZaiOAuthConfig {
+export function createWebZaiOAuthConfig(env: WebImportMetaEnv = {}): WebZaiOAuthConfig {
   const devOrigin = env.VITE_DEV_ORIGIN?.trim().replace(/\/$/, "");
   const ccbuddyEndpointUrls = buildCCbuddyEndpointUrls(
     env.VITE_CCBUDDY_BASE_URL?.trim() ||
@@ -62,7 +62,7 @@ function createWebZaiOAuthConfig(env: WebImportMetaEnv = {}): WebZaiOAuthConfig 
     redirectUri: ccbuddyEndpointUrls.webShareCallbackUrl,
     shareRedirectUri: ccbuddyEndpointUrls.webShareCallbackUrl,
     ...(devOrigin ? { devOrigin } : {}),
-    allowDevReturnToRedirect: env.VITE_WEB_REMOTE_ALLOW_DEV_RETURN_TO === "true",
+    allowDevReturnToRedirect: env.VITE_WEB_AUTH_ALLOW_DEV_RETURN_TO === "true",
   };
 }
 

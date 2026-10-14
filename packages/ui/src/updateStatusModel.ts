@@ -77,7 +77,7 @@ export function isUpdateActionCompleted(
   );
 }
 
-function getUpdateDownloadProgressLabel(updateState: UpdateStatePayload | null) {
+export function getUpdateDownloadProgressLabel(updateState: UpdateStatePayload | null) {
   if (updateState?.kind !== "download-progress") {
     return null;
   }

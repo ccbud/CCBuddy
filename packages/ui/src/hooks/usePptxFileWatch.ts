@@ -19,7 +19,10 @@ function normalizeFileWatchPathForCompare(path: string): string {
     : normalized;
 }
 
-function shouldReloadPptxPreviewForWatchEvent(event: FileWatchEvent, filePath: string): boolean {
+export function shouldReloadPptxPreviewForWatchEvent(
+  event: FileWatchEvent,
+  filePath: string,
+): boolean {
   if (!event.changedPath) {
     return true;
   }

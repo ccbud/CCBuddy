@@ -17,7 +17,7 @@ import type { McpTelemetryTracker } from "./telemetry.js";
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 
-interface CreateMcpAdapterForPoolInput {
+export interface CreateMcpAdapterForPoolInput {
   connectionContext: McpConnectionContext;
   config: McpServerConfig;
   serverName: string;

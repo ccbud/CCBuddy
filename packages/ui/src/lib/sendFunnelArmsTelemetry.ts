@@ -1,15 +1,11 @@
 import type { ArmsCustomEventPayload, IPlatformService } from "@ccbuddy/shared";
 import { logger } from "@/logger.js";
 
-// Composer 发送漏斗埋点的 ARMS 出口。
-// 本组事件只走 ARMS，不进 /event/report；reporter 由 Root.tsx 按 isDesktop 安装，
-// Web / 手机远控拿不到 reporter，整组静默。
+export const SEND_FUNNEL_ARMS_GROUP = "send_funnel";
 
-const SEND_FUNNEL_ARMS_GROUP = "send_funnel";
-
-const SEND_FUNNEL_EVENT_INPUT_FOCUS = "send_input_focus";
-const SEND_FUNNEL_EVENT_SEND_CLICK = "send_click";
-const SEND_FUNNEL_EVENT_SEND_RESULT = "send_result";
+export const SEND_FUNNEL_EVENT_INPUT_FOCUS = "send_input_focus";
+export const SEND_FUNNEL_EVENT_SEND_CLICK = "send_click";
+export const SEND_FUNNEL_EVENT_SEND_RESULT = "send_result";
 
 type ArmsReporter = Pick<IPlatformService, "reportArmsCustomEvent">;
 
@@ -31,6 +27,10 @@ export function setSendFunnelArmsReporter(reporter: ArmsReporter | null): void {
   armsReporter = reporter;
 }
 
+export function clearSendFunnelArmsReporterForTest(): void {
+  armsReporter = null;
+}
+
 // 原因:ARMS 属观测链路,发送主链路不得因埋点失败而中断。
 function emit(payload: ArmsCustomEventPayload): void {
   if (!armsReporter) {
@@ -46,7 +46,7 @@ function emit(payload: ArmsCustomEventPayload): void {
 }
 
 /** 会话态 / 草稿态，用于区分「已有会话里发」和「新建任务首发」两类漏斗。 */
-function composerScopeOf(sessionId: string | null | undefined): "session" | "draft" {
+export function composerScopeOf(sessionId: string | null | undefined): "session" | "draft" {
   return sessionId ? "session" : "draft";
 }
 

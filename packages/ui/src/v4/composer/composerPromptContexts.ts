@@ -25,7 +25,7 @@ import {
   type PluginUiModelContext,
 } from "@/plugin-ui/index.js";
 
-interface ComposerPromptContexts {
+export interface ComposerPromptContexts {
   codeComments: readonly CodeCommentComposerAttachment[];
   conversationSelections: readonly ConversationSelectionDisplayReference[];
   webElements: readonly WebElementContextComposerAttachment[];

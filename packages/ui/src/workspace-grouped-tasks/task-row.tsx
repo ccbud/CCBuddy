@@ -70,6 +70,7 @@ function GroupedTaskRowComponent({
   activeWorkspacePath: string;
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
+
   workspaceLabel: string;
   onSelectTask: (workspacePath: string, taskId: string, workspaceIdentity?: string) => void;
   onCloseTask: (task: CCbuddyTaskMeta) => void;
@@ -103,7 +104,7 @@ function GroupedTaskRowComponent({
   // 交互胶囊是当前最高优先级的右侧状态；无论来自 sessions-index 摘要还是
   // activity attention，都不应再并排显示相对时间并挤压任务标题。
   const hasPendingInteraction = Boolean(task.pendingInteraction) || taskAttention !== null;
-  // 远端 session 未就绪时打开文件树必然会被 resolver 拒绝，因此不要暴露
+  // Bugfix：远端 session 未就绪时打开文件树必然会被 resolver 拒绝，因此不要暴露
   // 无效 action；本地 task 不需要 remoteSessionId，仍保持入口可用。
   const canOpenFileTree =
     Boolean(onOpenFileTree) && (!task.workspaceIdentity?.trim() || Boolean(remoteSessionId));
@@ -134,12 +135,12 @@ function GroupedTaskRowComponent({
   const isActive =
     buildTaskWorkspaceKey(activeWorkspacePath, activeWorkspaceIdentity) === workspaceKey &&
     activeTaskId === task.taskId;
-  const isMobileActive = false;
+
   const statusDotClassName =
     leadingIndicator === "error"
       ? "bg-destructive"
       : leadingIndicator === "unread"
-        ? // grouped task 未读点需要和普通 task list 共用 sky 色，避免 brand 色在不同主题下表达漂移。
+        ? // Bugfix: grouped task 未读点需要和普通 task list 共用 sky 色，避免 brand 色在不同主题下表达漂移。
           "bg-sky-500 dark:bg-sky-400"
         : null;
   const canShowHoverActions = !dragOverlay;
@@ -163,7 +164,6 @@ function GroupedTaskRowComponent({
     <div
       role={dragOverlay ? undefined : "button"}
       tabIndex={dragOverlay ? undefined : 0}
-      data-mobile-active-task={!dragOverlay && isMobileActive ? "true" : undefined}
       className={cn(
         "group/task-row",
         TASK_GROUP_ROW_CLASS,
@@ -180,7 +180,7 @@ function GroupedTaskRowComponent({
           className="text-foreground"
           title={dragOverlay ? undefined : taskTitle}
         >
-          {/* grouped task 标题超出时不要显示省略号，右侧渐隐能保留标题连续性，避免和右侧状态元信息挤在一起。*/}
+          {/* Bugfix: grouped task 标题超出时不要显示省略号，右侧渐隐能保留标题连续性，避免和右侧状态元信息挤在一起。 */}
           {taskTitle}
         </TaskTitleOverflowText>
         <span className="ml-auto flex shrink-0 items-center gap-1.5 text-ui-sm text-foreground-subtle">
@@ -250,9 +250,11 @@ function GroupedTaskRowComponent({
   const {
     taskSessionFile,
     taskNativeSessionLogFile,
+    providerConfigFile,
     fileManagerLabel,
     handleCopyText,
     handleOpenTaskPathInFileManager,
+    handleOpenProviderConfig,
   } = useTaskListItemContextActions({
     workspacePath: task.workspacePath,
     remoteSessionId,
@@ -261,6 +263,7 @@ function GroupedTaskRowComponent({
     provider: task.provider,
     intl,
     loadTaskPaths: contextMenuOpen,
+    loadProviderConfig: contextMenuOpen,
   });
   const handleSelect = () => {
     onSelectTask(task.workspacePath, task.taskId, task.workspaceIdentity);
@@ -300,7 +303,7 @@ function GroupedTaskRowComponent({
       type: "bug",
       module: "Agent任务执行失败",
       severity: "P2-中",
-      includeLogs: false,
+      includeLogs: true,
       description: buildTaskFeedbackDescription({
         taskTitle,
         taskId: task.taskId,
@@ -341,12 +344,10 @@ function GroupedTaskRowComponent({
     droppable.setNodeRef(element);
   };
   const groupedTaskDomKey = typeof dragId === "string" ? encodeURIComponent(dragId) : undefined;
-  // CSS hidden → flex 会让 action trigger 在 pointer 到达时才获得布局尺寸，
+  // Bug 原因：CSS hidden → flex 会让 action trigger 在 pointer 到达时才获得布局尺寸，
   // Tooltip Portal 可能先以未定位坐标绘制。改为交互状态决定 action 是否挂载，
-  // 同时保留键盘、触摸设备和手机远控 active task 的入口。
   const shouldMountHoverActions =
-    !task.pendingInteraction &&
-    (taskRowHovered || taskRowFocusWithin || isHoverNone || isMobileActive);
+    !task.pendingInteraction && (taskRowHovered || taskRowFocusWithin || isHoverNone);
   // 触屏端 isHoverNone 只负责常驻 action；时间、状态点和 cron/off-peak 元信息
   // 仍应保留，仅在真实 hover / focus 交互时让位，避免手机端永久丢失任务状态。
   const shouldSuppressTaskMetadata = taskRowHovered || taskRowFocusWithin;
@@ -369,7 +370,6 @@ function GroupedTaskRowComponent({
         }
       }}
       data-grouped-task-key={groupedTaskDomKey}
-      data-mobile-active-task={isMobileActive ? "true" : undefined}
       className={cn(
         "group/task-row",
         TASK_GROUP_ROW_CLASS,
@@ -380,7 +380,7 @@ function GroupedTaskRowComponent({
     >
       <span className={TASK_GROUP_ROW_LINE_CLASS}>
         <TaskTitleOverflowText as="span" className="text-foreground" title={taskTitle}>
-          {/* grouped task 标题超出时不要显示省略号，右侧渐隐能保留标题连续性，避免和右侧状态元信息挤在一起。*/}
+          {/* Bugfix: grouped task 标题超出时不要显示省略号，右侧渐隐能保留标题连续性，避免和右侧状态元信息挤在一起。 */}
           {taskTitle}
         </TaskTitleOverflowText>
         <span className="ml-auto flex shrink-0 items-center gap-1.5 text-ui-sm text-foreground-subtle">
@@ -509,6 +509,7 @@ function GroupedTaskRowComponent({
           fileManagerLabel={fileManagerLabel}
           taskSessionFile={taskSessionFile}
           taskNativeSessionLogFile={taskNativeSessionLogFile}
+          providerConfigFile={providerConfigFile}
           onMoveTaskToGroup={onMoveTaskToGroup}
           onMoveTaskToTop={onMoveTaskToTop}
           onStartRenameTask={onStartRenameTask}
@@ -516,6 +517,7 @@ function GroupedTaskRowComponent({
           onMarkTaskAsUnread={onMarkTaskAsUnread}
           onOpenTaskPathInFileManager={() => void handleOpenTaskPathInFileManager()}
           onCopyText={(label, text) => void handleCopyText(label, text)}
+          onOpenProviderConfig={() => void handleOpenProviderConfig()}
           onOpenTaskFeedback={() => void handleOpenTaskFeedback()}
           disabledReason={workspaceActionsDisabledReason}
         />

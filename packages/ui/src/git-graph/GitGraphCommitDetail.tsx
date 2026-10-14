@@ -3,7 +3,7 @@ import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { formatCommitTime, getRefIcon, getShortHash } from "./GitGraphDisplay.js";
 import type { GitGraphCommit } from "./layout.js";
 
-interface GitGraphCommitDetailProps {
+export interface GitGraphCommitDetailProps {
   commit: GitGraphCommit;
 }
 

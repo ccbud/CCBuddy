@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { raceClientRequestWithV4Interaction } from "./interaction-response-race.js";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
+  CoreErrorType,
+  createCoreError,
   AskUserQuestionInputSchema,
   AMEND_WORKFLOW_TOOL_NAME,
   CREATE_WORKFLOW_TOOL_NAME,
@@ -38,7 +40,11 @@ import type {
   V4InteractionAnswer,
   V4InteractionRegistrationOptions,
 } from "../ccbuddy-protocol-v4/interaction-registry.js";
-import type { CCbuddyProtocolAgentServerContext } from "./server-types.js";
+import {
+  PROTOCOL_CLIENT_REQUEST_ERROR_CODES,
+  ProtocolRequestError,
+  type CCbuddyProtocolAgentServerContext,
+} from "./server-types.js";
 import {
   buildProtocolPermissionOptions,
   buildSessionPermissionUpdates,
@@ -47,23 +53,51 @@ import {
   buildPermissionDeniedContent,
   PERMISSION_DENIED_BY_USER_CONTENT,
 } from "./permission-options.js";
+import { withWorkflowSettingsAdjustment } from "./workflow-settings-answer.js";
 
 const EXIT_PLAN_MODE_APPROVAL_QUESTION = "Review this implementation plan.";
 const EXIT_PLAN_MODE_APPROVAL_APPROVE = "approve";
 const INTERACTION_REQUEST_REANNOUNCE_INTERVAL_MS = 1_000;
+
+interface RegisteredRequestOptions extends PermissionBrokerRequestOptions {
+  onRegistered?: () => void;
+}
 
 export function createProtocolInteractionBroker(
   context: CCbuddyProtocolAgentServerContext,
 ): PermissionBrokerPort {
   return {
     requestPermission(request, options) {
-      if (request.toolName === ASK_USER_QUESTION_TOOL_NAME) {
-        return requestUserInput(context, request, options);
-      }
-      if (request.toolName === EXIT_PLAN_MODE_TOOL_NAME) {
-        return requestExitPlanModeApproval(context, request, options);
-      }
-      return requestPermission(context, request, options);
+      const ready = Promise.withResolvers<void>();
+      const registeredOptions = { ...options, onRegistered: () => ready.resolve() };
+      const requestResult =
+        request.toolName === ASK_USER_QUESTION_TOOL_NAME
+          ? requestUserInput(context, request, registeredOptions)
+          : request.toolName === EXIT_PLAN_MODE_TOOL_NAME
+            ? requestExitPlanModeApproval(context, request, registeredOptions)
+            : requestPermission(context, request, registeredOptions);
+      const result = requestResult.catch((error: unknown) => {
+        // 协议错误只在适配层翻译；core 不识别传输错误码，也不能把基础设施故障当用户拒绝。
+        if (request.mode === "guarded" && error instanceof ProtocolRequestError) {
+          const type =
+            error.code === PROTOCOL_CLIENT_REQUEST_ERROR_CODES.cancelled
+              ? CoreErrorType.ToolCancelled
+              : error.code === PROTOCOL_CLIENT_REQUEST_ERROR_CODES.timedOut
+                ? CoreErrorType.PermissionTimeout
+                : error.code === PROTOCOL_CLIENT_REQUEST_ERROR_CODES.noClientAttached
+                  ? CoreErrorType.ConfigurationError
+                  : CoreErrorType.ToolExecutionFailed;
+          throw createCoreError(type, error.message, { cause: error, recoverable: true });
+        }
+        throw error;
+      });
+      void result.then(
+        () => ready.resolve(),
+        (error: unknown) => ready.reject(error),
+      );
+      // 旧调用方只消费 result；它们不观察登记信号时也不能产生未处理拒绝。
+      void ready.promise.catch(() => {});
+      return Object.assign(result, { registered: ready.promise });
     },
   };
 }
@@ -71,7 +105,7 @@ export function createProtocolInteractionBroker(
 async function requestPermission(
   context: CCbuddyProtocolAgentServerContext,
   request: PermissionBrokerRequest,
-  options?: PermissionBrokerRequestOptions,
+  options?: RegisteredRequestOptions,
 ): Promise<PermissionBrokerResult> {
   const permissionOptions = buildProtocolPermissionOptions(request);
   // v3 反向 RPC 的选项列表：会话免确认只在 v4 投放（旧桌面回传 response 原文，认不出会话语义）。
@@ -104,14 +138,17 @@ async function requestPermission(
     // v4 answer → CCbuddyPermissionResponse：optionId 语义来自 v4 reducer 合成的
     // allowOnce/allowAlways/deny（见 product-projection onPermissionRequested）。
     (answer) => {
-      const response = v4AnswerToPermissionResponse(answer, permissionOptions, request.toolName);
+      // 工作流确认窗里调整过的设置随放行应答一起走（docs/dynamic-workflow/launch.md
+      // 「Adjusting the settings in the window」）。
+      const base = v4AnswerToPermissionResponse(answer, permissionOptions, request.toolName);
+      const response = withWorkflowSettingsAdjustment(base, answer, request.toolName);
       return response.decision === "deny" && answer.freeText?.trim()
         ? { ...response, preserveReasonFormatting: true }
         : response;
     },
     {
       ...createInteractionRegistrationOptions(request, "other"),
-      ...(!request.origin &&
+      ...(request.approvalMode !== "user-once" && !request.origin &&
       !request.optionsPolicy &&
       options?.claimResponse &&
       context.deps?.sessionStore?.commitPermissionFullAccess
@@ -133,6 +170,7 @@ async function requestPermission(
           }
         : {}),
     },
+    options?.onRegistered,
   );
   return {
     ...response,
@@ -304,7 +342,7 @@ export async function requestMcpElicitation(
 async function requestUserInput(
   context: CCbuddyProtocolAgentServerContext,
   request: PermissionBrokerRequest,
-  options?: PermissionBrokerRequestOptions,
+  options?: RegisteredRequestOptions,
 ): Promise<PermissionBrokerResult> {
   const parsed = AskUserQuestionInputSchema.safeParse(request.input);
   if (!parsed.success) {
@@ -351,6 +389,7 @@ async function requestUserInput(
       context,
       initialAutoResolution,
     ),
+    options?.onRegistered,
   );
 
   return userInputResponseToBrokerResult(request, response);
@@ -378,7 +417,7 @@ function v4AnswerToUserInputResponse(answer: V4InteractionAnswer): CCbuddyUserIn
 async function requestExitPlanModeApproval(
   context: CCbuddyProtocolAgentServerContext,
   request: PermissionBrokerRequest,
-  options?: PermissionBrokerRequestOptions,
+  options?: RegisteredRequestOptions,
 ): Promise<PermissionBrokerResult> {
   const response = await raceClientRequestWithV4Interaction(
     context,
@@ -406,6 +445,7 @@ async function requestExitPlanModeApproval(
     // （planApprovalResponseToBrokerResult 走 plan_approval_feedback deny）；否则 decline。
     (answer) => v4AnswerToPlanApprovalResponse(answer),
     createInteractionRegistrationOptions(request, "other"),
+    options?.onRegistered,
   );
 
   return planApprovalResponseToBrokerResult(response);

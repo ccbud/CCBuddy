@@ -78,7 +78,7 @@ import type {
   WorkspaceFileTreeStickyFolderItem,
 } from "@/workspace-file-tree/types.js";
 
-function getWorkspaceFileTreeDirectoryLoadDepth(
+export function getWorkspaceFileTreeDirectoryLoadDepth(
   workspacePath: string,
   directoryPath: string,
 ): number {
@@ -226,7 +226,7 @@ export function WorkspaceFileTree({
       return;
     }
     lastNonBlockingRootErrorRef.current = errorMessage;
-    // 根目录已有缓存时，刷新失败只能作为非阻塞提示；阻塞错误页会把保留的旧文件树隐藏掉。
+    // Bugfix: 根目录已有缓存时，刷新失败只能作为非阻塞提示；阻塞错误页会把保留的旧文件树隐藏掉。
     toast(`${intl.formatMessage({ id: "workspaceFileTree.readFailed" })}: ${errorMessage}`);
   }, [intl, rootError, rootLoaded]);
   const gitStatusLabelByStatus = useMemo<Record<WorkspaceFileGitStatus, string>>(
@@ -792,7 +792,7 @@ export function WorkspaceFileTree({
   );
 }
 
-function getWorkspaceFileTreeBlockingRootError({
+export function getWorkspaceFileTreeBlockingRootError({
   rootLoaded,
   rootError,
 }: {

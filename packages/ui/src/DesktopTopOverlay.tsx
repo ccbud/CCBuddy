@@ -8,7 +8,6 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
-import { CCbuddyAboutLogo } from "@/components/ui/CCbuddyAboutLogo.js";
 import { UpdateStatusButton } from "@/UpdateStatusButton.js";
 import { DesktopTopOverlayActionButton } from "@/DesktopTopOverlayActionButton.js";
 import {
@@ -36,6 +35,7 @@ interface DesktopTopOverlayProps {
   canGoBack: boolean;
   canGoForward: boolean;
   showNewTaskButton?: boolean;
+  appLogoUrl: string;
   platform: IPlatformService;
   onToggleSidebar: () => void;
   onCreateTask: () => void;
@@ -65,6 +65,7 @@ export function DesktopTopOverlay({
   canGoBack: _canGoBack,
   canGoForward: _canGoForward,
   showNewTaskButton,
+  appLogoUrl,
   platform,
   onToggleSidebar,
   onCreateTask,
@@ -138,7 +139,12 @@ export function DesktopTopOverlay({
               buttonClassName="group relative overflow-hidden rounded-lg"
               onClick={onToggleSidebar}
             >
-              <CCbuddyAboutLogo className="size-5 transition-opacity duration-150 group-hover:opacity-0" />
+              <img
+                src={appLogoUrl}
+                alt="CCbuddy"
+                className="size-5 transition-opacity duration-150 group-hover:opacity-0"
+                draggable={false}
+              />
               <SidebarToggleIcon className="absolute inset-0 m-auto size-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
             </DesktopTopOverlayActionButton>
           )}
@@ -153,8 +159,6 @@ export function DesktopTopOverlay({
               <SidebarToggleIcon className="size-4" />
             </DesktopTopOverlayActionButton>
           )}
-
-          {/* 远程控制移动端左上角空间有限，任务前进/后退在这里会与主操作拥挤重叠。*/}
           {hideTaskNavigationButtons ? null : (
             <>
               <DesktopTopOverlayActionButton

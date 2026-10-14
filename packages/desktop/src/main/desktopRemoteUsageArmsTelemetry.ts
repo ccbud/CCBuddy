@@ -12,11 +12,11 @@ import {
   type FinalArmsCustomEventE2EController,
 } from "./desktopArmsCustomEvent.js";
 
-const REMOTE_USAGE_ARMS_GROUP = "remote_usage";
-const REMOTE_USAGE_ARMS_EVENT_CONNECT_RESULT = "remote_connect_result";
-const REMOTE_USAGE_ARMS_EVENT_ACTIVE_SESSION_COUNT = "remote_active_session_count";
-const REMOTE_USAGE_ARMS_EVENT_DISCONNECT = "remote_disconnect";
-const REMOTE_USAGE_GAUGE_INTERVAL_MS = 300_000;
+export const REMOTE_USAGE_ARMS_GROUP = "remote_usage";
+export const REMOTE_USAGE_ARMS_EVENT_CONNECT_RESULT = "remote_connect_result";
+export const REMOTE_USAGE_ARMS_EVENT_ACTIVE_SESSION_COUNT = "remote_active_session_count";
+export const REMOTE_USAGE_ARMS_EVENT_DISCONNECT = "remote_disconnect";
+export const REMOTE_USAGE_GAUGE_INTERVAL_MS = 300_000;
 
 export interface RemoteConnectionStats {
   activeSessionCount: number;
@@ -53,7 +53,7 @@ let telemetryConfig: RemoteUsageArmsTelemetryConfig | null = null;
 let periodicTimer: ReturnType<typeof setInterval> | null = null;
 let lastGaugeRendererId: number | null = null;
 
-function buildRemoteConnectResultArmsPayload(params: {
+export function buildRemoteConnectResultArmsPayload(params: {
   result: RemoteUsageResult;
   remoteKind: RemoteUsageRemoteKind;
   connectTrigger: RemoteWorkspaceConnectTrigger;
@@ -72,7 +72,7 @@ function buildRemoteConnectResultArmsPayload(params: {
   };
 }
 
-function buildRemoteActiveSessionCountArmsPayload(
+export function buildRemoteActiveSessionCountArmsPayload(
   params: {
     sampleReason: "state-change" | "periodic";
     transition: RemoteGaugeTransition;
@@ -93,7 +93,7 @@ function buildRemoteActiveSessionCountArmsPayload(
   };
 }
 
-function buildRemoteDisconnectArmsPayload(params: {
+export function buildRemoteDisconnectArmsPayload(params: {
   remoteKind: RemoteUsageRemoteKind;
   disconnectReason: RemoteDisconnectReason;
   durationMs: number;
@@ -207,4 +207,10 @@ export function stopRemoteUsageArmsPeriodicSampling(): void {
   if (!timer) return;
   (telemetryConfig?.clearInterval ?? clearInterval)(timer);
   periodicTimer = null;
+}
+
+export function resetRemoteUsageArmsTelemetryForTest(): void {
+  stopRemoteUsageArmsPeriodicSampling();
+  telemetryConfig = null;
+  lastGaugeRendererId = null;
 }

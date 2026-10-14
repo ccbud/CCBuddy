@@ -4,15 +4,15 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./useTheme": "./src/useTheme.ts",
     "./conversation-share-readonly": "./src/v4/ConversationShareReadonlyTimeline.tsx",
-    "./history-review": "./src/history/index.ts",
-    "./oauth-provider-icon": "./src/lib/oauthProviderIcon.tsx",
-    "./message": "./src/components/ai-elements/message.tsx",
     "./e2e-store-bridge": "./src/lib/e2eStoreBridgeBootstrap.ts",
+    "./history-review": "./src/history/index.ts",
+    "./message": "./src/components/ai-elements/message.tsx",
+    "./oauth-provider-icon": "./src/lib/oauthProviderIcon.tsx",
     "./remote-workspace-session-store": "./src/store/remoteWorkspaceSessionStore.ts",
+    "./replay": "./src/replay.ts",
     "./styles.css": "./src/styles.css",
-    "./replay": "./src/replay.ts"
+    "./useTheme": "./src/useTheme.ts"
   },
   "scripts": {
     "lint": "oxlint",
@@ -61,6 +61,7 @@
     "highlight.js": "^11.11.1",
     "katex": "^0.16.45",
     "lexical": "^0.42.0",
+    "lottie-web": "5.13.0",
     "lucide-react": "^1.17.0",
     "marked": "16.4.2",
     "media-chrome": "^4.18.2",
@@ -90,9 +91,12 @@
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-virtual": "^3.13.23",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2",
     "unified": "^11.0.5"

@@ -17,7 +17,7 @@ interface PresentationElementRowInput {
   cells: readonly PresentationElementCellInput[];
 }
 
-interface PresentationElementNodeInput {
+export interface PresentationElementNodeInput {
   id: string;
   name: string;
   nodeType: "shape" | "picture" | "table" | "group" | "chart" | "unknown";
@@ -28,7 +28,7 @@ interface PresentationElementNodeInput {
   rows?: readonly PresentationElementRowInput[];
 }
 
-interface PresentationGroupTextEntryInput {
+export interface PresentationGroupTextEntryInput {
   nodeId: string;
   nodePath: string;
   text: string;

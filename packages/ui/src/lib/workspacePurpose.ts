@@ -1,7 +1,9 @@
 import type { WorkspacePurpose } from "@ccbuddy/shared";
 import type { WorkspaceTabState } from "@/store/tabStore.js";
 
-function getWorkspacePurpose(target: { workspacePurpose?: WorkspacePurpose }): WorkspacePurpose {
+export function getWorkspacePurpose(target: {
+  workspacePurpose?: WorkspacePurpose;
+}): WorkspacePurpose {
   return target.workspacePurpose === "conversation" ? "conversation" : "project";
 }
 

@@ -21,6 +21,7 @@ export type ToolCallIdentitySource =
   | "title"
   | "raw"
   | "raw-ccbuddy-meta"
+  | "raw-claude-meta"
   | "legacy-kind"
   | "legacy-title"
   | "legacy-payload"
@@ -116,6 +117,7 @@ function readRawToolNameCandidates(raw: unknown) {
       readNestedString(raw, ["tool_name"]) ??
       readNestedString(raw, ["name"]),
     ccbuddy: readNestedString(raw, ["_meta", "ccbuddy", "toolName"]),
+    claudeCode: readNestedString(raw, ["_meta", "claudeCode", "toolName"]),
     rawKind: readNestedString(raw, ["kind"]),
     rawTitle: readNestedString(raw, ["title"]),
   };
@@ -129,11 +131,17 @@ function isLegacyAgentTool(
   const title = normalizeLegacyToken(toolCall.title);
   const rawDirect = normalizeLegacyToken(rawNames.direct);
   const rawCCbuddy = normalizeLegacyToken(rawNames.ccbuddy);
+  const rawClaude = normalizeLegacyToken(rawNames.claudeCode);
 
   return (
+    rawClaude === "agent" ||
+    rawClaude === "task" ||
     rawCCbuddy === "agent" ||
+    rawCCbuddy === "spawn_agent" ||
     rawDirect === "agent" ||
+    rawDirect === "spawn_agent" ||
     kind === "agent" ||
+    kind === "spawn_agent" ||
     (kind === "think" && (title === "agent" || title === "task")) ||
     (kind === "think" &&
       isRecord(toolCall.input) &&
@@ -141,10 +149,15 @@ function isLegacyAgentTool(
   );
 }
 
-function isLegacySkillTool(toolCall: ToolIdentityLike) {
+function isLegacySkillTool(
+  toolCall: ToolIdentityLike,
+  rawNames: ReturnType<typeof readRawToolNameCandidates>,
+) {
   const kind = normalizeLegacyToken(toolCall.kind);
   const title = normalizeLegacyToken(toolCall.title);
+  const rawClaude = normalizeLegacyToken(rawNames.claudeCode);
   return (
+    rawClaude === "skill" ||
     title === "skill" ||
     kind === "skill" ||
     (kind === "other" && isRecord(toolCall.input) && typeof toolCall.input.skill === "string")
@@ -220,7 +233,7 @@ export function resolveToolCallIdentity(toolCall: ToolIdentityLike): ToolCallIde
 
   if (isLegacyAgentTool(toolCall, rawNames)) {
     return identityFromLegacyFamily(
-      rawNames.direct ?? rawNames.ccbuddy ?? "Agent",
+      rawNames.direct ?? rawNames.ccbuddy ?? rawNames.claudeCode ?? "Agent",
       "agent",
       "legacy-payload",
     );
@@ -271,7 +284,10 @@ export function resolveToolCallIdentity(toolCall: ToolIdentityLike): ToolCallIde
     );
   }
 
-  if (normalizedTitle === "enterplanmode") {
+  if (
+    normalizedTitle === "enterplanmode" ||
+    normalizeLegacyToken(rawNames.claudeCode) === "enterplanmode"
+  ) {
     return identityFromLegacyFamily("EnterPlanMode", "plan-guidance", "legacy-title");
   }
 
@@ -284,6 +300,7 @@ export function resolveToolCallIdentity(toolCall: ToolIdentityLike): ToolCallIde
       toolCall.title,
       rawNames.direct,
       rawNames.ccbuddy,
+      rawNames.claudeCode,
       rawNames.rawKind,
       rawNames.rawTitle,
     ]
@@ -294,13 +311,14 @@ export function resolveToolCallIdentity(toolCall: ToolIdentityLike): ToolCallIde
     return identityFromLegacyFamily("switch_mode", "switch-mode", "legacy-kind");
   }
 
-  if (isLegacySkillTool(toolCall)) {
+  if (isLegacySkillTool(toolCall, rawNames)) {
     return identityFromLegacyFamily("Skill", "skill", "legacy-payload");
   }
 
   if (
     normalizedKind === "ask_question" ||
     normalizedTitle === "askuserquestion" ||
+    normalizeLegacyToken(rawNames.claudeCode) === "askuserquestion" ||
     hasAskUserQuestionPayload(toolCall)
   ) {
     return identityFromLegacyFamily("AskUserQuestion", "ask-user-question", "legacy-payload");
@@ -316,6 +334,14 @@ export function resolveToolCallIdentity(toolCall: ToolIdentityLike): ToolCallIde
   );
   if (titlePrefixFamily === "file-read") {
     return identityFromLegacyFamily(toolCall.title?.trim() ?? null, "file-read", "legacy-title");
+  }
+
+  const claudeIdentity = identityFromKnownToolName(rawNames.claudeCode, "raw-claude-meta");
+  if (claudeIdentity) {
+    return {
+      ...claudeIdentity,
+      isLegacy: true,
+    };
   }
 
   return UNKNOWN_TOOL_IDENTITY;

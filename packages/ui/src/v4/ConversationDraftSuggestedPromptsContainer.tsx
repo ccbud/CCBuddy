@@ -42,6 +42,7 @@ import {
 } from "@/v4/draftSuggestedPromptItems.js";
 import {
   resolveDraftSuggestedPluginFlowStage,
+  resolveSuggestedPluginClientBoundary,
   type ConversationDraftSuggestedPromptsContainerProps,
   type DraftSuggestedPluginFlow,
   type DraftSuggestedPluginOperation,
@@ -297,8 +298,7 @@ export function ConversationDraftSuggestedPromptsContainer({
       const resolved =
         await resolution.services.pluginManagementService.resolveSuggestedPluginReference({
           ...targetParams(),
-          clientMode: "desktop-continuous" as const,
-          deliveryKind: "desktop-continuous" as const,
+          ...resolveSuggestedPluginClientBoundary(),
           stableId: current.plugin.stableId,
           operationId: current.operationId,
         });
@@ -616,8 +616,7 @@ export function ConversationDraftSuggestedPromptsContainer({
           operation,
           resolution.services.pluginManagementService.resolveSuggestedPluginReference({
             ...targetParams(),
-            clientMode: "desktop-continuous" as const,
-            deliveryKind: "desktop-continuous" as const,
+            ...resolveSuggestedPluginClientBoundary(),
             stableId: plugin.stableId,
             operationId: operation.operationId,
           }),
@@ -706,6 +705,7 @@ export function ConversationDraftSuggestedPromptsContainer({
     [
       cancelOperation,
       clearOperationFeedback,
+      isDesktop,
       locale,
       onOpenAutomations,
       platform,
@@ -714,7 +714,6 @@ export function ConversationDraftSuggestedPromptsContainer({
       resolution.rpcReady,
       resolution.services.pluginManagementService,
       handleMutation,
-      isDesktop,
       showMutationConfirmation,
       showPluginActionPopover,
       targetParams,

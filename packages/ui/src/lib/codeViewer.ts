@@ -410,7 +410,7 @@ function getPatchHeaderFileTarget(patch: string): string | null {
   return null;
 }
 
-function getDiffSourceFileTarget(
+export function getDiffSourceFileTarget(
   source: PatchCodeViewerSource | MultiFileDiffCodeViewerSource,
 ): string | null {
   if (isUsableDiffFileTarget(source.path)) {
@@ -444,7 +444,6 @@ export function createDiffSourceFilePreviewSource(
   }
 
   // diff tab 只保存 diff source；打开“原文件预览”时必须保留 workspace scope，
-  // 否则远程 workspace 或手机远控会按本地路径边界去读文件。
   return {
     type: "file",
     title: getPathLeaf(path),

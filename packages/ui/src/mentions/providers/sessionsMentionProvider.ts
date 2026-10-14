@@ -85,7 +85,7 @@ function mapTaskToMentionItem(
   };
 }
 
-function collectSessionMentionItems(
+export function collectSessionMentionItems(
   tasks: CCbuddyTaskMeta[],
   provider: CCbuddyProvider,
   options: {

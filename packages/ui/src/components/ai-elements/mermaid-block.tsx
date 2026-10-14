@@ -37,10 +37,6 @@ const mermaidPlugin = createMermaidPlugin();
 let mermaidRenderQueue = Promise.resolve();
 const MERMAID_COLOR_CANVAS_SENTINEL = "#010203";
 
-// Mermaid 底层的 khroma 解析器不支持 Tailwind v4 常见的 oklab/color-mix 结果。
-// 先让浏览器解析主题 token，再通过 canvas 采样成传统 rgb/rgba，避免把现代 CSS 颜色直接传给 Mermaid。
-// Web 远程控制的启动测试只提供了最小 document mock，SSR/预渲染环境也可能没有 DOM 工厂；
-// 颜色归一化是增强能力，不能让 MessageResponse 的静态导入在这些环境中直接崩溃。
 const canCreateDomElements =
   typeof document !== "undefined" && typeof document.createElement === "function";
 const mermaidColorResolverEl: HTMLSpanElement | null = canCreateDomElements

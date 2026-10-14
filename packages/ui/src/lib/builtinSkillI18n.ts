@@ -18,6 +18,7 @@ const OFFICIAL_BUILTIN_PLUGIN_NAMES = new Set([
   "presentations",
   "spreadsheets",
   "ios-simulator",
+  "restore-legacy-sessions",
   "skill-creator",
   "plugin-creator",
   "superpowers",
@@ -35,6 +36,7 @@ const OFFICIAL_PLUGIN_PATH_MARKERS = [
   "/presentations-plugin/",
   "/spreadsheets-plugin/",
   "/ios-simulator-plugin/",
+  "/restore-legacy-sessions-plugin/",
   "/skill-creator-plugin/",
   "/plugin-creator-plugin/",
   "/superpowers-plugin/",
@@ -106,6 +108,11 @@ const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
     "zh-CN": "完成任务、实现重大功能或合并前，用于请求代码评审以确认满足需求。",
     "en-US":
       "Use when completing tasks, implementing major features, or before merging to verify work meets requirements.",
+  },
+  "restore-legacy-sessions": {
+    "zh-CN": "检查、规划或执行 ACP 时代 CCbuddy 旧 session 恢复到新的 CCbuddy 任务与会话库。",
+    "en-US":
+      "Inspect, plan, or restore old ACP-era CCbuddy sessions into the new CCbuddy task and session stores.",
   },
   "plugin-creator": {
     "zh-CN": "创建、校验 CCbuddy 插件，并指导本地安装与更新。",

@@ -1,7 +1,4 @@
-// 侧栏会话项「在分屏打开 / 拖拽分屏」入口的可用性开关。
-// session workbench groups 支持桌面和普通 web app；手机与 /remote web-remote
-// 不启用。用 context 而不是逐层 props：会话项上下文菜单和 drag source 被多个
-// 侧栏 Section 共用，判定源收敛在 WorkspaceShellLayout 一处。
+// session workbench groups由桌面和普通Web宿主提供；没有provider时禁用分屏入口。
 import { createContext, useContext, useMemo, useRef, type ReactNode } from "react";
 import type { WorkbenchSessionTarget } from "@/v4/workbenchSessionPlacement.js";
 

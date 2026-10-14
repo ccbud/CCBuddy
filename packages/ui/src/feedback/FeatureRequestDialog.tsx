@@ -328,7 +328,7 @@ function FeatureRequestTextarea({
   );
 }
 
-function buildFeatureRequestDescription({
+export function buildFeatureRequestDescription({
   description,
   solution,
   source,

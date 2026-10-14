@@ -27,7 +27,7 @@ interface SplitDividerDragState {
   rafId: number | null;
 }
 
-interface WorkbenchSplitDividerProps {
+export interface WorkbenchSplitDividerProps {
   containerRef: RefObject<HTMLDivElement | null>;
   splitId: string;
   direction: SplitDirection;

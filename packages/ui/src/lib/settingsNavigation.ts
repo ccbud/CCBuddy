@@ -21,9 +21,9 @@ export type SettingsSectionId =
   | "automations"
   | "shortcuts";
 
-type SettingsUsageTabTarget = "app" | "codingPlan";
-type SettingsPluginTabTarget = "plugins" | "mcps" | "skills" | "commands";
-type SettingsPluginNavigationOrigin = "plugin-store";
+export type SettingsUsageTabTarget = "app" | "codingPlan";
+export type SettingsPluginTabTarget = "plugins" | "mcps" | "skills" | "commands";
+export type SettingsPluginNavigationOrigin = "plugin-store";
 
 const SETTINGS_SECTION_INTENT_KEY = "ccbuddy-settings-section-intent",
   SETTINGS_USAGE_TAB_INTENT_KEY = "ccbuddy-settings-usage-tab-intent",
@@ -42,12 +42,9 @@ const HIDDEN_SETTINGS_SECTIONS = new Set<SettingsSectionId>([
   // 工作区搜索（.ccbuddyignore）设置入口先隐藏：规则文件仍生效并可手动编辑，
   // 编辑页代码保留，放开时从这里移除即可。
   "workspaceFileSearch",
-  "computerUse",
-  // 旧云端套餐与购买配额页不属于自配模型产品。
-  "usage",
 ]);
 
-interface SettingsSectionIntentEventDetail {
+export interface SettingsSectionIntentEventDetail {
   section: SettingsSectionId;
   pluginTab?: SettingsPluginTabTarget;
   pluginOrigin?: SettingsPluginNavigationOrigin;
@@ -102,7 +99,6 @@ function getLocalStorage(): Storage | null {
   try {
     return window.localStorage;
   } catch (error) {
-    // 部分 WebView / 移动远控容器可能禁用 localStorage。
     // 设置页分区记忆只是 UI 偏好，存储不可用时回退默认入口，不应阻断打开设置页。
     logger.warn("[settingsNavigation] localStorage 不可用", {
       error: error instanceof Error ? error.message : String(error),
@@ -111,7 +107,7 @@ function getLocalStorage(): Storage | null {
   }
 }
 
-function readLastSettingsSectionPreference(
+export function readLastSettingsSectionPreference(
   fallbackSection: SettingsSectionId = "general",
 ): SettingsSectionId {
   const storage = getLocalStorage();
@@ -291,7 +287,7 @@ function clearPendingSettingsSectionIntent(): void {
   }
 }
 
-function consumePendingSettingsSection(
+export function consumePendingSettingsSection(
   fallbackSection: SettingsSectionId = "general",
 ): SettingsSectionId {
   if (typeof window === "undefined") {

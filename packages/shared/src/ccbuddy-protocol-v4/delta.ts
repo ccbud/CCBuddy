@@ -1,5 +1,5 @@
 import { mcpAppInstanceSchema } from "../mcp-apps/instance.js";
-// ConversationDelta：快照增量与插件 UI 的 live-only 通知，操作集合封闭。
+// ConversationDelta：快照增量与插件 UI 的 live-only 通知，操作集合封闭（10-protocol-spec §4.5）。
 // 没有 row.inserted（中间插入）、没有 row.moved、没有字段级 JSON patch——
 // 凡此模型表达不了的结构变化，服务端一律发 snapshot resync，刻意压缩客户端错误面。
 //
@@ -73,7 +73,8 @@ export const pluginUiResourceSubscriberSchema = z
 /**
  * run 的 **header** = `workflowRunSchema` 减去 actors / nodes 两张按实例增量同步的表。
  *
- * 使用 `.omit` 从同一 schema 派生，避免独立维护的字段表不一致导致订阅解析失败。小集合（reports / artifacts / phases / pendingQuestions…）留在 header 里整键替换——
+ * `.omit` 派生而不是手抄一份字段表：2026-09-04 的那次订阅永久失效就是「两处各写一份 run 词汇表」
+ * 的后果。小集合（reports / artifacts / phases / pendingQuestions…）留在 header 里整键替换——
  * 它们的上界都是几十条，为它们再开一套增量语法只会多一套能写错的东西。
  */
 export const workflowRunHeaderSchema = workflowRunSchema.omit({ actors: true, nodes: true });

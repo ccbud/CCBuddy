@@ -61,3 +61,20 @@ test("development icon path resolves beside the desktop source or build", () => 
   );
   assert.equal(iconPath, join(mainModuleDirectory, "../../build/icons/128x128.png"));
 });
+
+test("missing artwork keeps the English prompt's update actions available", () => {
+  const text = {
+    title: "Update CCbuddy",
+    message: "Please install the update",
+    detail: "2.0.11 → 2.0.12",
+    autoUpdateButton: "Auto update",
+    manualUpdateButton: "Manual update",
+    quitButton: "Quit",
+  };
+  const html = renderForceUpdatePromptHtml(text, "en-US", null);
+  assert.doesNotMatch(html, /class="brand-icon"/);
+  assert.match(html, /<div class="brand-title">CCbuddy<\/div>/);
+  assert.match(html, /data-action="auto"[^>]*>Auto update<\/button>/);
+  assert.match(html, /data-action="manual"[^>]*>Manual update<\/button>/);
+  assert.match(html, /data-action="quit"[^>]*>Quit<\/button>/);
+});

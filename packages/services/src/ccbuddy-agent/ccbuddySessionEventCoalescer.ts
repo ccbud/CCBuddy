@@ -17,7 +17,7 @@ interface PendingBackgroundSessionEvent {
   event: SessionServiceEvent;
 }
 
-interface BackgroundSessionEventCoalescer {
+export interface BackgroundSessionEventCoalescer {
   accept(event: CCbuddyAgentServiceEvent): void;
   flush(): void;
   dispose(): void;

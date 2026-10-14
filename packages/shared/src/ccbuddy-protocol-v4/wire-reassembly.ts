@@ -69,7 +69,7 @@ export function reassembleTopicWireFrames<F>(
   }
 
   if (first.fragmentCount > PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxFragments) {
-    // fragmentCount 曾只受 logicalBytes 约束，恶意元数据可在
+    // 修复原因：fragmentCount 曾只受 logicalBytes 约束，恶意元数据可在
     // 缺片路径制造千万级 missingIndexes，先用协议硬上限阻断无界分配。
     return {
       kind: "rejected",

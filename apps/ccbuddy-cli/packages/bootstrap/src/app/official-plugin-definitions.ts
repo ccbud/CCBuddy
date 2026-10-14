@@ -18,7 +18,7 @@ export interface OfficialPluginListingSeed {
   examplePrompts_i18n?: Record<string, string[]>;
 }
 
-const OFFICIAL_BROWSER_USE_PLUGIN_NAME = "browser-use";
+export const OFFICIAL_BROWSER_USE_PLUGIN_NAME = "browser-use";
 export const OFFICIAL_BROWSER_USE_PLUGIN_ID = `${OFFICIAL_BROWSER_USE_PLUGIN_NAME}@${CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE}`;
 /**
  * node_repl 宿主。它不是面向用户的插件：没有 skill、没有 listing、不进市场，唯一职责是
@@ -31,13 +31,13 @@ export const OFFICIAL_BROWSER_USE_PLUGIN_ID = `${OFFICIAL_BROWSER_USE_PLUGIN_NAM
  */
 export const OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME = "node-repl-host";
 export const OFFICIAL_NODE_REPL_HOST_PLUGIN_ID = `${OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME}@${CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE}`;
-const OFFICIAL_CUA_PLUGIN_NAME = "computer-use";
+export const OFFICIAL_CUA_PLUGIN_NAME = "computer-use";
 export const OFFICIAL_CUA_PLUGIN_ID = `${OFFICIAL_CUA_PLUGIN_NAME}@${CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE}`;
 
 export interface OfficialPluginDefinition {
   // 内容型 plugin (无 MCP server / 无系统依赖) 可以设为 true,
   // 这样用户首次 `/skill <name>` 就能用,不必先 `ccbuddy plugins enable`。
-  // 默认 false 保持 ios-simulator / android-emulator 这类重负载 plugin 原来行为。
+  // 默认 false，避免未明确声明的插件能力随启动启用。
   defaultEnabled?: boolean;
   listing?: OfficialPluginListingSeed;
   /**
@@ -56,7 +56,7 @@ export interface OfficialPluginDefinition {
 
 const ZAI_AUTHOR = { name: "Z.ai", url: "https://z.ai" } as const;
 
-const OFFICIAL_NODE_REPL_HOST_REQUIRED_SEED_PATHS = ["dist/mcp/server.js"] as const;
+export const OFFICIAL_NODE_REPL_HOST_REQUIRED_SEED_PATHS = ["dist/mcp/server.js"] as const;
 
 export const OFFICIAL_BROWSER_USE_REQUIRED_SEED_PATHS = [
   "docs/api.json",
@@ -70,21 +70,18 @@ export const OFFICIAL_BROWSER_USE_REQUIRED_SEED_PATHS = [
   "skills/web-gui-tester/SKILL.md",
 ] as const;
 
-const OFFICIAL_CUA_REQUIRED_SEED_PATHS = [
+export const OFFICIAL_CUA_REQUIRED_SEED_PATHS = [
   "docs/computer-use.md",
   "scripts/computer-use-client.mjs",
   "skills/computer-use/SKILL.md",
 ] as const;
 
-// ccbuddy-guide 原本没有 requiredSeedPaths，seed 丢文件时会静默装出一个
-// 没有 /workflow 命令的插件——症状是命令不存在，没有任何诊断。commands/ 与技能正文都钉住。
-const OFFICIAL_CCBUDDY_GUIDE_REQUIRED_SEED_PATHS = [
-  "commands/workflow.md",
-  "skills/dynamic-workflows/SKILL.md",
-  "skills/dynamic-workflows/examples.md",
-  "skills/dynamic-workflows/patterns.md",
+// 为已安装的可选指南插件保留兼容标识；本仓库不再将该插件登记为内置 seed。
+export const OFFICIAL_CCBUDDY_GUIDE_REQUIRED_SEED_PATHS = [
+  "skills/ccbuddy-configuration-guide/SKILL.md",
 ] as const;
 
+// 修复原因：上游清单包含本仓库已移除的插件；内置 seed 只登记实际随包发布的三个包。
 export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = [
   {
     defaultEnabled: true,
@@ -134,7 +131,7 @@ export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = 
     // 无 listing：宿主不进市场、不对用户露出。它必须始终可用，因为 node_repl 的注册门禁
     // 是「Browser Use 或 Computer Use 任一启用」，宿主自己不参与那个判断。
     //
-    // 这里的 defaultEnabled 不违反「仅限内容型插件」那条约定（见下方 computer-use 的说明）：
+    // 这里的 defaultEnabled 不违反「仅限内容型插件」那条约定：
     // 约定要防的是「首启即注入整套工具集并拉起 Helper」，而 seed 宿主两件都不做——工具是否
     // 进模型工具池由两个能力插件的启停决定，Helper 由 SDK 首次调用时才拉起。
     defaultEnabled: true,
@@ -146,26 +143,7 @@ export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = 
       "../../node-repl-host",
       "../../../node-repl-host",
     ],
-    version: "0.6.0",
-  },
-  {
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "developer-tools",
-      displayName: "Android Emulator",
-      displayName_i18n: { "zh-CN": "Android 模拟器" },
-      description_i18n: {
-        "zh-CN": "提供 Android 开发工作流与模拟器自动化能力。",
-      },
-    },
-    name: "android-emulator",
-    rootCandidates: [
-      "packages/android-emulator-plugin",
-      "../android-emulator-plugin",
-      "../../android-emulator-plugin",
-      "../../../android-emulator-plugin",
-    ],
-    version: "0.1.0",
+    version: "0.6.1",
   },
   {
     // manifest 只声明 browser-use skill；宿主 node_repl MCP 独立注入，package 另外携带其 server/client
@@ -192,209 +170,6 @@ export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = 
     // 插件 package/manifest 升版时遗漏官方 seed 版本，会继续加载旧缓存目录。
     // package、manifest、definition 三处版本应保持一致，避免发布内容和安装版本再次分叉。
     version: "0.5.1",
-  },
-  ...(
-    [
-      ["documents", "docx", "Documents", "Word文档"],
-      ["pdf", "pdf", "PDF", "PDF"],
-      ["presentations", "pptx", "Presentations", "演示文档"],
-      ["spreadsheets", "xlsx", "Spreadsheets", "电子表格"],
-    ] as const
-  ).map(
-    ([name, skill, displayName, chineseName]): OfficialPluginDefinition => ({
-      defaultEnabled: true,
-      listing: {
-        author: ZAI_AUTHOR,
-        category: "productivity",
-        displayName,
-        displayName_i18n: { "zh-CN": chineseName },
-        // 复用已发布的文档图标，拆分插件无需依赖新 CDN 资源。
-        description_i18n: { "zh-CN": `创建、编辑与审阅${chineseName}（${skill.toUpperCase()}）。` },
-      },
-      name,
-      requiredSeedPaths: ["agents/visual-judge.md", `skills/${skill}/SKILL.md`],
-      rootCandidates: [
-        `packages/${name}-plugin`,
-        `../${name}-plugin`,
-        `../../${name}-plugin`,
-        `../../../${name}-plugin`,
-      ],
-      version: "0.1.7",
-    }),
-  ),
-  {
-    // 沿用原聚合文档插件的官方搜图能力，仅拆出独立开关；认证仍由官方 MCP adapter 注入。
-    defaultEnabled: true,
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "productivity",
-      displayName: "Image Search",
-      displayName_i18n: { "zh-CN": "搜图" },
-      description_i18n: { "zh-CN": "查找插图与参考配图。" },
-    },
-    name: "image-search",
-    requiredSeedPaths: [".mcp.json"],
-    rootCandidates: [
-      "packages/image-search-plugin",
-      "../image-search-plugin",
-      "../../image-search-plugin",
-      "../../../image-search-plugin",
-    ],
-    version: "0.1.1",
-  },
-  {
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "developer-tools",
-      displayName: "iOS Simulator",
-      displayName_i18n: { "zh-CN": "iOS 模拟器" },
-      description_i18n: {
-        "zh-CN": "提供 iOS 开发工作流与模拟器自动化能力。",
-      },
-    },
-    name: "ios-simulator",
-    rootCandidates: [
-      "packages/ios-simulator-plugin",
-      "../ios-simulator-plugin",
-      "../../ios-simulator-plugin",
-      "../../../ios-simulator-plugin",
-    ],
-    version: "0.1.0",
-  },
-  {
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "utilities",
-      displayName: "Restore Legacy Sessions",
-      displayName_i18n: { "zh-CN": "恢复旧版会话" },
-      description_i18n: {
-        "zh-CN": "将旧版会话恢复为 CCbuddy 任务与会话记录。",
-      },
-    },
-    name: "restore-legacy-sessions",
-    rootCandidates: [
-      "packages/restore-legacy-sessions-plugin",
-      "../restore-legacy-sessions-plugin",
-      "../../restore-legacy-sessions-plugin",
-      "../../../restore-legacy-sessions-plugin",
-    ],
-    version: "0.1.0",
-  },
-  {
-    defaultEnabled: true,
-    name: "plugin-creator",
-    version: "0.1.1",
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "utilities",
-      displayName: "Plugin Creator",
-      // 创建器使用客户端自带图标，不再借用 skill-creator 的远端图片。
-      displayName_i18n: { "zh-CN": "插件创建器" },
-      description_i18n: {
-        "zh-CN": "开发、校验 CCbuddy 插件，完成本地 dev 市场安装、试用与更新。",
-      },
-    },
-    rootCandidates: [
-      "packages/plugin-creator-plugin",
-      "../plugin-creator-plugin",
-      "../../plugin-creator-plugin",
-      "../../../plugin-creator-plugin",
-    ],
-    requiredSeedPaths: [
-      "skills/plugin-creator/SKILL.md",
-      "skills/plugin-creator/scripts/create-basic-plugin.mjs",
-      "skills/plugin-creator/scripts/marketplace-files.mjs",
-      "skills/plugin-creator/scripts/upsert-dev-marketplace.mjs",
-      "skills/plugin-creator/scripts/scaffold-files.mjs",
-      "skills/plugin-creator/scripts/validate-plugin.mjs",
-      "skills/plugin-creator/references/plugin-json-spec.md",
-      "skills/plugin-creator/references/installing-and-updating.md",
-    ],
-  },
-  {
-    defaultEnabled: true,
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "utilities",
-      displayName: "Skill Creator",
-      displayName_i18n: { "zh-CN": "技能创建器" },
-      description_i18n: { "zh-CN": "创建、编辑和验证可复用的 CCbuddy 技能。" },
-    },
-    name: "skill-creator",
-    rootCandidates: [
-      "packages/skill-creator-plugin",
-      "../skill-creator-plugin",
-      "../../skill-creator-plugin",
-      "../../../skill-creator-plugin",
-    ],
-    version: "0.1.0",
-  },
-  {
-    // 纯内容型插件（只有 commands + skills，无 MCP / 无系统依赖），默认启用，
-    // 让用户/agent 开箱即用地拿到 CCbuddy 配置指南、自诊断技能与 dynamic workflow 编写指南。
-    defaultEnabled: true,
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "utilities",
-      displayName: "CCbuddy Guide",
-      displayName_i18n: { "zh-CN": "CCbuddy 使用指南" },
-      description_i18n: {
-        "zh-CN": "提供 CCbuddy 配置指南与插件、技能、MCP、命令和钩子诊断。",
-      },
-      examplePrompts: [
-        "How do I configure MCP servers in CCbuddy?",
-        "Diagnose my current CCbuddy setup",
-      ],
-      examplePrompts_i18n: {
-        "zh-CN": ["CCbuddy 里怎么配置 MCP 服务器？", "帮我诊断当前的 CCbuddy 配置"],
-      },
-    },
-    name: "ccbuddy-guide",
-    requiredSeedPaths: OFFICIAL_CCBUDDY_GUIDE_REQUIRED_SEED_PATHS,
-    rootCandidates: [
-      "packages/ccbuddy-guide-plugin",
-      "../ccbuddy-guide-plugin",
-      "../../ccbuddy-guide-plugin",
-      "../../../ccbuddy-guide-plugin",
-    ],
-    version: "0.2.0",
-  },
-  {
-    // 产品决策：电脑控制回退为默认关闭，需用户在设置页显式开启。
-    // 因此这里不声明 defaultEnabled——computer-use 携带 MCP server 与系统 Helper 依赖，
-    // 默认开启意味着每个新用户首启即注入整套工具集并拉起 Helper。
-    // 「defaultEnabled 仅限内容型插件」的旧约定随之恢复完整。
-    // 判定式是 enabledPlugins[id] ?? defaultEnabled：曾在设置页手动开过的用户已落盘
-    // 显式 true，不受本次默认值变更影响。改回默认开启时，需同步
-    // packages/shared/src/plugin-marketplaces.ts 的名单（bootstrap 单测机械对照两者）、
-    // isCCbuddyCuaInternalFeatureEnabled（打包层默认 true）与输入框入口 hidden 默认值的联动语义。
-    name: "computer-use",
-    hostMcpServerNames: ["node_repl"],
-    // 用户露出名统一为「Computer Use / 电脑控制」。包名与 producer 仓库仍保持 ccbuddy-cua，
-    // 以兼容原生 Helper identity；EN 描述基线走 manifest
-    // description，这里只放 zh-CN 覆盖；resolveLocalizedText 在 en-US 时回退到 manifest。
-    listing: {
-      author: ZAI_AUTHOR,
-      category: "productivity",
-      displayName: "Computer Use",
-      displayName_i18n: { "zh-CN": "电脑控制" },
-      description_i18n: {
-        "zh-CN": "自动化桌面应用：智能体驱动鼠标、键盘与界面元素，代你完成实际任务。",
-      },
-      // 插件更名为 computer-use 后，CDN 图标仍发布在 ccbuddy-cua 目录；沿用资源路径避免 404。
-    },
-    rootCandidates: [
-      "packages/ccbuddy-cua-plugin",
-      "../ccbuddy-cua-plugin",
-      "../../ccbuddy-cua-plugin",
-      "../../../ccbuddy-cua-plugin",
-    ],
-    requiredSeedPaths: OFFICIAL_CUA_REQUIRED_SEED_PATHS,
-    // 当前 CUA 为不可用占位包，无需复制 native runtime；避免把本地旧依赖继续带入缓存。
-    runtimeTopLevelPaths: [],
-    // 这里的 version 追踪上游 ccbuddy-cua runtime 版本，使插件 UI 展示、缓存路径、
-    // marketplace 条目都对齐；具体版本由原子 producer bump 工作流维护。
-    version: "0.6.3",
   },
 ];
 

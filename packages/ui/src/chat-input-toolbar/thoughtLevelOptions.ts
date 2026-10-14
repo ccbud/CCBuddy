@@ -2,7 +2,7 @@ import type { CCbuddyConfigOption, CCbuddyProvider } from "@ccbuddy/shared";
 import type { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { getConfigOptionEntryLabel } from "@/chat-input-toolbar/display.js";
 
-type ThoughtLevelEntry = NonNullable<CCbuddyConfigOption["options"]>[number];
+export type ThoughtLevelEntry = NonNullable<CCbuddyConfigOption["options"]>[number];
 
 const NO_THOUGHT_LEVEL_VALUES = new Set([
   "disabled",

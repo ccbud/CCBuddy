@@ -19,7 +19,7 @@ interface DraftModelReadinessState {
   dismissed: boolean;
 }
 
-interface DraftModelReadinessGate {
+export interface DraftModelReadinessGate {
   /** 只有 readiness 已确认或检查本身不可用时，才允许进入 workspace prepare/prewarm。 */
   agentStartupAllowed: boolean;
   error: ModelConfigMissingUiError | null;
@@ -30,7 +30,7 @@ interface DraftModelReadinessGate {
   markProviderNotReady(): void;
 }
 
-function resolveModelSelectionReadinessStatus(
+export function resolveModelSelectionReadinessStatus(
   view: ModelSelectionView,
 ): Extract<DraftModelReadinessStatus, "ready" | "missing"> {
   return view.providers.some((provider) => provider.models.length > 0) ? "ready" : "missing";

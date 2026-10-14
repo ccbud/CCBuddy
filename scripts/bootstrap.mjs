@@ -146,6 +146,7 @@ function runBootstrapWithRemoteBuild() {
     // remote assets 已经占过一轮内存峰值，这里显式串行包构建，且不改变 build:bootstrap/CI 命令。
     runPnpm(["--filter", filter, "build"]);
   }
+  // 修复：e2e-report/stream-animate 未包含在当前产品树，不能将其作为远程 bootstrap 必需包。
   runBootstrapServerBuild();
   runBootstrapDesktopBuild();
 }

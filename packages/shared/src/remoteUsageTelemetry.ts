@@ -18,7 +18,6 @@ export function resolveWorkspaceTelemetryDetail(scope: {
 }
 
 export type RemoteUsageRemoteKind = RemoteTarget["kind"];
-export type RemoteUsageWorkspaceKind = "local" | "remote";
 export type RemoteUsageResult = "success" | "failure";
 export type RemoteWorkspaceConnectTrigger = "new" | "reconnect" | "restore";
 export type RemoteUsageErrorCategory =

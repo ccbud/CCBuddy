@@ -4,7 +4,7 @@ import {
   ccbuddyProviderAccountAccessSchema,
 } from "@ccbuddy/shared";
 
-interface EntitledAccountProviderAccess {
+export interface EntitledAccountProviderAccess {
   readonly providerId: string;
   readonly access: CCbuddyProviderAccountAccess;
   readonly label?: string;

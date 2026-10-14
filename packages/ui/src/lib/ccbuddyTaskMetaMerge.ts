@@ -50,7 +50,7 @@ export function mergeTaskWithOptimisticMeta(
       preferredTask.titleOverridden === true || fallbackTask.titleOverridden === true
         ? true
         : (preferredTask.titleOverridden ?? fallbackTask.titleOverridden),
-    // 远控首页“运行中”依赖 task.meta.status 作为未订阅 runtime 时的兜底。
+    // 任务列表“运行中”依赖 task.meta.status 作为未订阅 runtime 时的兜底。
     // 之前乐观元数据 updatedAt 更新后，如果自身没带 status，会把持久化 status 覆盖成 undefined，
     // 最终列表误显示 idle。这里补 status 回退，避免 running/completed/error 被乐观层吞掉。
     status: preferredTask.status ?? fallbackTask.status,

@@ -5,6 +5,7 @@ import type { SkillRoot } from "../skills/index.js";
 import type { ExecutionContext, TraceContext } from "../tracing/tracer.js";
 
 export const CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE = "ccbuddy-plugins-official";
+export const CLAUDE_OFFICIAL_PLUGIN_MARKETPLACE = "claude-plugins-official";
 export const CCBUDDY_INLINE_PLUGIN_MARKETPLACE = "inline";
 export const CCBUDDY_PLUGIN_HOST_COMMAND = "__ccbuddy-plugin-host";
 /**
@@ -20,7 +21,7 @@ export const CCBUDDY_PLUGIN_HOST_COMMAND = "__ccbuddy-plugin-host";
 export const CCBUDDY_DWF_CHILD_COMMAND = "__ccbuddy-dwf-child";
 
 export function isOfficialMarketplaceId(id: string): boolean {
-  return id === CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE;
+  return id === CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE || id === CLAUDE_OFFICIAL_PLUGIN_MARKETPLACE;
 }
 
 export type PluginSource = "official" | "inline" | "cache";

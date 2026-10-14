@@ -53,3 +53,8 @@ export function resolveDraftSuggestedPluginFlowStage(
   if (status === "missing" || status === "disabled") return status;
   return status === "ready" ? "checking" : "unavailable";
 }
+
+export function resolveSuggestedPluginClientBoundary() {
+  const profile = "desktop-continuous" as const;
+  return { clientMode: profile, deliveryKind: profile };
+}

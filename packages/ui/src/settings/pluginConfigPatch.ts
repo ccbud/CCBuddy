@@ -2,7 +2,7 @@ import type { CCbuddyPluginInfo, CCbuddyPluginUserConfigOption } from "@ccbuddy/
 
 export type PluginOptionDraftValue = string | number | boolean | null;
 
-interface PluginConfigPatch {
+export interface PluginConfigPatch {
   options: Record<string, string | number | boolean>;
   clearOptionKeys: string[];
 }

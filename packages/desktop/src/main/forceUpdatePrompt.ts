@@ -146,7 +146,7 @@ export function renderForceUpdatePromptHtml(
       background: #f8f8f8;
       display: flex;
     }
-    /* 强更截图范围就是完整 BrowserWindow；外层留白加内层圆角会把宿主底色显示成黑框。*/
+    /* Bugfix: 强更截图范围就是完整 BrowserWindow；外层留白加内层圆角会把宿主底色显示成黑框。 */
     .panel {
       width: 100%;
       height: 100%;
@@ -202,7 +202,7 @@ export function renderForceUpdatePromptHtml(
       cursor: pointer;
       -webkit-app-region: no-drag;
     }
-    /* 字体字符 × 的字形基线会让视觉中心偏移，改用两条线保证和主窗口关闭按钮一致居中。*/
+    /* Bugfix: 字体字符 × 的字形基线会让视觉中心偏移，改用两条线保证和主窗口关闭按钮一致居中。 */
     .close::before,
     .close::after {
       content: "";
@@ -391,7 +391,7 @@ export function renderForceUpdatePromptHtml(
       return kind === 'checking' || kind === 'downloading' || kind === 'ready' || kind === 'installing';
     }
     function showCloseConfirmation() {
-      // 自动升级会禁用主按钮，但关闭窗口仍应给用户二次确认，避免误关中断下载。
+      // Bugfix: 自动升级会禁用主按钮，但关闭窗口仍应给用户二次确认，避免误关中断下载。
       resizePromptHeight(${FORCE_UPDATE_PROMPT_HEIGHT});
       previousAutoState = isActiveAutoState(currentState.kind) ? currentState : previousAutoState;
       currentState = { kind: 'confirm-close' };
@@ -499,8 +499,8 @@ export async function showForceUpdatePrompt(
   options: ShowForceUpdatePromptOptions = {},
 ): Promise<ForceUpdatePromptAction> {
   const { app, BrowserWindow, nativeTheme } = await import("electron");
-  // 旧实现按 cwd 读仓库图标，安装包从其他目录启动时会失败并显示旧底座字母。
-  // 窗口每次直接读取随包图标；缺失时只保留已有的 CCbuddy 文字标题。
+  // 同步上游曾恢复按 cwd 读图，安装包从其他目录启动就会缺图并显示旧品牌字母。
+  // 先异步读取随包资源；缺图只保留 CCbuddy 标题，窗口渲染不依赖仓库工作目录。
   const iconPath = resolveForceUpdatePromptIconPath(app.isPackaged, process.resourcesPath);
   const iconDataUrl = await readForceUpdatePromptIcon(iconPath);
   const parentWindow =

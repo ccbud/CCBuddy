@@ -20,7 +20,7 @@ export interface CCbuddyDataSizeScanRequest {
   maxFiles: number;
 }
 
-interface CCbuddyDataSizeScanOptions extends CCbuddyDataSizeScanRequest {
+export interface CCbuddyDataSizeScanOptions extends CCbuddyDataSizeScanRequest {
   signal?: AbortSignal;
   /** 仅用于定向测试时间上限，不进入 Worker 消息。 */
   now?: () => number;

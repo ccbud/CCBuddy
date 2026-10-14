@@ -6,18 +6,18 @@ import type { ICCbuddyTaskService } from "@ccbuddy/services";
 import type { CCbuddyTaskMeta } from "@ccbuddy/shared";
 import { buildTaskEntityKey } from "@/lib/taskQueryCache.js";
 
-interface TaskListMembershipScope {
+export interface TaskListMembershipScope {
   workspacePath: string;
   workspaceIdentity?: string;
 }
 
-type TaskListMembershipService = Pick<
+export type TaskListMembershipService = Pick<
   ICCbuddyTaskService,
   "listPinnedTaskIds" | "listArchivedTasks" | "listTasks" | "listPinnedTasks"
 > &
   Partial<Pick<ICCbuddyTaskService, "listDeletedTaskIds">>;
 
-interface TaskListMembershipSets {
+export interface TaskListMembershipSets {
   /** tasks-index 三个持久分区（active/pinned/archived）的完整 task 行并集。 */
   taskIndexItems: CCbuddyTaskMeta[];
   pinnedIds: Set<string>;
@@ -109,8 +109,8 @@ async function holdTaskListMembershipRefreshResultForE2E(): Promise<void> {
   await hold.released;
 }
 
-/** remote shard 的归属在各自 endpoint 的 tasks-index，按 endpoint 分片拉取后求并。 */
-interface TaskListMembershipEndpoint {
+/** M5 ③：remote shard 的归属在各自 endpoint 的 tasks-index，按 endpoint 分片拉取后求并。 */
+export interface TaskListMembershipEndpoint {
   service: TaskListMembershipService;
   scopes: TaskListMembershipScope[];
 }
@@ -329,12 +329,12 @@ export function fetchTaskListMembershipSetsForEndpointsCached(params: {
 }
 
 /** 测试/异常恢复用：清空 membership 缓存。 */
-function clearTaskListMembershipCache(): void {
+export function clearTaskListMembershipCache(): void {
   membershipPromiseByCacheKey.clear();
 }
 
 /** 按 endpoint 并行拉取归属并求并集（taskId 为 sessionId，跨 endpoint 不冲突）。 */
-async function fetchTaskListMembershipSetsForEndpoints(
+export async function fetchTaskListMembershipSetsForEndpoints(
   endpoints: TaskListMembershipEndpoint[],
 ): Promise<TaskListMembershipSets> {
   const results = await Promise.all(

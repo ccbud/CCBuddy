@@ -7,13 +7,14 @@ import { resolveOfficialPluginRoots } from "./bundled-plugins.js";
 import { DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS } from "./official-plugin-definitions.js";
 import { getPluginStorageRoot } from "./paths.js";
 import type { CCbuddyAppOptions } from "./types.js";
+import { filterVisualizeSkillRoots } from "./visualize-skill-gate.js";
 
 export function resolveStartupPlugins(input: {
   cliStorageRoot: string;
   configResult: ConfigResult;
   env?: NodeJS.ProcessEnv;
   logger?: Logger;
-  options: Pick<CCbuddyAppOptions, "officialPluginRoots" | "pluginStorageRoot">;
+  options: Pick<CCbuddyAppOptions, "officialPluginRoots" | "pluginStorageRoot" | "includeVisualize">;
   startupTimer: StartupTimer;
   workingDirectory: string;
 }): PluginLoadOutcome {
@@ -36,6 +37,10 @@ export function resolveStartupPlugins(input: {
     storageRoot: pluginStorageRoot,
     workingDirectory: input.workingDirectory,
   });
+  pluginOutcome.skillRoots = filterVisualizeSkillRoots(
+    pluginOutcome.skillRoots,
+    input.options.includeVisualize,
+  );
   input.startupTimer.mark("CCbuddy plugins resolved", {
     context: {
       commandRootCount: pluginOutcome.commandRoots.length,

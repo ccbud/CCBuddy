@@ -1,4 +1,4 @@
-import type { StorageRootSpec } from "@ccbuddy/services";
+import type { StorageRootSpec } from "@ccbuddy/shared";
 import type { StorageScanProgress } from "@ccbuddy/services/node";
 
 export interface StorageScanWorkerData {
@@ -6,7 +6,7 @@ export interface StorageScanWorkerData {
   progressIntervalMs: number;
 }
 
-type StorageScanWorkerCommand = { type: "abort" };
+export type StorageScanWorkerCommand = { type: "abort" };
 
 export type StorageScanWorkerMessage =
   | { type: "progress"; progress: StorageScanProgress }

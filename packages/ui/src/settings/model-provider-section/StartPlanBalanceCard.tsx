@@ -135,7 +135,7 @@ function formatFullTokenUsage(locale: string, value: number): string {
   }).format(value);
 }
 
-interface StartPlanQuotaCardEntry {
+export interface StartPlanQuotaCardEntry {
   plan: UsageEntitlementSubscriptionDetail;
   limits: UsageQuotaLimit[];
 }

@@ -211,6 +211,29 @@ export function getTaskUiState(workspaceState: WorkspaceCCbuddyUIState, taskId: 
   return workspaceState.taskUiByTaskId[taskId] ?? DEFAULT_TASK_UI_STATE;
 }
 
+export function hasTaskPendingPermissionRequest(
+  workspaceState: WorkspaceCCbuddyUIState,
+  taskId: string,
+): boolean {
+  const taskUiState = getTaskUiState(workspaceState, taskId);
+  return (
+    taskUiState.permissionRequest != null ||
+    (taskUiState.pendingPermissionRequests?.length ?? 0) > 0
+  );
+}
+
+export function hasTaskPendingHumanInterventionRequest(
+  workspaceState: WorkspaceCCbuddyUIState,
+  taskId: string,
+): boolean {
+  const taskUiState = getTaskUiState(workspaceState, taskId);
+  return (
+    hasTaskPendingPermissionRequest(workspaceState, taskId) ||
+    taskUiState.elicitationRequest != null ||
+    (taskUiState.pendingElicitationRequests?.length ?? 0) > 0
+  );
+}
+
 export function getTaskMeta(
   workspaceState:
     | WorkspaceCCbuddyUIState

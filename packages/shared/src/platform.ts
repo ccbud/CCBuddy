@@ -249,6 +249,27 @@ export interface CreateTempTextAttachmentResult {
   sizeBytes: number;
 }
 
+/**
+ * dwf 产物「作为文件打开」：把某一版产物的字节落成宿主本机上的一份副本
+ * （docs/dynamic-workflow/authoring.md「How the user sees them」）。
+ *
+ * ⚠ 术语：artifact = 脚本经 `artifact.*` 发布给用户看的产出，不是引擎的 `RunSettlement.artifact`。
+ */
+export interface MaterializeWorkflowArtifactFileRequest {
+  runId: string;
+  artifactId: string;
+  /** 这份字节属于哪一版；副本按版本分目录，一版一份。 */
+  version: number;
+  /** 期望的文件名（含扩展名，扩展名决定系统用哪个 App 打开）；宿主会再清洗一次。 */
+  fileName: string;
+  bytes: Uint8Array;
+}
+
+export interface MaterializeWorkflowArtifactFileResult {
+  /** 副本在宿主本机上的绝对路径。 */
+  localPath: string;
+}
+
 export type SaveFileRequest =
   | {
       data: ArrayBuffer;
@@ -276,7 +297,9 @@ export interface PrintPageToPdfResult {
   error?: string;
 }
 
-export function createOpenInEditorRemoteTarget(target: RemoteTarget): OpenInEditorRemoteTarget {
+export function createOpenInEditorRemoteTarget(
+  target: RemoteTarget,
+): OpenInEditorRemoteTarget | undefined {
   switch (target.kind) {
     case "ssh":
       // openInEditor 只需要构造 VS Code Remote-SSH URI 的连接标识，
@@ -301,6 +324,8 @@ export function createOpenInEditorRemoteTarget(target: RemoteTarget): OpenInEdit
         kind: "docker",
         container: target.container,
       };
+    case "server":
+      return undefined;
   }
 }
 
@@ -406,6 +431,18 @@ export interface DesktopZoomState {
   zoomLevel: number;
 }
 
+/**
+ * 桌面端"关闭驻留托盘"能力（spec：docs/desktop/linux-close-to-tray.md）。
+ * Linux 上取决于 session DBus 是否有 StatusNotifierWatcher（KDE/XFCE 原生有，
+ * GNOME 需 AppIndicator 扩展）；Windows 固定 supported=true；macOS/Web 不查询。
+ */
+export interface DesktopCloseToTrayCapability {
+  /** 关闭驻留托盘是否可用 */
+  supported: boolean;
+  /** 是否为 GNOME 系桌面且无托盘；设置页据此追加"安装 AppIndicator 扩展"提示 */
+  gnomeLikeWithoutTray: boolean;
+}
+
 export interface DesktopWindowChromeState {
   isMaximized: boolean;
   /** 本机 macOS 主版本；非 macOS 或无法解析时为 null。 */
@@ -427,6 +464,13 @@ export interface RemoteConnectionRuntimeLog {
   timestamp: string;
 }
 
+/** 普通远程会话的绑定目标；UI 提供身份，Main registry 保持唯一连接所有权。 */
+export interface RemoteWorkspaceSessionTarget {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  remoteSessionId: string;
+}
+
 export interface RemoteSessionClosedEvent {
   sessionId: string;
   reason: "host-exit";
@@ -444,6 +488,84 @@ export interface EmbeddedBrowserOpenUrlRequest {
   browserId?: string;
   browserGeneration?: number;
   sourceTabId?: string;
+}
+
+export interface EmbeddedBrowserPermissionDeviceOption {
+  deviceId: string;
+  name?: string;
+  vendorId?: number;
+  productId?: number;
+  serialNumber?: string;
+}
+
+export interface EmbeddedBrowserPermissionScreenOption {
+  sourceId: string;
+  name: string;
+  /** 源类型：整个屏幕 / 窗口，由 main 按 desktopCapturer source id 前缀判定。 */
+  kind: "screen" | "window";
+  thumbnailDataUrl?: string;
+}
+
+/** Main → Renderer 的内置浏览器权限弹窗请求；kind 决定 renderer 渲染哪类弹窗。 */
+export type EmbeddedBrowserPermissionPromptEvent =
+  | {
+      requestId: string;
+      kind: "permission";
+      origin: string;
+      permission: string;
+      mediaTypes?: string[];
+      /** 发起请求的 guest webContents id；renderer 据此只在归属 tab 渲染，
+       *  避免后台 tab 的请求显示在当前 tab 造成误批准。 */
+      guestWebContentsId?: number;
+    }
+  | {
+      requestId: string;
+      kind: "screen-share";
+      origin: string;
+      screens: EmbeddedBrowserPermissionScreenOption[];
+      /** 屏幕共享无 tab 锚定语义，恒缺省（兜底渲染）。 */
+      guestWebContentsId?: number;
+    }
+  | {
+      requestId: string;
+      kind: "device";
+      origin: string;
+      /** select-hid-device / select-usb-device / select-serial-port / select-bluetooth-device */
+      permission: string;
+      devices: EmbeddedBrowserPermissionDeviceOption[];
+      /** 发起请求的 guest webContents id（serial/蓝牙可取到；hid/usb 受 frame 限制
+       *  缺省，renderer 兜底渲染）。 */
+      guestWebContentsId?: number;
+    };
+
+export type EmbeddedBrowserPermissionResolution =
+  | { action: "allow-always" }
+  | { action: "allow-session" }
+  | { action: "block-always" }
+  | { action: "dismiss" }
+  | { action: "share-screen"; sourceId: string }
+  | { action: "select-device"; deviceId: string }
+  | { action: "cancel" };
+
+export interface EmbeddedBrowserPermissionResolveRequest {
+  requestId: string;
+  resolution: EmbeddedBrowserPermissionResolution;
+}
+
+export type EmbeddedBrowserSitePermissionsSnapshot = Record<
+  string,
+  Record<string, "allow" | "deny">
+>;
+
+export interface EmbeddedBrowserSitePermissionUpdateRequest {
+  origin: string;
+  permission: string;
+  /** "ask" 表示删除该条记录，回到每次询问。 */
+  state: "allow" | "deny" | "ask";
+}
+
+export interface EmbeddedBrowserSitePermissionResetRequest {
+  origin: string;
 }
 
 export interface BotRemoteWorkspaceReconnectedEvent {
@@ -533,7 +655,7 @@ export interface IPlatformService {
 
   /**
    * 插件 UI 沙箱平台端口。只有桌面端实现；
-   * web / 手机远控为 undefined，plugin-ui 据此回退到普通 MCP 工具卡片。
+   * Web 为 undefined，plugin-ui 据此回退到普通 MCP 工具卡片。
    */
   pluginSandbox?: PluginSandboxPlatformPort;
 
@@ -557,7 +679,7 @@ export interface IPlatformService {
 
   /**
    * 从浏览器 File 对象解析宿主本地路径；只有 Desktop preload 能安全实现。
-   * Web/手机端返回 null，避免 UI 层依赖 Electron 的非标准 File.path。
+   * Web 端返回 null，避免 UI 层依赖 Electron 的非标准 File.path。
    */
   getPathForFile?(file: unknown): string | null;
 
@@ -566,11 +688,18 @@ export interface IPlatformService {
 
   /**
    * 在宿主 ~/.ccbuddy 临时目录创建文本附件文件。
-   * 手机远控必须通过 shared-host/platform proxy 写到桌面宿主，避免大文本进入 prompt payload。
    */
   createTempTextAttachment?(
     payload: CreateTempTextAttachmentRequest,
   ): Promise<CreateTempTextAttachmentResult>;
+
+  /**
+   * 把 dwf 产物某一版的字节写成宿主本机上的一份副本（只在路径为空时写），返回其路径。
+   * 仅 Desktop 实现：普通 Web 端没有「用本机 App 打开文件」的能力，缺席即不出入口。
+   */
+  materializeWorkflowArtifactFile?(
+    payload: MaterializeWorkflowArtifactFileRequest,
+  ): Promise<MaterializeWorkflowArtifactFileResult>;
 
   /** 订阅当前窗口内远程连接过程日志，返回 disposer */
   onRemoteConnectionLog(handler: (entry: RemoteConnectionRuntimeLog) => void): () => void;
@@ -620,7 +749,7 @@ export interface IPlatformService {
   /** 列出当前机器 SSH config 中可用于快速填表的 alias */
   listSSHConfigAliases(): Promise<SSHConfigAliasOption[]>;
 
-  /** 读取宿主环境中的原生 MCP 用户目录配置；手机远控通过已连接桌面 host 转发。 */
+  /** 读取宿主环境中的原生 MCP 用户目录配置。 */
   loadMcpFromUserDirectory?(
     payload?: LoadCliMcpFromUserDirectoryRequest,
   ): Promise<LoadCliMcpFromUserDirectoryResult>;
@@ -630,7 +759,7 @@ export interface IPlatformService {
     payload: SaveCliMcpToUserDirectoryRequest,
   ): Promise<{ success: boolean; error?: string }>;
 
-  /** 迁移旧版 Common MCP 配置；仅宿主环境可执行，手机远控通过 desktop attachment 转发。 */
+  /** 迁移旧版 Common MCP 配置；仅宿主环境可执行。 */
   migrateLegacyCommonMcp?(
     payload?: MigrateLegacyCommonMcpRequest,
   ): Promise<MigrateLegacyCommonMcpResult>;
@@ -709,9 +838,9 @@ export interface IPlatformService {
   /** 通过宿主环境上报 ARMS 自定义事件；Web 端当前为空实现 */
   reportArmsCustomEvent(payload: ArmsCustomEventPayload): Promise<void>;
 
-  /** 读取 Desktop Renderer 用户操作 Trace 的当前灰度配置；Web/手机不实现。 */
+  /** 读取 Desktop Renderer 用户操作 Trace 的当前灰度配置；Web 不实现。 */
   getRendererActionTraceConfig?(): Promise<RendererActionTraceConfigV1>;
-  /** 订阅 Main 推送的 Renderer 用户操作 Trace 配置；Web/手机不实现。 */
+  /** 订阅 Main 推送的 Renderer 用户操作 Trace 配置；Web 不实现。 */
   onRendererActionTraceConfigChanged?(
     callback: (config: RendererActionTraceConfigV1) => void,
   ): () => void;
@@ -721,12 +850,15 @@ export interface IPlatformService {
 
   /**
    * Renderer → Main：主窗口 renderer 每 60 秒的 heap 读数，进 `renderer_main` 角色事件。单向 send、fire-and-forget；
-   * Web 端与手机远控没有桥，不实现即 no-op。
+   * Web 端没有桥，不实现即 no-op。
    */
   reportRendererHeapSample?(sample: RendererHeapSample): void;
 
   /** 同步当前窗口所有 tab 的 workspace 路径到 main 进程（用于跨窗口去重） */
   syncWindowTabs(paths: string[]): void;
+
+  /** 同步当前窗口已连接的远程 workspace 身份，供宿主 registry 和机器人会话使用。 */
+  syncRemoteWorkspaceSessions?(targets: RemoteWorkspaceSessionTarget[]): void;
 
   /** 同步当前窗口的未读 task 数给宿主环境，用于 Dock / 任务栏徽标聚合 */
   syncWindowUnreadCount(count: number): void;
@@ -735,6 +867,12 @@ export interface IPlatformService {
 
   /** 同步需要 main 进程即时感知的应用设置；Web fallback 可忽略 */
   syncAppSettings?(patch: Partial<AppSettings>): void;
+
+  /**
+   * 查询"关闭驻留托盘"能力；桌面端 main 进程探测后返回，Web 无桥不实现。
+   * 设置页据此决定 Linux 上的开关是否置灰。
+   */
+  getCloseToTrayCapability?(): Promise<DesktopCloseToTrayCapability>;
 
   /** 快捷键设置页录制态开关；桌面端 main 据此暂时摘除可配置菜单 accelerator，Web 可忽略 */
   setShortcutRecordingActive?(active: boolean): void;
@@ -750,6 +888,24 @@ export interface IPlatformService {
 
   /** 注册内置浏览器 webview 请求打开新页面的回调，返回 disposer */
   onOpenBrowserUrl?(handler: (request: EmbeddedBrowserOpenUrlRequest) => void): () => void;
+  /** 注册内置浏览器网页权限弹窗请求（main → renderer），返回 disposer */
+  onEmbeddedBrowserPermissionPrompt?(
+    handler: (event: EmbeddedBrowserPermissionPromptEvent) => void,
+  ): () => void;
+  /** 回传用户对内置浏览器权限弹窗的决策（renderer → main） */
+  resolveEmbeddedBrowserPermissionPrompt?(request: EmbeddedBrowserPermissionResolveRequest): void;
+  /** 读取内置浏览器站点权限记录（设置页「网站权限」） */
+  getEmbeddedBrowserSitePermissions?(): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
+  /** 修改/删除单条站点权限；返回更新后的快照 */
+  setEmbeddedBrowserSitePermission?(
+    request: EmbeddedBrowserSitePermissionUpdateRequest,
+  ): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
+  /** 清空全部站点权限记录 */
+  clearEmbeddedBrowserSitePermissions?(): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
+  /** 重置单个站点的全部权限记录（删除该 origin 下所有持久决定）；返回更新后的快照 */
+  resetEmbeddedBrowserSitePermission?(
+    request: EmbeddedBrowserSitePermissionResetRequest,
+  ): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
   /** 注册 agent 首次 browser 命令建好受控 view 的回调（自动开 browser-use tab），返回 disposer */
   onBrowserViewReady?(
     handler: (payload: {
@@ -994,8 +1150,8 @@ export interface IPlatformService {
   /** 获取当前设备的稳定标识符
    *
    * - 桌面端：基于 userData 路径的 SHA-256，始终稳定且唯一
-   * - 手机端（Web 远程控制）：物理属性指纹（browserPlatform | screen.width | screen.height | colorDepth），
-   *   抗浏览器/网络/语言/时区变化，换手机才会变
+   * - Web 端：浏览器物理属性指纹（browserPlatform | screen.width | screen.height | colorDepth），
+   *   保持当前设备的浏览器标识稳定
    */
   getDeviceId(): string;
 }

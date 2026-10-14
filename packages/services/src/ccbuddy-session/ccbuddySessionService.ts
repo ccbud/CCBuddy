@@ -415,7 +415,7 @@ export function createCCbuddySessionService({
       if (!wasDeferredDraft) {
         return Promise.resolve();
       }
-      // 手机 replayable 首发由 task facade 消费 deferred draft，需要在这里清除草稿标记
+      // Web replayable 首发由 task facade 消费 deferred draft，需要在这里清除草稿标记
       // 并通知 task index 同步，避免桌面后续控制同一 task 时仍按 deferred 规则跳过同步。
       notifySyncer(params);
       logger.info(undefined, "[ccbuddy-session-service] deferred draft session 已提升为 task", {
@@ -487,7 +487,11 @@ export function createCCbuddySessionService({
       return withApiRetryRuntime(await agentService.setMode(params));
     },
 
-    // onDynamicSessionEvent（renderer 侧旧 session/subscribe 订阅面）已删。
+    respondProviderRuntimeHeaders(params) {
+      return agentService.respondProviderRuntimeHeaders(params);
+    },
+
+    // M5 删波次 2：onDynamicSessionEvent（renderer 侧旧 session/subscribe 订阅面）已删。
     // v4 UI 的会话事件走 agentService 的 conversation 帧通道，本 service 不再向
     // agentService.onDynamicSessionEvent 建立任何订阅。
   };

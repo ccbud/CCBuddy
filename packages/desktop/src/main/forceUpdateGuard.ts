@@ -28,12 +28,12 @@ export interface ForceUpdateGuardLogger {
   warn: (...args: unknown[]) => void;
 }
 
-interface ForceUpdateGuardResult {
+export interface ForceUpdateGuardResult {
   blocked: boolean;
   requirement?: ForceUpdateRequirement;
 }
 
-interface ForceUpdateGuardOptions {
+export interface ForceUpdateGuardOptions {
   locale: Locale;
   logger: ForceUpdateGuardLogger;
   endpointOrigin?: string;
@@ -44,7 +44,7 @@ interface ForceUpdateGuardOptions {
   onBlocked?: (requirement: ForceUpdateRequirement) => void;
 }
 
-function resolveForceUpdateClientConfigUrl(
+export function resolveForceUpdateClientConfigUrl(
   endpointOrigin = DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
 ): string {
   const url = new URL(
@@ -68,7 +68,7 @@ function getForceUpdateMinimalVersionFromClientConfig(config: unknown): string |
   };
   if (typeof envelope.code === "number" && envelope.code !== 0) {
     // /client/configs 与服务层一样只有 code=0 才可信，避免错误 envelope 携带旧 data 时误触发启动强更。
-    throw new Error(`CCbuddy update config failed: ${envelope.code}`);
+    throw new Error(`CCbuddy client config failed: ${envelope.code}`);
   }
   return getForceUpdateMinimalVersionFromConfig(envelope.data?.configs);
 }
@@ -149,7 +149,7 @@ async function fetchRemoteForceUpdateConfig(
   });
 }
 
-async function resolveDesktopForceUpdateRequirement(options: {
+export async function resolveDesktopForceUpdateRequirement(options: {
   logger: ForceUpdateGuardLogger;
   endpointOrigin?: string;
   fetchRemoteConfig?: () => Promise<unknown>;
@@ -183,7 +183,7 @@ async function resolveDesktopForceUpdateRequirement(options: {
   return null;
 }
 
-function resolveForceUpdateDownloadUrl(
+export function resolveForceUpdateDownloadUrl(
   locale: Locale,
   endpointOrigin = DEFAULT_CCBUDDY_ENDPOINT_ORIGIN,
 ): string {
@@ -191,7 +191,7 @@ function resolveForceUpdateDownloadUrl(
   return locale === "zh-CN" ? `${origin}/cn` : `${origin}/en`;
 }
 
-function formatForceUpdateDialogText(
+export function formatForceUpdateDialogText(
   requirement: ForceUpdateRequirement,
   locale: Locale,
 ): ForceUpdateDialogText {

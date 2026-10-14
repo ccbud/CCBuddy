@@ -91,5 +91,5 @@ Use this shape when creating a feature-specific decision or coverage-planning do
 - Provider fixture:
 - File-system fixture:
 - Timing strategy:
-- Execution environment and available runner:
+- Docker preset:
 - Review risks:

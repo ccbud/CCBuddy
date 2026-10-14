@@ -10,7 +10,7 @@ import {
 const MAX_RICH_DIFF_FULL_CONTENT_CHAR_COUNT = 180_000;
 const MAX_RICH_DIFF_FULL_CONTENT_LINE_COUNT = 1_200;
 
-type GitPaneDiffPreviewPlan =
+export type GitPaneDiffPreviewPlan =
   | {
       kind: "rich";
     }
@@ -113,7 +113,7 @@ function countLogicalLines(content: string | null): number {
   return lineCount;
 }
 
-function shouldRenderPatchOnlyGitDiffPreview(diff: GitDiffResult): boolean {
+export function shouldRenderPatchOnlyGitDiffPreview(diff: GitDiffResult): boolean {
   if (diff.availability !== "patch" || !diff.patch) {
     return false;
   }
@@ -168,7 +168,7 @@ export function getGitPaneDiffPreviewPlan(diff: GitDiffResult | null): GitPaneDi
   return { kind: "patch" };
 }
 
-function shouldRenderPlainTextDiffPreview(patch: string): string[] | null {
+export function shouldRenderPlainTextDiffPreview(patch: string): string[] | null {
   const fallbackLines = getPlainTextPatchFallbackLines(patch);
   if (!fallbackLines) {
     return null;

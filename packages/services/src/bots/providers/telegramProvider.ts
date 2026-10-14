@@ -398,9 +398,7 @@ export function createTelegramBotProvider(deps: TelegramProviderDeps): BotProvid
 
     async send(bot: BotConfig, message: BotOutboundMessage) {
       const token = await loadToken(bot);
-      if (!token?.trim()) {
-        return;
-      }
+      if (!token?.trim()) throw new Error("Telegram bot token is missing");
       const selection = message.selection;
       const replyMarkup = selection ? buildSelectionReplyMarkup(selection) : undefined;
       const chunks = splitTelegramText(message.text);
@@ -408,31 +406,40 @@ export function createTelegramBotProvider(deps: TelegramProviderDeps): BotProvid
         // Bugfix: 长 Plan 会被拆成多条消息，审批提示位于最后一条。
         // 按钮必须跟随最终决策上下文，不能挂在尚未发送完整正文的第一条上。
         const shouldAttachReplyMarkup = index === chunks.length - 1 && replyMarkup;
-        const response = await fetchBotProvider(
-          `https://api.telegram.org/bot${token}/sendMessage`,
-          {
+        const send = (markdown: boolean) =>
+          fetchBotProviderJson<{
+            ok?: boolean;
+            description?: string;
+            error_code?: number;
+            parameters?: { retry_after?: number };
+          }>(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               chat_id: message.providerUserId,
               text,
-              parse_mode: "Markdown",
-              ...(shouldAttachReplyMarkup ? { reply_markup: replyMarkup } : {}),
-            }),
-          },
-        );
-        if (!response.ok) {
-          // Bugfix: Telegram Markdown 对未闭合的 `_*[]()` 很敏感，模型输出偶尔会被拒收。
-          // 解析失败时退回纯文本重发，既优先支持 Markdown，也保证消息不会丢。
-          await fetchBotProvider(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              chat_id: message.providerUserId,
-              text,
+              ...(markdown ? { parse_mode: "Markdown" } : {}),
               ...(shouldAttachReplyMarkup ? { reply_markup: replyMarkup } : {}),
             }),
           });
+        let response = await send(true);
+        // 只有明确的格式拒绝才改纯文本；限流、封禁和结果未知不能盲目重发。
+        if (
+          response.status === 400 &&
+          (!response.payload?.description ||
+            /parse|entities|markdown/i.test(response.payload.description))
+        )
+          response = await send(false);
+        if (!response.ok || response.payload?.ok !== true) {
+          throw Object.assign(
+            new Error(
+              `Telegram send failed (${response.payload?.error_code ?? response.status}): ${response.payload?.description ?? "unknown delivery result"}`,
+            ),
+            {
+              deliveryRejected: response.payload?.ok === false,
+              retryAfter: response.payload?.parameters?.retry_after,
+            },
+          );
         }
       }
     },

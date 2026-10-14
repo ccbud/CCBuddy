@@ -14,6 +14,7 @@ import {
 import type { PluginReferenceCatalogEntry } from "@ccbuddy/contracts";
 import { buildPluginReferenceCatalog } from "@ccbuddy/core";
 import {
+  enrichCachedClaudeMarketplaceIconsForOverview,
   getCCbuddyPluginsOverview,
   resolveCCbuddyPlugins,
   updateCCbuddyPluginMarketplace,
@@ -237,6 +238,7 @@ interface PluginReferenceListingDisplay {
 function resolveReferenceListingDisplayByPluginId(
   workspacePath: string,
 ): Map<string, PluginReferenceListingDisplay> {
+  enrichCachedClaudeMarketplaceIconsForOverview({ workingDirectory: workspacePath });
   const overview = getCCbuddyPluginsOverview({ workingDirectory: workspacePath });
   const displayByPluginId = new Map<string, PluginReferenceListingDisplay>();
   for (const plugin of [

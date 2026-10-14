@@ -22,6 +22,10 @@ interface RemoteConnectionFormSnapshot {
   wslUser?: string;
   dockerContainer: string;
   manualDockerContainer?: string;
+  serverUrl?: string;
+  serverName?: string;
+  serverToken?: string;
+  serverWorkspacePath?: string;
 }
 
 export function getRemoteWizardStepCopy(
@@ -138,6 +142,36 @@ export function buildRemoteTarget(
           kind: "wsl",
           distro: snapshot.wslDistro || undefined,
           ...(wslUser ? { user: wslUser } : {}),
+        },
+      };
+    }
+    case "server": {
+      const url = snapshot.serverUrl?.trim() ?? "";
+      if (!url) {
+        return {
+          errorMessage: intl.formatMessage({ id: "server.validation.urlRequired" }),
+        };
+      }
+
+      try {
+        new URL(url);
+      } catch {
+        return {
+          errorMessage: intl.formatMessage({ id: "server.validation.invalidUrl" }),
+        };
+      }
+
+      const name = snapshot.serverName?.trim();
+      const token = snapshot.serverToken?.trim();
+      const workspacePath = snapshot.serverWorkspacePath?.trim();
+
+      return {
+        target: {
+          kind: "server",
+          url,
+          ...(name ? { name } : {}),
+          ...(token ? { token } : {}),
+          ...(workspacePath ? { workspacePath } : {}),
         },
       };
     }
