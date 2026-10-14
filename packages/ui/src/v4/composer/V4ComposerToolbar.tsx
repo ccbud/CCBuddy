@@ -1038,8 +1038,7 @@ function V4ComposerModelControlsImpl({
   const modelMenuVisible = modelSelectGroups.length > 0 || showManageModelsAction;
   // Bug 根因：手机端固定宽度的二级菜单没有消费 Radix 测得的当前方向可用宽度，
   // 共享 min-w-32 还会阻止极窄空间继续收缩。保持二级交互，同时把窗口边缘作为硬上限。
-  const providerSubmenuClassName =
-    undefined;
+  const providerSubmenuClassName = undefined;
   useToolbarShortcutBindings({
     hasAnyOption: Boolean(modelOption) || Boolean(thoughtOption),
     toolbarDisabled: disabled || recoveryPending,

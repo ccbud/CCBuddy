@@ -2,7 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { CCbuddyPromptAttachment } from "@ccbuddy/shared";
 import { PROTOCOL_V4_LIMITS, type AttachmentRef } from "@ccbuddy/shared/ccbuddy-protocol-v4";
-import type { ICCbuddyAgentService, CCbuddyAgentSessionTarget } from "#src/ccbuddy-agent/ccbuddyAgent.js";
+import type {
+  ICCbuddyAgentService,
+  CCbuddyAgentSessionTarget,
+} from "#src/ccbuddy-agent/ccbuddyAgent.js";
 
 const CHUNK_BYTES = 384 * 1024;
 type UploadAgent = Pick<

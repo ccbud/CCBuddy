@@ -59,10 +59,7 @@ export function usePluginCreator(
       const current = resolveWorkbenchNewTaskTarget({
         activeWorkspacePath: state.activeWorkspacePath,
         activeWorkspaceIdentity: state.activeWorkspaceIdentity,
-        activeGroup:
-          groups.activeGroupId
-            ? (groups.groups[groups.activeGroupId] ?? null)
-            : null,
+        activeGroup: groups.activeGroupId ? (groups.groups[groups.activeGroupId] ?? null) : null,
         paneLayout: usePaneLayoutStore.getState(),
       });
       return (

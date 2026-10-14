@@ -307,7 +307,7 @@ export function buildAssistantPreviewCardsFromReferences(
   for (const match of content.matchAll(LOCALHOST_URL_RE)) {
     const url = normalizeTrailingUrlText(match[0] ?? "");
     if (!isValidAssistantPreviewWebsiteUrl(url)) continue;
-        if (options.suppressEmbeddedCards) continue;
+    if (options.suppressEmbeddedCards) continue;
     const filePath = resolveLocalhostHtmlChangedPath(url, workspacePath, changedFilePaths, {
       homePath: options.homePath,
     });

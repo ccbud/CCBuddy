@@ -20,11 +20,10 @@ export function shouldEnableModifiedEnterSubmit({
 }: {
   inputRoutingMode: InputRouting["mode"];
   isMobileTextInputViewport: boolean;
-
 }): boolean {
   // Bug 原因：旧门禁把 draft 和通用移动媒体查询当成了“手机端”，导致桌面新任务以及
   // Windows 窄窗口/触屏设备都没有注册 Ctrl+Enter，事件最终退回 Lexical 默认换行。
-    return inputRoutingMode !== "reject";
+  return inputRoutingMode !== "reject";
 }
 
 export function shouldReverseFollowupDeliveryForPointer({

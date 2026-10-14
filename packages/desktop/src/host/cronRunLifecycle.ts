@@ -1,7 +1,4 @@
-import type {
-  CCbuddyAutomationRunOutcome,
-  CCbuddyAutomationTrigger,
-} from "@ccbuddy/shared";
+import type { CCbuddyAutomationRunOutcome, CCbuddyAutomationTrigger } from "@ccbuddy/shared";
 
 export interface CronRunLifecycleRepo {
   ensureRunClaimed(params: {

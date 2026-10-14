@@ -73,7 +73,14 @@ export const ccbuddyPermissionResponseSchema = z
   })
   .strict();
 export type CCbuddyPermissionResponse = z.infer<typeof ccbuddyPermissionResponseSchema>;
-export const ccbuddySessionModeSchema = z.enum(["plan", "build", "edit", "yolo", "guarded", "auto"]);
+export const ccbuddySessionModeSchema = z.enum([
+  "plan",
+  "build",
+  "edit",
+  "yolo",
+  "guarded",
+  "auto",
+]);
 export const ccbuddySessionStatusSchema = z.enum([
   "idle",
   "running",

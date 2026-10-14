@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import armsRum from "@arms/rum-electron";
 import { CCBUDDY_AGENT_LIFECYCLE_LOG_MARKER } from "@ccbuddy/shared/process-diagnostic";
-import { CCBUDDY_ARMS_RUM_ENDPOINT, CCBUDDY_VERSION, mapCCbuddyEnvToArmsRumEnv } from "@ccbuddy/shared";
+import {
+  CCBUDDY_ARMS_RUM_ENDPOINT,
+  CCBUDDY_VERSION,
+  mapCCbuddyEnvToArmsRumEnv,
+} from "@ccbuddy/shared";
 import { ARMS_BROWSER_COLLECTORS, parseArmsViewName } from "../shared/armsRumShared.js";
 import { redactArmsEventBatch } from "./armsEventRedaction.js";
 import { ensureDesktopDeviceMidSync } from "./desktopDeviceMid.js";

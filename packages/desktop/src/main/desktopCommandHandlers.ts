@@ -646,7 +646,8 @@ export async function executeDesktopCommand(options: {
       return;
     case DesktopCommandIds.SetCCbuddyEndpointCustom: {
       const current =
-        (await options.settingService.get()).ccbuddyEndpointOrigin ?? DEFAULT_CCBUDDY_ENDPOINT_ORIGIN;
+        (await options.settingService.get()).ccbuddyEndpointOrigin ??
+        DEFAULT_CCBUDDY_ENDPOINT_ORIGIN;
       const value = await promptCustomCCbuddyEndpoint(targetWindow, current);
       if (!value) {
         return;

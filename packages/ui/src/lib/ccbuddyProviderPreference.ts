@@ -28,7 +28,9 @@ function isAgentProvider(value: unknown): value is CCbuddyProvider {
   return typeof value === "string" && CCBUDDY_AGENT_PROVIDERS.includes(value as CCbuddyProvider);
 }
 
-export function readLastSelectedAgentProvider(storage: StorageLike | null = getBrowserStorage()): CCbuddyProvider | null {
+export function readLastSelectedAgentProvider(
+  storage: StorageLike | null = getBrowserStorage(),
+): CCbuddyProvider | null {
   const rawValue = storage?.getItem(LAST_SELECTED_AGENT_PROVIDER_STORAGE_KEY);
   if (!isAgentProvider(rawValue)) {
     return CCBUDDY_AGENT_PROVIDER;

@@ -72,7 +72,10 @@ export const ccbuddyTopicResourceCancelParamsSchema = z
 export const ccbuddyTopicResourceCancelResultSchema = z.object({ cancelled: z.boolean() }).strict();
 export type CCbuddyTopicResourceReadParams = z.infer<typeof ccbuddyTopicResourceReadParamsSchema>;
 export type CCbuddyTopicResourceReadResult = z.infer<typeof ccbuddyTopicResourceReadResultSchema>;
-export { activeWorkSummarySchema, type ActiveWorkSummary } from "../ccbuddy-protocol-v4/snapshot.js";
+export {
+  activeWorkSummarySchema,
+  type ActiveWorkSummary,
+} from "../ccbuddy-protocol-v4/snapshot.js";
 // browser-use 命令/结果契约单一来源：agent 构造、协议校验和 main executor 共用同一 schema。
 import {
   browserBackendListResultSchema,
@@ -367,7 +370,9 @@ export const ccbuddyTopicResourceRelayRequestSchema = ccbuddyTopicResourceReadPa
     trace: ccbuddyProtocolTraceSchema.optional(),
   })
   .strict();
-export type CCbuddyTopicResourceRelayRequest = z.infer<typeof ccbuddyTopicResourceRelayRequestSchema>;
+export type CCbuddyTopicResourceRelayRequest = z.infer<
+  typeof ccbuddyTopicResourceRelayRequestSchema
+>;
 export const ccbuddyTopicResourceRelayKeySchema = ccbuddyTopicResourceCancelParamsSchema;
 export const ccbuddyTopicResourceRelayChunkRequestSchema = ccbuddyTopicResourceRelayKeySchema
   .extend({
@@ -912,7 +917,9 @@ export const ccbuddyMcpUiCancelSamplingParamsSchema = z
   .strict();
 export const ccbuddyMcpUiSamplingResultSchema = mcpAppsSamplingResultSchema;
 export type CCbuddyMcpUiSamplingParams = z.infer<typeof ccbuddyMcpUiSamplingParamsSchema>;
-export type CCbuddyMcpUiCancelSamplingParams = z.infer<typeof ccbuddyMcpUiCancelSamplingParamsSchema>;
+export type CCbuddyMcpUiCancelSamplingParams = z.infer<
+  typeof ccbuddyMcpUiCancelSamplingParamsSchema
+>;
 
 export const ccbuddyMcpUiCallToolParamsSchema = z
   .object({
@@ -1032,7 +1039,9 @@ export type CCbuddyMcpUiClaimAppToolCallParams = z.infer<
   typeof ccbuddyMcpUiClaimAppToolCallParamsSchema
 >;
 export const ccbuddyMcpUiAppToolAcceptedResultSchema = z.object({ accepted: z.boolean() }).strict();
-export type CCbuddyMcpUiAppToolAcceptedResult = z.infer<typeof ccbuddyMcpUiAppToolAcceptedResultSchema>;
+export type CCbuddyMcpUiAppToolAcceptedResult = z.infer<
+  typeof ccbuddyMcpUiAppToolAcceptedResultSchema
+>;
 export const ccbuddyMcpUiResolveAppToolCallParamsSchema = z
   .object({
     ...ccbuddyMcpUiAppToolInstanceShape,
@@ -1430,34 +1439,37 @@ const ccbuddyComputerUseTurnStartedEventSchema = ccbuddyComputerUseOperationEven
   kind: z.literal("turn-started"),
   turnId: nonEmptyString,
 });
-const ccbuddyComputerUseTurnCompletedEventSchema = ccbuddyComputerUseOperationEventBaseSchema.extend({
-  kind: z.literal("turn-completed"),
-  turnId: nonEmptyString,
-});
+const ccbuddyComputerUseTurnCompletedEventSchema =
+  ccbuddyComputerUseOperationEventBaseSchema.extend({
+    kind: z.literal("turn-completed"),
+    turnId: nonEmptyString,
+  });
 const ccbuddyComputerUseTurnFailedEventSchema = ccbuddyComputerUseOperationEventBaseSchema.extend({
   kind: z.literal("turn-failed"),
   turnId: nonEmptyString,
 });
-const ccbuddyComputerUseToolScheduledEventSchema = ccbuddyComputerUseOperationEventBaseSchema.extend({
-  kind: z.literal("tool-scheduled"),
-  turnId: nonEmptyString,
-  toolCallId: nonEmptyString,
-  toolName: nonEmptyString,
-  // 这个 cell 是否在用 Computer Use。只表达布尔事实，不再携带动作名——旧的
-  // operationAction 靠从模型源码里抽取动作名得到，SDK 面一变就整体失配（见
-  // bootstrap/src/ccbuddy-protocol/computer-use-operation-event.ts 的 usesComputerUse）。
-  // 只挂在 scheduled 上：ToolCallStartedPayload 没有 input，start 时已拿不到模型源码。
-  computerUse: z.literal(true).optional(),
-});
+const ccbuddyComputerUseToolScheduledEventSchema =
+  ccbuddyComputerUseOperationEventBaseSchema.extend({
+    kind: z.literal("tool-scheduled"),
+    turnId: nonEmptyString,
+    toolCallId: nonEmptyString,
+    toolName: nonEmptyString,
+    // 这个 cell 是否在用 Computer Use。只表达布尔事实，不再携带动作名——旧的
+    // operationAction 靠从模型源码里抽取动作名得到，SDK 面一变就整体失配（见
+    // bootstrap/src/ccbuddy-protocol/computer-use-operation-event.ts 的 usesComputerUse）。
+    // 只挂在 scheduled 上：ToolCallStartedPayload 没有 input，start 时已拿不到模型源码。
+    computerUse: z.literal(true).optional(),
+  });
 const ccbuddyComputerUseToolStartedEventSchema = ccbuddyComputerUseOperationEventBaseSchema.extend({
   kind: z.literal("tool-started"),
   turnId: nonEmptyString.optional(),
   toolCallId: nonEmptyString,
   toolName: nonEmptyString.optional(),
 });
-const ccbuddyComputerUseSessionClosedEventSchema = ccbuddyComputerUseOperationEventBaseSchema.extend({
-  kind: z.literal("session-closed"),
-});
+const ccbuddyComputerUseSessionClosedEventSchema =
+  ccbuddyComputerUseOperationEventBaseSchema.extend({
+    kind: z.literal("session-closed"),
+  });
 
 export const ccbuddyComputerUseOperationEventSchema = z.discriminatedUnion("kind", [
   ccbuddyComputerUseTurnStartedEventSchema,
@@ -1467,7 +1479,9 @@ export const ccbuddyComputerUseOperationEventSchema = z.discriminatedUnion("kind
   ccbuddyComputerUseToolStartedEventSchema,
   ccbuddyComputerUseSessionClosedEventSchema,
 ]);
-export type CCbuddyComputerUseOperationEvent = z.infer<typeof ccbuddyComputerUseOperationEventSchema>;
+export type CCbuddyComputerUseOperationEvent = z.infer<
+  typeof ccbuddyComputerUseOperationEventSchema
+>;
 
 export const ccbuddySessionEventTypeSchema = z.enum([
   "session.created",
@@ -1820,7 +1834,10 @@ export const ccbuddySessionEventSchema = z.discriminatedUnion("type", [
   ccbuddySessionEventEnvelopeFor("session.created", ccbuddySessionCreatedEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("session.resumed", ccbuddySessionResumedEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("session.updated", jsonObjectSchema),
-  ccbuddySessionEventEnvelopeFor("session.titleUpdated", ccbuddySessionTitleUpdatedEventPayloadSchema),
+  ccbuddySessionEventEnvelopeFor(
+    "session.titleUpdated",
+    ccbuddySessionTitleUpdatedEventPayloadSchema,
+  ),
   ccbuddySessionEventEnvelopeFor("session.closed", ccbuddySessionClosedEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("turn.started", ccbuddyTurnStartedEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("turn.steerQueued", ccbuddyTurnSteerQueuedEventPayloadSchema),
@@ -1835,9 +1852,18 @@ export const ccbuddySessionEventSchema = z.discriminatedUnion("type", [
   ccbuddySessionEventEnvelopeFor("part.removed", ccbuddyMessagePartRemovedEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("model.streaming", ccbuddyModelStreamingEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("tool.updated", ccbuddyToolUpdatedEventPayloadSchema),
-  ccbuddySessionEventEnvelopeFor("permission.requested", ccbuddyPermissionRequestedEventPayloadSchema),
-  ccbuddySessionEventEnvelopeFor("permission.resolved", ccbuddyPermissionResolvedEventPayloadSchema),
-  ccbuddySessionEventEnvelopeFor("userInput.requested", ccbuddyUserInputRequestedEventPayloadSchema),
+  ccbuddySessionEventEnvelopeFor(
+    "permission.requested",
+    ccbuddyPermissionRequestedEventPayloadSchema,
+  ),
+  ccbuddySessionEventEnvelopeFor(
+    "permission.resolved",
+    ccbuddyPermissionResolvedEventPayloadSchema,
+  ),
+  ccbuddySessionEventEnvelopeFor(
+    "userInput.requested",
+    ccbuddyUserInputRequestedEventPayloadSchema,
+  ),
   ccbuddySessionEventEnvelopeFor("userInput.resolved", ccbuddyUserInputResolvedEventPayloadSchema),
   ccbuddySessionEventEnvelopeFor("checkpoint.created", jsonObjectSchema),
   ccbuddySessionEventEnvelopeFor("rewind.triggered", jsonObjectSchema),
@@ -2091,7 +2117,9 @@ export const DEFAULT_CCBUDDY_MODEL_CONTEXT_BUDGET_STRATEGY = "preflight-v1" as c
 
 // 3.12.2：legacy 仅为旧协议接收兼容；Runtime 一律归一为上面的共享默认策略。
 export const ccbuddyModelContextBudgetStrategySchema = z.enum(["legacy", "preflight-v1"]);
-export type CCbuddyModelContextBudgetStrategy = z.infer<typeof ccbuddyModelContextBudgetStrategySchema>;
+export type CCbuddyModelContextBudgetStrategy = z.infer<
+  typeof ccbuddyModelContextBudgetStrategySchema
+>;
 
 export const ccbuddySessionRuntimePreferencesResultSchema = z
   .object({
@@ -2923,7 +2951,13 @@ export type CCbuddyPluginUserConfigOption = z.infer<typeof ccbuddyPluginUserConf
 
 // 组件类型与详情弹窗/市场详情共用的分组顺序保持一致：agent / command / skill / hook / mcp。
 // 注意：这三个 schema 必须定义在 ccbuddyPluginInfoSchema 之前，因为后者（.strict()）的 components 字段引用了它们。
-export const ccbuddyPluginComponentKindSchema = z.enum(["agent", "command", "skill", "hook", "mcp"]);
+export const ccbuddyPluginComponentKindSchema = z.enum([
+  "agent",
+  "command",
+  "skill",
+  "hook",
+  "mcp",
+]);
 export type CCbuddyPluginComponentKind = z.infer<typeof ccbuddyPluginComponentKindSchema>;
 
 export const ccbuddyPluginComponentItemSchema = z
@@ -3099,7 +3133,9 @@ export const ccbuddySkillReferenceCatalogEntrySchema = z
     pluginName: nonEmptyString.optional(),
   })
   .strict();
-export type CCbuddySkillReferenceCatalogEntry = z.infer<typeof ccbuddySkillReferenceCatalogEntrySchema>;
+export type CCbuddySkillReferenceCatalogEntry = z.infer<
+  typeof ccbuddySkillReferenceCatalogEntrySchema
+>;
 
 export const ccbuddySkillsReferenceCatalogParamsSchema = z
   .object({
@@ -3172,7 +3208,9 @@ export type CCbuddySavedWorkflowEntry = z.infer<typeof ccbuddySavedWorkflowEntry
 export const ccbuddySavedWorkflowInvalidEntrySchema = z
   .object({ path: nonEmptyString, reason: nonEmptyString })
   .strict();
-export type CCbuddySavedWorkflowInvalidEntry = z.infer<typeof ccbuddySavedWorkflowInvalidEntrySchema>;
+export type CCbuddySavedWorkflowInvalidEntry = z.infer<
+  typeof ccbuddySavedWorkflowInvalidEntrySchema
+>;
 /** 名字非法 / 未找到 / frontmatter 坏 / 读错——与 core store 的 resolve 失败四态逐字对应。 */
 export const ccbuddySavedWorkflowFailureReasonSchema = z.enum([
   "invalid_name",
@@ -3180,7 +3218,9 @@ export const ccbuddySavedWorkflowFailureReasonSchema = z.enum([
   "parse_error",
   "read_error",
 ]);
-export type CCbuddySavedWorkflowFailureReason = z.infer<typeof ccbuddySavedWorkflowFailureReasonSchema>;
+export type CCbuddySavedWorkflowFailureReason = z.infer<
+  typeof ccbuddySavedWorkflowFailureReasonSchema
+>;
 const ccbuddySavedWorkflowFailureSchema = z
   .object({
     ok: z.literal(false),
@@ -3242,12 +3282,16 @@ export const ccbuddyWorkflowsUpdateMetaParamsSchema = z
     scope: ccbuddySavedWorkflowScopeSchema.optional(),
   })
   .strict();
-export type CCbuddyWorkflowsUpdateMetaParams = z.infer<typeof ccbuddyWorkflowsUpdateMetaParamsSchema>;
+export type CCbuddyWorkflowsUpdateMetaParams = z.infer<
+  typeof ccbuddyWorkflowsUpdateMetaParamsSchema
+>;
 export const ccbuddyWorkflowsUpdateMetaResultSchema = z.union([
   z.object({ ok: z.literal(true), path: nonEmptyString }).strict(),
   ccbuddySavedWorkflowFailureSchema,
 ]);
-export type CCbuddyWorkflowsUpdateMetaResult = z.infer<typeof ccbuddyWorkflowsUpdateMetaResultSchema>;
+export type CCbuddyWorkflowsUpdateMetaResult = z.infer<
+  typeof ccbuddyWorkflowsUpdateMetaResultSchema
+>;
 
 export const ccbuddyWorkflowsDeleteParamsSchema = z
   .object({
@@ -3865,7 +3909,9 @@ export const ccbuddyAutomationScheduleRuleSchema = z
     monthlyMode: z.enum(["date", "weekday"]).optional(),
   })
   .strict();
-export type CCbuddyAutomationScheduleRuleProtocol = z.infer<typeof ccbuddyAutomationScheduleRuleSchema>;
+export type CCbuddyAutomationScheduleRuleProtocol = z.infer<
+  typeof ccbuddyAutomationScheduleRuleSchema
+>;
 
 /** 会话侧长间隔周期 carrier 的 unit 枚举（与 scheduleRule.unit 同集）。 */
 export const ccbuddyAutomationIntervalUnitSchema = z.enum([
@@ -3936,12 +3982,16 @@ export const ccbuddyAutomationCreateParamsSchema = z
     message: "intervalUnit is a recurring carrier and cannot combine with maxRuns",
     path: ["maxRuns"],
   });
-export type CCbuddyAutomationCreateProtocolParams = z.infer<typeof ccbuddyAutomationCreateParamsSchema>;
+export type CCbuddyAutomationCreateProtocolParams = z.infer<
+  typeof ccbuddyAutomationCreateParamsSchema
+>;
 
 export const ccbuddyAutomationCreateResultSchema = z
   .object({ automation: ccbuddyAutomationProtocolSchema })
   .strict();
-export type CCbuddyAutomationCreateProtocolResult = z.infer<typeof ccbuddyAutomationCreateResultSchema>;
+export type CCbuddyAutomationCreateProtocolResult = z.infer<
+  typeof ccbuddyAutomationCreateResultSchema
+>;
 
 export const ccbuddyAutomationUpdateParamsSchema = z
   .object({
@@ -3994,11 +4044,15 @@ export const ccbuddyAutomationUpdateParamsSchema = z
       path: ["maxRuns"],
     },
   );
-export type CCbuddyAutomationUpdateProtocolParams = z.infer<typeof ccbuddyAutomationUpdateParamsSchema>;
+export type CCbuddyAutomationUpdateProtocolParams = z.infer<
+  typeof ccbuddyAutomationUpdateParamsSchema
+>;
 export const ccbuddyAutomationUpdateResultSchema = z
   .object({ automation: ccbuddyAutomationProtocolSchema })
   .strict();
-export type CCbuddyAutomationUpdateProtocolResult = z.infer<typeof ccbuddyAutomationUpdateResultSchema>;
+export type CCbuddyAutomationUpdateProtocolResult = z.infer<
+  typeof ccbuddyAutomationUpdateResultSchema
+>;
 
 export const ccbuddyAutomationListParamsSchema = z.object({}).strict();
 export type CCbuddyAutomationListProtocolParams = z.infer<typeof ccbuddyAutomationListParamsSchema>;
@@ -4023,9 +4077,13 @@ export type CCbuddyAutomationCheckTaskBindingProtocolResult = z.infer<
 export const ccbuddyAutomationDeleteParamsSchema = z
   .object({ automationId: nonEmptyString })
   .strict();
-export type CCbuddyAutomationDeleteProtocolParams = z.infer<typeof ccbuddyAutomationDeleteParamsSchema>;
+export type CCbuddyAutomationDeleteProtocolParams = z.infer<
+  typeof ccbuddyAutomationDeleteParamsSchema
+>;
 export const ccbuddyAutomationDeleteResultSchema = z.object({ deleted: z.boolean() }).strict();
-export type CCbuddyAutomationDeleteProtocolResult = z.infer<typeof ccbuddyAutomationDeleteResultSchema>;
+export type CCbuddyAutomationDeleteProtocolResult = z.infer<
+  typeof ccbuddyAutomationDeleteResultSchema
+>;
 
 // ---- Off-Peak（闲时任务）会话内创建协议----
 // 与 automation 兄弟并列（独立域，禁止互相复用标记/表）。workspace 由 host 端从
@@ -4038,7 +4096,9 @@ export const ccbuddyOffPeakPermissionModeSchema = z.enum([
   "yolo",
   "guarded",
 ]);
-export type CCbuddyOffPeakProtocolPermissionMode = z.infer<typeof ccbuddyOffPeakPermissionModeSchema>;
+export type CCbuddyOffPeakProtocolPermissionMode = z.infer<
+  typeof ccbuddyOffPeakPermissionModeSchema
+>;
 
 export const ccbuddyOffPeakCreateParamsSchema = z
   .object({
@@ -4231,7 +4291,8 @@ export const ccbuddyProtocolMethods = {
   interactionBrowserExecute: "interaction/browserExecute",
 } as const;
 
-export type CCbuddyProtocolMethod = (typeof ccbuddyProtocolMethods)[keyof typeof ccbuddyProtocolMethods];
+export type CCbuddyProtocolMethod =
+  (typeof ccbuddyProtocolMethods)[keyof typeof ccbuddyProtocolMethods];
 
 export const ccbuddyProtocolEmptyResultSchema = z.object({}).strict();
 

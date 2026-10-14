@@ -38,7 +38,9 @@ import {
 } from "./remoteCdn.js";
 import { getElectronAppPath, isElectronAppPackaged } from "./desktopElectronApp.js";
 
-declare const __CCBUDDY_PACKAGED_AGENT_TELEMETRY_ENV__: Readonly<Record<string, string>> | undefined;
+declare const __CCBUDDY_PACKAGED_AGENT_TELEMETRY_ENV__:
+  | Readonly<Record<string, string>>
+  | undefined;
 
 const isLocalDevelopmentRuntime = !isElectronAppPackaged();
 export const desktopRuntimeEnv: CCbuddyRuntimeEnv = isLocalDevelopmentRuntime

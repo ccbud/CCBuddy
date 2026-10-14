@@ -704,7 +704,7 @@ export function useWorkspaceTaskLists(params: {
             return;
           }
 
-                    // 这里只监听低频归属类事件并标脏对应 workspace 查询，避免消息流事件触发整表重拉。
+          // 这里只监听低频归属类事件并标脏对应 workspace 查询，避免消息流事件触发整表重拉。
           logger.info(
             `[useWorkspaceTaskLists] 收到无法增量处理的 workspace_task_list_changed，刷新 workspace 行 workspace=${config.scope.workspacePath} reason=${event.reason}`,
           );

@@ -4,10 +4,7 @@ import {
   type ChromeBrowserDataImportOptions,
   type EmbeddedBrowserSitePermissionUpdateRequest,
 } from "@ccbuddy/shared";
-import {
-  clearEmbeddedBrowserData,
-  importChromeBrowserData,
-} from "./browserDataManager.js";
+import { clearEmbeddedBrowserData, importChromeBrowserData } from "./browserDataManager.js";
 import {
   clearEmbeddedBrowserSitePermissions,
   getEmbeddedBrowserSitePermissionSnapshot,

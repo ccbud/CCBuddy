@@ -276,7 +276,9 @@ export class BigModelCodingPlanSubscriptionProvider {
 
   async getManualClaimPlanPreviews(): Promise<ManualClaimPlanPreviewSnapshot> {
     const token = (await this.credentialService.load(CCBUDDY_JWT_TOKEN_KEY))?.trim();
-    const url = new URL(buildRuntimeCCbuddyApiUrl(process.env, "/api/v1/ccbuddy-plan/billing/preview"));
+    const url = new URL(
+      buildRuntimeCCbuddyApiUrl(process.env, "/api/v1/ccbuddy-plan/billing/preview"),
+    );
     url.searchParams.set("app_version", CCBUDDY_VERSION);
     url.searchParams.set("platform", resolveClientPlatformKey());
     const payload = await readCodingPlanApiJson<RemoteEnvelope<ManualClaimPlanPreviewPayload>>(

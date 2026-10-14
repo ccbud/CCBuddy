@@ -154,7 +154,10 @@ import type {
   CCbuddyTaskIndexTerminalEvent,
 } from "./ccbuddyTaskIndexSyncer.js";
 import { readModelTrajectory } from "./modelTrajectory.js";
-import { errorAttributionSchema, type CommandPayloadMap } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import {
+  errorAttributionSchema,
+  type CommandPayloadMap,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import {
   assertV4CommandAckOk,
   createHostCommandEnvelope,
@@ -269,7 +272,10 @@ export function createCCbuddyTaskServiceAdapter(
 ): ICCbuddyTaskService {
   // Bot 原来绕过连接 facade，导致真实附件 admission 缺少可信身份；复用既有 scope，
   // 同一 Bot 接入的附件、命令及对账共用连接，不改变桌面与Web 客户端各自的传输模式。
-  const botConnectionScopes = new Map<string, ReturnType<typeof createCCbuddyAgentConnectionScope>>();
+  const botConnectionScopes = new Map<
+    string,
+    ReturnType<typeof createCCbuddyAgentConnectionScope>
+  >();
   function botAgent(workspace: CCbuddyAgentWorkspaceTarget) {
     const key = JSON.stringify([resolveWorkspaceKey(workspace), workspace.remoteSessionId ?? ""]);
     let scope = botConnectionScopes.get(key);
@@ -4298,7 +4304,8 @@ function textFromParts(parts: readonly CCbuddyMessagePart[]): string {
 function reasoningFromParts(parts: readonly CCbuddyMessagePart[]): string | undefined {
   const text = parts
     .filter(
-      (part): part is Extract<CCbuddyMessagePart, { type: "reasoning" }> => part.type === "reasoning",
+      (part): part is Extract<CCbuddyMessagePart, { type: "reasoning" }> =>
+        part.type === "reasoning",
     )
     .map((part) => part.text)
     .join("");
@@ -5929,7 +5936,9 @@ function apiRetryFromSessionInfoPayload(
     return runtimeRetry;
   }
 
-  const metaRetry = normalizeCCbuddyApiRetryStatus(asRecord(asRecord(payload._meta).ccbuddy).apiRetry);
+  const metaRetry = normalizeCCbuddyApiRetryStatus(
+    asRecord(asRecord(payload._meta).ccbuddy).apiRetry,
+  );
   if (metaRetry !== undefined) {
     return metaRetry;
   }

@@ -6,7 +6,10 @@ import {
   type SessionControl,
   type ConversationTopicWireCandidate,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
-import type { ICCbuddyAgentService, CCbuddyAgentSessionTarget } from "#src/ccbuddy-agent/ccbuddyAgent.js";
+import type {
+  ICCbuddyAgentService,
+  CCbuddyAgentSessionTarget,
+} from "#src/ccbuddy-agent/ccbuddyAgent.js";
 
 /** Bot 控制操作临时读取 CLI 权威快照，不建立第二份输入队列。 */
 export function readBotGroupRuntimeSnapshot(

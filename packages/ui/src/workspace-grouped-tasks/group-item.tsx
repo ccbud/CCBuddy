@@ -1,28 +1,14 @@
 /* eslint-disable max-lines -- group header 的颜色菜单、右键菜单、rename 焦点保护和组内 task 渲染共享同一个 group 上下文，后续再按交互域继续拆。 */
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import type {
-  CCbuddyGroupedTaskViewNode,
-  CCbuddyTaskGroupColor,
-} from "@ccbuddy/services";
+import type { CCbuddyGroupedTaskViewNode, CCbuddyTaskGroupColor } from "@ccbuddy/services";
 import {
   CRON_DEFAULT_GROUP_ID,
   OFF_PEAK_DEFAULT_GROUP_ID,
   type CCbuddyTaskMeta,
 } from "@ccbuddy/shared";
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  MessageCirclePlus,
-} from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, MessageCirclePlus } from "lucide-react";
 import { cn } from "@/components/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import {
@@ -105,11 +91,7 @@ export function GroupItem({
 
   getTaskRemoteSessionId: (task: CCbuddyTaskMeta) => string | undefined;
   getTaskWorkspaceLabel: (task: CCbuddyTaskMeta) => string;
-  onSelectTask: (
-    workspacePath: string,
-    taskId: string,
-    workspaceIdentity?: string,
-  ) => void;
+  onSelectTask: (workspacePath: string, taskId: string, workspaceIdentity?: string) => void;
   onCloseTask: (task: CCbuddyTaskMeta) => void;
   onOpenFileTree?: (task: CCbuddyTaskMeta) => void;
   onCreateTask: () => void;
@@ -148,9 +130,7 @@ export function GroupItem({
   const [colorMenuOpen, setColorMenuOpen] = useState(false);
   const [titleEditorWidth, setTitleEditorWidth] = useState<number | null>(null);
   const groupContentId = useId();
-  const [shouldRenderGroupContent, setShouldRenderGroupContent] = useState(
-    () => !collapsed,
-  );
+  const [shouldRenderGroupContent, setShouldRenderGroupContent] = useState(() => !collapsed);
   const shouldShowEmptyDropZone = !hasDraftTask && node.tasks.length === 0;
   const visualCollapsed = collapsed;
   const titleEditorText = renameDraft || node.group.title;
@@ -233,9 +213,7 @@ export function GroupItem({
       return undefined;
     }
     const updateWidth = () => {
-      setTitleEditorWidth(
-        Math.ceil(measureButton.getBoundingClientRect().width),
-      );
+      setTitleEditorWidth(Math.ceil(measureButton.getBoundingClientRect().width));
     };
     updateWidth();
     const resizeObserver = new ResizeObserver(updateWidth);
@@ -302,12 +280,9 @@ export function GroupItem({
       return false;
     }
     menuRenamePendingRef.current = false;
-    logger.debug(
-      "[WorkspaceGroupedTasksSection] context menu rename focus handoff",
-      {
-        groupId: node.group.id,
-      },
-    );
+    logger.debug("[WorkspaceGroupedTasksSection] context menu rename focus handoff", {
+      groupId: node.group.id,
+    });
     armMenuRenameFocusGuard();
     startRename();
     focusRenameInput({ select: true });
@@ -359,12 +334,9 @@ export function GroupItem({
         ) {
           // group 重命名里中文输入法用 Enter 确认候选词时也会冒出 keydown。
           // 这不是用户要提交重命名，不能 blur，否则 blur 会继续触发 commitRename。
-          logger.debug(
-            "[WorkspaceGroupedTasksSection] ignore group rename enter during IME",
-            {
-              groupId: node.group.id,
-            },
-          );
+          logger.debug("[WorkspaceGroupedTasksSection] ignore group rename enter during IME", {
+            groupId: node.group.id,
+          });
           return;
         }
         event.currentTarget.blur();
@@ -396,12 +368,9 @@ export function GroupItem({
     if (newGroupInitialFocusGuardRef.current) {
       // 新建 group 会同时打开颜色菜单；Radix DropdownMenu 可能在打开瞬间抢焦，
       // 这个 blur 不代表用户结束命名，只在初始展开窗口内把焦点还给 name input。
-      logger.debug(
-        "[WorkspaceGroupedTasksSection] keep new group initial name focus",
-        {
-          groupId: node.group.id,
-        },
-      );
+      logger.debug("[WorkspaceGroupedTasksSection] keep new group initial name focus", {
+        groupId: node.group.id,
+      });
       focusRenameInput({ select: true });
       return;
     }
@@ -425,12 +394,9 @@ export function GroupItem({
         // 新建 group 同时要求 name input 保持焦点、color menu 自动展开。
         // Radix 在 input 回焦时会把这次初始展开判成外部焦点移动并请求关闭；
         // 只忽略初始窗口内的这一次关闭，窗口结束后点击空白仍按正常关闭处理。
-        logger.debug(
-          "[WorkspaceGroupedTasksSection] keep new group initial color menu open",
-          {
-            groupId: node.group.id,
-          },
-        );
+        logger.debug("[WorkspaceGroupedTasksSection] keep new group initial color menu open", {
+          groupId: node.group.id,
+        });
         setColorMenuOpen(true);
         return;
       }
@@ -582,9 +548,7 @@ export function GroupItem({
                   {TASK_GROUP_COLORS.map((color) => (
                     <DropdownMenuRadioItem key={color} value={color}>
                       <TaskGroupColorDot color={color} />
-                      <span>
-                        {intl.formatMessage({ id: `taskGroup.color.${color}` })}
-                      </span>
+                      <span>{intl.formatMessage({ id: `taskGroup.color.${color}` })}</span>
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
@@ -595,15 +559,9 @@ export function GroupItem({
                 <label
                   className="relative min-w-6 max-w-full shrink overflow-hidden align-middle"
                   onClick={(event) => event.stopPropagation()}
-                  style={
-                    titleEditorWidth
-                      ? { width: `${titleEditorWidth}px` }
-                      : undefined
-                  }
+                  style={titleEditorWidth ? { width: `${titleEditorWidth}px` } : undefined}
                 >
-                  <span className="sr-only">
-                    {intl.formatMessage({ id: "taskGroup.rename" })}
-                  </span>
+                  <span className="sr-only">{intl.formatMessage({ id: "taskGroup.rename" })}</span>
                   <button
                     ref={titleMeasureButtonRef}
                     type="button"
@@ -665,10 +623,7 @@ export function GroupItem({
             {newTaskAction}
           </div>
         </ContextMenuTrigger>
-        <ContextMenuContent
-          className="w-44"
-          onCloseAutoFocus={handleContextMenuCloseAutoFocus}
-        >
+        <ContextMenuContent className="w-44" onCloseAutoFocus={handleContextMenuCloseAutoFocus}>
           <ContextMenuItem onSelect={onCreateTask}>
             {intl.formatMessage({ id: "taskGroup.newTask" })}
           </ContextMenuItem>
@@ -690,14 +645,9 @@ export function GroupItem({
               onPointerDown={(event) => event.stopPropagation()}
             >
               {TASK_GROUP_COLORS.map((color) => (
-                <ContextMenuItem
-                  key={color}
-                  onSelect={() => handleGroupColorChange(color)}
-                >
+                <ContextMenuItem key={color} onSelect={() => handleGroupColorChange(color)}>
                   <TaskGroupColorDot color={color} />
-                  <span>
-                    {intl.formatMessage({ id: `taskGroup.color.${color}` })}
-                  </span>
+                  <span>{intl.formatMessage({ id: `taskGroup.color.${color}` })}</span>
                 </ContextMenuItem>
               ))}
             </ContextMenuSubContent>
@@ -719,9 +669,7 @@ export function GroupItem({
         className={cn(
           "grid overflow-hidden",
           "transition-[grid-template-rows,opacity] duration-200 ease-out",
-          visualCollapsed
-            ? "grid-rows-[0fr] opacity-0"
-            : "grid-rows-[1fr] opacity-100",
+          visualCollapsed ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100",
         )}
       >
         <div className="min-h-0 overflow-hidden">
@@ -752,7 +700,6 @@ export function GroupItem({
                     activeWorkspacePath={activeWorkspacePath}
                     activeWorkspaceIdentity={activeWorkspaceIdentity}
                     activeTaskId={activeTaskId}
-
                     onSelectTask={onSelectTask}
                     onCloseTask={onCloseTask}
                     onOpenFileTree={onOpenFileTree}
@@ -768,10 +715,7 @@ export function GroupItem({
               ) : (
                 <>
                   {shouldShowEmptyDropZone ? (
-                    <EmptyGroupDropZone
-                      groupId={node.group.id}
-                      onCreateTask={onCreateTask}
-                    />
+                    <EmptyGroupDropZone groupId={node.group.id} onCreateTask={onCreateTask} />
                   ) : null}
                   {node.tasks.length > 0 ? (
                     <VirtualizedGroupedTaskList
@@ -783,7 +727,6 @@ export function GroupItem({
                       activeWorkspacePath={activeWorkspacePath}
                       activeWorkspaceIdentity={activeWorkspaceIdentity}
                       activeTaskId={activeTaskId}
-
                       onSelectTask={onSelectTask}
                       onCloseTask={onCloseTask}
                       onOpenFileTree={onOpenFileTree}
@@ -807,9 +750,7 @@ export function GroupItem({
         aria-hidden="true"
         className={cn(
           "transition-[height,opacity] duration-150 ease-out motion-reduce:transition-none",
-          visualCollapsed
-            ? "h-0 pointer-events-none opacity-0"
-            : "h-2.5 opacity-100",
+          visualCollapsed ? "h-0 pointer-events-none opacity-0" : "h-2.5 opacity-100",
         )}
       />
     </div>

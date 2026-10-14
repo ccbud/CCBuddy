@@ -18,7 +18,6 @@ export function PluginAddMenu({
   onCreateTask?: (request?: CreateTaskRequest) => void;
   onAddMarketplace: () => void;
   testId: string;
-
 }) {
   const { intl } = useCCbuddyIntl();
   const creator = usePluginCreator(onCreateTask);

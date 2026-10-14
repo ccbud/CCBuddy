@@ -34,7 +34,10 @@ export function createTopicResourceBridge(
   const pending = new Map<string, { taskId: string; controller: AbortController }>();
   let disposed = false;
   return {
-    async read(value: unknown, trace?: CCbuddyProtocolTrace): Promise<CCbuddyTopicResourceReadResult> {
+    async read(
+      value: unknown,
+      trace?: CCbuddyProtocolTrace,
+    ): Promise<CCbuddyTopicResourceReadResult> {
       const request = ccbuddyTopicResourceReadParamsSchema.parse(value);
       if (disposed) throw new Error("Topic resource connection is closed");
       if (pending.has(request.requestId))

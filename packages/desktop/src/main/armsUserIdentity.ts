@@ -18,9 +18,7 @@ export interface ArmsUserIdentitySync {
  * （非字段合并），这里只传 { name }，刻意不带 id，保持与 appARMSBootstrap.init 的
  * user.name 写法一致，避免反复覆盖。
  */
-export function createArmsUserIdentitySync(
-  deps: ArmsUserIdentitySyncDeps,
-): ArmsUserIdentitySync {
+export function createArmsUserIdentitySync(deps: ArmsUserIdentitySyncDeps): ArmsUserIdentitySync {
   let lastWrittenName: string | null = null;
 
   function refresh(): void {

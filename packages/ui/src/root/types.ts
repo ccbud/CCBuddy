@@ -1,7 +1,4 @@
-import type {
-  IPlatformService,
-  UserInfo,
-} from "@ccbuddy/shared";
+import type { IPlatformService, UserInfo } from "@ccbuddy/shared";
 import type { IServiceAccessor } from "@ccbuddy/services";
 import type { CreateTaskRequest } from "@/app-shell/types.js";
 

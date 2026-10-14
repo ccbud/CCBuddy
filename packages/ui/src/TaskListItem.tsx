@@ -1,14 +1,6 @@
 /* eslint-disable max-lines -- task item 同时承载默认列表和 timeline 两行布局的共享交互，先保持动作链路集中避免归档/置顶回归。 */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Archive,
-  Clock,
-  CloudUpload,
-  ListTree,
-  LoaderIcon,
-  Moon,
-  Pin,
-} from "lucide-react";
+import { Archive, Clock, CloudUpload, ListTree, LoaderIcon, Moon, Pin } from "lucide-react";
 import { isCronTask, isOffPeakTask, type CCbuddyTaskMeta } from "@ccbuddy/shared";
 import { TID_TASK_ARCHIVE, TID_TASK_ITEM, testId } from "@ccbuddy/shared";
 import { Badge } from "@/components/ui/badge.js";
@@ -16,10 +8,7 @@ import { Button } from "@/components/ui/button.js";
 import { cn } from "@/components/lib/utils.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { getPathLeaf } from "@/lib/path.js";
-import {
-  formatTaskTitleWithChanges,
-  getTaskChangeSummary,
-} from "@/lib/taskChangeSummary.js";
+import { formatTaskTitleWithChanges, getTaskChangeSummary } from "@/lib/taskChangeSummary.js";
 import {
   deriveTaskLeadingIndicator,
   formatTaskRelativeTime,
@@ -51,10 +40,7 @@ import { TaskRowActionButton } from "@/workspace-grouped-tasks/task-row-action-b
 import { TaskWorkflowRunLines } from "@/components/workflow-run-line/TaskWorkflowRunLines.js";
 
 type TaskListItemIntl = {
-  formatMessage: (
-    desc: { id: string },
-    values?: Record<string, string>,
-  ) => string;
+  formatMessage: (desc: { id: string }, values?: Record<string, string>) => string;
 };
 
 interface TaskListItemProps {
@@ -87,15 +73,11 @@ function areJsonFieldsEqual(left: unknown, right: unknown) {
 
 function getTaskAutomationIdentity(task: CCbuddyTaskMeta): string | undefined {
   return (
-    task.cronAutomationId ??
-    (task as CCbuddyTaskMeta & { automationId?: string }).automationId
+    task.cronAutomationId ?? (task as CCbuddyTaskMeta & { automationId?: string }).automationId
   );
 }
 
-function areTaskListItemTaskFieldsEqual(
-  left: CCbuddyTaskMeta,
-  right: CCbuddyTaskMeta,
-) {
+function areTaskListItemTaskFieldsEqual(left: CCbuddyTaskMeta, right: CCbuddyTaskMeta) {
   if (left === right) {
     return true;
   }
@@ -117,10 +99,7 @@ function areTaskListItemTaskFieldsEqual(
   );
 }
 
-function areTaskListItemPropsEqual(
-  left: TaskListItemProps,
-  right: TaskListItemProps,
-) {
+function areTaskListItemPropsEqual(left: TaskListItemProps, right: TaskListItemProps) {
   return (
     left.workspacePath === right.workspacePath &&
     left.remoteSessionId === right.remoteSessionId &&
@@ -175,8 +154,7 @@ export const MemoTaskItem = memo(function TaskListItem({
   const itemRef = useRef<HTMLLIElement | null>(null);
   const workspaceActionsDisabled = useOptionalTabStore(
     (state) =>
-      actionsDisabled ||
-      isWorkspaceReadOnly(state, task.workspacePath, task.workspaceIdentity),
+      actionsDisabled || isWorkspaceReadOnly(state, task.workspacePath, task.workspaceIdentity),
   );
   const workspaceActionsDisabledReason = workspaceActionsDisabled
     ? (actionsDisabledReason ??
@@ -223,9 +201,7 @@ export const MemoTaskItem = memo(function TaskListItem({
   const taskWorkspaceScope = useMemo(
     () => ({
       workspacePath,
-      ...(task.workspaceIdentity?.trim()
-        ? { workspaceIdentity: task.workspaceIdentity }
-        : {}),
+      ...(task.workspaceIdentity?.trim() ? { workspaceIdentity: task.workspaceIdentity } : {}),
       ...(remoteSessionId ? { remoteSessionId } : {}),
     }),
     [remoteSessionId, task.workspaceIdentity, workspacePath],
@@ -238,16 +214,13 @@ export const MemoTaskItem = memo(function TaskListItem({
     Boolean(state.sessionIndex[taskWorkbenchSessionKey]),
   );
   const canDragToWorkbench =
-    !workspaceActionsDisabled &&
-    splitPaneEntryEnabled &&
-    !isSessionInWorkbenchGroup;
+    !workspaceActionsDisabled && splitPaneEntryEnabled && !isSessionInWorkbenchGroup;
 
   // V4 runtime/interaction 已由 sessions-index 投影，旧 Zustand map 不再接收
   // 后台会话 delta。row 直接消费随列表条目到达的 activity sidecar，避免 spinner/attention 假静止。
   const taskActivity = getTaskListRowActivity(task);
   const taskAttention = getTaskListAttention(task);
-  const hasPendingInteraction =
-    Boolean(task.pendingInteraction) || taskAttention !== null;
+  const hasPendingInteraction = Boolean(task.pendingInteraction) || taskAttention !== null;
   const taskAttentionLabel = taskAttention
     ? intl.formatMessage({
         id: taskAttention.kind === "userInput" ? "taskList.userInputTag" : "taskList.permissionTag",
@@ -263,9 +236,7 @@ export const MemoTaskItem = memo(function TaskListItem({
   const taskTitle =
     task.title ||
     intl.formatMessage({
-      id: task.forkedFromTaskId
-        ? "taskList.forkedUntitled"
-        : "taskList.untitled",
+      id: task.forkedFromTaskId ? "taskList.forkedUntitled" : "taskList.untitled",
     });
   const handleSelect = useCallback(() => {
     runUserAction({
@@ -285,9 +256,7 @@ export const MemoTaskItem = memo(function TaskListItem({
       const payload = {
         kind: "ccbuddy/session" as const,
         workspacePath,
-        ...(task.workspaceIdentity?.trim()
-          ? { workspaceIdentity: task.workspaceIdentity }
-          : {}),
+        ...(task.workspaceIdentity?.trim() ? { workspaceIdentity: task.workspaceIdentity } : {}),
         ...(remoteSessionId ? { remoteSessionId } : {}),
         sessionId: task.taskId,
       };
@@ -390,26 +359,19 @@ export const MemoTaskItem = memo(function TaskListItem({
   const isTaskOffPeak = isOffPeakTask(task);
   const showTimelineIdleIndicator =
     variant === "timeline" && leadingIndicator === "none" && !isPinned;
-    // 已置顶任务如果继续常显 Pin，会和绝对定位的手机图标重叠；手机激活态默认让手机图标优先，hover 时再显示 Pin 操作。
-  const showPinnedState =
-    isPinned && leadingIndicator === "none";
-  const shouldMountWorkspaceTaskActions =
-    hoverActionsVisible || focusActionsVisible || isHoverNone;
+  // 已置顶任务如果继续常显 Pin，会和绝对定位的手机图标重叠；手机激活态默认让手机图标优先，hover 时再显示 Pin 操作。
+  const showPinnedState = isPinned && leadingIndicator === "none";
+  const shouldMountWorkspaceTaskActions = hoverActionsVisible || focusActionsVisible || isHoverNone;
   // Bugfix：hover:none 只代表触屏端需要常驻 action，不代表应永久隐藏时间、状态和变更摘要。
   // 元信息仅在真实 hover / focus 交互时让位，保持旧触屏布局的“元信息 + action”语义。
-  const shouldSuppressWorkspaceTaskMetadata =
-    hoverActionsVisible || focusActionsVisible;
+  const shouldSuppressWorkspaceTaskMetadata = hoverActionsVisible || focusActionsVisible;
   const taskTimeLabel = formatTaskRelativeTime(task.updatedAt, intl);
   const taskChangeSummary = getTaskChangeSummary(task);
   const isRemoteTask = Boolean(task.workspaceIdentity?.trim());
   const archiveLabel = intl.formatMessage({
     id: isArchiveConfirming ? "common.confirm" : "taskList.archive",
   });
-  const taskTitleWithChanges = formatTaskTitleWithChanges(
-    taskTitle,
-    taskChangeSummary,
-    intl,
-  );
+  const taskTitleWithChanges = formatTaskTitleWithChanges(taskTitle, taskChangeSummary, intl);
   const workspaceLabel = getPathLeaf(task.workspacePath);
   const taskItemKey = `${buildTaskWorkspaceKey(task.workspacePath, task.workspaceIdentity)}:${task.taskId}`;
   // 工作流运行行：标题下的第二条通道，
@@ -434,9 +396,7 @@ export const MemoTaskItem = memo(function TaskListItem({
           <span className="text-diff-added">+{taskChangeSummary.added}</span>
         ) : null}
         {taskChangeSummary.removed > 0 ? (
-          <span className="ml-1 text-diff-removed">
-            -{taskChangeSummary.removed}
-          </span>
+          <span className="ml-1 text-diff-removed">-{taskChangeSummary.removed}</span>
         ) : null}
       </span>
     ) : null;
@@ -444,15 +404,11 @@ export const MemoTaskItem = memo(function TaskListItem({
     !workspaceActionsDisabled &&
     !hasPendingInteraction &&
     (shouldMountWorkspaceTaskActions || isArchiveConfirming);
-  const archiveActionVisibilityClassName = isArchiveConfirming
-    ? "flex"
-    : "flex";
+  const archiveActionVisibilityClassName = isArchiveConfirming ? "flex" : "flex";
   const archiveActionNode = shouldRenderArchiveAction ? (
     /* 交互调整：任务进入“等待归档确认”后，右侧 hover 区不再显示归档按钮。
        否则一个 item 同时出现“待确认状态”和“可归档操作”，视觉重心会互相打架。 */
-    <div
-      className={cn("items-center gap-0.5", archiveActionVisibilityClassName)}
-    >
+    <div className={cn("items-center gap-0.5", archiveActionVisibilityClassName)}>
       {isArchiveConfirming ? (
         <ControlHintTooltip title={archiveLabel} side="top" align="center">
           <Button
@@ -466,10 +422,7 @@ export const MemoTaskItem = memo(function TaskListItem({
             onClick={handleArchive}
             data-testid={testId(TID_TASK_ARCHIVE, task.taskId)}
             // Bugfix: 归档确认态是显式等待用户决策的状态，必须持续显示 destructive 按钮。
-            className={cn(
-              "shrink-0 border-destructive/20 px-2",
-              archiveActionVisibilityClassName,
-            )}
+            className={cn("shrink-0 border-destructive/20 px-2", archiveActionVisibilityClassName)}
             aria-label={archiveLabel}
           >
             <span>{intl.formatMessage({ id: "common.confirm" })}</span>
@@ -498,13 +451,12 @@ export const MemoTaskItem = memo(function TaskListItem({
   // 远端 task 的 session 未就绪时 resolver 会拒绝打开；渲染层同步隐藏入口，
   // 避免展示一个点击后无反馈的按钮。本地 task 不依赖已打开 tab，仍可直接按路径打开。
   const canOpenFileTree =
-    Boolean(onOpenFileTree) &&
-    (!task.workspaceIdentity?.trim() || Boolean(remoteSessionId));
+    Boolean(onOpenFileTree) && (!task.workspaceIdentity?.trim() || Boolean(remoteSessionId));
   const fileTreeActionNode =
     canOpenFileTree &&
     !workspaceActionsDisabled &&
     !hasPendingInteraction &&
-    (shouldMountWorkspaceTaskActions) ? (
+    shouldMountWorkspaceTaskActions ? (
       <span className="inline-flex shrink-0">
         {/* Bugfix：Pinned 文件树按钮曾手写 hover 背景和 tooltip，导致与 Grouped task
             的同一操作视觉不一致。直接复用共享 action，统一 bg-hover、尺寸和 pointer 行为。 */}
@@ -546,17 +498,13 @@ export const MemoTaskItem = memo(function TaskListItem({
   // hover:none 只让右侧 task actions 常驻；如果也用它接管 leading 槽，
   // 触屏端的错误、未读和 loading 状态会被 Pin 永久替换。
   const shouldRenderPinAction =
-    showPinAction &&
-    (showPinnedState || shouldSuppressWorkspaceTaskMetadata);
+    showPinAction && (showPinnedState || shouldSuppressWorkspaceTaskMetadata);
   return (
     <li
       ref={itemRef}
       data-testid={testId(TID_TASK_ITEM, task.taskId)}
       data-task-item-key={taskItemKey}
-
-      data-archive-confirming-task-id={
-        isArchiveConfirming ? task.taskId : undefined
-      }
+      data-archive-confirming-task-id={isArchiveConfirming ? task.taskId : undefined}
       onClick={handleSelect}
       onContextMenu={handleContextMenu}
       draggable={canDragToWorkbench}
@@ -583,7 +531,11 @@ export const MemoTaskItem = memo(function TaskListItem({
       className={cn(
         "group/task-item flex cursor-pointer gap-2 rounded-lg pl-2.5 pr-1 py-1 transition-[background-color,border-color,box-shadow]",
         // 默认行 32px 时前置槽整行居中；长出工作流运行行后行体是两行的纵向列，槽改为对齐首行。
-        variant === "timeline" ? "items-start py-1.5" : hasWorkflowRunLines ? "items-start" : "items-center",
+        variant === "timeline"
+          ? "items-start py-1.5"
+          : hasWorkflowRunLines
+            ? "items-start"
+            : "items-center",
         isActive ? "bg-selected" : "hover:bg-surface-hover",
       )}
     >
@@ -606,10 +558,7 @@ export const MemoTaskItem = memo(function TaskListItem({
           )}
         >
           {leadingIndicator === "error" ? (
-            <span
-              data-error-indicator="true"
-              className="h-1.5 w-1.5 rounded-full bg-destructive"
-            />
+            <span data-error-indicator="true" className="h-1.5 w-1.5 rounded-full bg-destructive" />
           ) : leadingIndicator === "unread" ? (
             <span
               data-unread-indicator="true"
@@ -618,10 +567,7 @@ export const MemoTaskItem = memo(function TaskListItem({
           ) : leadingIndicator === "loading" ? (
             <LoaderIcon className="size-4 animate-spin text-foreground-subtle" />
           ) : showTimelineIdleIndicator ? (
-            <span
-              data-idle-indicator="true"
-              className="h-1.5 w-1.5 rounded-full bg-border"
-            />
+            <span data-idle-indicator="true" className="h-1.5 w-1.5 rounded-full bg-border" />
           ) : null}
         </span>
         {shouldRenderPinAction ? (
@@ -643,7 +589,6 @@ export const MemoTaskItem = memo(function TaskListItem({
       {variant === "timeline" ? (
         <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-1.5">
-
             <TaskTitleOverflowText
               className="text-ui-base text-foreground"
               title={taskTitleWithChanges}
@@ -681,10 +626,7 @@ export const MemoTaskItem = memo(function TaskListItem({
                 >
                   {changeSummaryNode}
                   {changeSummaryNode ? (
-                    <span
-                      aria-hidden="true"
-                      className="shrink-0 text-foreground-subtlest"
-                    >
+                    <span aria-hidden="true" className="shrink-0 text-foreground-subtlest">
                       ·
                     </span>
                   ) : null}
@@ -717,7 +659,6 @@ export const MemoTaskItem = memo(function TaskListItem({
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-w-0 items-center gap-2">
             <div className="relative min-w-0 flex h-6 flex-1 flex-wrap items-center gap-1.5">
-
               <TaskTitleOverflowText
                 className="text-ui-base text-foreground"
                 title={taskTitleWithChanges}
@@ -756,9 +697,7 @@ export const MemoTaskItem = memo(function TaskListItem({
                 data-task-row-metadata="true"
                 className={cn(
                   "mr-0.5 flex shrink-0 items-center gap-1 text-ui-sm text-foreground-subtle",
-                  isArchiveConfirming || shouldSuppressWorkspaceTaskMetadata
-                    ? "hidden"
-                    : undefined,
+                  isArchiveConfirming || shouldSuppressWorkspaceTaskMetadata ? "hidden" : undefined,
                 )}
               >
                 {isTaskCron ? (
@@ -819,15 +758,13 @@ export function TaskListItemContextMenuContent({
 }) {
   const workspaceActionsDisabled = useOptionalTabStore(
     (state) =>
-      disableTaskActions ||
-      isWorkspaceReadOnly(state, task.workspacePath, task.workspaceIdentity),
+      disableTaskActions || isWorkspaceReadOnly(state, task.workspacePath, task.workspaceIdentity),
   );
   const workspaceActionsDisabledReason = workspaceActionsDisabled
-    ? (disabledReason ??
-      intl.formatMessage({ id: "workspaceSidebar.unavailableLocalDirectory" }))
+    ? (disabledReason ?? intl.formatMessage({ id: "workspaceSidebar.unavailableLocalDirectory" }))
     : undefined;
   // 收尾：「在分屏打开」仅桌面 shell（context 由 WorkspaceShellLayout 提供；
-    const splitPaneEntry = useV4SplitPaneEntry();
+  const splitPaneEntry = useV4SplitPaneEntry();
   const splitPaneEntryEnabled = splitPaneEntry.enabled;
   const splitPaneTarget = useMemo(
     () => ({
@@ -864,9 +801,7 @@ export function TaskListItemContextMenuContent({
   const taskTitle =
     task.title ||
     intl.formatMessage({
-      id: task.forkedFromTaskId
-        ? "taskList.forkedUntitled"
-        : "taskList.untitled",
+      id: task.forkedFromTaskId ? "taskList.forkedUntitled" : "taskList.untitled",
     });
 
   const handleOpenTaskFeedback = useCallback(async () => {
@@ -945,10 +880,7 @@ export function TaskListItemContextMenuContent({
         void handleOpenTaskPathInFileManager();
       }}
       onCopyWorkspacePath={() => {
-        void handleCopyText(
-          intl.formatMessage({ id: "appHeader.copyPath" }),
-          workspacePath,
-        );
+        void handleCopyText(intl.formatMessage({ id: "appHeader.copyPath" }), workspacePath);
       }}
       onCopyTaskPath={() => {
         void handleCopyText(
@@ -963,10 +895,7 @@ export function TaskListItemContextMenuContent({
         );
       }}
       onCopySessionId={() => {
-        void handleCopyText(
-          intl.formatMessage({ id: "appHeader.copySessionId" }),
-          task.taskId,
-        );
+        void handleCopyText(intl.formatMessage({ id: "appHeader.copySessionId" }), task.taskId);
       }}
       onViewModelTrajectory={() => {
         // 通过单例 store 把“打开轨迹”请求交给所属 workspace 的侧边栏控制器（useAppPanels）。

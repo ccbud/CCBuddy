@@ -136,17 +136,17 @@ export function Root(props: RootProps) {
               <TabStoreProvider>
                 <DiffsWorkerPoolProvider>
                   <AssistantCodeCommentFeatureProvider
-                      enabled={props.assistantCodeCommentCardsEnabled}
-                    >
-                      <CodingPlanUpgradeDialogProvider>
-                        <RewardsProvider desktop={props.isDesktop === true}>
-                          <RequestSecurityHost />
-                          <MarketingTouchProvider desktop={props.isDesktop === true}>
-                            <RootInner {...props} />
-                          </MarketingTouchProvider>
-                        </RewardsProvider>
-                      </CodingPlanUpgradeDialogProvider>
-                    </AssistantCodeCommentFeatureProvider>
+                    enabled={props.assistantCodeCommentCardsEnabled}
+                  >
+                    <CodingPlanUpgradeDialogProvider>
+                      <RewardsProvider desktop={props.isDesktop === true}>
+                        <RequestSecurityHost />
+                        <MarketingTouchProvider desktop={props.isDesktop === true}>
+                          <RootInner {...props} />
+                        </MarketingTouchProvider>
+                      </RewardsProvider>
+                    </CodingPlanUpgradeDialogProvider>
+                  </AssistantCodeCommentFeatureProvider>
                 </DiffsWorkerPoolProvider>
               </TabStoreProvider>
             </StoreProvider>
@@ -461,7 +461,7 @@ function RootInner({
       rootProviderAvailability.hydrated || rootModelSelectionRead.state.status === "error",
   });
 
-    const providerAvailabilityLoginEntryGuardEnabled = false;
+  const providerAvailabilityLoginEntryGuardEnabled = false;
   const { startupCheckCompleted: providerAvailabilityStartupCheckCompleted } =
     useProviderAvailabilityLoginEntryGuard({
       enabled: providerAvailabilityLoginEntryGuardEnabled,
@@ -633,7 +633,7 @@ function RootInner({
     );
   }, [hasCompletedFullRestore, isDesktop, windowWorkspaceTabs]);
 
-      // headers 请求永远滞留 pending，任务永久「工作中」。应答方必须常驻桌面窗口、
+  // headers 请求永远滞留 pending，任务永久「工作中」。应答方必须常驻桌面窗口、
   // 覆盖每个打开的 workspace tab，与展示状态解耦；Web 端保持零订阅，桌面仍是唯一权威。
   const requestSecurityBridgeNode = isDesktop ? (
     <RequestSecurityWorkspaceBridge workspaceTabs={windowWorkspaceTabs} />
@@ -642,7 +642,7 @@ function RootInner({
   const { tryRefresh, clearCredentials } = useTokenRefresh();
   void tryRefresh;
   void clearCredentials;
-    // Web 端继续使用该 gate 会在 workspace tab 注入前渲染空 RootShell，露出浏览器白底。
+  // Web 端继续使用该 gate 会在 workspace tab 注入前渲染空 RootShell，露出浏览器白底。
   const isStartupRenderBlocked = shouldShowRootStartupLoading({
     isDesktop,
     welcomeScreenOpen: Boolean(welcomeScreenOpenReason),
@@ -1068,7 +1068,6 @@ function RootInner({
             remoteWorkspaceSessions={remoteWorkspaceSessions}
             allowRemoteWorkspace={allowRemoteWorkspace}
             handleBackFromSettings={handleBackFromSettings}
-
             user={null}
             reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
             remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}
@@ -1077,7 +1076,6 @@ function RootInner({
             }
             remoteConnectionLogs={remoteConnectionLogs}
             allowOpenWorkspace={allowOpenWorkspace}
-
             isDesktop={isDesktop}
             isMacDesktop={isMacDesktop}
             isWindowsDesktop={isWindowsDesktop}

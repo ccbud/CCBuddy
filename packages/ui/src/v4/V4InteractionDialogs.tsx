@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CCbuddyElicitationRequest, CCbuddyPermissionOption, CCbuddyProvider } from "@ccbuddy/shared";
+import type {
+  CCbuddyElicitationRequest,
+  CCbuddyPermissionOption,
+  CCbuddyProvider,
+} from "@ccbuddy/shared";
 import type { ConversationSnapshot } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { ElicitationDialog } from "@/ElicitationDialog.js";
 import { PermissionDialog } from "@/PermissionDialog.js";
@@ -125,7 +129,10 @@ export function V4InteractionDialogs({
   const workspaceHookReview = currentSnapshot?.pendingInteractions.find(
     (interaction) => interaction.payload.kind === "workspaceHookReview",
   );
-  const notificationEnabled = useCCbuddyStoreWithDefault((state) => state.notificationEnabled, true);
+  const notificationEnabled = useCCbuddyStoreWithDefault(
+    (state) => state.notificationEnabled,
+    true,
+  );
   const botElicitationProgress = useCCbuddySessionStore(
     (state) =>
       getTaskUiState(getWorkspaceState(state, workspacePath, workspaceIdentity), sessionId)
@@ -335,7 +342,6 @@ export function V4InteractionDialogs({
         {...(workspaceIdentity === undefined ? {} : { workspaceIdentity })}
         {...(remoteSessionId === undefined ? {} : { remoteSessionId })}
         {...(workflowSessionModel === undefined ? {} : { workflowSessionModel })}
-
         provider={provider}
         responding={
           permissionResponse?.interactionId === pending.interactionId && permissionResponse.pending

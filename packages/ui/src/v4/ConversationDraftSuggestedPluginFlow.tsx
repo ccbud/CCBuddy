@@ -24,7 +24,6 @@ export interface ConversationDraftSuggestedPromptsContainerProps {
   workspaceIdentity?: string;
   remoteSessionId?: string;
   isDesktop?: boolean;
-
 }
 
 export async function trackDraftSuggestedPluginOperation<T>(
@@ -56,6 +55,6 @@ export function resolveDraftSuggestedPluginFlowStage(
 }
 
 export function resolveSuggestedPluginClientBoundary() {
-  const profile = ("desktop-continuous" as const);
+  const profile = "desktop-continuous" as const;
   return { clientMode: profile, deliveryKind: profile };
 }

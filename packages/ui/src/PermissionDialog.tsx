@@ -469,7 +469,6 @@ export function PermissionDialog({
   remoteSessionId?: string;
   workflowSessionModel?: { providerId: string; modelId: string };
   provider?: CCbuddyProvider;
-
 }) {
   const { intl } = useCCbuddyIntl();
   const isMobileTextInputViewport = useIsMobileTextInputViewport();

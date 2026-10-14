@@ -277,10 +277,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
   const shouldMountWorkspaceRowActions =
     // workspace action 以前常驻 DOM，仅靠 opacity 隐藏；相邻 tooltip 会在
     // 浮层定位完成前误认隐藏 trigger，短暂显示到错误位置。改为交互时挂载，菜单打开时保活。
-    workspaceRowHovered ||
-    workspaceRowFocusWithin ||
-    workspaceActionMenuOpen ||
-    isHoverNone;
+    workspaceRowHovered || workspaceRowFocusWithin || workspaceActionMenuOpen || isHoverNone;
   const remoteErrorCopyResetRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -752,7 +749,9 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
       <span className="relative flex size-4 shrink-0 items-center justify-center">
         {renderWorkspaceIcon()}
       </span>
-      <div className="min-w-0 truncate text-ui-base text-foreground-subtle">{workspaceSidebarLabel}</div>
+      <div className="min-w-0 truncate text-ui-base text-foreground-subtle">
+        {workspaceSidebarLabel}
+      </div>
       {!isExpanded && taskListHasUnread ? (
         <span
           aria-hidden="true"
@@ -913,9 +912,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
                         open={workspaceActionMenuOpen}
                         onOpenChange={setWorkspaceActionMenuOpen}
                       >
-                        <ControlHintTooltip
-                          title={intl.formatMessage({ id: "common.more" })}
-                        >
+                        <ControlHintTooltip title={intl.formatMessage({ id: "common.more" })}>
                           <DropdownMenuTrigger asChild>
                             <Button
                               type="button"
@@ -1136,7 +1133,6 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
             showFooter={false}
             loading={taskListLoading}
             hasMore={taskListHasMore}
-
             onShowMore={onShowMoreTasks}
             onRenameTask={handleRenameTask}
             onSetTaskPinned={handleSetTaskPinned}

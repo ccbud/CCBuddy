@@ -6852,7 +6852,8 @@ export function createBotsService(
       };
     });
     // 历史文本附件在各条原始附件之后追加，保留它且不归给后续消息。
-    if (topicBatch) admittedAttachments.push(...prepared.ccbuddyAttachments.slice(attachmentOffset));
+    if (topicBatch)
+      admittedAttachments.push(...prepared.ccbuddyAttachments.slice(attachmentOffset));
     const source = {
       authorizationId: context.group.authorizationId,
       botIdentity: { name: bot.name, ...(message.botOpenId ? { openId: message.botOpenId } : {}) },
@@ -8723,7 +8724,10 @@ export function createBotsService(
             if (!alias) continue;
             // 默认会话可能已切换工作区；迁移检查必须使用旧任务自己的完整工作区身份。
             const workspace = group.taskWorkspaces?.[alias.taskId] ?? candidate;
-            const service = await resolveCCbuddyTaskServiceForContext({ ...candidate, ...workspace });
+            const service = await resolveCCbuddyTaskServiceForContext({
+              ...candidate,
+              ...workspace,
+            });
             if (
               !service.getBotGroupTaskBlockReason ||
               (await service.getBotGroupTaskBlockReason({

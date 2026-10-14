@@ -379,7 +379,6 @@ function GitStatusSection({
   separated: boolean;
   workspaceIdentity?: string;
   workspacePath: string;
-
 }) {
   const { intl } = useCCbuddyIntl();
   const git = model.git;
@@ -1942,7 +1941,7 @@ function ConversationStatusPanelImpl({
     variantOverride: summaryPanelVariantOverride ?? null,
   });
   const isVariantAutomatic = summaryPanelVariantOverride == null;
-      // 让 Radix 在上/下之间翻转；桌面和宽屏 Web 保持原左侧交互。
+  // 让 Radix 在上/下之间翻转；桌面和宽屏 Web 保持原左侧交互。
 
   const panelModeValue = isVariantAutomatic ? "auto" : variant;
   const { intl } = useCCbuddyIntl();
@@ -2111,7 +2110,6 @@ function ConversationStatusPanelImpl({
                 onRefreshGit={onRefreshGit}
                 onOpenGitReview={onOpenGitReview}
                 separated={false}
-
               />
             ) : null}
             {canRenderGoal ? (

@@ -6,10 +6,7 @@ const FALLBACK_SUBSCRIPTION_ERROR_CODE = "fault.subscribe.unknown";
 const STANDALONE_REASON_CODE_PATTERN = /^fault\.[A-Za-z0-9._-]+$/;
 const SUFFIX_REASON_CODE_PATTERN = /\((fault\.[A-Za-z0-9._-]+)\)\s*$/;
 
-type SubscriptionErrorReporter = Pick<
-  ConversationTelemetrySupervisor,
-  "reportVisibleChatError"
->;
+type SubscriptionErrorReporter = Pick<ConversationTelemetrySupervisor, "reportVisibleChatError">;
 
 export function resolveSessionSubscriptionErrorCode(message: string): string {
   const trimmedMessage = message.trim();
@@ -31,12 +28,7 @@ export function useSessionSubscriptionErrorTelemetry(params: {
   const reportedKeysRef = useRef(new Set<string>());
 
   useEffect(() => {
-    if (
-      !params.visible ||
-      !params.supervisor ||
-      !params.sessionId ||
-      !params.lastError
-    ) {
+    if (!params.visible || !params.supervisor || !params.sessionId || !params.lastError) {
       return;
     }
     const errorCode = resolveSessionSubscriptionErrorCode(params.lastError);

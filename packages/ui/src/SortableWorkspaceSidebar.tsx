@@ -123,7 +123,6 @@ export const SortableWorkspaceSidebarItem = memo(function SortableWorkspaceSideb
       taskListHasMore={taskListHasMore}
       taskListHasUnread={taskListHasUnread}
       taskListLiveWorkflowCount={taskListLiveWorkflowCount}
-
       onShowMoreTasks={handleShowMoreTasks}
       reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
       remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}

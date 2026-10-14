@@ -648,7 +648,7 @@ function ConversationTimelineImpl({
     if (!element) return;
 
     // rail 改由 CSS container query 隐藏后，完整历史补拉失去了同一宽度
-        // rail 的显隐、占位与过渡仍完全由 CSS 裁决，不恢复 composer 几何测量。
+    // rail 的显隐、占位与过渡仍完全由 CSS 裁决，不恢复 composer 几何测量。
     const commitWidth = (width: number) => {
       const normalizedWidth = Math.max(0, Math.round(width));
       setTurnNavigatorContainerWidthPx((current) =>

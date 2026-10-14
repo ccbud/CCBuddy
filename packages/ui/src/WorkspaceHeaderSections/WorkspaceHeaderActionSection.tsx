@@ -47,16 +47,13 @@ export function WorkspaceHeaderActionSection({
         />
       ) : null}
       {/* 分享发布接口依赖登录态；未登录时隐藏入口，避免用户打开后只能得到鉴权失败。 */}
-      {activeTaskId &&
-      user &&
-      isDesktop !== false &&
-      remoteTarget?.kind !== "server" ? (
+      {activeTaskId && user && isDesktop !== false && remoteTarget?.kind !== "server" ? (
         <ConversationShareMenu
           taskId={activeTaskId}
           useWindowsCaptionSpacing={useWindowsCaptionSpacing}
         />
       ) : null}
-      {(
+      {
         <>
           {!hideHelpMenu ? <WorkspaceHelpMenuButton isDesktop={Boolean(isDesktop)} /> : null}
           <WorkspaceTerminalToggleButton
@@ -66,7 +63,7 @@ export function WorkspaceHeaderActionSection({
             useWindowsCaptionSpacing={useWindowsCaptionSpacing}
           />
         </>
-      )}
+      }
       {!isSidePaneOpen ? (
         <WorkspaceSidePaneToggleButton
           isSidePaneOpen={isSidePaneOpen}

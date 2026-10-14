@@ -1,9 +1,6 @@
 import type { CCbuddyConfigOption, CCbuddyTaskMeta } from "@ccbuddy/shared";
 import { getCCbuddyAgentModeSelectOptions } from "@ccbuddy/shared";
-import {
-  decodeCustomModelValue,
-  encodeCustomModelValue,
-} from "@/lib/ccbuddyCustomModelValue.js";
+import { decodeCustomModelValue, encodeCustomModelValue } from "@/lib/ccbuddyCustomModelValue.js";
 
 function parseProviderQualifiedModel(
   model: string,
@@ -27,9 +24,7 @@ function isSyntheticModelPlaceholder(model: string): boolean {
   return model.trim().toLocaleLowerCase() === "<synthetic>";
 }
 
-export function resolveGlmRecoveredTaskModelValue(
-  taskModel: string | undefined,
-): string | null {
+export function resolveGlmRecoveredTaskModelValue(taskModel: string | undefined): string | null {
   const normalizedTaskModel = taskModel?.trim();
   if (!normalizedTaskModel || isSyntheticModelPlaceholder(normalizedTaskModel)) {
     return null;

@@ -1,4 +1,8 @@
-import { createLocalServices, createTopicResourcePeers, getAppConfigDir } from "@ccbuddy/services/node";
+import {
+  createLocalServices,
+  createTopicResourcePeers,
+  getAppConfigDir,
+} from "@ccbuddy/services/node";
 import {
   materializeBundledCCbuddyBuiltinProviderConfig,
   readBundledCCbuddyBuiltinProviderConfig,

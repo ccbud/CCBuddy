@@ -38,10 +38,7 @@ import { toWorkspaceRelativePath } from "@/lib/taskChangeSummary.js";
 import { getPathLeaf } from "@/lib/path.js";
 import { logger } from "@/logger.js";
 import { HighlightedMatchText } from "@/quickpick/HighlightedMatchText.js";
-import {
-  QUICK_PICK_SECTION_ORDER,
-  type QuickPickCommand,
-} from "@/quickpick/quickPickCommands.js";
+import { QUICK_PICK_SECTION_ORDER, type QuickPickCommand } from "@/quickpick/quickPickCommands.js";
 import { QUICK_PICK_ICON_BY_KIND } from "@/quickpick/quickPickCommandIcons.js";
 import {
   quickPickCommandClassName,
@@ -193,7 +190,10 @@ function matchesCommand(command: QuickPickCommand, title: string, query: string)
   }
 
   const searchText = `${title} ${command.keywords.join(" ")}`.toLocaleLowerCase();
-  return normalizedQuery.split(/\s+/).filter(Boolean).every((part) => searchText.includes(part));
+  return normalizedQuery
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((part) => searchText.includes(part));
 }
 
 function buildTaskResultRows(params: {
@@ -378,9 +378,7 @@ export function CommandCenterSearchHistory({
               className="inline-flex min-h-5 max-w-44 shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 leading-none text-ui-base text-foreground-subtle hover:bg-surface-hover hover:text-foreground"
               onClick={() => onPickEntry(entry)}
             >
-              {prefix ? (
-                <span className="font-mono text-ui-xs text-brand">{prefix}</span>
-              ) : null}
+              {prefix ? <span className="font-mono text-ui-xs text-brand">{prefix}</span> : null}
               <span className="min-w-0 truncate">{entry.query}</span>
             </button>
           );
@@ -393,10 +391,7 @@ export function CommandCenterSearchHistory({
             onClick={onToggleExpanded}
           >
             <ChevronDownIcon
-              className={cn(
-                "size-3.5 transition-transform",
-                expanded ? "rotate-180" : "",
-              )}
+              className={cn("size-3.5 transition-transform", expanded ? "rotate-180" : "")}
             />
           </button>
         ) : null}
@@ -459,9 +454,8 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
   const activeScope = resolvedQuery.explicitScope ? resolvedQuery.scope : manualScope;
   const searchQuery = resolvedQuery.query;
   const hasSearchQuery = searchQuery.trim().length > 0;
-  const searchConversations = open && hasSearchQuery && (
-    activeScope === "all" || activeScope === "conversations"
-  );
+  const searchConversations =
+    open && hasSearchQuery && (activeScope === "all" || activeScope === "conversations");
   const searchFiles = open && hasSearchQuery && (activeScope === "all" || activeScope === "files");
   const searchWorkspaceTabs = useMemo(
     () => (searchConversations ? effectiveWorkspaceTabs : []),
@@ -534,9 +528,7 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
     [searchQuery, workspaceFiles],
   );
   const recentChangeRows = useMemo(
-    () =>
-      [...(effectiveActiveTaskChangeSummary?.files ?? [])]
-        .sort(compareRecentChangedFiles),
+    () => [...(effectiveActiveTaskChangeSummary?.files ?? [])].sort(compareRecentChangedFiles),
     [effectiveActiveTaskChangeSummary],
   );
   const recentChangePreviewRows = useMemo(
@@ -544,9 +536,7 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
     [recentChangeRows],
   );
   const recentTaskRows = useMemo(
-    () =>
-      recentTaskList.items
-        .filter((task) => task.taskId !== activeTaskId),
+    () => recentTaskList.items.filter((task) => task.taskId !== activeTaskId),
     [activeTaskId, recentTaskList.items],
   );
   const recentTaskPreviewRows = useMemo(
@@ -729,9 +719,7 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
       <button
         type="button"
         className="mt-0.5 flex min-h-7 w-full items-center gap-1.5 rounded-xl px-2.5 pl-8 text-left text-ui-base text-foreground-subtle hover:bg-menu-hover hover:text-foreground"
-        onClick={() =>
-          setExpandedSections((current) => new Set(current).add(sectionId))
-        }
+        onClick={() => setExpandedSections((current) => new Set(current).add(sectionId))}
       >
         {intl.formatMessage({ id: "commandCenter.moreResults" })}
         <ChevronDownIcon className="size-3.5" />
@@ -768,9 +756,7 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
               onSelect={() => selectRecentChange(file)}
             >
               <FileDisplayIcon src={descriptor.fileIconSrc} size={14} className="shrink-0" />
-              <span className="min-w-0 flex-1 truncate">
-                {relativePath}
-              </span>
+              <span className="min-w-0 flex-1 truncate">{relativePath}</span>
               <CommandShortcut className={quickPickMetadataClassName}>
                 <span className="text-diff-added">+{file.added}</span>{" "}
                 <span className="text-diff-removed">-{file.removed}</span>
@@ -868,9 +854,10 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
       return null;
     }
 
-    const visibleRows = activeScope === "conversations" || expandedSections.has("conversations")
-      ? conversationRows
-      : conversationRows.slice(0, COMMAND_CENTER_SECTION_LIMIT);
+    const visibleRows =
+      activeScope === "conversations" || expandedSections.has("conversations")
+        ? conversationRows
+        : conversationRows.slice(0, COMMAND_CENTER_SECTION_LIMIT);
     return (
       <CommandGroup heading={intl.formatMessage({ id: "commandCenter.section.conversations" })}>
         {taskList.loading && conversationRows.length === 0 ? (
@@ -926,9 +913,10 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
       return null;
     }
 
-    const visibleRows = activeScope === "files" || expandedSections.has("files")
-      ? fileRows
-      : fileRows.slice(0, COMMAND_CENTER_SECTION_LIMIT);
+    const visibleRows =
+      activeScope === "files" || expandedSections.has("files")
+        ? fileRows
+        : fileRows.slice(0, COMMAND_CENTER_SECTION_LIMIT);
     return (
       <CommandGroup heading={intl.formatMessage({ id: "commandCenter.section.files" })}>
         {workspaceFilesLoading && fileRows.length === 0 ? (

@@ -1463,7 +1463,7 @@ const UserInputRowView = memo(function UserInputRowView(
           data-topic-message-id={row.botGroupSource!.messageId}
         >
           {/* 多条原文共用一个已接收输入，不能把局部编辑误当作替换整批。 */}
-          <SingleUserInputRowView {...props} row={row}  />
+          <SingleUserInputRowView {...props} row={row} />
         </div>
       ))}
     </div>
@@ -1515,8 +1515,7 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   });
   const forkLabel = intl.formatMessage({ id: "chat.message.fork" });
   const timeLabel = formatMessageTimeLabel(createdAt, locale, intl);
-  const resolveTooltip = (label: string): string | undefined =>
-    compactLayout ? undefined : label;
+  const resolveTooltip = (label: string): string | undefined => (compactLayout ? undefined : label);
 
   useEffect(() => {
     setLocalFeedback(feedback);

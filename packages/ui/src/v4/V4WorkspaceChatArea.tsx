@@ -204,9 +204,7 @@ export function V4WorkspaceChatArea({
   const setSplitRatioAction = usePaneLayoutStore((state) => state.setSplitRatio);
   const resetPaneLayoutAction = usePaneLayoutStore((state) => state.resetToPrimaryPane);
   const activeGroup = useWorkbenchGroupStore((state) =>
-    compactLayout || !state.activeGroupId
-      ? null
-      : (state.groups[state.activeGroupId] ?? null),
+    compactLayout || !state.activeGroupId ? null : (state.groups[state.activeGroupId] ?? null),
   );
   const focusGroupPaneAction = useWorkbenchGroupStore((state) => state.focusPane);
   const closeGroupPaneAction = useWorkbenchGroupStore((state) => state.closePane);

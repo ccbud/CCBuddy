@@ -654,7 +654,9 @@ export interface ICCbuddyAgentService {
   grantWorkspaceHookTrust(
     params: CCbuddyAgentGrantWorkspaceHookTrustParams,
   ): Promise<CCbuddyWorkspaceHookTrustGrantResult>;
-  listMcpServerStatuses(params: CCbuddyAgentListMcpServerStatusesParams): Promise<CCbuddyMcpListResult>;
+  listMcpServerStatuses(
+    params: CCbuddyAgentListMcpServerStatusesParams,
+  ): Promise<CCbuddyMcpListResult>;
   listPlugins(params: CCbuddyAgentPluginViewParams): Promise<CCbuddyPluginsListResult>;
   /**
    * Plugin 对话引用 catalog：session-scoped 只读投影。
@@ -707,7 +709,9 @@ export interface ICCbuddyAgentService {
     params: CCbuddyAgentListMcpResourcesForUiParams,
   ): Promise<CCbuddyMcpUiListResourceTemplatesResult>;
   subscribeMcpResourceForUi(params: CCbuddyAgentMcpResourceSubscriptionForUiParams): Promise<void>;
-  unsubscribeMcpResourceForUi(params: CCbuddyAgentMcpResourceSubscriptionForUiParams): Promise<void>;
+  unsubscribeMcpResourceForUi(
+    params: CCbuddyAgentMcpResourceSubscriptionForUiParams,
+  ): Promise<void>;
   /** App-Provided Tools：页面工具登记 / 注销与模型调用的认领 / 回传（信箱投递走 v4 live 增量）。 */
   registerAppToolsForUi(
     params: CCbuddyAgentRegisterAppToolsForUiParams,
@@ -727,7 +731,9 @@ export interface ICCbuddyAgentService {
   ): Promise<CCbuddyPluginsListUiSurfacesResult>;
   // 已保存工作流的 GUI 中枢：workspace 级、无会话，每次调用现扫 `<cwd>/.ccbuddy/workflows/`。
   // 全局档传 `scope: "global"`：带 workspace 就用它当载体，不带则由 services 层自选本机载体运行时。
-  listSavedWorkflows(params: CCbuddyAgentListSavedWorkflowsParams): Promise<CCbuddyWorkflowsListResult>;
+  listSavedWorkflows(
+    params: CCbuddyAgentListSavedWorkflowsParams,
+  ): Promise<CCbuddyWorkflowsListResult>;
   getSavedWorkflow(params: CCbuddyAgentGetSavedWorkflowParams): Promise<CCbuddyWorkflowsGetResult>;
   updateSavedWorkflowMeta(
     params: CCbuddyAgentUpdateSavedWorkflowMetaParams,
@@ -740,7 +746,9 @@ export interface ICCbuddyAgentService {
   ): Promise<CCbuddyWorkflowsRunsResult>;
   // 在项目档 / 全局档之间移动同名文件：
   // `workspace` 是载体（移到项目传目标项目、移到全局传源项目），`to` 是落点档；不覆盖已存在的目标。
-  moveSavedWorkflow(params: CCbuddyAgentMoveSavedWorkflowParams): Promise<CCbuddyWorkflowsMoveResult>;
+  moveSavedWorkflow(
+    params: CCbuddyAgentMoveSavedWorkflowParams,
+  ): Promise<CCbuddyWorkflowsMoveResult>;
   // 完成卡的「直接保存」（docs/dynamic-workflow/transcript-and-notifications.md）：按 runId 从
   // journal 取这次 run 实际跑过的脚本落盘，不经模型回合。两者都必带 workspace（journal 在那里）。
   saveSavedWorkflowFromRun(
@@ -778,18 +786,24 @@ export interface ICCbuddyAgentService {
   cancelPluginOperation(
     params: CCbuddyAgentCancelPluginOperationParams,
   ): Promise<CCbuddyPluginsCancelOperationResult>;
-  uninstallPlugin(params: CCbuddyAgentUninstallPluginParams): Promise<CCbuddyPluginsUninstallResult>;
+  uninstallPlugin(
+    params: CCbuddyAgentUninstallPluginParams,
+  ): Promise<CCbuddyPluginsUninstallResult>;
   updatePlugin(params: CCbuddyAgentUpdatePluginParams): Promise<CCbuddyPluginsInstallResult>;
   restoreBuiltinPlugin(
     params: CCbuddyAgentRestoreBuiltinPluginParams,
   ): Promise<CCbuddyPluginsRestoreBuiltinResult>;
-  configurePlugin(params: CCbuddyAgentConfigurePluginParams): Promise<CCbuddyPluginsConfigureResult>;
+  configurePlugin(
+    params: CCbuddyAgentConfigurePluginParams,
+  ): Promise<CCbuddyPluginsConfigureResult>;
   resetPluginConfig(
     params: CCbuddyAgentResetPluginConfigParams,
   ): Promise<CCbuddyPluginsConfigureResult>;
   validatePlugin(params: CCbuddyAgentValidatePluginParams): Promise<CCbuddyPluginsValidateResult>;
   describePlugin(params: CCbuddyAgentDescribePluginParams): Promise<CCbuddyPluginsDescribeResult>;
-  setPluginEnabled(params: CCbuddyAgentSetPluginEnabledParams): Promise<CCbuddyPluginsSetEnabledResult>;
+  setPluginEnabled(
+    params: CCbuddyAgentSetPluginEnabledParams,
+  ): Promise<CCbuddyPluginsSetEnabledResult>;
   // ---- 定时任务(automation)管理 ----
   listAutomations(params: CCbuddyAgentWorkspaceTarget): Promise<CCbuddyAutomation[]>;
   listAllAutomations(): Promise<CCbuddyAutomation[]>;
@@ -798,7 +812,9 @@ export interface ICCbuddyAgentService {
   deleteAutomation(params: CCbuddyAgentAutomationIdParams): Promise<void>;
   setAutomationEnabled(params: CCbuddyAgentSetAutomationEnabledParams): Promise<void>;
   restartAutomation(params: CCbuddyAgentAutomationIdParams): Promise<void>;
-  runAutomationNow(params: CCbuddyAgentAutomationIdParams): Promise<CCbuddyAgentRunAutomationNowResult>;
+  runAutomationNow(
+    params: CCbuddyAgentAutomationIdParams,
+  ): Promise<CCbuddyAgentRunAutomationNowResult>;
   listAutomationRuns(params: CCbuddyAgentAutomationIdParams): Promise<CCbuddyAutomationRun[]>;
   deleteAutomationRun(params: CCbuddyAgentDeleteAutomationRunParams): Promise<void>;
   generateWorkspaceText(
@@ -868,7 +884,9 @@ export interface ICCbuddyAgentService {
    * 仅剩 ccbuddyTaskServiceAdapter.onDynamicTaskEvent（replayable 读路径）消费。
    * 写路径已收敛 v4 命令面；本订阅是读路径投影源。
    */
-  onDynamicSessionEvent(params: CCbuddyAgentSessionSubscribeParams): Event<CCbuddyAgentServiceEvent>;
+  onDynamicSessionEvent(
+    params: CCbuddyAgentSessionSubscribeParams,
+  ): Event<CCbuddyAgentServiceEvent>;
   // ── v4 conversation 通道（竖切）──
   /** RPC attachment 建立后先读取 host 可信 hello。 */
   helloConversationV4(): Promise<HelloMessage>;
@@ -928,10 +946,14 @@ export interface ICCbuddyAgentService {
     params: CCbuddyAgentConversationFileRewindPreviewParams,
   ): Promise<V4ConversationFileRewindPreviewResult>;
   sendConversationCommandV4(params: CCbuddyAgentConversationCommandParams): Promise<CommandAck>;
-  queryConversationCommandsV4(params: CCbuddyAgentCommandsQueryParams): Promise<CommandsQueryResult>;
+  queryConversationCommandsV4(
+    params: CCbuddyAgentCommandsQueryParams,
+  ): Promise<CommandsQueryResult>;
   attachmentBeginV4(params: CCbuddyAgentAttachmentBeginParams): Promise<V4AttachmentBeginResult>;
   attachmentChunkV4(params: CCbuddyAgentAttachmentChunkParams): Promise<V4AttachmentChunkResult>;
-  attachmentCommitV4(params: CCbuddyAgentAttachmentTerminalParams): Promise<V4AttachmentCommitResult>;
+  attachmentCommitV4(
+    params: CCbuddyAgentAttachmentTerminalParams,
+  ): Promise<V4AttachmentCommitResult>;
   attachmentAbortV4(params: CCbuddyAgentAttachmentTerminalParams): Promise<void>;
   /** Desktop local 已发送视频 source query；远端与 Web 返回 chunked。 */
   attachmentPreviewSourceV4(

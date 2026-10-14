@@ -95,7 +95,7 @@ export function shouldRenderPreviewPaneHeavyContent({
   }
 
   if (isMobileOverlay) {
-        // transform 动画结束不会触发 ResizeObserver，不能用桌面窄条优化延迟真实预览。
+    // transform 动画结束不会触发 ResizeObserver，不能用桌面窄条优化延迟真实预览。
     return true;
   }
 

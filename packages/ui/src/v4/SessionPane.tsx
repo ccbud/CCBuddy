@@ -1742,14 +1742,7 @@ export function SessionPane({
         clientKind: isDesktop ? "desktop" : compactLayout ? "mobile" : "web",
       });
     },
-    [
-      platform,
-      workspacePath,
-      workspaceIdentity,
-      remoteSessionId,
-      isDesktop,
-      compactLayout,
-    ],
+    [platform, workspacePath, workspaceIdentity, remoteSessionId, isDesktop, compactLayout],
   );
   const handleDraftSessionCreated = useCallback(
     (
@@ -1883,8 +1876,9 @@ export function SessionPane({
               ...(groupedDraftTask ? { groupedDraftTask } : {}),
               sessionCreateSource:
                 sessionCreateSource ??
-                useCCbuddySessionStore.getState().getWorkspaceState(workspacePath, workspaceIdentity)
-                  .draftCreateSource,
+                useCCbuddySessionStore
+                  .getState()
+                  .getWorkspaceState(workspacePath, workspaceIdentity).draftCreateSource,
             }
           : undefined,
       );
@@ -5166,7 +5160,6 @@ export function SessionPane({
         queueEditActiveForCurrentComposer ||
         quotaBanner.state.blocksSubmit
       }
-
       workspacePath={workspacePath}
       workspaceIdentity={workspaceIdentity}
       remoteSessionId={remoteSessionId ?? undefined}
@@ -5326,7 +5319,6 @@ export function SessionPane({
           workspacePath={workspacePath}
           workspaceIdentity={workspaceIdentity}
           remoteSessionId={remoteSessionId ?? undefined}
-
           provider={provider}
           snapshot={snapshot}
         />
@@ -5345,7 +5337,6 @@ export function SessionPane({
           workspacePath={workspacePath}
           workspaceIdentity={workspaceIdentity}
           remoteSessionId={remoteSessionId ?? undefined}
-
           isDesktop={isDesktop}
         />
       ) : null}
@@ -5400,10 +5391,7 @@ export function SessionPane({
         onDragOver={effectiveDropTargetController?.onDragOver}
         onDragLeave={effectiveDropTargetController?.onDragLeave}
         onDrop={effectiveDropTargetController?.onDrop}
-        className={cn(
-          "relative flex h-full min-h-0 flex-col",
-          compactLayout && "min-w-0",
-        )}
+        className={cn("relative flex h-full min-h-0 flex-col", compactLayout && "min-w-0")}
       >
         {effectiveDropTargetController?.active ? (
           <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-accent/55 backdrop-blur-sm">
@@ -5474,7 +5462,6 @@ export function SessionPane({
               endedSubagentCount={subagents.endedTotal}
               rootSessionId={rootSessionId ?? sessionId ?? undefined}
               parentSessionId={sessionId ?? undefined}
-
               isMobileViewport={isMobileTextInputViewport}
               layoutMode={statusPanelLayout}
               summaryPanelVariantOverride={effectiveSummaryPanelVariantOverride}
@@ -5515,9 +5502,7 @@ export function SessionPane({
               onCancelBackgroundWork={readOnly ? undefined : handleCancelBackgroundWork}
               onOpenSubagentSession={onOpenSubagentSession ? handleOpenSubagentSession : undefined}
               onOpenSubagentDirectory={
-                onOpenSubagentDirectory && !compactLayout
-                  ? handleOpenSubagentDirectory
-                  : undefined
+                onOpenSubagentDirectory && !compactLayout ? handleOpenSubagentDirectory : undefined
               }
               onOpenWorkflowRun={
                 onOpenWorkflowRun && sessionId ? handleOpenWorkflowRunFromPanel : undefined
@@ -5587,9 +5572,7 @@ export function SessionPane({
                   onLoadAllOlder={handleLoadAllOlder}
                   turnNavigatorDirectoryRevision={state.turnNavigatorDirectoryRevision}
                   bottomDock={conversationBottomDock}
-                  hideTurnNavigator={
-                    shareActive && shareInSelectionStage && !compactLayout
-                  }
+                  hideTurnNavigator={shareActive && shareInSelectionStage && !compactLayout}
                   backgroundScrollLocked={resolveConversationShareBackgroundScrollLocked({
                     partialShareActive: shareActive,
                     stage: shareDraft?.stage ?? "selection",
@@ -5620,9 +5603,7 @@ export function SessionPane({
                   emptyState={
                     isDraft ? (
                       <div data-testid={TID_CHAT_EMPTY} className="w-full">
-                        <ConversationDraftEmptyState
-                          compactLayout={compactLayout}
-                        />
+                        <ConversationDraftEmptyState compactLayout={compactLayout} />
                       </div>
                     ) : null
                   }

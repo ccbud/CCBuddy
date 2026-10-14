@@ -1,4 +1,7 @@
-import type { WorkflowRunPendingQuestion, WorkflowRunState } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type {
+  WorkflowRunPendingQuestion,
+  WorkflowRunState,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { laneDisplayName } from "@/components/workflow-graph/lane-name.js";
 import { phaseDisplayName } from "@/components/workflow-graph/phase-name.js";
 import type { WorkflowCausalityGraphData } from "@/components/workflow-graph/types.js";

@@ -63,7 +63,11 @@ export async function closeAndRefreshCodingPlanUpgradeFromWebview(params: {
   }
 }
 
-export function CodingPlanUpgradeDialog({ target, onClose, onOpenResult }: CodingPlanUpgradeDialogProps) {
+export function CodingPlanUpgradeDialog({
+  target,
+  onClose,
+  onOpenResult,
+}: CodingPlanUpgradeDialogProps) {
   const { providerSettingsService, credentialService, codingPlanSubscriptionService } =
     useServices();
   const providerSettingsRead = useProviderSettingsView();

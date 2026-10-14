@@ -45,7 +45,8 @@ function loadEnvFiles(): Record<string, string> {
   // 真实环境变量优先级最高
   if (process.env.CCBUDDY_ENV) vars.CCBUDDY_ENV = process.env.CCBUDDY_ENV;
   if (process.env.CCBUDDY_BASE_URL) vars.CCBUDDY_BASE_URL = process.env.CCBUDDY_BASE_URL;
-  if (process.env.VITE_CCBUDDY_BASE_URL) vars.VITE_CCBUDDY_BASE_URL = process.env.VITE_CCBUDDY_BASE_URL;
+  if (process.env.VITE_CCBUDDY_BASE_URL)
+    vars.VITE_CCBUDDY_BASE_URL = process.env.VITE_CCBUDDY_BASE_URL;
   // OAuth origin/client_id 由 host runtime 读取；这里保留覆盖入口，方便开发构建时观察统一 env 来源。
   if (process.env.ZAI_OAUTH_CLIENT_ID) vars.ZAI_OAUTH_CLIENT_ID = process.env.ZAI_OAUTH_CLIENT_ID;
   if (process.env.ZAI_OAUTH_ORIGIN) vars.ZAI_OAUTH_ORIGIN = process.env.ZAI_OAUTH_ORIGIN;
@@ -69,7 +70,10 @@ function loadEnvFiles(): Record<string, string> {
 const env = loadEnvFiles();
 const { environment: ccbuddyEnv } = await loadBuiltinProviderConfig();
 // 安装包身份与后端环境分轴：CCBUDDY_PREVIEW_IDENTITY=1 让生产后端的构建仍以 CCbuddy Preview 身份打包运行。
-const ccbuddyProductFlavor = resolveDesktopProductFlavor({ ...process.env, CCBUDDY_ENV: ccbuddyEnv });
+const ccbuddyProductFlavor = resolveDesktopProductFlavor({
+  ...process.env,
+  CCBUDDY_ENV: ccbuddyEnv,
+});
 console.log(`[tsup] CCBUDDY_ENV=${ccbuddyEnv} CCBUDDY_PRODUCT_FLAVOR=${ccbuddyProductFlavor}`);
 
 function parseCsvEnv(value: string | undefined): string[] {

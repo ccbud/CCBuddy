@@ -447,7 +447,10 @@ export function resolveDefaultCCbuddyAgentCommand(
     return applyPresentationSurfaceToCommand(
       {
         command,
-        args: parseArgsJson(process.env.CCBUDDY_AGENT_SERVER_ARGS_JSON) ?? ["app-server", "--stdio"],
+        args: parseArgsJson(process.env.CCBUDDY_AGENT_SERVER_ARGS_JSON) ?? [
+          "app-server",
+          "--stdio",
+        ],
         cwd: process.env.CCBUDDY_AGENT_SERVER_CWD?.trim() || context.workspacePath,
       },
       context.presentationSurface,
@@ -789,7 +792,9 @@ export class CCbuddyAgentProcessManager {
     return cleanupPromise;
   }
 
-  private async cleanupManagedProcessForShutdown(managed: ManagedCCbuddyAgentProcess): Promise<void> {
+  private async cleanupManagedProcessForShutdown(
+    managed: ManagedCCbuddyAgentProcess,
+  ): Promise<void> {
     await this.cleanupManagedProcessWithRetry(
       managed,
       "manager-dispose",

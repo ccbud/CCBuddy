@@ -659,17 +659,17 @@ function ConversationComposerImpl({
   const isMobileTextInputViewport = useIsMobileTextInputViewport();
   const primaryModifierPressed = usePrimaryFollowupModifier();
   const appleKeyboardPlatform = isAppleKeyboardPlatform();
-    // 接线没有补回，导致 Enter 误发送。恢复旧语义：手机视口下 Enter 换行并用按钮发送；
+  // 接线没有补回，导致 Enter 误发送。恢复旧语义：手机视口下 Enter 换行并用按钮发送；
   // 桌面端仍由 resolveChatEnterSubmits 的视口门禁保持 Enter 发送。
   const enterSubmits = resolveChatEnterSubmits({
     isMobileTextInputViewport,
     preferEnterNewline: false,
   });
   // 修复原因：旧 ChatView 删除后，iOS 防聚焦放大的接线没有迁到 v4 composer，
-    const avoidIosInputFocusZoom = shouldAvoidIosInputFocusZoom({
+  const avoidIosInputFocusZoom = shouldAvoidIosInputFocusZoom({
     isMobileTextInputViewport,
   });
-    // 40px 编辑区并覆盖工具栏。手机端改用短文案并限制两行；桌面端继续保留完整提示。
+  // 40px 编辑区并覆盖工具栏。手机端改用短文案并限制两行；桌面端继续保留完整提示。
 
   const sendShortcut = resolveChatEnterShortcut({ enterSubmits });
   const updateText = useCallback(
@@ -1287,8 +1287,8 @@ function ConversationComposerImpl({
           localTtft: !workspaceIdentity?.trim()
             ? getLocalTtftObserver()?.start(
                 workspacePath,
-                (snapshotRef.current !== null &&
-                  snapshotRef.current.inputRouting.mode !== "startNow"),
+                snapshotRef.current !== null &&
+                  snapshotRef.current.inputRouting.mode !== "startNow",
                 trimmed.startsWith("/"),
               )
             : undefined,
@@ -2163,7 +2163,6 @@ function ConversationComposerImpl({
             sessionId={sessionId ?? null}
             phase={composerPhase}
             provider={provider}
-
             isMobileViewport={isMobileTextInputViewport}
             draftMode={draftMode}
             draftConfig={draftConfig}
@@ -2282,7 +2281,6 @@ function ConversationComposerImpl({
           workspacePath={workspacePath}
           workspaceIdentity={workspaceIdentity}
           remoteSessionId={remoteSessionId}
-
           currentSessionBusy={canStop}
         />
         <ConversationBackgroundWorkTrigger
@@ -2418,7 +2416,6 @@ function ConversationComposerImpl({
           inputApiRef={inputApiRef}
           promptHistory={promptHistory}
           avoidIosInputFocusZoom={avoidIosInputFocusZoom}
-
           // Bugfix 原因：命令目录必须完整来自 CLI workspace slash catalog；UI 只在
           // secondary pane 按产品能力隐藏 goal，不再追加任何内建命令或别名。
           excludedSlashCommandNames={suppressGoalCommands ? ["goal"] : undefined}

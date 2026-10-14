@@ -1,8 +1,5 @@
 import type { RemoteAssetInstallMode, RemoteTarget } from "@ccbuddy/shared";
-import {
-  isValidWslUser,
-  normalizeRemoteResourcePackageSelection,
-} from "@ccbuddy/shared";
+import { isValidWslUser, normalizeRemoteResourcePackageSelection } from "@ccbuddy/shared";
 import type { SSHAuthMethod } from "@/hooks/useRemoteConnectionForm.js";
 import type { RemoteWizardStep } from "@/RemoteConnectionWizardChrome.js";
 

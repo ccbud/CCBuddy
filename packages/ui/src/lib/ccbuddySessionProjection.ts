@@ -159,7 +159,9 @@ export function parseModelPickerValue(value: string): ModelSelection {
   return parseSharedModelSelection(value);
 }
 
-export function toCCbuddyTaskMode(mode: CCbuddyTaskMode | undefined): CCbuddySessionMode | undefined {
+export function toCCbuddyTaskMode(
+  mode: CCbuddyTaskMode | undefined,
+): CCbuddySessionMode | undefined {
   switch (mode) {
     case "plan":
       return "plan";
@@ -355,7 +357,9 @@ export function ccbuddySessionSnapshotToCCbuddyTaskSnapshot(
         contextUsageFromProjection(snapshot.projection) ??
         undefined,
       pendingPermissions,
-      backgroundBashJobs: parseCCbuddyBackgroundTaskControlItems(snapshot.projection.backgroundJobs),
+      backgroundBashJobs: parseCCbuddyBackgroundTaskControlItems(
+        snapshot.projection.backgroundJobs,
+      ),
       pendingElicitations: snapshot.projection.pendingPermissions
         .filter((permission) => isUserInputBackedPermissionToolName(permission.toolName))
         .map((permission) =>
@@ -784,7 +788,9 @@ function sessionTodoGroupsToRuntime(
   }));
 }
 
-export function ccbuddySessionSnapshotToTaskMeta(snapshot: CCbuddySessionStateSnapshot): CCbuddyTaskMeta {
+export function ccbuddySessionSnapshotToTaskMeta(
+  snapshot: CCbuddySessionStateSnapshot,
+): CCbuddyTaskMeta {
   return {
     taskId: snapshot.session.sessionId,
     traceId: generateTraceId(snapshot.session.sessionId),
@@ -3119,7 +3125,9 @@ function apiRetryFromSessionInfoPayload(
     return runtimeRetry;
   }
 
-  const metaRetry = normalizeCCbuddyApiRetryStatus(asRecord(asRecord(payload._meta).ccbuddy).apiRetry);
+  const metaRetry = normalizeCCbuddyApiRetryStatus(
+    asRecord(asRecord(payload._meta).ccbuddy).apiRetry,
+  );
   if (metaRetry !== undefined) {
     return metaRetry;
   }
@@ -3307,7 +3315,8 @@ function textFromParts(parts: readonly CCbuddyMessagePart[]): string {
 function reasoningFromParts(parts: readonly CCbuddyMessagePart[]): string | undefined {
   const text = parts
     .filter(
-      (part): part is Extract<CCbuddyMessagePart, { type: "reasoning" }> => part.type === "reasoning",
+      (part): part is Extract<CCbuddyMessagePart, { type: "reasoning" }> =>
+        part.type === "reasoning",
     )
     .map((part) => part.text)
     .join("");
@@ -3475,7 +3484,9 @@ function goalVerificationTimelineStatusValue(
     : undefined;
 }
 
-function goalVerificationFromRecord(record: Record<string, unknown>): CCbuddyGoalVerification | null {
+function goalVerificationFromRecord(
+  record: Record<string, unknown>,
+): CCbuddyGoalVerification | null {
   const reason = stringValue(record.reason)?.trim();
   if (!reason) {
     return null;

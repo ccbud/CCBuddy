@@ -444,7 +444,7 @@ export function createDiffSourceFilePreviewSource(
   }
 
   // diff tab 只保存 diff source；打开“原文件预览”时必须保留 workspace scope，
-    return {
+  return {
     type: "file",
     title: getPathLeaf(path),
     path,

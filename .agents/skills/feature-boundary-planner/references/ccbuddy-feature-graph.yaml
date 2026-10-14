@@ -2221,8 +2221,6 @@ nodes:
       - symbol: "WorkspacePinnedTasksSection"
         file: "packages/ui/src/WorkspacePinnedTasksSection.tsx"
 
-
-
   - id: "state.task-list-row-projection"
     kind: "state-owner"
     label: "Task list row and membership projection"
@@ -2272,7 +2270,6 @@ nodes:
         file: "packages/ui/src/components/ui/pptx-preview-viewer.tsx"
       - symbol: "openCodeViewerSidePane"
         file: "packages/ui/src/lib/workspaceSidePane.ts"
-
 
   - id: "service.ccbuddy-task-list"
     kind: "service"
@@ -3441,8 +3438,6 @@ nodes:
         file: "apps/ccbuddy-cli/packages/core/src/mcp/index.ts"
       - symbol: "CuaToolCallBlock"
         file: "packages/ui/src/ToolCallBlocks/renderers/cua.tsx"
-
-
 
   - id: "service.desktop-app-shutdown-policy"
     kind: "service"

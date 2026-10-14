@@ -66,7 +66,7 @@ export const useDynamicWorkflowAvailabilityStore = create<DynamicWorkflowAvailab
     ensureLoaded(service): Promise<void> {
       if (settledService === service) return Promise.resolve();
       if (inFlight) {
-                // 若在途的就是这一份，那时 settledService 已等于它，递归会立即命中上面的 no-op。
+        // 若在途的就是这一份，那时 settledService 已等于它，递归会立即命中上面的 no-op。
         return inFlight.then(() => get().ensureLoaded(service));
       }
       const run = loadDynamicWorkflowConfig(service, {}, set).finally(() => {

@@ -662,7 +662,9 @@ function isProtocolRequestTimeout(error: unknown, method: string): boolean {
   if (error instanceof CCbuddyProtocolRequestTimeoutError) {
     return error.method === method;
   }
-  return error instanceof Error && error.message === `CCbuddy Protocol request timed out: ${method}`;
+  return (
+    error instanceof Error && error.message === `CCbuddy Protocol request timed out: ${method}`
+  );
 }
 
 function assertV4AttachmentNdjsonEnvelope(method: string, params: unknown): void {
@@ -4716,7 +4718,9 @@ export function createCCbuddyAgentService(
       );
     },
 
-    async resolveSuggestedPluginReference(params: CCbuddyAgentResolveSuggestedPluginReferenceParams) {
+    async resolveSuggestedPluginReference(
+      params: CCbuddyAgentResolveSuggestedPluginReferenceParams,
+    ) {
       const client = await getPluginManagementClient();
       return client.request(
         ccbuddyProtocolMethods.pluginsResolveSuggestedReference,
@@ -5413,7 +5417,9 @@ export function createCCbuddyAgentService(
           module: "services.ccbuddy_agent",
           requestId: params.requestId,
         });
-        throw new Error(`CCbuddy session runtime preferences request not found: ${params.requestId}`);
+        throw new Error(
+          `CCbuddy session runtime preferences request not found: ${params.requestId}`,
+        );
       }
       const responseContext = {
         event: "ccbuddy_agent.runtime_preferences.host_response_received",

@@ -142,7 +142,7 @@ export class BrowserOAuthCredentialRepo {
       }
     } catch {
       // localStorage 可能留下旧版或手工写入的损坏 JSON。
-          }
+    }
 
     this.clearAll();
     return { status: "signed-out" };

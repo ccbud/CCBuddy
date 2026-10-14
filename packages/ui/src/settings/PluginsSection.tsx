@@ -826,7 +826,6 @@ function PluginList({
                 <PluginAddMenu
                   testId="plugin-settings-add"
                   onCreateTask={onCreateTask}
-
                   onAddMarketplace={() => onOpenPluginStore(undefined, "add-marketplace")}
                 />
               </>
@@ -1296,7 +1295,6 @@ export function PluginsSection({
               isDesktop={isDesktop}
               isMacDesktop={isMacDesktop}
               isWindowsDesktop={isWindowsDesktop}
-
               searchQuery={searchQueries.plugins}
               onAdd={selectedScope.kind === "user" ? openPluginStoreForSelectedScope : undefined}
               onCreateTask={onCreateTask}
@@ -1322,7 +1320,6 @@ export function PluginsSection({
                 remoteSessionId={mcpTarget.remoteSessionId}
                 remoteTarget={mcpTarget.remoteTarget}
                 localWorkspacePath={mcpTarget.localWorkspacePath}
-
                 scopeFilter={effectiveMcpScopeKey === "user" ? "user" : "workspace"}
                 parentScopeKey={selectedScopeKey}
                 workspaceTabs={workspaceTabs}
@@ -1352,7 +1349,6 @@ export function PluginsSection({
                 workspaceIdentity={target.workspaceIdentity}
                 remoteSessionId={target.remoteSessionId}
                 remoteTarget={target.remoteTarget}
-
                 scopeFilter={selectedScope.kind === "user" ? "user" : "workspace"}
                 searchQuery={searchQueries.skills}
                 onCreateTask={onCreateTask}

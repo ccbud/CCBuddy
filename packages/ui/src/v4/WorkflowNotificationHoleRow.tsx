@@ -1,6 +1,9 @@
 import { Pen } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { WorkflowNotificationMeta, WorkflowRunHole } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type {
+  WorkflowNotificationMeta,
+  WorkflowRunHole,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { ToolLayout } from "@/ToolCallBlocks/ToolLayout.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { workflowRunQuestionWaitedLabel } from "@/app-shell/workflowRunQuestions.js";

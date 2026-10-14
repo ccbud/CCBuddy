@@ -60,10 +60,12 @@ async function main() {
 
   // Phase 3: Initialize services and start stdio RPC server
   let topicResourceChannel: IChannel | undefined;
-  const ccbuddyBuiltinProviderConfigFilePath = await materializeBundledCCbuddyBuiltinProviderConfig({
-    environmentConfigRoot: getAppConfigDir(),
-    content: readBundledCCbuddyBuiltinProviderConfig(),
-  });
+  const ccbuddyBuiltinProviderConfigFilePath = await materializeBundledCCbuddyBuiltinProviderConfig(
+    {
+      environmentConfigRoot: getAppConfigDir(),
+      content: readBundledCCbuddyBuiltinProviderConfig(),
+    },
+  );
   const { authorityModeParseResult, services } = createStdioServices({
     env: process.env,
     ccbuddyBuiltinProviderConfigFilePath,

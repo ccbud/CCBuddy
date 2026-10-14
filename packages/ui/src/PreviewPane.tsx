@@ -29,10 +29,7 @@ import { TID_PREVIEW_PANE } from "@ccbuddy/shared";
 import { useWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { usePptxFileWatch } from "@/hooks/usePptxFileWatch.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
-import {
-  usePdfViewerLabels,
-  usePptxViewerLabels,
-} from "@/hooks/usePreviewViewerLabels.js";
+import { usePdfViewerLabels, usePptxViewerLabels } from "@/hooks/usePreviewViewerLabels.js";
 import {
   FILE_VIEWER_MAX_TEXT_BYTES,
   createDiffSourceFilePreviewSource,

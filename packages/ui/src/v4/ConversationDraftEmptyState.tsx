@@ -1,4 +1,3 @@
-
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CCbuddyAboutLogo } from "@/components/ui/CCbuddyAboutLogo.js";
 import { cn } from "@/components/lib/utils.js";

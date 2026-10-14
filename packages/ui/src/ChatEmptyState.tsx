@@ -66,11 +66,7 @@ function inferWorkspaceHomePath(path: string) {
 
 function getWorkspaceMenuTitle(path: string, homeLabel: string) {
   const normalizedPath = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (
-    /^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)$/.test(
-      normalizedPath,
-    )
-  ) {
+  if (/^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)$/.test(normalizedPath)) {
     return homeLabel;
   }
 
@@ -79,11 +75,7 @@ function getWorkspaceMenuTitle(path: string, homeLabel: string) {
 
 function getWorkspaceListTitle(path: string, homeLabel: string) {
   const normalizedPath = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (
-    /^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)$/.test(
-      normalizedPath,
-    )
-  ) {
+  if (/^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)$/.test(normalizedPath)) {
     return getPathLeaf(path);
   }
 
@@ -92,11 +84,7 @@ function getWorkspaceListTitle(path: string, homeLabel: string) {
 
 export function getWorkspaceTriggerTitle(path: string, homeLabel: string) {
   const normalizedPath = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (
-    /^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)$/.test(
-      normalizedPath,
-    )
-  ) {
+  if (/^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)$/.test(normalizedPath)) {
     return getPathLeaf(path);
   }
 
@@ -146,8 +134,7 @@ export function filterVisibleWorkspaceMenuTabs({
   return workspaceTabs
     .filter((workspaceTab) => {
       const isDisconnectedRemoteWorkspace = Boolean(
-        hasRemoteWorkspaceIdentity(workspaceTab) &&
-        !workspaceTab.remoteSessionId,
+        hasRemoteWorkspaceIdentity(workspaceTab) && !workspaceTab.remoteSessionId,
       );
 
       // 空态菜单的 workspace 列表是给“立即切换可用上下文”用的。
@@ -161,10 +148,7 @@ export function filterVisibleWorkspaceMenuTabs({
         return true;
       }
 
-      const workspaceTitle = getWorkspaceListTitle(
-        workspaceTab.workspacePath,
-        homeWorkspaceLabel,
-      );
+      const workspaceTitle = getWorkspaceListTitle(workspaceTab.workspacePath, homeWorkspaceLabel);
       const searchableText = [
         workspaceTitle,
         workspaceTab.label,
@@ -217,10 +201,7 @@ export function ChatEmptyWorkspacePreviewMenu({
   allowOpenWorkspace?: boolean;
   allowRemoteWorkspace?: boolean;
   remoteWorkspaceSessions?: RemoteWorkspaceSessionEntry[];
-  onConnectRemote: (
-    options: RemoteTarget,
-    requestId?: string,
-  ) => Promise<string>;
+  onConnectRemote: (options: RemoteTarget, requestId?: string) => Promise<string>;
   onSelectRemoteProject: (
     sessionId: string,
     path: string,
@@ -240,8 +221,7 @@ export function ChatEmptyWorkspacePreviewMenu({
   const showRemoteConnectionEntry = useRemoteConnectionEntryVisibility();
   // Web 普通模式没有完整远程 workspace 会话链路，不能只依赖全局 feature visibility。
   // 这里叠加壳层能力开关，确保本地 Web 模式的空态菜单不会露出必然失败的远程连接入口。
-  const canUseRemoteWorkspace =
-    allowRemoteWorkspace && showRemoteConnectionEntry;
+  const canUseRemoteWorkspace = allowRemoteWorkspace && showRemoteConnectionEntry;
   const currentWorkspaceTab =
     workspaceTabs.find((workspaceTab) =>
       isWorkspaceMenuTabSelected(workspaceTab, {
@@ -249,8 +229,7 @@ export function ChatEmptyWorkspacePreviewMenu({
         workspaceIdentity,
       }),
     ) ?? null;
-  const isConversationWorkspace =
-    currentWorkspaceTab?.workspacePurpose === "conversation";
+  const isConversationWorkspace = currentWorkspaceTab?.workspacePurpose === "conversation";
   const canDetachProject =
     allowConversationWorkspaceSelection &&
     allowConversationWorkspaceDetach &&
@@ -264,9 +243,7 @@ export function ChatEmptyWorkspacePreviewMenu({
       : workspacePath;
   const homeWorkspacePath = inferWorkspaceHomePath(workspacePath);
   const homeWorkspaceLabel = intl.formatMessage({ id: "chat.empty.home" });
-  const isCurrentRemoteWorkspace = hasRemoteWorkspaceIdentity(
-    currentWorkspaceTab ?? {},
-  );
+  const isCurrentRemoteWorkspace = hasRemoteWorkspaceIdentity(currentWorkspaceTab ?? {});
   const visibleWorkspaceTabs = useMemo(
     () =>
       filterVisibleWorkspaceMenuTabs({
@@ -306,7 +283,11 @@ export function ChatEmptyWorkspacePreviewMenu({
             onClick={(event) => {
               event.stopPropagation();
               void runUserActionAsync({
-                input: { featureId: "workspace.project_binding", action: "detach", trigger: "button" },
+                input: {
+                  featureId: "workspace.project_binding",
+                  action: "detach",
+                  trigger: "button",
+                },
                 operation: () => Promise.resolve(onSelectConversationWorkspace()),
                 completed: { resultSource: "optimistic_projection" },
                 failureStage: "project_detach",
@@ -324,9 +305,7 @@ export function ChatEmptyWorkspacePreviewMenu({
             className={cn(
               "min-w-0 rounded-full bg-transparent text-ui-base/relaxed hover:bg-transparent",
               // 紧凑布局空态区域更窄，限制触发按钮宽度，让超长项目路径在按钮内省略。
-              compactLayout
-                ? "max-w-44 pl-3 pr-2"
-                : "max-w-[15rem] pl-3 pr-2",
+              compactLayout ? "max-w-44 pl-3 pr-2" : "max-w-[15rem] pl-3 pr-2",
               triggerClassName,
             )}
             aria-label={intl.formatMessage({ id: "chat.empty.workspaceMenu" })}
@@ -341,20 +320,12 @@ export function ChatEmptyWorkspacePreviewMenu({
                   "group-hover/workspace-chip:opacity-0 group-focus-within/workspace-chip:opacity-0",
               )}
             />
-            <span className="block max-w-full truncate">
-              {currentWorkspaceTitle}
-            </span>
-            {triggerIndicator ?? (
-              <ChevronDownIcon className="size-3.5 text-foreground-subtle" />
-            )}
+            <span className="block max-w-full truncate">{currentWorkspaceTitle}</span>
+            {triggerIndicator ?? <ChevronDownIcon className="size-3.5 text-foreground-subtle" />}
           </Button>
         </DropdownMenuTrigger>
       </div>
-      <DropdownMenuContent
-        align="start"
-        side="top"
-        className="w-72 p-0"
-      >
+      <DropdownMenuContent align="start" side="top" className="w-72 p-0">
         <div
           data-slot="command-input-wrapper"
           className="p-1 border-b border-border"
@@ -384,8 +355,7 @@ export function ChatEmptyWorkspacePreviewMenu({
             const isRemoteWorkspace = hasRemoteWorkspaceIdentity(workspaceTab);
             const WorkspaceIcon = isRemoteWorkspace
               ? Cloud
-              : inferWorkspaceHomePath(workspaceTab.workspacePath) ===
-                  workspaceTab.workspacePath
+              : inferWorkspaceHomePath(workspaceTab.workspacePath) === workspaceTab.workspacePath
                 ? House
                 : Folder;
 
@@ -399,7 +369,9 @@ export function ChatEmptyWorkspacePreviewMenu({
                 onSelect={() => {
                   runUserAction({
                     input: {
-                      featureId: isConversationWorkspace ? "workspace.project_binding" : "workspace.local.lifecycle",
+                      featureId: isConversationWorkspace
+                        ? "workspace.project_binding"
+                        : "workspace.local.lifecycle",
                       action: isConversationWorkspace ? "attach" : "switch",
                       trigger: "menu",
                       workspaceKind: isRemoteWorkspace ? "remote" : "local",
@@ -411,9 +383,7 @@ export function ChatEmptyWorkspacePreviewMenu({
                 }}
               >
                 <WorkspaceIcon className="size-4 text-foreground-subtle" />
-                <span className="min-w-0 flex-1 truncate">
-                  {workspaceTitle}
-                </span>
+                <span className="min-w-0 flex-1 truncate">{workspaceTitle}</span>
               </DropdownMenuCheckboxItem>
             );
           })}
@@ -440,7 +410,12 @@ export function ChatEmptyWorkspacePreviewMenu({
                   `[ChatEmptyWorkspacePreviewMenu] open remote dialog from workspace menu workspace=${workspacePath}`,
                 );
                 runUserAction({
-                  input: { featureId: "workspace.remote.lifecycle", action: "open_dialog", trigger: "menu", workspaceKind: "remote" },
+                  input: {
+                    featureId: "workspace.remote.lifecycle",
+                    action: "open_dialog",
+                    trigger: "menu",
+                    workspaceKind: "remote",
+                  },
                   operation: () => setSshDialogOpen(true),
                   completed: { resultSource: "local_commit" },
                   failureStage: "dialog_open",
@@ -457,7 +432,11 @@ export function ChatEmptyWorkspacePreviewMenu({
               checked={isConversationWorkspace}
               onSelect={() =>
                 void runUserActionAsync({
-                  input: { featureId: "workspace.project_binding", action: "work_outside_project", trigger: "menu" },
+                  input: {
+                    featureId: "workspace.project_binding",
+                    action: "work_outside_project",
+                    trigger: "menu",
+                  },
                   operation: () => Promise.resolve(onSelectConversationWorkspace()),
                   completed: { resultSource: "optimistic_projection" },
                   failureStage: "project_detach",
@@ -465,9 +444,7 @@ export function ChatEmptyWorkspacePreviewMenu({
               }
             >
               <MessageCircle className="size-4 text-foreground-subtle" />
-              <span>
-                {intl.formatMessage({ id: "chat.empty.workOutsideProject" })}
-              </span>
+              <span>{intl.formatMessage({ id: "chat.empty.workOutsideProject" })}</span>
             </DropdownMenuCheckboxItem>
           ) : null}
         </div>

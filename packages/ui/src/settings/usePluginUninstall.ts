@@ -1,8 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import type {
-  CCbuddyInstalledPluginSummary,
-  CCbuddyPluginInfo,
-} from "@ccbuddy/shared";
+import type { CCbuddyInstalledPluginSummary, CCbuddyPluginInfo } from "@ccbuddy/shared";
 import type { IPluginManagementService } from "@ccbuddy/services";
 import { usePluginManagementStore } from "@/store/pluginManagementStore.js";
 

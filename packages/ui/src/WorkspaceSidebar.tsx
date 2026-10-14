@@ -326,7 +326,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   pluginStoreActive?: boolean;
   historyViewActive?: "list" | "timeline" | null;
   onFileTreeOpenChange?: (open: boolean) => void;
-
 }) {
   const { intl, localePreference, setLocalePreference } = useCCbuddyIntl();
   const handleTaskRowSelect = useCallback(
@@ -580,14 +579,12 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     showArchivedTasks,
     taskOrganizeBy,
   });
-  const effectiveTaskViewMode =
-    taskViewMode;
+  const effectiveTaskViewMode = taskViewMode;
   const visibleWorkspaceTaskKeys = useMemo(
     () =>
       resolveVisibleWorkspaceTaskKeys({
         enabled:
-          effectiveTaskViewMode === "workspace" &&
-          purposeSectionPreferences.projectsExpanded,
+          effectiveTaskViewMode === "workspace" && purposeSectionPreferences.projectsExpanded,
         expandedWorkspacePaths,
         workspaces: projectWorkspaceTabs,
       }),
@@ -625,12 +622,12 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     setCreateGroupedTaskDraftAction(() => action);
   }, []);
   const shouldShowPinnedTasks =
-    (taskViewMode === "workspace" ||
-      taskViewMode === "timeline" ||
-      taskViewMode === "archived" ||
-      // Bugfix: grouped 主体会主动过滤 pinned task；如果同页不渲染全局置顶区，
-      // 从 Header 置顶当前任务后整条 row 会无处展示，看起来像 session 被删除。
-      taskViewMode === "grouped");
+    taskViewMode === "workspace" ||
+    taskViewMode === "timeline" ||
+    taskViewMode === "archived" ||
+    // Bugfix: grouped 主体会主动过滤 pinned task；如果同页不渲染全局置顶区，
+    // 从 Header 置顶当前任务后整条 row 会无处展示，看起来像 session 被删除。
+    taskViewMode === "grouped";
   const workspaceScrollRef = useRef<HTMLDivElement | null>(null);
   const [showWorkspaceTopMask, setShowWorkspaceTopMask] = useState(false);
   const [showWorkspaceBottomMask, setShowWorkspaceBottomMask] = useState(false);
@@ -776,7 +773,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   }, [onOpenAutomations]);
   const activeTaskId = useCCbuddySessionStore(
     (state) =>
-            // workspaceIdentity 写入 activeTaskId；如果侧栏仍然只读 path-only 桶，
+      // workspaceIdentity 写入 activeTaskId；如果侧栏仍然只读 path-only 桶，
       // 当前任务高亮会丢失，也会把后续选择误判成未激活。
       selectWorkspaceCCbuddyState(state, workspacePath, workspaceIdentity).activeTaskId,
   );
@@ -840,8 +837,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     };
   }, [expandedWorkspacePaths, workspaceTabs.length]);
 
-  const isGroupedTaskGroupView =
-    !showArchivedTasks && taskOrganizeBy === "grouped";
+  const isGroupedTaskGroupView = !showArchivedTasks && taskOrganizeBy === "grouped";
   const toggleableGroupedTaskGroupIds =
     groupedTaskGroupIds.length > 0
       ? groupedTaskGroupIds
@@ -862,20 +858,14 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     collapsedGroupedTaskGroupIds,
   );
   const canToggleAllProjectTaskGroups =
-    !showArchivedTasks &&
-    taskOrganizeBy === "project" &&
-    projectWorkspaceTabs.length > 0;
-  const showToggleAllTaskGroups =
-    canToggleAllProjectTaskGroups ||
-    showToggleAllGroupedTaskGroups;
-  const canToggleAllTaskGroups =
-    canToggleAllProjectTaskGroups ||
-    canToggleAllGroupedTaskGroups;
-  const areAllTaskGroupsExpanded = taskOrganizeBy === "grouped"
+    !showArchivedTasks && taskOrganizeBy === "project" && projectWorkspaceTabs.length > 0;
+  const showToggleAllTaskGroups = canToggleAllProjectTaskGroups || showToggleAllGroupedTaskGroups;
+  const canToggleAllTaskGroups = canToggleAllProjectTaskGroups || canToggleAllGroupedTaskGroups;
+  const areAllTaskGroupsExpanded =
+    taskOrganizeBy === "grouped"
       ? areAllToggleableGroupedTaskGroupsOpen
       : purposeSectionPreferences.projectsExpanded && areAllWorkspaceGroupsExpanded;
-  const toggleAllTaskGroupsTransitionPending =
-    showOptimisticGroupedTaskGroupToggle;
+  const toggleAllTaskGroupsTransitionPending = showOptimisticGroupedTaskGroupToggle;
   const toggleAllTaskGroupsPresentation = resolveSidebarTaskGroupTogglePresentation({
     current: {
       visible: showToggleAllTaskGroups,
@@ -969,7 +959,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   }, [toggleAllTaskGroupsPresentation, toggleAllTaskGroupsTransitionPending]);
 
   useLayoutEffect(() => {
-
     const listNode = primaryTaskTabsListRef.current;
     if (!listNode) {
       return;
@@ -1038,7 +1027,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
       <div className={cn("pl-2.5 pr-3")}>
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 shrink-0 items-center gap-1">
-            {(
+            {
               <Tabs
                 value={activePrimaryTaskMode}
                 onValueChange={handlePrimaryTaskModeChange}
@@ -1087,7 +1076,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
-            )}
+            }
             {toggleAllTaskGroupsPresentation ? (
               <ControlHintTooltip
                 title={intl.formatMessage({
@@ -1277,24 +1266,16 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
       // 这里用设计系统的结构面 token 固定侧栏层级，避免不同合成器把左侧容器混成异常灰块。
       className="flex h-full flex-col overflow-hidden"
     >
-      <div
-        className={cn("h-12 [app-region:drag]")}
-      ></div>
+      <div className={cn("h-12 [app-region:drag]")}></div>
       <div className="relative flex-1 min-h-0 overflow-hidden">
         <div
-
           className={cn(
             "absolute inset-0 flex min-h-0 flex-col transition-transform duration-200 ease-out",
             isFileTreeOpen && "-translate-x-full pointer-events-none",
           )}
           aria-hidden={isFileTreeOpen}
         >
-          <div
-            className={cn(
-              "flex flex-col gap-1 px-2",
-              isWindowsDesktop ? "py-2" : "py-3",
-            )}
-          >
+          <div className={cn("flex flex-col gap-1 px-2", isWindowsDesktop ? "py-2" : "py-3")}>
             {onOpenHistoryView ? (
               <HistorySidebarButton
                 view="timeline"
@@ -1354,7 +1335,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                 }
               />
             ) : null} */}
-            {(
+            {
               <Button
                 variant="ghost"
                 onClick={handleOpenAutomationsMain}
@@ -1370,7 +1351,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                 <CalendarClock className="size-4" />
                 {intl.formatMessage({ id: "workspace.openScheduledSettings" })}
               </Button>
-            )}
+            }
             <Button
               variant="ghost"
               onClick={handleOpenPluginStoreMain}
@@ -1408,7 +1389,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                   activeWorkspaceIdentity={workspaceIdentity}
                   activeTaskId={displayActiveTaskId}
                   taskSortBy={taskSortBy}
-
                   onSelectTask={handleTaskRowSelect}
                   onOpenFileTree={(target) => {
                     setFileTreeTarget(target);
@@ -1425,7 +1405,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                     activeWorkspaceIdentity={workspaceIdentity}
                     activeTaskId={displayActiveTaskId}
                     sortBy={taskSortBy}
-
                     onSelectTask={onSelectTask}
                   />
                 ) : taskViewMode === "grouped" ? (
@@ -1434,7 +1413,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                     activeWorkspacePath={workspacePath}
                     activeWorkspaceIdentity={workspaceIdentity}
                     activeTaskId={displayActiveTaskId}
-
                     onSelectTask={onSelectTask}
                     onCreateTask={onCreateTask}
                     onOpenFileTree={(target) => {
@@ -1456,7 +1434,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                     activeWorkspaceIdentity={workspaceIdentity}
                     activeTaskId={displayActiveTaskId}
                     taskSortBy={taskSortBy}
-
                     onSelectTask={handleTaskRowSelect}
                   />
                 ) : (
@@ -1588,7 +1565,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                                             taskListLiveWorkflowCount={
                                               taskGroup?.liveWorkflowCount ?? 0
                                             }
-
                                             workspaceKey={workspaceKey}
                                             onShowMoreWorkspaceTasks={handleShowMoreWorkspaceTasks}
                                             reconnectingRemoteWorkspaceKeys={
@@ -1675,7 +1651,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                                 emptyMessage={intl.formatMessage({
                                   id: "workspaceSidebar.noConversations",
                                 })}
-
                                 onSelectTask={handleTaskRowSelect}
                               />
                             </WorkspacePurposeSection>

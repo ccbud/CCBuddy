@@ -1,6 +1,9 @@
 import { Hourglass, MessageCircleQuestion, Workflow } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { WorkflowNotificationMeta, WorkflowRunHole } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type {
+  WorkflowNotificationMeta,
+  WorkflowRunHole,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { CodeBlock, CodeBlockHeader } from "@/components/ai-elements/code-block.js";
 import { WorkflowNotificationHoleRow } from "@/v4/WorkflowNotificationHoleRow.js";
 import { ToolLayout } from "@/ToolCallBlocks/ToolLayout.js";

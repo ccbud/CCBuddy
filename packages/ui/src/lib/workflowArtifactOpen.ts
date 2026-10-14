@@ -1,4 +1,3 @@
-
 export function shouldOpenWorkflowArtifactInBrowser(params: {
   contentType?: string;
   supportsEmbeddedBrowser: boolean;

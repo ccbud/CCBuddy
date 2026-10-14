@@ -42,10 +42,7 @@ export function TaskActionMenuContent({
   onOpenProviderConfig,
 }: {
   intl: {
-    formatMessage: (
-      desc: { id: string },
-      values?: Record<string, string>,
-    ) => string;
+    formatMessage: (desc: { id: string }, values?: Record<string, string>) => string;
   };
   isPinned: boolean;
   fileManagerLabel: string;
@@ -81,8 +78,7 @@ export function TaskActionMenuContent({
   onViewModelTrajectory?: () => void;
   onOpenProviderConfig: () => void;
 }) {
-  const taskTargetActionsDisabled =
-    disableTaskActions || disableTaskTargetActions;
+  const taskTargetActionsDisabled = disableTaskActions || disableTaskTargetActions;
 
   return (
     <>
@@ -140,7 +136,7 @@ export function TaskActionMenuContent({
         </Item>
       ) : null}
       <Separator />
-      {(
+      {
         <Item
           disabled={disableTaskActions}
           title={disableTaskActions ? disabledReason : undefined}
@@ -152,7 +148,7 @@ export function TaskActionMenuContent({
         >
           {fileManagerLabel}
         </Item>
-      )}
+      }
       <Item
         disabled={disableTaskActions}
         title={disableTaskActions ? disabledReason : undefined}
@@ -161,11 +157,7 @@ export function TaskActionMenuContent({
         {intl.formatMessage({ id: "appHeader.copyPath" })}
       </Item>
       <Item
-        disabled={
-          taskTargetActionsDisabled ||
-          taskSessionFile.loading ||
-          !taskSessionFile.path
-        }
+        disabled={taskTargetActionsDisabled || taskSessionFile.loading || !taskSessionFile.path}
         title={taskTargetActionsDisabled ? disabledReason : undefined}
         onSelect={onCopyTaskPath}
       >
@@ -193,14 +185,9 @@ export function TaskActionMenuContent({
           {intl.formatMessage({ id: "appHeader.copySessionId" })}
         </Item>
       ) : null}
-      {(
-
+      {
         <Item
-          disabled={
-            disableTaskActions ||
-            providerConfigFile.loading ||
-            !providerConfigFile.path
-          }
+          disabled={disableTaskActions || providerConfigFile.loading || !providerConfigFile.path}
           title={disableTaskActions ? disabledReason : undefined}
           onSelect={() => {
             if (!disableTaskActions) {
@@ -212,7 +199,7 @@ export function TaskActionMenuContent({
             {intl.formatMessage({ id: "appHeader.goToProviderConfig" })}
           </span>
         </Item>
-      )}
+      }
       {onViewModelTrajectory ? (
         <>
           <Separator />

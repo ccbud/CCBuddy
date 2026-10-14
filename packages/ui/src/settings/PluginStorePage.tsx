@@ -50,7 +50,6 @@ import {
 } from "@/settings/pluginStoreTryPrompt.js";
 
 interface PluginStorePageProps {
-
   workspacePath?: string | null;
   workspaceIdentity?: string;
   onCreateTask?: (request?: CreateTaskRequest) => void;
@@ -503,7 +502,6 @@ export function PluginStorePage({
             </ControlHintTooltip>
             <PluginAddMenu
               testId="plugin-store-create"
-
               onCreateTask={onCreateTask}
               onAddMarketplace={() => {
                 setAddMarketplaceError(null);

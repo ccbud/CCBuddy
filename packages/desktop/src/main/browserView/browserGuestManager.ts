@@ -2588,7 +2588,8 @@ export class BrowserGuestManager {
       active.lifecycle !== "closed" &&
       (includeClosing || !active.closeFlight) &&
       sameScope(active.owner, context)
-    ) return active;
+    )
+      return active;
     const defaultId = this.defaultTabByScope.get(key);
     const existingDefault = defaultId ? this.tabs.get(defaultId) : undefined;
     if (
@@ -2796,7 +2797,8 @@ export class BrowserGuestManager {
           this.tabs.get(tab.tabId) === tab &&
           tab.lifecycle !== "closed" &&
           sameScope(tab.owner, owner)
-        ) this.releaseToUser(tab);
+        )
+          this.releaseToUser(tab);
       });
       return;
     }
@@ -2861,7 +2863,12 @@ export class BrowserGuestManager {
     // human tab 在 claim 前只置 tab.active、不进 activeTabByScope；这种自报 active 优先于回退，
     // 且一旦命中就不再往下走，保证同 scope 只有一个 active=true。
     for (const tab of this.tabs.values()) {
-      if (tab.active && tab.lifecycle !== "closed" && !tab.closeFlight && sameScope(tab.owner, owner)) {
+      if (
+        tab.active &&
+        tab.lifecycle !== "closed" &&
+        !tab.closeFlight &&
+        sameScope(tab.owner, owner)
+      ) {
         return tab.tabId;
       }
     }
@@ -4046,7 +4053,12 @@ export class BrowserGuestManager {
 
   private async persistShell(tab: ManagedTab): Promise<void> {
     const store = this.residencyOptions.recoveryStore;
-    if (!store || this.tabs.get(tab.tabId) !== tab || tab.lifecycle === "closed" || tab.closeFlight) {
+    if (
+      !store ||
+      this.tabs.get(tab.tabId) !== tab ||
+      tab.lifecycle === "closed" ||
+      tab.closeFlight
+    ) {
       return;
     }
     const residency = this.residencyCoordinator.get(tab.tabId);

@@ -248,12 +248,7 @@ export function WorkspacePinnedTasksSection({
     if (!item) {
       return;
     }
-    onSelectTaskRef.current(
-      item.workspacePath,
-      item.taskId,
-      item.workspaceIdentity,
-      item.unreadAt,
-    );
+    onSelectTaskRef.current(item.workspacePath, item.taskId, item.workspaceIdentity, item.unreadAt);
   }, []);
   const archivePinnedItemInline = useCallback(
     (event: ReactMouseEvent, itemKey: string) => {
@@ -566,7 +561,6 @@ export function WorkspacePinnedTasksSection({
                     buildTaskWorkspaceKey(item.workspacePath, item.workspaceIdentity) ===
                       activeWorkspaceKey && item.taskId === activeTaskId
                   }
-
                   onSelectTask={handlers.onSelectTask}
                   onArchiveTaskInline={handlers.onArchiveTaskInline}
                   onCancelArchiveConfirm={handleCancelArchiveConfirm}

@@ -71,8 +71,7 @@ export function useAssistantPreviewCardsForAssistantTextRow({
   );
   const needsFileChanges = fileReferences.some(
     (reference) =>
-      reference.kind === "markdown" ||
-      (reference.kind === "html" && compactLayout !== true),
+      reference.kind === "markdown" || (reference.kind === "html" && compactLayout !== true),
   );
   const target = useMemo<ConversationRowTarget | null>(
     () =>

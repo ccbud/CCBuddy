@@ -2,7 +2,11 @@ import { PluginUiWorkspaceProvider } from "@/plugin-ui/index.js";
 /* eslint-disable max-lines -- App 当前集中编排 workspace 级状态、导航、Git 派生数据和 shell wiring；已将新增 side pane memory 桥接抽出，剩余拆分需要按 shell 边界单独重构。 */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { resolveWorkspaceKey, type GitChangeSourceId, type WorkspacePurpose } from "@ccbuddy/shared";
+import {
+  resolveWorkspaceKey,
+  type GitChangeSourceId,
+  type WorkspacePurpose,
+} from "@ccbuddy/shared";
 import { useCCbuddyStore } from "@/store/StoreProvider.js";
 import { getVisibleTaskMetas, useCCbuddySessionStore } from "@/store/ccbuddySessionStore.js";
 import { useTaskQueryCacheStore } from "@/store/taskQueryCacheStore.js";
@@ -780,7 +784,7 @@ export function App({
       {
         // 修复原因：workspace 行“新建对话”以前由叶子组件直接 activateTab + startDraft，
         // 没有退出重启恢复的 workbench group/pane。group primary binding 因而仍可覆盖草稿。
-                useWorkbenchGroupStore.getState().deactivateActiveGroup();
+        useWorkbenchGroupStore.getState().deactivateActiveGroup();
         usePaneLayoutStore.getState().resetToPrimaryPane();
       }
       store.startDraft(
@@ -1229,7 +1233,6 @@ export function App({
           onCreateScratchWorkspace={onCreateScratchWorkspace}
           remoteConnectionInProgress={remoteConnectionInProgress}
           allowOpenWorkspace={allowOpenWorkspace}
-
           allowRemoteWorkspace={allowRemoteWorkspace}
           remoteWorkspaceSessions={remoteWorkspaceSessions}
           workspaceAbsPath={workspaceAbsPath}

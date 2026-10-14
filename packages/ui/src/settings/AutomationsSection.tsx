@@ -317,7 +317,9 @@ export function canRestartAutomation(
   return automation.lifecycleStatus === "failed";
 }
 
-export function canToggleAutomation(automation: Pick<CCbuddyAutomation, "lifecycleStatus">): boolean {
+export function canToggleAutomation(
+  automation: Pick<CCbuddyAutomation, "lifecycleStatus">,
+): boolean {
   return automation.lifecycleStatus !== "completed" && automation.lifecycleStatus !== "failed";
 }
 
