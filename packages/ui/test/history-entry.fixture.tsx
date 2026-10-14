@@ -9,64 +9,19 @@ import {
   HistoryReviewController,
   type HistoryReadBridge,
 } from "../src/history/HistoryReviewController.js";
-import type { HistorySessionDetail, HistorySnapshot } from "../src/history/contract.js";
+import { createDesktopPlatform } from "../../desktop/src/renderer/src/desktopPlatform.js";
 
 declare global {
   interface Window {
     historyEntryHarness: {
-      onHistoryRequested(listener: (view: "list" | "timeline") => void): () => void;
       requestHistory(view: "list" | "timeline"): Promise<void>;
     };
   }
 }
 
-const createdAt = new Date(Date.now() - 15 * 60_000).toISOString();
-const summary = {
-  id: "fixture-session",
-  source: "claude" as const,
-  sessionId: "fixture-session",
-  title: "History entry fixture",
-  project: "Fixture workspace",
-  cwd: "/fixture/workspace",
-  createdAt,
-  lastActivity: new Date().toISOString(),
-  messageCount: 1,
-  model: null,
-  parentSessionId: null,
-  isSubagent: false,
-  fingerprint: "fixture",
-};
-const snapshot: HistorySnapshot = {
-  protocolVersion: 1,
-  version: 1,
-  sessions: [summary],
-  diagnostics: [],
-  roots: [],
-  complete: true,
-};
-const detail: HistorySessionDetail = {
-  summary,
-  diagnostics: [],
-  messages: [
-    {
-      id: "fixture-message",
-      sequence: 0,
-      role: "user",
-      timestamp: createdAt,
-      model: null,
-      usage: null,
-      blocks: [{ type: "text", text: "Read-only history content from the renderer fixture." }],
-    },
-  ],
-};
-const history: HistoryReadBridge = {
-  protocolVersion: 1,
-  list: async () => snapshot,
-  load: async () => detail,
-  refresh: async () => ({ type: "terminal", generation: 1, status: "success", snapshot }),
-  onRefreshEvent: () => () => {},
-};
-const platform = { onOpenHistoryViewRequested: window.historyEntryHarness.onHistoryRequested };
+// 回归依据：必须经过生产平台装配；手造 history capability 会漏掉适配器丢失导致的入口消失。
+const platform = createDesktopPlatform({ isLocalDevelopmentRuntime: true });
+const history = platform.historyReview;
 
 function HistoryEntryFixture() {
   const [view, setView] = useState<WorkspaceMainView>("chat");
@@ -95,8 +50,12 @@ function HistoryEntryFixture() {
   return (
     <div className="flex h-dvh bg-background text-foreground">
       <aside className="flex w-60 shrink-0 flex-col gap-3 border-r border-border p-3">
-        <HistorySidebarButton view="timeline" activeView={historyView} onOpen={openHistory} />
-        <HistorySidebarButton view="list" activeView={historyView} onOpen={openHistory} />
+        {history ? (
+          <>
+            <HistorySidebarButton view="timeline" activeView={historyView} onOpen={openHistory} />
+            <HistorySidebarButton view="list" activeView={historyView} onOpen={openHistory} />
+          </>
+        ) : null}
         <button data-testid="fixture-open-settings" onClick={() => setWorkspaceVisible(false)}>
           Settings
         </button>
@@ -106,12 +65,13 @@ function HistoryEntryFixture() {
         className="min-h-0 min-w-0 flex-1"
         data-view={view}
         data-visible={workspaceVisible}
+        data-history-capable={Boolean(history)}
       >
         {!workspaceVisible ? (
           <h1>Settings fixture</h1>
-        ) : historyView ? (
+        ) : historyView && history ? (
           <HistoryReviewController
-            history={history}
+            history={history as HistoryReadBridge}
             view={historyView}
             onViewChange={openHistory}
             locale="en-US"

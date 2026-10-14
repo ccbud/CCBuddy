@@ -43,6 +43,11 @@ jobs:
           packages/desktop/test/finalize-macos-release.test.mjs
           packages/desktop/test/legacy-native-update.test.mjs
           packages/desktop/test/prepare-main-release.test.mjs
+      - name: Test desktop history platform integration
+        run: >-
+          pnpm exec vitest run
+          packages/desktop/src/renderer/src/desktopPlatform.test.ts
+          --config packages/ui/vitest.config.ts
 
   macos-package:
     name: Build unsigned macOS arm64 package

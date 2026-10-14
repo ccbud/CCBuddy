@@ -14,9 +14,10 @@ test("session history uses the main renderer entry in dev and packaged modes", a
   assert.equal(rendererHtmlFileName("index"), "index.html");
 
   const html = await readFile(join(desktopRoot, "src", "renderer", "index.html"), "utf8");
-  const entry = await readFile(join(desktopRoot, "src", "renderer", "src", "mainEntry.ts"), "utf8");
+  const entry = await readFile(join(desktopRoot, "src", "renderer", "src", "main.tsx"), "utf8");
   const viteConfig = await readFile(join(desktopRoot, "vite.config.ts"), "utf8");
-  assert.match(html, /src="\.\/src\/mainEntry\.ts"/u);
-  assert.match(entry, /import\("\.\/main\.js"\)/u);
+  // 启动页已改为静态加载 main.tsx，历史应继续复用该入口，不能再断言旧的延迟导入路径。
+  assert.match(html, /src="\.\/src\/main\.tsx"/u);
+  assert.match(entry, /platform=\{desktopPlatform\}/u);
   assert.doesNotMatch(viteConfig, /history\.html/u);
 });

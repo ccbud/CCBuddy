@@ -146,6 +146,29 @@ covers the workspace returns immediately to the workspace before showing history
 requesting the already selected history view does not trigger the Settings exit
 fallback to chat.
 
+Desktop's `createDesktopPlatform` must forward the preload's `ccbuddyHistory`
+bridge as `IPlatformService.historyReview`, and forward
+`onOpenHistoryViewRequested` to the existing main-view navigation hook. The
+sidebar's capability check uses that injected service; exposing a preload global
+alone must not be treated as completed integration. A missing history bridge
+keeps the history commands unavailable without preventing the workbench from
+starting. The adapter does not own history data or a second navigation state.
+
+```mermaid
+sequenceDiagram
+    participant Preload as Desktop preload
+    participant Platform as IPlatformService adapter
+    participant App as App main-view owner
+    participant History as History controller
+    participant Main as Main history IPC
+    Preload->>Platform: ccbuddyHistory read bridge + menu subscription
+    Platform->>App: history capability + requested list/timeline
+    App->>History: render selected history route
+    History->>Platform: list / refresh / load
+    Platform->>Main: existing validated read-only IPC
+    Main-->>History: snapshot / progress / detail
+```
+
 ## Borrowed design rules
 
 - Codex's protocol-first approach: the read API has an explicit, versioned,
@@ -237,3 +260,9 @@ producer records or config files.
     loading either task cannot redirect the other task's model changes.
     Repeating an import with the same trimmed identity reuses its task; local
     imports without an identity retain their previous IDs.
+13. Regression coverage creates the real Desktop platform adapter from separate
+    preload history and application bridges. Both sidebar commands remain
+    available, list and calendar navigation read the supplied catalog, and native
+    menu requests still select history from Settings. Bridge methods, refresh
+    events, and subscription disposal are forwarded. A preload without history
+    does not invent the capability or crash on an unavailable menu subscription.
