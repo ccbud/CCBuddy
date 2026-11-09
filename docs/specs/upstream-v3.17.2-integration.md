@@ -405,3 +405,14 @@ standalone-server 与远端附着 Host 均保持单 root、禁本机彻底删除
 - 未执行 Windows/Linux 原生安装包、真机触摸、真实 SSH 连接、发行包升级或外部模型验收。
 
 按用户要求，所有六批修改合为一次最终提交并提 PR，不创建中间 commit。
+
+### PR #59 打包回归修复
+
+- CI 的类型、lint、格式和架构任务通过，macOS 打包在构建 CLI bundle 时失败。
+  GenUI 模型上下文新增的 `@ccbuddy/shared/gen-ui` 子入口缺少精确 alias，
+  被 esbuild 的通用 shared alias 错误改写为 `src/index.ts/gen-ui`。
+- 在现有 CLI 构建别名表补齐 GenUI 入口，不改运行时协议、产品行为或门禁规则。
+- 新增实际 esbuild 子入口打包测试并接入 PR 检查；修复前已复现同一解析错误。
+  完整 runtime-assets 准备与 macOS 安装包构建作为本次修复的验收路径。
+- 本地 Node 24.14.0：根 typecheck/lint/fmt/架构检查通过，打包相关测试 29/29，
+  Desktop 历史平台集成测试通过；生产配置的 runtime-assets 准备及 Desktop/Web 构建通过。
