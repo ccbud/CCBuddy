@@ -22,6 +22,7 @@ import {
   stageSharpIntoBundledAgents,
 } from "./sharp-package-assets.mjs";
 import { officialPluginPackages } from "./agent-official-plugin-packages.mjs";
+import { BUNDLED_NPM_VERSION, stageBundledNpm } from "./bundled-npm-assets.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, "..");
@@ -292,4 +293,9 @@ buildOfficialPluginRuntimes();
 stageBundle();
 stageOfficialPlugins();
 stageBundledSkillPack();
+const stagedNpmRoot = await stageBundledNpm({
+  cacheDir: resolve(repoRoot, "node_modules", ".cache", "ccbuddy-bundled-npm"),
+  glmDir,
+});
+console.log(`[prepare:agent-bundle] staged npm@${BUNDLED_NPM_VERSION} into ${stagedNpmRoot}`);
 stageSharpForNodeReplPlugin();

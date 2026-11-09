@@ -11,7 +11,7 @@ import type { RuntimeMessageEntry } from "../../agent/message-history.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { hasEnoughRuntimeEntriesToCompact, selectCompactEntries } from "../helpers/index.js";
 import {
-  buildCompactSummaryRequestMessages,
+  prepareCompactSummaryRequest,
   formatCompactSummaryOrThrow,
 } from "./compact-active-helpers.js";
 import { runCompactSummaryModelRequest } from "./compact-summary-model-request.js";
@@ -47,9 +47,6 @@ export function startAutoCompactPrepass(
   if (!hasEnoughRuntimeEntriesToCompact(selection.entriesForSummary)) return;
   const instructions = buildCompactPrompt(undefined);
   const model = input.model;
-  const useMidConversationSystem =
-    runtime.config.midConversationSystem?.mode === "force" ||
-    model.properties.supportsMidConversationSystem;
 
   startSpeculativeCompaction(runtime, {
     entries: selection.entriesForSummary,
@@ -73,6 +70,12 @@ export function startAutoCompactPrepass(
       const startedAt = Date.now();
       let result: Awaited<ReturnType<typeof runCompactSummaryModelRequest>> | undefined;
       try {
+        const prepared = prepareCompactSummaryRequest(
+          runtime,
+          model,
+          selection.entriesForSummary,
+          instructions,
+        );
         result = await runCompactSummaryModelRequest({
           logger: runtime.logger,
           model,
@@ -82,13 +85,7 @@ export function startAutoCompactPrepass(
               MAX_OUTPUT_TOKENS_FOR_SUMMARY,
               model.optionSpecs.maxOutputTokens.max,
             ),
-            messages: buildCompactSummaryRequestMessages(
-              selection.entriesForSummary,
-              instructions,
-              {
-                useMidConversationSystem,
-              },
-            ),
+            messages: prepared.request.messages,
             metadata: traceContextToLogContext(traceContext),
             modelRequestSessionType: resolveModelRequestSessionTypeFromTaskType(
               runtime.config.taskType,
@@ -107,7 +104,8 @@ export function startAutoCompactPrepass(
                 traceContext,
               },
             ),
-            tools: [],
+            tools: prepared.request.tools,
+            toolSearchEnabled: prepared.request.toolSearchEnabled,
             traceContext,
           },
         });

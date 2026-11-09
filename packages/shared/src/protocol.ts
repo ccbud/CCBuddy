@@ -68,6 +68,7 @@ export interface WorkspaceFileEntry {
 }
 
 export interface SystemInfo {
+  virtualProjects?: true;
   homedir: string;
   platform: string;
 }
@@ -367,6 +368,7 @@ export interface AppSettings {
   providerFamilyDomainMigrated?: boolean;
   /** 新建或冷恢复 Session 是否为 Bash 注入 bfs/ugrep 增强；默认启用。 */
   nativeSearchEnhancementsEnabled?: boolean;
+  toolSearchMode?: import("./app-runtime-preferences.js").AppToolSearchMode;
   /** 新建或冷恢复 Session 是否启用 Memory；默认关闭。 */
   memoryEnabled?: boolean;
   onboardingOccupation?:

@@ -925,6 +925,12 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     id: "0022_backfilled_session_reasoning",
     sql: BACKFILLED_SESSION_REASONING_MIGRATION_SQL,
   },
+  {
+    appVersion: "2.0.12",
+    id: "0023_session_soft_delete_outcome",
+    sql: `alter table session add column time_deleted integer;
+          alter table session add column last_outcome text;`,
+  },
 ];
 import { OFFICIAL_GLM_SELECTION_MIGRATION_SQL } from "./migrations/0021-official-glm-selection.js";
 import { BACKFILLED_SESSION_REASONING_MIGRATION_SQL } from "./migrations/0022-backfilled-session-reasoning.js";

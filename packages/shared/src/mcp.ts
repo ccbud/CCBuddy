@@ -179,6 +179,7 @@ export type CCbuddyAgentMcpServer =
       command: string;
       args: string[];
       env: Array<{ name: string; value: string }>;
+      alwaysLoad?: boolean;
       isolation?: "session" | "workspace";
       protocolVersion?: "legacy" | "auto" | "2026-07-28";
       timeoutMs?: number;
@@ -191,6 +192,7 @@ export type CCbuddyAgentMcpServer =
       protocolVersion?: "legacy" | "auto" | "2026-07-28";
       headers: Array<{ name: string; value: string }>;
       oauth?: McpOAuthConfig;
+      alwaysLoad?: boolean;
       timeoutMs?: number;
     };
 
@@ -309,6 +311,7 @@ export function convertToCCbuddyAgentMcpServer(
           }))
         : [],
       // MCP 设置页会把 timeoutMs 写入 config；session/create 走协议 DTO 时
+      ...(typeof config.alwaysLoad === "boolean" ? { alwaysLoad: config.alwaysLoad } : {}),
       // 只能透传正整数，否则 strict protocol schema 会把存量非法配置从“忽略”变成“创建失败”。
       ...(isValidMcpTimeoutMs(config.timeoutMs) ? { timeoutMs: config.timeoutMs } : {}),
       ...(isMcpIsolation(config.isolation) ? { isolation: config.isolation } : {}),
@@ -330,6 +333,7 @@ export function convertToCCbuddyAgentMcpServer(
           }))
         : [],
       ...(isValidMcpOAuthConfig(config.oauth) ? { oauth: config.oauth } : {}),
+      ...(typeof config.alwaysLoad === "boolean" ? { alwaysLoad: config.alwaysLoad } : {}),
       // HTTP/SSE MCP 与 stdio 一样需要保留超时配置，避免 UI 保存后真实 session 丢字段。
       ...(isValidMcpTimeoutMs(config.timeoutMs) ? { timeoutMs: config.timeoutMs } : {}),
       ...(isMcpIsolation(config.isolation) ? { isolation: config.isolation } : {}),

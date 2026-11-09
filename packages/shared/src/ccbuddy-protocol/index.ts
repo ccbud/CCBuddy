@@ -32,6 +32,7 @@ export { conversationQuoteSchema, conversationQuotesSchema } from "../conversati
 // 上述旧协议 client/server 组删除时，本文件整体删除。
 // 注：外部零消费 schema 多为存活 schema 联合的内部依赖，随宿主文件一起处理，勿单删。
 import { z } from "zod";
+import { appToolSearchModeSchema } from "../app-runtime-preferences.js";
 import { accountProviderUnavailableReasonSchema } from "../account-provider-state.js";
 import { bashOutputDisplaySchema } from "../bash-output-display.js";
 import { ccbuddyAutomationBotDeliveryTargetSchema } from "../bots.js";
@@ -67,7 +68,10 @@ export const ccbuddyTopicResourceReadResultSchema = z
   })
   .strict();
 export const ccbuddyTopicResourceCancelParamsSchema = z
-  .object({ requestId: z.string().min(1).max(256), taskId: z.string().min(1).max(256) })
+  .object({
+    requestId: z.string().min(1).max(256),
+    taskId: z.string().min(1).max(256),
+  })
   .strict();
 export const ccbuddyTopicResourceCancelResultSchema = z.object({ cancelled: z.boolean() }).strict();
 export type CCbuddyTopicResourceReadParams = z.infer<typeof ccbuddyTopicResourceReadParamsSchema>;
@@ -123,8 +127,18 @@ export const CCBUDDY_PROTOCOL_VERSION = 1 as const;
 // V4 wire 与 legacy 主协议并存；禁止为了 V4 physical framing 改写 legacy 版本。
 export const CCBUDDY_PROTOCOL_V4_WIRE_VERSION = 3 as const;
 export const ccbuddyRuntimeCapabilitiesSchema = z.object({
+  sessionDirectorySource: z.boolean().optional(),
   independentPlanState: z.boolean().optional(),
+  genUiContext: z.boolean().optional(),
 });
+export const ccbuddyRuntimeCapabilitiesParamsSchema = z
+  .object({
+    hostCapabilities: z
+      .object({ sessionDirectorySource: z.boolean().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
 export const ccbuddyProtocolErrorCodes = {
   sessionUnavailable: -32004,
 } as const;
@@ -236,7 +250,10 @@ const ccbuddyCreateWorkflowCausalityGraphDisplaySchema = z
             lane: z.string().min(1).max(64),
             steps: z.array(z.string().min(1).max(64)).min(1).max(64),
             member: z
-              .object({ index: z.number().int().nonnegative(), of: z.number().int().positive() })
+              .object({
+                index: z.number().int().nonnegative(),
+                of: z.number().int().positive(),
+              })
               .strict()
               .optional(),
             many: z.literal(true).optional(),
@@ -247,7 +264,9 @@ const ccbuddyCreateWorkflowCausalityGraphDisplaySchema = z
     handoffs: z
       .array(
         ccbuddyWorkflowEdgeSchema
-          .extend({ types: z.array(z.string().min(1).max(128)).min(1).max(8).optional() })
+          .extend({
+            types: z.array(z.string().min(1).max(128)).min(1).max(8).optional(),
+          })
           .strict(),
       )
       .max(256),
@@ -277,7 +296,14 @@ const ccbuddyCreateWorkflowCausalityGraphDisplaySchema = z
     // 阶段流（docs/dynamic-workflow/presentation.md「Streams」）：两端互为 alongside 的 data 边，
     // 只有 {from, to}——不是 runs after，不进 phaseEdges、不带 back。与词汇表同进同退。
     phaseStreams: z
-      .array(z.object({ from: z.string().min(1).max(64), to: z.string().min(1).max(64) }).strict())
+      .array(
+        z
+          .object({
+            from: z.string().min(1).max(64),
+            to: z.string().min(1).max(64),
+          })
+          .strict(),
+      )
       .max(128)
       .optional(),
     // 还开着的留白，源码序（docs/dynamic-workflow/authoring.md「Holes」）；镜像 v4。
@@ -478,7 +504,10 @@ export const ccbuddyStorageStartupStateSchema = z
   .strict()
   .superRefine((state, context) => {
     if (state.phase === "failed" && !state.errorCode)
-      context.addIssue({ code: "custom", message: "failed requires errorCode" });
+      context.addIssue({
+        code: "custom",
+        message: "failed requires errorCode",
+      });
   });
 export type CCbuddyStorageStartupState = z.infer<typeof ccbuddyStorageStartupStateSchema>;
 
@@ -750,6 +779,7 @@ export const ccbuddyProtocolMcpServerSchema = z.union([
       command: nonEmptyString,
       args: z.array(z.string()),
       env: z.array(ccbuddyProtocolMcpEntrySchema),
+      alwaysLoad: z.boolean().optional(),
       isolation: z.enum(["session", "workspace"]).optional(),
       protocolVersion: z.enum(["legacy", "auto", "2026-07-28"]).optional(),
       timeoutMs: z.number().int().positive().optional(),
@@ -762,6 +792,7 @@ export const ccbuddyProtocolMcpServerSchema = z.union([
       url: nonEmptyString,
       headers: z.array(ccbuddyProtocolMcpEntrySchema),
       oauth: ccbuddyProtocolMcpOAuthSchema.optional(),
+      alwaysLoad: z.boolean().optional(),
       isolation: z.enum(["session", "workspace"]).optional(),
       protocolVersion: z.enum(["legacy", "auto", "2026-07-28"]).optional(),
       timeoutMs: z.number().int().positive().optional(),
@@ -865,7 +896,10 @@ const ccbuddyMcpUiPluginScopeShape = {
   serverName: nonEmptyString,
 };
 export const ccbuddyMcpUiCloseInstanceParamsSchema = z
-  .object({ ...ccbuddyMcpUiPluginScopeShape, onlyIfIdle: z.boolean().optional() })
+  .object({
+    ...ccbuddyMcpUiPluginScopeShape,
+    onlyIfIdle: z.boolean().optional(),
+  })
   .strict();
 export const ccbuddyMcpUiCloseInstanceResultSchema = z.object({ closed: z.boolean() }).strict();
 export const ccbuddyMcpReadResourceParamsSchema = z
@@ -913,7 +947,10 @@ export const ccbuddyMcpUiSamplingParamsSchema = z
   })
   .strict();
 export const ccbuddyMcpUiCancelSamplingParamsSchema = z
-  .object({ ...ccbuddyMcpUiPluginScopeShape, operationId: nonEmptyString.max(128) })
+  .object({
+    ...ccbuddyMcpUiPluginScopeShape,
+    operationId: nonEmptyString.max(128),
+  })
   .strict();
 export const ccbuddyMcpUiSamplingResultSchema = mcpAppsSamplingResultSchema;
 export type CCbuddyMcpUiSamplingParams = z.infer<typeof ccbuddyMcpUiSamplingParamsSchema>;
@@ -940,7 +977,10 @@ export const ccbuddyMcpUiCancelCallResultSchema = z.object({ cancelled: z.boolea
 export type CCbuddyMcpUiCancelCallResult = z.infer<typeof ccbuddyMcpUiCancelCallResultSchema>;
 /** 页面发起的 resources/list、resources/templates/list、subscribe、unsubscribe 代理。 */
 export const ccbuddyMcpUiListResourcesParamsSchema = z
-  .object({ ...ccbuddyMcpUiPluginScopeShape, cursor: nonEmptyString.max(2048).optional() })
+  .object({
+    ...ccbuddyMcpUiPluginScopeShape,
+    cursor: nonEmptyString.max(2048).optional(),
+  })
   .strict();
 export type CCbuddyMcpUiListResourcesParams = z.infer<typeof ccbuddyMcpUiListResourcesParamsSchema>;
 const ccbuddyMcpUiResourceDescriptorSchema = z
@@ -1012,7 +1052,9 @@ export type CCbuddyMcpUiRegisterAppToolsParams = z.infer<
   typeof ccbuddyMcpUiRegisterAppToolsParamsSchema
 >;
 export const ccbuddyMcpUiRegisterAppToolsResultSchema = z
-  .object({ tools: z.array(z.object({ name: z.string(), modelName: z.string() }).strict()) })
+  .object({
+    tools: z.array(z.object({ name: z.string(), modelName: z.string() }).strict()),
+  })
   .strict();
 export type CCbuddyMcpUiRegisterAppToolsResult = z.infer<
   typeof ccbuddyMcpUiRegisterAppToolsResultSchema
@@ -1048,7 +1090,9 @@ export const ccbuddyMcpUiResolveAppToolCallParamsSchema = z
     callId: nonEmptyString.max(MCP_APPS_APP_TOOL_CALL_ID_MAX_CHARS),
     result: mcpAppsAppToolCallResultSchema.optional(),
     error: z
-      .object({ message: z.string().max(MCP_APPS_APP_TOOL_ERROR_MESSAGE_MAX_CHARS) })
+      .object({
+        message: z.string().max(MCP_APPS_APP_TOOL_ERROR_MESSAGE_MAX_CHARS),
+      })
       .strict()
       .optional(),
   })
@@ -1961,6 +2005,7 @@ export const ccbuddyDynamicWorkflowModeSchema = z.enum(DYNAMIC_WORKFLOW_MODES);
 
 export const ccbuddySessionCreateParamsSchema = z
   .object({
+    additionalDirectories: z.array(nonEmptyString).max(256).optional(),
     sessionId: nonEmptyString.optional(),
     workspace: ccbuddyWorkspaceRefSchema,
     parentSessionId: nonEmptyString.optional(),
@@ -1988,6 +2033,7 @@ export type CCbuddySessionCreateParams = z.infer<typeof ccbuddySessionCreatePara
 
 export const ccbuddySessionResumeParamsSchema = z
   .object({
+    additionalDirectories: z.array(nonEmptyString).max(256).optional(),
     sessionId: nonEmptyString,
     workspace: ccbuddyWorkspaceRefSchema.optional(),
     // 旧 session 尚无 runtime/model_selection entry 时，由同 task 的索引元数据提供迁移 hint。
@@ -2106,6 +2152,7 @@ export const CCBUDDY_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS = 15_000;
 export const ccbuddySessionRequestRuntimePreferencesParamsSchema = z
   .object({
     sessionId: nonEmptyString,
+    directorySessionId: nonEmptyString.optional(),
     scope: ccbuddySessionRuntimePreferencesScopeSchema,
   })
   .strict();
@@ -2123,7 +2170,9 @@ export type CCbuddyModelContextBudgetStrategy = z.infer<
 
 export const ccbuddySessionRuntimePreferencesResultSchema = z
   .object({
+    additionalDirectories: z.array(nonEmptyString).max(256).optional(),
     nativeSearchEnhancementsEnabled: z.boolean(),
+    toolSearchMode: appToolSearchModeSchema.default("off"),
     subagentRuntimeConfigEnabled: z.boolean().optional(),
     memoryEnabled: z.boolean().default(false),
     askUserQuestionAutoResolutionEnabled: z.boolean().default(true),
@@ -3485,7 +3534,10 @@ export type CCbuddyWorkflowsSaveResult = z.infer<typeof ccbuddyWorkflowsSaveResu
 // 因此会自动不再算数。
 /** 转写自对话的候选：模型用 `SaveWorkflow` 存过、并在入参里认领了这次 run。 */
 export const ccbuddyWorkflowsForRunCandidateSchema = z
-  .object({ name: nonEmptyString, scope: ccbuddySavedWorkflowScopeSchema.optional() })
+  .object({
+    name: nonEmptyString,
+    scope: ccbuddySavedWorkflowScopeSchema.optional(),
+  })
   .strict();
 export type CCbuddyWorkflowsForRunCandidate = z.infer<typeof ccbuddyWorkflowsForRunCandidateSchema>;
 /** 候选上界：一次 run 在一段对话里被存过的次数远小于它。 */
@@ -3583,6 +3635,7 @@ export const ccbuddyPluginStoreListingSchema = z
     descriptionI18n: z.record(z.string(), z.string()).optional(),
     icon: z.string().optional(),
     category: z.string().optional(),
+    publisherType: z.enum(["official", "community"]).optional(),
     author: z.string().optional(),
     authorUrl: z.string().optional(),
     homepage: z.string().optional(),
@@ -4157,7 +4210,47 @@ export const ccbuddyOffPeakListResultSchema = z
   .strict();
 export type CCbuddyOffPeakListProtocolResult = z.infer<typeof ccbuddyOffPeakListResultSchema>;
 
+// Session 运行实例生命周期；不同于 session/stop（停止生成）。
+export const sessionLifecycleParamsSchema = z.object({ sessionId: z.string().min(1) }).strict();
+export const sessionLifecycleActivationParamsSchema = sessionLifecycleParamsSchema.extend({
+  workspace: ccbuddyWorkspaceRefSchema.optional(),
+});
+export const sessionLifecycleStateSchema = z.enum([
+  "unloaded",
+  "starting",
+  "ready",
+  "stopping",
+  "faulted",
+]);
+export const sessionLifecycleOperationSchema = z.enum(["ensureReady", "stop", "restart"]);
+export const sessionLifecycleFailureSchema = z
+  .object({
+    operation: sessionLifecycleOperationSchema,
+    code: z.string(),
+    message: z.string(),
+  })
+  .strict();
+export const sessionLifecycleSnapshotSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    state: sessionLifecycleStateSchema,
+    generation: z.number().int().nonnegative().default(0),
+    revision: z.number().int().nonnegative().default(0),
+    lastError: sessionLifecycleFailureSchema.nullable(),
+  })
+  .strict();
+export const sessionLifecycleResultSchema = z.object({ completed: z.literal(true) }).strict();
+export type SessionLifecycleState = z.infer<typeof sessionLifecycleStateSchema>;
+export type SessionLifecycleOperation = z.infer<typeof sessionLifecycleOperationSchema>;
+export type SessionLifecycleFailure = z.infer<typeof sessionLifecycleFailureSchema>;
+export type SessionLifecycleSnapshot = z.infer<typeof sessionLifecycleSnapshotSchema>;
+
 export const ccbuddyProtocolMethods = {
+  sessionLifecycleChanged: "session/lifecycle/changed",
+  sessionLifecycleGetState: "session/lifecycle/getState",
+  sessionLifecycleEnsureReady: "session/lifecycle/ensureReady",
+  sessionLifecycleStop: "session/lifecycle/stop",
+  sessionLifecycleRestart: "session/lifecycle/restart",
   runtimeCapabilities: "runtime/capabilities",
   computerUseOperationEvent: "computer-use/operation-event",
   sessionCreate: "session/create",
@@ -4399,14 +4492,23 @@ export const ccbuddyStoragePreparationFrameSchema = z.discriminatedUnion("method
     })
     .strict(),
   z
-    .object({ method: z.literal("startup/storagePrepared"), params: z.object({}).strict() })
+    .object({
+      method: z.literal("startup/storagePrepared"),
+      params: z.object({}).strict(),
+    })
     .strict(),
   z
-    .object({ method: z.literal("startup/storageState"), params: ccbuddyStorageStartupStateSchema })
+    .object({
+      method: z.literal("startup/storageState"),
+      params: ccbuddyStorageStartupStateSchema,
+    })
     .strict(),
 ]);
 export const ccbuddyStoragePathReadySchema = z
-  .object({ method: z.literal("startup/storagePathReady"), reuse: z.boolean().optional() })
+  .object({
+    method: z.literal("startup/storagePathReady"),
+    reuse: z.boolean().optional(),
+  })
   .strict();
 
 // 桌面本地 TTFT 的严格事实合同；检查点不能替代实际内容帧。

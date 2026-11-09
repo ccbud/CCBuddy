@@ -154,3 +154,8 @@ export function parseRemoteWorkspaceIdentity(
 export function isRemoteWorkspaceIdentity(identity: string): boolean {
   return parseRemoteWorkspaceIdentity(identity) !== null;
 }
+
+export function remoteHostIdFromWorkspaceIdentity(identity: string): string | null {
+  const parsed = parseRemoteWorkspaceIdentity(identity);
+  return parsed ? identity.slice(0, -(parsed.workspacePath.length + 1)) : null;
+}

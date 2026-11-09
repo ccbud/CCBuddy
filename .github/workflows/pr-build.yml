@@ -43,6 +43,7 @@ jobs:
           packages/desktop/test/finalize-macos-release.test.mjs
           packages/desktop/test/legacy-native-update.test.mjs
           packages/desktop/test/prepare-main-release.test.mjs
+          apps/ccbuddy-cli/packages/cli/scripts/build.test.mjs
       - name: Test desktop history platform integration
         run: >-
           pnpm exec vitest run

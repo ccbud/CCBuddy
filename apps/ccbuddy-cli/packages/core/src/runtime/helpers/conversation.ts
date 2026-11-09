@@ -1,4 +1,6 @@
 import { activeSessionMessages, modelMessageContentToText } from "../deps.js";
+import type { GenUiModelContext } from "@ccbuddy/shared/gen-ui";
+import { attachGenUiContext } from "../../agent/gen-ui-context.js";
 import {
   buildPromptAttachmentBlocks,
   buildPromptAttachmentReminderBodies,
@@ -111,6 +113,7 @@ export function buildRuntimeUserEntriesFromTurn(
   attachments: ResolvedTurnAttachment[],
   options: {
     browserAmbientContext?: { tabCount: number; currentUrl?: string };
+    genUiContext?: GenUiModelContext;
   } = {},
 ): RuntimeMessageEntry[] {
   const realUserBlocks: ModelMessageContentBlock[] = [];
@@ -149,13 +152,16 @@ export function buildRuntimeUserEntriesFromTurn(
   blocks.push(...realUserBlocks, ...pastedImageBlocks);
 
   return [
-    {
-      message: {
-        role: "user",
-        content: normalizeRealUserContent(blocks),
+    attachGenUiContext(
+      {
+        message: {
+          role: "user",
+          content: normalizeRealUserContent(blocks),
+        },
+        metadata: realUserRuntimeMetadata(),
       },
-      metadata: realUserRuntimeMetadata(),
-    },
+      options.genUiContext,
+    ),
     ...promptAttachmentEntries,
   ];
 }
@@ -164,8 +170,7 @@ export function formatBrowserAmbientUserInput(
   input: string,
   context?: { tabCount: number; currentUrl?: string },
 ): string {
-  if (!context || !Number.isInteger(context.tabCount) || context.tabCount <= 0)
-    return input;
+  if (!context || !Number.isInteger(context.tabCount) || context.tabCount <= 0) return input;
   const tabLabel = context.tabCount === 1 ? "tab" : "tabs";
   const lines = [
     '<in-app-browser-context source="ambient-ui-state">',

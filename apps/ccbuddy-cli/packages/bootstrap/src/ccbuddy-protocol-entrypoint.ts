@@ -1,4 +1,6 @@
-import { createConfig } from "@ccbuddy/adapters/config";
+import { createConfig, resolvePath } from "@ccbuddy/adapters/config";
+import { getCliStorageRoot, getProjectMemoryRoot } from "./app/paths.js";
+import { createNodeSessionDataFiles } from "@ccbuddy/adapters/storage";
 import type { McpElicitationPort, McpNotificationPort } from "@ccbuddy/contracts";
 import { createNodeModelSelectionFacade } from "@ccbuddy/provider-node";
 import { createNodeLoggerFactory } from "@ccbuddy/adapters/logging";
@@ -15,10 +17,10 @@ import {
 } from "@ccbuddy/shared";
 import type { SqliteSessionStore } from "@ccbuddy/adapters/storage";
 import { traceContextToLogContext, createRootTraceContext } from "@ccbuddy/contracts";
-import type { McpPort, ModelSelection } from "@ccbuddy/contracts";
-import type { PresentationSurface } from "@ccbuddy/core";
-import type { RunCCbuddyProtocolAgentOptions, CCbuddyAppOptions } from "./app/types.js";
+import type { McpPort } from "@ccbuddy/contracts";
+import type { RunCCbuddyProtocolAgentOptions } from "./app/types.js";
 import { createCCbuddyApp } from "./app/create-app.js";
+import { resolveMcpNodeFallbackProvider } from "./app/mcp-node-fallback.js";
 import {
   createNodeReplBrowserBroker,
   type NodeReplBrowserBroker,
@@ -51,35 +53,14 @@ import { acquireProtocolStartupResource } from "./ccbuddy-protocol/startup-resou
 import { prepareCCbuddyTelemetryEnv, shutdownCCbuddyTelemetry } from "./telemetry-bootstrap.js";
 import type { CCbuddyProcessResourceSampler } from "./process-resource-sampler.js";
 
-export function applyProtocolPresentationSurface(
-  options: Omit<CCbuddyAppOptions, "providerRegistry">,
-  presentationSurface: PresentationSurface,
-): Omit<CCbuddyAppOptions, "providerRegistry"> {
-  return {
-    ...options,
-    runtimeConfig: {
-      ...options.runtimeConfig,
-      presentationSurface,
-    },
-  };
-}
-
-/**
- * 进程级 Registry 已就绪后，它就是当前 Environment 的模型事实源。
- *
- * 旧 workspace snapshot 不再参与 Provider 和 Model 执行。
- */
-export function applyProtocolProviderRegistry(
-  options: Omit<CCbuddyAppOptions, "providerRegistry">,
-  providerRegistry: CCbuddyAppOptions["providerRegistry"],
-  configuredDefaultModelSelection?: ModelSelection,
-): CCbuddyAppOptions {
-  return {
-    ...options,
-    providerRegistry,
-    ...(configuredDefaultModelSelection ? { configuredDefaultModelSelection } : {}),
-  };
-}
+import {
+  applyProtocolPresentationSurface,
+  applyProtocolProviderRegistry,
+} from "./ccbuddy-protocol/app-options.js";
+export {
+  applyProtocolPresentationSurface,
+  applyProtocolProviderRegistry,
+} from "./ccbuddy-protocol/app-options.js";
 
 export async function runCCbuddyProtocolAgent(
   options: RunCCbuddyProtocolAgentOptions = {},
@@ -263,6 +244,10 @@ export async function runCCbuddyProtocolAgent(
               noProxy: configResult.config.network.noProxy,
               caCertFile: configResult.config.network.caCertFile,
             },
+            nodeFallback: resolveMcpNodeFallbackProvider({
+              cliStorageRoot: getCliStorageRoot(resolvePath(configResult.config.storage.dir)),
+              logger,
+            }),
             officialMcpAuth,
             telemetry: mcpTelemetryTracker,
             workingDirectory: options.cwd,
@@ -315,6 +300,15 @@ export async function runCCbuddyProtocolAgent(
       mcpPort,
       mcpTelemetry: mcpTelemetryTracker,
       sessionStore,
+      sessionDataFiles: createNodeSessionDataFiles({
+        cliStorageRoot: getCliStorageRoot(resolvePath(configResult.config.storage.dir)),
+        memoryRoot: ({ workspacePath, workspaceIdentity }) =>
+          getProjectMemoryRoot(
+            getCliStorageRoot(resolvePath(configResult.config.storage.dir)),
+            workspacePath,
+            workspaceIdentity,
+          ),
+      }),
       syncAccountProviderConfig: activeProviderRegistryRuntime.syncAccountProviderConfig,
       refreshProviderRegistry: async (reason) => {
         await activeProviderRegistryRuntime.runtime.registryService.refresh(reason);

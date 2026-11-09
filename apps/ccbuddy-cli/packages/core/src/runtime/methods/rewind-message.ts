@@ -699,6 +699,7 @@ async function rebuildConversationDerivedState(
   await hydrateReadFileStateFromSession({
     messages: options.persistedMessages,
     readFileState: this.readFileState,
+    retainContextSeeds: true,
     workingDirectory: this.workingDirectory,
     workspaceRoot: this.workspaceRoot,
     ...branchOptions,

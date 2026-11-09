@@ -268,6 +268,15 @@ export class CommandInbox {
     return true;
   }
 
+  async resetReleasedSession(sessionId: string): Promise<void> {
+    const bucketKey = this.bucketKey(sessionId);
+    await Promise.all(
+      [...(this.inFlight.get(bucketKey)?.values() ?? [])].map((entry) => entry.final),
+    );
+    this.liveInputs.delete(bucketKey);
+    this.clearSession(sessionId);
+  }
+
   private async queryOne(
     key: CommandKey,
   ): Promise<{ key: CommandKey; result: CommandAck | "unknown" }> {

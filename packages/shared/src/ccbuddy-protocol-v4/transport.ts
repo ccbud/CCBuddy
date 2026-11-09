@@ -29,6 +29,7 @@ export const hostCapabilitiesSchema = z.object({
   // Wire-compatible：旧 Host 缺失等价于 false；调用方必须用 === true 判断。
   workspaceHookReview: z.boolean().optional(),
   independentPlanState: z.boolean().optional(),
+  genUiContext: z.boolean().optional(),
   /**
    * 本 Host 会发 `workflowRun.*` 键级增量（delta.ts 的两条 op），因而 `workflowRuns` 的
    * actors / nodes 可以到 1024 而不是旧界的 256。没有这个位的消费者收到的仍是整键
@@ -198,7 +199,11 @@ export const conversationTopicFrameSchema = createTopicFrameSchema(
   })
   .superRefine((frame, context) => {
     if (!frame.topic.startsWith("conversation/") || frame.topic.length === "conversation/".length) {
-      context.addIssue({ code: "custom", message: "invalid conversation topic", path: ["topic"] });
+      context.addIssue({
+        code: "custom",
+        message: "invalid conversation topic",
+        path: ["topic"],
+      });
     }
   });
 export type ConversationTopicFrame = z.infer<typeof conversationTopicFrameSchema>;
@@ -206,14 +211,22 @@ export const conversationTopicWireFrameSchema = createTopicWireFrameSchema(
   conversationTopicFrameSchema,
 ).superRefine((wire, context) => {
   if (!wire.topic.startsWith("conversation/") || wire.topic.length === "conversation/".length) {
-    context.addIssue({ code: "custom", message: "invalid conversation topic", path: ["topic"] });
+    context.addIssue({
+      code: "custom",
+      message: "invalid conversation topic",
+      path: ["topic"],
+    });
   }
 });
 export type ConversationTopicWireFrame = z.infer<typeof conversationTopicWireFrameSchema>;
 export const conversationTopicWireCandidateSchema = topicWireFrameCandidateSchema.superRefine(
   (wire, context) => {
     if (!wire.topic.startsWith("conversation/") || wire.topic.length === "conversation/".length) {
-      context.addIssue({ code: "custom", message: "invalid conversation topic", path: ["topic"] });
+      context.addIssue({
+        code: "custom",
+        message: "invalid conversation topic",
+        path: ["topic"],
+      });
     }
   },
 );
@@ -228,7 +241,11 @@ export const sessionsIndexTopicFrameSchema = createTopicFrameSchema(
     !frame.topic.startsWith("sessions-index/") ||
     frame.topic.length === "sessions-index/".length
   ) {
-    context.addIssue({ code: "custom", message: "invalid sessions-index topic", path: ["topic"] });
+    context.addIssue({
+      code: "custom",
+      message: "invalid sessions-index topic",
+      path: ["topic"],
+    });
   }
 });
 export type SessionsIndexTopicFrame = z.infer<typeof sessionsIndexTopicFrameSchema>;
@@ -236,7 +253,11 @@ export const sessionsIndexTopicWireFrameSchema = createTopicWireFrameSchema(
   sessionsIndexTopicFrameSchema,
 ).superRefine((wire, context) => {
   if (!wire.topic.startsWith("sessions-index/") || wire.topic.length === "sessions-index/".length) {
-    context.addIssue({ code: "custom", message: "invalid sessions-index topic", path: ["topic"] });
+    context.addIssue({
+      code: "custom",
+      message: "invalid sessions-index topic",
+      path: ["topic"],
+    });
   }
 });
 export type SessionsIndexTopicWireFrame = z.infer<typeof sessionsIndexTopicWireFrameSchema>;
@@ -330,6 +351,8 @@ export type RoutedTopicWireCandidate = z.infer<typeof routedTopicWireCandidateSc
 // 载体复用现有 JSON-RPC（stdio NDJSON / socket），方法名带 v4/ 前缀与旧协议并存；
 // 旧 session/* 方法删除后，这里就是唯一协议面。
 export const V4_METHODS = {
+  sessionDataMeasure: "v4/storage/sessionData/measure",
+  sessionDataPurge: "v4/storage/sessionData/purge",
   connectionFlow: "v4/connection/flow",
   controllerSubscribe: "v4/controller/subscribe",
   controllerResync: "v4/controller/resync",
@@ -428,6 +451,7 @@ export const v4ConversationSubscribeParamsSchema = subscribeParamsSchema.extend(
   legacyTaskIds: z.array(z.string().min(1)).max(MAX_LEGACY_TASK_IDS_PER_SUBSCRIBE).optional(),
   // 仅供 host→CLI cold resume 使用；live conversation 不消费该 hint。
   resumeThoughtLevel: z.string().trim().min(1).optional(),
+  additionalDirectories: z.array(z.string().min(1)).max(256).optional(),
   /**
    * 这条订阅收不收 `workflowRun.*` 键级增量。与 `clientMode` 同族：由**可信 host** 从该连接的
    * clientHello 注入，面向 UI 的 subscribe 选不了它——一个客户端能不能认得增量是连接的事实，
@@ -923,7 +947,11 @@ export const v4AttachmentChunkParamsSchema = z
   .superRefine((value, context) => {
     const decodedBytes = decodedBase64ByteLength(value.dataBase64);
     if (decodedBytes === null) {
-      context.addIssue({ code: "custom", message: "invalid base64", path: ["dataBase64"] });
+      context.addIssue({
+        code: "custom",
+        message: "invalid base64",
+        path: ["dataBase64"],
+      });
       return;
     }
     if (decodedBytes > PROTOCOL_V4_LIMITS.attachmentChunkMaxBytes) {
@@ -1053,7 +1081,11 @@ export const v4AttachmentReadResultSchema = z
     }
     const decodedBytes = decodedBase64ByteLength(value.dataBase64);
     if (decodedBytes === null) {
-      context.addIssue({ code: "custom", message: "invalid base64", path: ["dataBase64"] });
+      context.addIssue({
+        code: "custom",
+        message: "invalid base64",
+        path: ["dataBase64"],
+      });
       return;
     }
     if (decodedBytes > PROTOCOL_V4_LIMITS.attachmentChunkMaxBytes) {
@@ -1102,7 +1134,11 @@ export const v4ConversationAttachmentReadResultSchema = z
   .superRefine((value, context) => {
     const decodedBytes = decodedBase64ByteLength(value.dataBase64);
     if (decodedBytes === null) {
-      context.addIssue({ code: "custom", message: "invalid base64", path: ["dataBase64"] });
+      context.addIssue({
+        code: "custom",
+        message: "invalid base64",
+        path: ["dataBase64"],
+      });
       return;
     }
     if (decodedBytes > PROTOCOL_V4_LIMITS.attachmentChunkMaxBytes) {

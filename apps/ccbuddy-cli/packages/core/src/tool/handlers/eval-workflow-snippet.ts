@@ -51,7 +51,8 @@ import { requireDynamicWorkflowSkill } from "./workflow-skill-gate.js";
 const EVAL_WORKFLOW_SNIPPET_TOOL_TIMEOUT_MS = 660_000;
 const EVAL_WORKFLOW_SNIPPET_MODEL_BYTES = 24_000;
 
-const NOT_EXECUTED_NOTE = "NOTE: The snippet was NOT executed — fix the errors above and call the tool again.";
+const NOT_EXECUTED_NOTE =
+  "NOTE: The snippet was NOT executed — fix the errors above and call the tool again.";
 const UNAVAILABLE_NOTE =
   "NOTE: The snippet was NOT executed — snippet evaluation is not available in this session.";
 
@@ -244,6 +245,7 @@ export const evalWorkflowSnippetToolEntry: ToolEntry = {
   capability:
     "Compile and synchronously run a small dynamic-workflow TypeScript snippet (world reads + pure logic) against the real workflow execution path, fully ephemerally",
   metadata: {
+    shouldDefer: true,
     name: EVAL_WORKFLOW_SNIPPET_TOOL_NAME,
     description: EVAL_WORKFLOW_SNIPPET_TOOL_DESCRIPTION,
     // world.run 落地后 snippet 可表达效应：readOnly 翻面，确认门在 prepareApproval

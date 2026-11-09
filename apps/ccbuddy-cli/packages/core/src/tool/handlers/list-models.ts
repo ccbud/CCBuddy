@@ -114,7 +114,9 @@ function formatListModelsModelContent(output: unknown): ModelMessageContent {
     if (model.reasoningLevels.length > 0) {
       const levels = model.reasoningLevels.join(",");
       const fallback =
-        model.defaultReasoningLevel === undefined ? "" : ` (default ${model.defaultReasoningLevel})`;
+        model.defaultReasoningLevel === undefined
+          ? ""
+          : ` (default ${model.defaultReasoningLevel})`;
       parts.push(`; levels: ${levels}${fallback}`);
     }
     // current 与 disabled 排在行尾且各用方括号：它们是模型据以**排除**一行的两个标记，
@@ -130,6 +132,7 @@ function formatListModelsModelContent(output: unknown): ModelMessageContent {
 export const listModelsToolEntry: ToolEntry = {
   capability: "List the models this host has configured, for choosing a workflow's subagent model",
   metadata: {
+    shouldDefer: true,
     name: LIST_MODELS_TOOL_NAME,
     description: LIST_MODELS_DESCRIPTION,
     readOnly: true,

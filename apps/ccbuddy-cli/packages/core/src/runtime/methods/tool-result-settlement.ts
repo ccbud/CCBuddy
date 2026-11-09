@@ -11,15 +11,14 @@ import {
   createStreamRecoveryAnchorId,
   emitStreamRecoveryAnchor,
   emitStreamingToolLedgerUpdate,
-  isErrorForToolResult,
   isTurnCancellationError,
   modelContentForToolResult,
   stringifyToolResultOutput,
+  toolBatchModelEntries,
 } from "../helpers/index.js";
 import { persistToolResultMediaAttachments } from "../helpers/tool-result-media-persistence.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import type { StreamedToolExecutionResult } from "../types.js";
-import { createRuntimeToolResultEntry } from "../../agent/message-history.js";
 import { recordBrowserTurnToolResult } from "../../repl/browser-turn-state.js";
 import { completedToolPartMetadata, mcpToolPartMetadata } from "./tool-part-metadata.js";
 import { projectToolNameForNonEmptyBoundary } from "./tool-part-persistence.js";
@@ -27,6 +26,7 @@ import type { RegularTurnLoopState } from "./turn-loop-state.js";
 import { emitNestedModelUsageEvents } from "./turn-nested-model-usage.js";
 import { commitTurnRequestEntries } from "./turn-output-token-continuation.js";
 import { recordToolUsageFromResult } from "./turn-tool-usage.js";
+import { persistAnnouncements } from "./context-refresh.js";
 
 export interface ToolResultPart {
   partID: PartId;
@@ -48,21 +48,14 @@ export async function settleToolResults(
   },
 ): Promise<void> {
   const { results, toolParts, toolCallById, streamedResultsById } = options;
+  const batchEntries = toolBatchModelEntries(results, {
+    registry: this.registry,
+    modelCallWrapperOf: (toolCallId) => toolCallById.get(toolCallId)?.modelCallWrapper,
+  });
   // 根因：工具调用已进入历史，但旧逻辑在异步保存之后逐项加入结果；中途失败会
   // 留下缺失结果的调用。整批真实结果必须在任何异步收尾之前同步进入两份模型历史。
   // 这只保证当前进程历史完整，恢复锚点仍以各项持久化成功为前提。
-  commitTurnRequestEntries(
-    this,
-    state.turnRequestState,
-    results.map((result) =>
-      createRuntimeToolResultEntry(
-        result.toolCallId,
-        result.toolName,
-        modelContentForToolResult(result),
-        isErrorForToolResult(result),
-      ),
-    ),
-  );
+  commitTurnRequestEntries(this, state.turnRequestState, batchEntries.toolResults);
   for (const result of results) {
     recordBrowserTurnToolResult({
       output: result.output,
@@ -127,7 +120,12 @@ export async function settleToolResults(
           callID: result.toolCallId,
           declarationIndex: persisted.declarationIndex,
           tool: projectedResultToolName.toolName,
-          metadata: projectedResultToolName.metadata,
+          metadata: {
+            ...projectedResultToolName.metadata,
+            ...(toolCallById.get(result.toolCallId)?.modelCallWrapper
+              ? { modelCallWrapper: toolCallById.get(result.toolCallId)?.modelCallWrapper }
+              : {}),
+          },
           state: result.success
             ? {
                 status: "completed",
@@ -228,6 +226,12 @@ export async function settleToolResults(
     );
   }
 
+  await persistAnnouncements(
+    this,
+    state.turnRequestState,
+    batchEntries.attachments,
+    options.modelTraceContext,
+  );
   if (deferredCheckpointCancellation) {
     throw deferredCheckpointCancellation;
   }

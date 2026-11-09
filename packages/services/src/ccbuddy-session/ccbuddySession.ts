@@ -34,6 +34,8 @@ export interface CCbuddyTaskTarget extends CCbuddySessionWorkspaceTarget {
 }
 
 export interface CCbuddySessionCreateParams extends CCbuddySessionWorkspaceTarget {
+  projectId?: string;
+  additionalDirectories?: string[];
   /** 仅导入事务使用的预分配 ID；普通新会话继续由 Agent 分配。 */
   sessionId?: string;
   sessionTraceId?: TraceId;

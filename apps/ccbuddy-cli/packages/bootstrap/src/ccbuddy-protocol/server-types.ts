@@ -15,6 +15,7 @@ import type { WorkspaceHookPolicyProvider } from "@ccbuddy/core";
 import type { AccountProviderConfigSnapshot } from "@ccbuddy/provider";
 import {
   ccbuddyProtocolErrorCodes,
+  type AppToolSearchMode,
   type CCbuddyAutomationBotDeliveryTarget,
   type CCbuddyDeliveryKind,
   type ModelSelection,
@@ -40,7 +41,9 @@ export interface ParamsSchema<T> {
 }
 
 export interface CCbuddyProtocolAgentDependencies {
-  createCCbuddyApp(options?: Omit<CCbuddyAppOptions, "providerRegistry">): CCbuddyApp | Promise<CCbuddyApp>;
+  createCCbuddyApp(
+    options?: Omit<CCbuddyAppOptions, "providerRegistry">,
+  ): CCbuddyApp | Promise<CCbuddyApp>;
   /**
    * 每个 session record 的内存 event store 工厂。
    * 默认 turn 窗口保留策略；测试可注入 spy 或 unbounded 实现做对照。
@@ -58,6 +61,7 @@ export interface CCbuddyProtocolAgentDependencies {
   /** 兼容旧测试/嵌入调用；新代码应通过 sessionResidentPoolOptions 设置 low-water。 */
   sessionResidentTargetCount?: number;
   sessionStore?: SessionStorePort;
+  sessionDataFiles?: import("@ccbuddy/adapters/storage").SessionDataFilesPort;
   version?: string;
   /** 受信 Host 管理的 Hook policy；workspace/project 配置不得覆盖。 */
   workspaceHookPolicyProvider?: WorkspaceHookPolicyProvider;
@@ -86,6 +90,8 @@ export interface CCbuddyProtocolSessionRecord {
   subagentRuntimeConfigEnabled?: boolean;
   memoryEnabled: boolean;
   nativeSearchEnhancementsEnabled: boolean;
+  toolSearchMode: AppToolSearchMode;
+  additionalDirectories?: readonly string[];
   modelContextBudgetStrategy: CCbuddyModelContextBudgetStrategy;
   createdAt: number;
   deliveryKind?: CCbuddyDeliveryKind;
@@ -127,6 +133,7 @@ export interface CCbuddyProtocolClientRequestOptions {
 }
 
 export interface CCbuddyProtocolAgentServerContext {
+  sessionDirectorySourceEnabled?: boolean;
   /** 进程退出期间，迟到的异步物化不能重新登记 session。 */
   assertServing?: () => void;
   deps: CCbuddyProtocolAgentResolvedDependencies;
@@ -157,6 +164,7 @@ export interface CCbuddyProtocolAgentServerContext {
   // 单 CLI resident session 池。冷恢复入口经 waitForDeactivation 等待旧 app.close 收尾，
   // 协议请求则持有 operation lease，禁止异步 handler 与容量回收交错。
   sessionResidentPool?: SessionResidentPool;
+  sessionLifecycle?: import("../session-lifecycle/index.js").SessionLifecycleController;
   sessions: Map<string, CCbuddyProtocolSessionRecord>;
   notify(notification: CCbuddyProtocolNotification): void;
   requestClient<T>(
@@ -325,7 +333,7 @@ export function requireSession(
   options: { deliveryKind?: CCbuddyDeliveryKind; operation?: string } = {},
 ): CCbuddyProtocolSessionRecord {
   const record = context.sessions.get(sessionId);
-  if (!record) {
+  if (!record || (context.sessionLifecycle && !context.sessionLifecycle.isReady(sessionId))) {
     // 诊断：readSession 只读取活跃 runtime；记录缺失时要区分“冷会话尚未恢复”和“ID 已失效”，
     // 不能只留下相同的错误文本，否则无法判断 UI 是读早了还是 task index 带来了脏引用。
     context.logger?.warn("CCbuddy Protocol session runtime missing", {

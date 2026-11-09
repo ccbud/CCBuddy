@@ -259,6 +259,7 @@ export interface V4CommandCoreHost {
    * 见 ccbuddy-protocol/server-operations.ts）；v4 自持会话注册表后收编为原生实现。
    */
   closeSession?(sessionId: string): Promise<void>;
+  deleteSession?(sessionId: string): Promise<void>;
   /**
    * 会话记录创建（createSession 的执行面：record 建立/事件接线/模型 catalog 同步/
    * 失败清理，全部与旧协议宿主纠缠）。binder 实现调旧 createSession op；
@@ -266,6 +267,8 @@ export interface V4CommandCoreHost {
    * 语义决策（draft persistence / firstInput 提交）留在原生 handler，不进钩子。
    */
   createSessionRecord?(params: {
+    sessionId?: string;
+    additionalDirectories?: string[];
     workspaceId: string;
     permissionScope?: "session";
     mcpServers?: CommandPayloadMap["createSession"]["mcpServers"];

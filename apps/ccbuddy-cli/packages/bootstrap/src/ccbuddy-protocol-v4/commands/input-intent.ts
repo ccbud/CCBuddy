@@ -10,6 +10,7 @@ import type {
 import { commandAdmissionOf } from "./executor.js";
 
 export interface CanonicalCommandIntent {
+  genUiContext?: TurnInputIntentMetadata["genUiContext"];
   inputOrigin?: "desktop" | "mobile";
   conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
   botGroupSource?: TurnInputIntentMetadata["botGroupSource"];
@@ -34,6 +35,7 @@ export function inputIntentMetadata(
   envelope: CommandEnvelope,
   options: {
     text: string;
+    genUiContext?: TurnInputIntentMetadata["genUiContext"];
     inputOrigin?: "desktop" | "mobile";
     conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
     botGroupSource?: TurnInputIntentMetadata["botGroupSource"];
@@ -69,6 +71,7 @@ export function inputIntentMetadata(
     // live intent 过去只带 kind/来源，projection 只能回退可见 command 文案；
     // goal 的 displayText（如 `/GoAl replace X`）不是 runtime 已解析的 canonical objective。
     text: options.text,
+    ...(options.genUiContext !== undefined ? { genUiContext: options.genUiContext } : {}),
     ...(options.modelSelection ? { modelSelection: options.modelSelection } : {}),
     ...(options.mode ? { mode: options.mode } : {}),
     ...(options.planEnabled !== undefined ? { planEnabled: options.planEnabled } : {}),
@@ -108,6 +111,7 @@ export function inputIntentMetadataFromCanonical(
     clientId: envelope.clientId || canonical.clientId || "cli",
     kind: canonical.kind,
     text,
+    ...(canonical.genUiContext !== undefined ? { genUiContext: canonical.genUiContext } : {}),
     ...(canonical.modelSelection ? { modelSelection: canonical.modelSelection } : {}),
     ...(canonical.mode ? { mode: canonical.mode } : {}),
     ...(canonical.planEnabled !== undefined ? { planEnabled: canonical.planEnabled } : {}),
@@ -145,6 +149,7 @@ export function inputIntentMetadataFromQueueItem(
     clientId: item.clientId,
     kind: item.kind,
     text: canonicalText,
+    ...(item.genUiContext !== undefined ? { genUiContext: item.genUiContext } : {}),
     ...(item.modelSelection ? { modelSelection: item.modelSelection } : {}),
     ...(item.mode ? { mode: item.mode } : {}),
     ...(item.planEnabled !== undefined ? { planEnabled: item.planEnabled } : {}),

@@ -73,6 +73,7 @@ import { resolvePluginRuntimeFeatures } from "./plugin-runtime-features.js";
 import { createSessionFacade } from "./session-facade.js";
 import { resolveAppRuntimeConfig, runtimeConfigLogContext } from "./runtime-config.js";
 import { resolveBundledSkillRoots } from "./bundled-skills.js";
+import { resolveMcpNodeFallbackProvider } from "./mcp-node-fallback.js";
 import { collectDynamicWorkflowDisabledSkillPaths } from "./dynamic-workflow-gate.js";
 import { createWorkspaceHookRuntimeSecurity } from "./workspace-hook-trust.js";
 import { createScriptWorkflowBridge } from "./script-workflow-methods.js";
@@ -240,7 +241,10 @@ export async function createCCbuddyApp(options: CCbuddyAppOptions): Promise<CCbu
     });
     // 随 CLI 内置的技能包（dynamic-workflows 等）：不属于任何插件，用户无法停用或卸载。
     const bundledSkillRoots = resolveBundledSkillRoots({ cliStorageRoot, logger });
-    const pluginTemplates = await loadPluginAgentTemplates({ logger, plugins: pluginOutcome.plugins });
+    const pluginTemplates = await loadPluginAgentTemplates({
+      logger,
+      plugins: pluginOutcome.plugins,
+    });
     const pluginSubagentProfiles =
       hostSubagentSnapshot?.kind === "built-in-fallback"
         ? []
@@ -414,6 +418,7 @@ export async function createCCbuddyApp(options: CCbuddyAppOptions): Promise<CCbu
               noProxy: configResult.config.network.noProxy,
               caCertFile: configResult.config.network.caCertFile,
             },
+            nodeFallback: resolveMcpNodeFallbackProvider({ cliStorageRoot, logger }),
             workingDirectory,
           })));
     const ownsMcpPort = options.mcpPort === undefined && mcpPort !== undefined;
@@ -852,6 +857,7 @@ export async function createCCbuddyApp(options: CCbuddyAppOptions): Promise<CCbu
         configResult.config.features.skill && configResult.config.skills.enabled
           ? (options.skillPort ??
             createNodeSkillAdapter({
+              additionalDirectories: runtimeConfig.additionalDirectories,
               extraRoots: configResult.config.skills.roots,
               extraResolvedRoots: [...pluginOutcome.skillRoots, ...bundledSkillRoots],
               disabledPaths: [
@@ -918,14 +924,11 @@ export async function createCCbuddyApp(options: CCbuddyAppOptions): Promise<CCbu
           return builtin.prompt;
         }
         return await resolveCCbuddyCustomCommandPrompt(text, {
+          additionalDirectories: runtimeConfig.additionalDirectories,
           env: options.env,
-          executionPort,
           logger,
           projectConfigPath: options.projectConfigPath,
-          sessionId,
-          signal: resolverOptions?.abortSignal,
           skipUserConfig: options.skipUserConfig,
-          traceContext: resolverOptions?.traceContext ?? traceContext,
           userConfigPath: options.userConfigPath,
           workingDirectory,
         });

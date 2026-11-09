@@ -1,4 +1,7 @@
 /* eslint-disable max-lines -- CCbuddy Protocol 的 session/workspace 方法共享同一个 server context 与 snapshot helpers，迁移期先集中维护。 */
+import type { CCbuddyWorkspaceRef } from "@ccbuddy/shared";
+import { resolveSessionDirectorySource } from "./session-directory-source.js";
+import { getSessionLifecycle, closeSessionRuntime } from "./session-runtime-lifecycle.js";
 import { observeSessionDebug } from "./session-debug.js";
 import {
   TASK_LIST_SESSION_TYPES,
@@ -103,7 +106,10 @@ import {
   type CCbuddyProtocolSessionRecord,
   type CCbuddyProtocolToolInputTransmissionState,
 } from "./server-types.js";
-import { createWorkspaceCCbuddyApp, ensureSessionModelAvailable } from "./workspace-model-runtime.js";
+import {
+  createWorkspaceCCbuddyApp,
+  ensureSessionModelAvailable,
+} from "./workspace-model-runtime.js";
 import { buildAppUsageSnapshot, resolveTzOffsetMs } from "./usage-stats-builder.js";
 import { createProtocolInteractionBroker } from "./interaction-broker.js";
 import { createProtocolAutomationPort } from "./automation-port.js";
@@ -119,7 +125,6 @@ import {
 } from "./subagent-session-query.js";
 import { runSessionModelConfigMutation } from "../ccbuddy-protocol-v4/model-config-mutation.js";
 import { runWithSessionResidencyFinalization } from "./session-residency.js";
-import { abortMcpUiToolCallsForSession, clearMcpUiAppToolsForSession } from "./mcp-ui/index.js";
 
 const PLAN_MODE_GOAL_CONTINUATION_SKIPPED_MESSAGE = "Plan mode 下已记录 goal，但不会自动继续。";
 const SLOW_SNAPSHOT_LOG_THRESHOLD_MS = 1000;
@@ -142,6 +147,8 @@ type CCbuddySessionRecordParams = (
 ) & { taskType?: SessionTaskType };
 
 interface SessionStartupPreferences {
+  additionalDirectories?: readonly string[];
+  toolSearchMode: import("@ccbuddy/shared").AppToolSearchMode;
   memoryEnabled: boolean;
   modelContextBudgetStrategy: CCbuddyModelContextBudgetStrategy;
   nativeSearchEnhancementsEnabled: boolean;
@@ -1241,15 +1248,41 @@ async function createSessionWithProjection<T>(
   ) => Promise<{ value: T; phaseDurationsMs?: SnapshotPhaseDurationsMs; messageCount?: number }>,
 ): Promise<T> {
   const params = parseParams(ccbuddySessionCreateParamsSchema, rawParams);
+  const sessionId = params.sessionId ?? createSessionId();
+  if (
+    context.sessions.has(sessionId) ||
+    (await context.deps.sessionStore?.getSession(sessionId as SessionId))
+  )
+    throw new ProtocolRequestError(-32602, "Session ID is already in use");
+  let result: { value: T } | undefined;
+  await getSessionLifecycle(context).initialize(
+    sessionId,
+    async () => {
+      result = {
+        value: await createSessionWithProjectionBody(
+          context,
+          { ...params, sessionId },
+          trace,
+          project,
+        ),
+      };
+    },
+    params.workspace,
+    "create",
+  );
+  return result ? result.value : (await project(requireSession(context, sessionId))).value;
+}
+
+async function createSessionWithProjectionBody<T>(
+  context: CCbuddyProtocolAgentServerContext,
+  rawParams: unknown,
+  trace: CCbuddyProtocolTrace | undefined,
+  project: (
+    record: CCbuddyProtocolSessionRecord,
+  ) => Promise<{ value: T; phaseDurationsMs?: SnapshotPhaseDurationsMs; messageCount?: number }>,
+): Promise<T> {
+  const params = parseParams(ccbuddySessionCreateParamsSchema, rawParams);
   const startedAt = Date.now();
-  if (params.sessionId && !params.importedHistory) {
-    // 普通 session/create 若允许外部指定 id，会覆盖 context.sessions 里的 active record，
-    // 造成运行中会话被接管、runtime 泄漏或后续 setModel/sendPrompt 路由错位。
-    throw new ProtocolRequestError(
-      -32602,
-      "sessionId is only supported for imported history creates",
-    );
-  }
   const sessionId = (params.sessionId ?? createSessionId()) as SessionId;
   const workspace = params.workspace;
   context.logger?.info("CCbuddy Protocol session/create started", {
@@ -1371,21 +1404,7 @@ async function createSessionWithProjection<T>(
       workspaceKey: workspace.workspaceKey,
       workspacePath: workspace.workspacePath,
     });
-    // draft 创建会用用户上次选择的模型作为启动种子。
-    // 如果该模型已被删除，失败的 record 不能留在 context.sessions：
-    // 后续 workspace 状态继续读到这个半初始化 app，造成模型/思考档位串台。
-    record.unsubscribe?.();
-    // v4 通道：创建期已 ingest 的事件会惰性建出 publisher，失败清理时一并回收。
-    // dispose 先于注册表删除，保证 session.removed 能带上 workspaceId 推送。
-    context.v4Gateway?.disposeSession(sessionId);
-    context.sessions.delete(sessionId);
-    try {
-      await record.app.close?.();
-    } catch {
-      // 保留原始 create 失败原因；close 只是清理半初始化 runtime 的 best-effort 动作。
-    }
-    // 内存 event store 随 record 释放。
-    await record.eventStore.deleteSession(sessionId as SessionId).catch(() => undefined);
+    // 失败清理由 lifecycle owner 统一等待；不能吞掉 close 失败后宣称已释放。
     throw error;
   }
 }
@@ -1404,7 +1423,60 @@ interface ActivatedSessionForResume {
  * 构建一份完整 legacy snapshot。runtime 激活和 legacy 表示是两个职责；这里保留
  * snapshot 之前的原有顺序与副作用，让 V4 随后用自己的 durable projection 水合。
  */
+export async function validateSessionActivationWorkspace(
+  context: CCbuddyProtocolAgentServerContext,
+  sessionId: string,
+  workspace?: CCbuddyWorkspaceRef,
+): Promise<void> {
+  if (!workspace) return;
+  const active = context.sessions.get(sessionId);
+  if (active) {
+    if (
+      active.workspace.workspaceKey !== workspace.workspaceKey ||
+      active.workspace.workspacePath !== workspace.workspacePath ||
+      active.workspace.workspaceIdentity !== workspace.workspaceIdentity ||
+      active.workspace.remoteSessionId !== workspace.remoteSessionId
+    )
+      throw new ProtocolRequestError(-32602, "Session activation workspace mismatch");
+    return;
+  }
+  const stored = await getPersistedSession(context, sessionId);
+  if (
+    !stored ||
+    !(await resolvePersistedDirectorySession(
+      context,
+      stored,
+      workspace,
+      context.sessionDirectorySourceEnabled === true,
+    ))
+  )
+    throw new ProtocolRequestError(-32602, "Session activation workspace mismatch");
+}
+
 export async function activateSessionForResume(
+  context: CCbuddyProtocolAgentServerContext,
+  params: CCbuddySessionResumeParams,
+  options: { reusePersistedMessages?: boolean } = {},
+): Promise<ActivatedSessionForResume> {
+  let result: ActivatedSessionForResume | undefined;
+  await getSessionLifecycle(context).initialize(
+    params.sessionId,
+    async () => {
+      result = await activateSessionRuntime(context, params, options);
+    },
+    params.workspace,
+  );
+  return (
+    result ?? {
+      record: requireSession(context, params.sessionId),
+      ...(options.reusePersistedMessages
+        ? { persistedMessages: await readPersistedSessionMessages(context, params.sessionId) }
+        : {}),
+    }
+  );
+}
+
+export async function activateSessionRuntime(
   context: CCbuddyProtocolAgentServerContext,
   params: CCbuddySessionResumeParams,
   options: { reusePersistedMessages?: boolean } = {},
@@ -1426,7 +1498,7 @@ export async function activateSessionForResume(
     return { record: existing };
   }
   let session = await getPersistedSession(context, params.sessionId);
-  if (!session) {
+  if (!session || session.time.deleted !== undefined) {
     // 诊断：冷恢复只有在持久化记录也不存在时才会走到这里；单凭错误文本无法和
     // readSession 的“runtime 尚未活跃”区分，因此把两层状态和等待耗时一起落盘。
     context.logger?.warn("CCbuddy Protocol session resume found no persisted record", {
@@ -1513,7 +1585,10 @@ export async function activateSessionForResume(
   };
 }
 
-export async function resumeSession(context: CCbuddyProtocolAgentServerContext, rawParams: unknown) {
+export async function resumeSession(
+  context: CCbuddyProtocolAgentServerContext,
+  rawParams: unknown,
+) {
   const params = parseParams(ccbuddySessionResumeParamsSchema, rawParams);
   const activated = await activateSessionForResume(context, params);
   return await snapshot(context, activated.record, activated.knownSession);
@@ -1616,38 +1691,77 @@ function resolveLegacyRemoteWorkspace(
   };
 }
 
+async function resolvePersistedDirectorySession(
+  context: CCbuddyProtocolAgentServerContext,
+  session: SessionInfo,
+  workspace: CCbuddyWorkspaceRef,
+  resolveOwner: boolean,
+): Promise<SessionInfo | null> {
+  return resolveSessionDirectorySource({
+    session,
+    workspace,
+    resolveOwner,
+    getSession: async (id) => (await context.deps.sessionStore?.getSession(id)) ?? null,
+    resolveLegacy: (entry) => {
+      const directory = entry.path ?? entry.directory;
+      return !entry.workspaceID && entry.directory === directory
+        ? resolveLegacyRemoteWorkspace(context, directory)
+        : null;
+    },
+  });
+}
+
 export async function listSessions(context: CCbuddyProtocolAgentServerContext, rawParams: unknown) {
   const params = parseParams(ccbuddySessionListParamsSchema, rawParams ?? {});
   const store = context.deps.sessionStore;
   // 显式 ID 查询只读持久化身份，供 Host 修复旧索引；不能为了识别 child 激活 runtime。
-  const stored = (
-    params.sessionIds
-      ? await Promise.all(params.sessionIds.map((id) => store?.getSession(id as SessionId) ?? null))
-      : store
-        ? await store.listSessions({
-            directory: params.workspace?.workspacePath,
-            includeArchived: params.includeArchived,
-            limit: params.limit ?? 50,
-            taskTypes: [...TASK_LIST_SESSION_TYPES],
-          })
-        : []
-  ).filter((session): session is SessionInfo => {
-    if (!session) return false;
-    return (
-      (params.includeArchived || session.time.archived === undefined) &&
-      (!params.workspace ||
-        (session.workspaceID?.trim() || session.path || session.directory) ===
-          (params.workspace.workspaceIdentity?.trim() || params.workspace.workspacePath))
-    );
-  });
-  const storedIds = new Set(stored.map((session) => String(session.id)));
-  const sessions = stored.map((session) =>
-    mapSessionInfo({
+  const candidates = params.sessionIds
+    ? await Promise.all(params.sessionIds.map((id) => store?.getSession(id as SessionId) ?? null))
+    : store
+      ? await store.listSessions({
+          directory: params.workspace?.workspacePath,
+          includeArchived: params.includeArchived,
+          limit: params.limit ?? 50,
+          taskTypes: [...TASK_LIST_SESSION_TYPES],
+        })
+      : [];
+  const scoped = await Promise.all(
+    candidates.map(async (session) => {
+      if (
+        !session ||
+        session.time.deleted !== undefined ||
+        (!params.includeArchived && session.time.archived !== undefined)
+      )
+        return null;
+      const includeDirectorySource = Boolean(
+        params.sessionIds && context.sessionDirectorySourceEnabled,
+      );
+      const source = params.workspace
+        ? await resolvePersistedDirectorySession(
+            context,
+            session,
+            params.workspace,
+            includeDirectorySource,
+          )
+        : session;
+      if (!source) return null;
+      return {
+        session,
+        directorySessionId:
+          includeDirectorySource && params.workspace ? String(source.id) : undefined,
+      };
+    }),
+  );
+  const stored = scoped.filter((entry) => entry !== null);
+  const storedIds = new Set(stored.map(({ session }) => String(session.id)));
+  const sessions = stored.map(({ session, directorySessionId }) => ({
+    ...mapSessionInfo({
       session,
       workspace:
         params.workspace ?? buildWorkspaceRef({ workspacePath: session.path ?? session.directory }),
     }),
-  );
+    ...(directorySessionId ? { directorySessionId } : {}),
+  }));
   if (params.sessionIds) return { sessions };
   for (const record of context.sessions.values()) {
     if (record.persistence === "deferred") continue;
@@ -1762,7 +1876,10 @@ export async function listSessionSubagents(
 
 const APP_USAGE_RANGE_DAYS: Record<string, number> = { "7d": 7, "30d": 30 };
 
-export async function getUsageStats(context: CCbuddyProtocolAgentServerContext, rawParams: unknown) {
+export async function getUsageStats(
+  context: CCbuddyProtocolAgentServerContext,
+  rawParams: unknown,
+) {
   const params = parseParams(ccbuddyUsageStatsParamsSchema, rawParams ?? {});
   const timeZone = params.timeZone ?? "UTC";
   const until = Date.now();
@@ -2009,7 +2126,10 @@ export async function sendPrompt(context: CCbuddyProtocolAgentServerContext, raw
   return afterPromptAccepted(context, record, "prompt_started");
 }
 
-export async function compactSession(context: CCbuddyProtocolAgentServerContext, rawParams: unknown) {
+export async function compactSession(
+  context: CCbuddyProtocolAgentServerContext,
+  rawParams: unknown,
+) {
   const params = parseParams(ccbuddySessionCompactParamsSchema, rawParams);
   const record = requireSession(context, params.sessionId);
   assertExpectedRevision(record, params.expectedRevision);
@@ -2251,6 +2371,40 @@ export async function forkSession(context: CCbuddyProtocolAgentServerContext, ra
  * 但不会进入 forkSession 的 active-turn guard / workspace fork；runtimeConfig 可固定在 fork 点。
  */
 export async function registerForkedSession(
+  context: CCbuddyProtocolAgentServerContext,
+  record: CCbuddyProtocolSessionRecord,
+  fork: Awaited<ReturnType<CCbuddyProtocolSessionRecord["app"]["forkFromCheckpoint"]>>,
+  options: {
+    runtimeConfig: {
+      mode: CollaborationMode;
+      model: string;
+      thoughtLevel?: string;
+      followupMode?: "queue" | "guide";
+    };
+    inheritLatestTarget: boolean;
+  },
+) {
+  let result: Awaited<ReturnType<typeof registerForkedSessionBody>> | undefined;
+  await getSessionLifecycle(context).initialize(
+    fork.forkedSessionId,
+    async () => {
+      result = await registerForkedSessionBody(context, record, fork, options);
+    },
+    record.workspace,
+  );
+  if (result) return result;
+  const forkedSession = await getPersistedSession(context, fork.forkedSessionId);
+  return {
+    ...fork,
+    snapshot: await snapshot(
+      context,
+      requireSession(context, fork.forkedSessionId),
+      forkedSession ?? undefined,
+    ),
+  };
+}
+
+async function registerForkedSessionBody(
   context: CCbuddyProtocolAgentServerContext,
   record: CCbuddyProtocolSessionRecord,
   fork: Awaited<ReturnType<CCbuddyProtocolSessionRecord["app"]["forkFromCheckpoint"]>>,
@@ -2718,21 +2872,7 @@ export async function closeSession(context: CCbuddyProtocolAgentServerContext, r
     // immediate；条件关闭必须在 Agent record 上原子判断，不能依赖 renderer 的旧快照。
     return { closed: false };
   }
-  record.unsubscribe?.();
-  // 会话关闭时 abort 仍在进行的插件 UI 工具调用，登记表不留孤儿。
-  abortMcpUiToolCallsForSession(params.sessionId);
-  // App-Provided Tools：结束本会话全部待执行的页面调用并丢弃登记。
-  clearMcpUiAppToolsForSession(context, params.sessionId);
-  // 清掉本会话全部资源订阅（refcount 归零的 uri 才真正向 server 退订）。
-  await record.app.unsubscribeMcpResourcesForUi?.(`${params.sessionId}|`).catch(() => 0);
-  await record.app.close?.();
-  // v4 通道：会话关闭同时清 publisher / 订阅调度；重开会话走 snapshot 冷启动。
-  // dispose 必须先于注册表删除——gateway 靠 getSessionWorkspaceId
-  // （读 context.sessions）定位 workspace 才能推 session.removed 给 sessions-index 订阅者。
-  context.v4Gateway?.disposeSession(params.sessionId);
-  context.sessions.delete(params.sessionId);
-  // 内存 event store 随 record 释放。
-  await record.eventStore.deleteSession(params.sessionId as SessionId);
+  await closeSessionRuntime(context, params.sessionId);
   return { closed: true };
 }
 
@@ -3164,6 +3304,7 @@ async function requestSessionRuntimePreferences(
   sessionId: SessionId,
   scope: CCbuddySessionRuntimePreferencesScope,
   trace?: CCbuddyProtocolTrace,
+  directorySessionId?: string,
 ): Promise<CCbuddySessionRuntimePreferencesResult> {
   const startedAt = Date.now();
   // CCbuddyProtocolTrace.traceId 是协议层的 string；LogContext 需要 branded TraceId，
@@ -3179,7 +3320,7 @@ async function requestSessionRuntimePreferences(
   try {
     const result = await context.requestClient(
       ccbuddyProtocolMethods.sessionRequestRuntimePreferences,
-      { sessionId, scope },
+      { sessionId, scope, ...(directorySessionId ? { directorySessionId } : {}) },
       ccbuddySessionRuntimePreferencesResultSchema,
       {
         timeoutMs: CCBUDDY_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS,
@@ -3228,6 +3369,7 @@ async function requestSessionRuntimePreferences(
         memoryEnabled: false,
         modelContextBudgetStrategy: DEFAULT_CCBUDDY_MODEL_CONTEXT_BUDGET_STRATEGY,
         nativeSearchEnhancementsEnabled: true,
+        toolSearchMode: "off",
       };
     }
     throw error;
@@ -3239,6 +3381,7 @@ async function resolveSessionStartupPreferences(
   sessionId: SessionId,
   source: SessionStartupPreferencesSource,
   trace?: CCbuddyProtocolTrace,
+  directorySessionId?: string,
 ): Promise<SessionStartupPreferences> {
   if (source.kind === "inherit") {
     const inheritedShellSelection = source.parent.app.runtime.getSessionShellSelection();
@@ -3246,6 +3389,8 @@ async function resolveSessionStartupPreferences(
       memoryEnabled: source.parent.memoryEnabled,
       modelContextBudgetStrategy: DEFAULT_CCBUDDY_MODEL_CONTEXT_BUDGET_STRATEGY,
       nativeSearchEnhancementsEnabled: source.parent.nativeSearchEnhancementsEnabled,
+      toolSearchMode: source.parent.toolSearchMode,
+      additionalDirectories: source.parent.additionalDirectories,
       resolveInitialBashShellSelection: async () => inheritedShellSelection,
     };
   }
@@ -3255,6 +3400,7 @@ async function resolveSessionStartupPreferences(
     sessionId,
     "runtime-materialization",
     trace,
+    directorySessionId,
   );
   // 必须在 session runtime 可发出第一次提问前应用；关闭路径会等待已有 snooze 持久化完成。
   await context.v4Interactions.initializeAskUserQuestionAutoResolutionEnabled(
@@ -3264,12 +3410,15 @@ async function resolveSessionStartupPreferences(
     memoryEnabled: runtimePreferences.memoryEnabled,
     modelContextBudgetStrategy: DEFAULT_CCBUDDY_MODEL_CONTEXT_BUDGET_STRATEGY,
     nativeSearchEnhancementsEnabled: runtimePreferences.nativeSearchEnhancementsEnabled,
+    toolSearchMode: runtimePreferences.toolSearchMode,
+    additionalDirectories: runtimePreferences.additionalDirectories,
     resolveInitialBashShellSelection: async () => {
       const executionPreferences = await requestSessionRuntimePreferences(
         context,
         sessionId,
         "user-execution",
         trace,
+        directorySessionId,
       );
       return resolveProtocolBashShellSelection(
         context,
@@ -3287,11 +3436,27 @@ async function materializeSessionRecord(
   source: SessionStartupPreferencesSource,
   trace?: CCbuddyProtocolTrace,
 ): Promise<CCbuddyProtocolSessionRecord> {
+  let directorySessionId: string | undefined;
+  if (source.kind === "host" && context.sessionDirectorySourceEnabled) {
+    directorySessionId = sessionId;
+    if (resume) {
+      const session = await getPersistedSession(context, sessionId);
+      const workspace =
+        params.workspace ?? buildWorkspaceRef({ workspacePath: context.deps.cwd ?? process.cwd() });
+      const owner = session
+        ? await resolvePersistedDirectorySession(context, session, workspace, true)
+        : null;
+      if (!owner) throw new Error("project.session-lineage-invalid");
+      directorySessionId = owner.id;
+    }
+  }
+  // 反向偏好请求直接携带可信 owner，避免恢复处理中再次反向 session/list 形成互等。
   const startupPreferences = await resolveSessionStartupPreferences(
     context,
     sessionId,
     source,
     trace,
+    directorySessionId,
   );
   return createRecord(context, params, sessionId, resume, startupPreferences, trace);
 }
@@ -3353,6 +3518,7 @@ async function createRecord(
       toolAllowlist: "toolAllowlist" in params ? params.toolAllowlist : undefined,
       toolDisallowlist: "toolDenylist" in params ? params.toolDenylist : undefined,
       nativeSearchEnhancementsEnabled: startupPreferences.nativeSearchEnhancementsEnabled,
+      toolSearch: { mode: startupPreferences.toolSearchMode },
       modelContextBudgetStrategy: startupPreferences.modelContextBudgetStrategy,
       // Memory Settings 是现有 CLI features.memory/use 之外的总开关。只在关闭时
       // 写入 override，避免开启值反向覆盖用户已有的 CLI 禁用配置。
@@ -3370,6 +3536,8 @@ async function createRecord(
       // automation 执行会话显式关闭二次命名，避免回答内容覆盖原始用户 query 标题。
       titleGeneration: params.titleGenerationEnabled === false ? { enabled: false } : {},
       workingDirectory: workspace.workspacePath,
+      additionalDirectories:
+        params.additionalDirectories ?? startupPreferences.additionalDirectories,
       // 身份隔离与路径执行分开：core 只把 identity 写入 session.workspace_id，
       // workingDirectory 仍是远端机器上的实际路径；本地 workspace 保持 undefined。
       workspaceIdentity: workspace.workspaceIdentity as WorkspaceId | undefined,
@@ -3415,6 +3583,8 @@ async function createRecord(
     memoryEnabled: startupPreferences.memoryEnabled,
     modelContextBudgetStrategy: startupPreferences.modelContextBudgetStrategy,
     nativeSearchEnhancementsEnabled: startupPreferences.nativeSearchEnhancementsEnabled,
+    toolSearchMode: startupPreferences.toolSearchMode,
+    additionalDirectories: params.additionalDirectories ?? startupPreferences.additionalDirectories,
     ...(parentSessionId ? { parentSessionId } : {}),
     persistence: "persistence" in params ? (params.persistence ?? "immediate") : "immediate",
     protocolEventSequences: new Map(),
@@ -3425,12 +3595,20 @@ async function createRecord(
     updatedAt: now,
     workspace,
   };
-  const unsubscribeSessionEvents = app.runtime.subscribeEvents({
-    onSessionEvent: (event) => onSessionEvent(context, record, event),
-  });
+  // app 物化后立即交给生命周期 owner；订阅初始化抛错时仍必须能够找到并释放它。
+  context.sessions.set(sessionId, record);
+  context.assertServing?.();
+  let subscribed = true;
+  let unsubscribeSessionEvents = () => {};
   record.unsubscribe = () => {
+    subscribed = false;
     unsubscribeSessionEvents();
   };
+  unsubscribeSessionEvents = app.runtime.subscribeEvents({
+    onSessionEvent: (event) => {
+      if (subscribed) onSessionEvent(context, record, event);
+    },
+  });
   // 绑定归属会话，供 automation-port 读取本会话实时 model/mode/thought。
   ownSessionRecord = record;
   return record;

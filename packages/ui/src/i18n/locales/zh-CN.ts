@@ -1,6 +1,36 @@
 import { requestSecurityMessagesZhCN } from "@/request-security-edition/messages.js";
 /** 中文翻译 */
 const zhCN: Record<string, string> = {
+  "projectManager.remoteTitle": "远程项目",
+  "projectManager.restart": "重启任务运行实例",
+  "projectManager.actions": "项目操作",
+  "projectManager.purge": "彻底删除项目数据",
+  "projectManager.purgeConfirm":
+    "彻底删除“{name}”的数据（预计 {bytes} 字节）？工作文件将保留，此操作不可撤销。",
+  "projectManager.purgeResult":
+    "已释放 {freedBytes} 字节，删除 {deletedSessions} 个会话，保留 {runningSessions} 个运行中和 {referencedSessions} 个被引用会话，失败 {failed} 项。",
+  "projectManager.addRoot": "将此任务目录加入目标项目？",
+  "projectManager.title": "项目管理",
+  "projectManager.create": "新建项目",
+  "projectManager.edit": "编辑项目",
+  "projectManager.description": "跨目录组织任务。每行一个绝对目录；空项目首次使用时创建默认目录。",
+  "projectManager.name": "名称",
+  "projectManager.roots": "目录（每行一个）",
+  "projectManager.primary": "主要目录",
+  "projectManager.save": "保存",
+  "projectManager.cancel": "取消",
+  "projectManager.removed": "已移除项目",
+  "projectManager.restore": "恢复项目",
+  "projectManager.remove": "移除项目（保留任务）",
+  "projectManager.newTask": "在项目中新建任务",
+  "projectManager.pin": "切换置顶",
+  "projectManager.up": "上移项目",
+  "projectManager.empty": "此视图暂无项目",
+  "projectManager.missing": "目录不可用",
+  "projectManager.archives": "归档任务",
+  "projectManager.archive": "归档任务",
+  "projectManager.unarchive": "取消归档",
+  "projectManager.move": "移动任务到项目",
   "startPlan.recommendation.subagentDescription":
     "你的体验套餐中，{model} 仍有可用额度，是否将此子智能体的模型切换到体验套餐？",
   "startPlan.recommendation.preferenceSaveFailed": "未能保存“不再提示”，本次仍按你的选择继续。",
@@ -2216,6 +2246,12 @@ const zhCN: Record<string, string> = {
     "仅新会话生效。Windows 下 Bash 工具用此 shell；自动优先 Git Bash，找不到回退 cmd.exe。",
   "settings.integratedTerminalShell.auto": "自动选择",
   "settings.nativeSearchEnhancements": "增强 Find 和 Grep",
+  "settings.toolSearch": "工具搜索",
+  "settings.toolSearchDescription":
+    "按需加载工具。自动模式使用 API Key 的本地搜索；关闭则发送完整工具目录。新建会话或应用重启后恢复会话时生效，当前会话保持原设置。",
+  "settings.toolSearch.auto": "自动",
+  "settings.toolSearch.local": "本地",
+  "settings.toolSearch.off": "关闭",
   "settings.nativeSearchEnhancementsDescription":
     "在新建会话或应用重启后恢复的会话中使用增强 Find 和 Grep。当前会话保持现有设置；Windows 的 Find 保持不变。",
   "settings.memory": "记忆",

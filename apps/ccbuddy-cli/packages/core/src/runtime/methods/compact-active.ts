@@ -1,4 +1,6 @@
 import { collectRuntimeAgentListing } from "../helpers/agent-listing.js";
+import { buildToolSearchAnnouncement } from "../../tool/search/exposure.js";
+import { collectDiscoveredTools } from "../../tool/search/history.js";
 import {
   CompactPhase,
   CompactReason,
@@ -22,7 +24,8 @@ import type { SessionEvent, TraceContext } from "../deps.js";
 import {
   defaultCompactPhaseForTrigger,
   defaultCompactReasonForTrigger,
-  buildPostCompactReadStateReminderEntries,
+  restorePostCompactFiles,
+  replaceReadFileStateAfterCompact,
   countCompactPreservedRuntimeMessages,
   buildPostCompactRuntimeEntries,
   compactFailureReasonFromError,
@@ -54,7 +57,7 @@ import {
 } from "../../agent/message-history.js";
 import { selectPersistedCompactTail } from "../helpers/compact-preservation.js";
 import {
-  buildCompactSummaryRequestMessages,
+  prepareCompactSummaryRequest,
   createCompactContextExceededFinishError,
   createCompactPromptTooLongError,
   formatCompactSummaryOrThrow,
@@ -77,7 +80,6 @@ import {
 } from "./turn-output-token-continuation.js";
 
 const AUTO_COMPACT_MAX_ATTEMPTS = 3;
-const COMPACT_TOOL_KEEP_MAX_COUNT = 100;
 
 export async function compactActiveConversation(
   this: AgentRuntimeInternal,
@@ -267,12 +269,8 @@ async function compactActiveConversationImpl(
     events,
   );
   // 止血原因：massive MCP 工具会把 compact summary request 的 provider context 撑爆。
-  // ToolSearch/deferred tools 完成前，仅在工具数超过阈值时让 compact summary 保持无工具。
   await this.initializeMcp(turnTraceContext);
   throwIfTurnAborted(options.abortSignal);
-  const runtimeCompactTools = this.getTools(compactModel);
-  const compactTools =
-    runtimeCompactTools.length > COMPACT_TOOL_KEEP_MAX_COUNT ? [] : runtimeCompactTools;
 
   while (true) {
     try {
@@ -332,18 +330,20 @@ async function compactActiveConversationImpl(
               preparedFirstPass,
             )
           : entriesForSummary;
-        const requestMessages = buildCompactSummaryRequestMessages(
+        const preparedSummary = prepareCompactSummaryRequest(
+          this,
+          compactModel,
           summaryInputEntries,
           compactPrompt,
-          { useMidConversationSystem },
         );
+        const requestMessages = preparedSummary.request.messages;
+        const compactTools = preparedSummary.request.tools;
         const recordableEntries = filterOutputTokenContinuationEntries(summaryInputEntries);
         const recordableRequestMessages =
           recordableEntries === summaryInputEntries
             ? requestMessages
-            : buildCompactSummaryRequestMessages(recordableEntries, compactPrompt, {
-                useMidConversationSystem,
-              });
+            : prepareCompactSummaryRequest(this, compactModel, recordableEntries, compactPrompt)
+                .request.messages;
         // Compact 曾只执行 capability projection，漏掉普通 turn 共用的聚合
         // 媒体预算；统一走模型媒体策略，避免 summary 请求绕过全局请求上限。
         const mediaPolicyProjection = projectMessagesForModelMediaPolicy(
@@ -426,6 +426,7 @@ async function compactActiveConversationImpl(
           preserveProviderStreamBoundaries: true,
           traceContext: modelTraceContext,
           tools: compactTools,
+          toolSearchEnabled: preparedSummary.request.toolSearchEnabled,
           refreshRuntimeHeadersBeforeAttempt: createRefreshRuntimeHeadersBeforeModelAttempt(this, {
             abortSignal: options.abortSignal,
             model: compactModel,
@@ -522,13 +523,28 @@ async function compactActiveConversationImpl(
         preservedEntries,
         options.agentListingTools ?? this.getTools(options.model ?? compactModel),
       );
+      const preCompactDiscoveredTools = [...collectDiscoveredTools(activeEntries)].sort();
+      const boundaryId = createCompactBoundaryId();
+      const toolSearchAnnouncement = buildToolSearchAnnouncement(
+        {
+          model: compactModel,
+          mode: this.config.toolSearch?.mode,
+          tools: this.getTools(compactModel),
+          registry: this.registry,
+          entries: preservedEntries,
+        },
+        new Set(preCompactDiscoveredTools),
+      );
+      const restoredFiles = await restorePostCompactFiles(this, {
+        preservedEntries,
+        traceContext: modelTraceContext,
+        abortSignal: options.abortSignal,
+      });
       const postCompactReminderEntries = [
+        ...(toolSearchAnnouncement ? [toolSearchAnnouncement] : []),
         ...(agentListingEntry ? [agentListingEntry] : []),
         ...(planFileReferenceEntry ? [planFileReferenceEntry] : []),
-        ...buildPostCompactReadStateReminderEntries({
-          preservedEntries,
-          readFileState: this.readFileState,
-        }),
+        ...restoredFiles.entries,
       ];
 
       const modelCompleteEvent = this.createEvent(
@@ -566,7 +582,10 @@ async function compactActiveConversationImpl(
             role: "user",
             content: summaryMessageContent,
           },
-          metadata: legacySyntheticRuntimeMetadata(),
+          metadata: {
+            ...legacySyntheticRuntimeMetadata(),
+            compactBoundary: { boundaryId, preCompactDiscoveredTools },
+          },
         },
         {
           postCompactReminderEntries,
@@ -578,7 +597,8 @@ async function compactActiveConversationImpl(
       });
       const providerPostCompactTokenCount = getUsageTotalTokens(result.usage);
       const compactBoundary = buildManualCompactBoundary({
-        boundaryId: createCompactBoundaryId(),
+        boundaryId,
+        preCompactDiscoveredTools,
         autoCompactThreshold: options.autoCompactThreshold,
         compactReason,
         customInstructions,
@@ -653,7 +673,7 @@ async function compactActiveConversationImpl(
             )
           : recordablePostCompactEntries,
       );
-      this.readFileState.clear();
+      replaceReadFileStateAfterCompact(this.readFileState, restoredFiles.readFileStateEntries);
       resetProjectMemoryRecall(this);
 
       return {

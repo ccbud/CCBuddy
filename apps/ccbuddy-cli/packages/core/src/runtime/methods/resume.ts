@@ -141,6 +141,7 @@ export async function resumeFromStore(
     branchCutAfterMessageId,
     messages,
     readFileState: this.readFileState,
+    markRestoredFromSession: true,
     rewindCreatedMessageId,
     rewindKeptMessageIds,
     rewindTargetMessageId,
@@ -311,7 +312,6 @@ export async function resumeFromStore(
     module: "core.runtime",
     partCount: hydration.partCount,
     readFileStateRestoredCount: readFileStateHydration.restoredCount,
-    readFileStateSkippedRangeReadCount: readFileStateHydration.skippedRangeReadCount,
     readFileStateSkippedUnreadableEditCount: readFileStateHydration.skippedUnreadableEditCount,
     recoveredCompactTimelineCount,
     resumedTodoCount: resumedTodos.length,
@@ -326,8 +326,8 @@ export async function resumeFromStore(
     // 中断 compact 恢复会写回 timeline part；bootstrap 不能继续把恢复前
     // messages 交给 V4，否则首帧会短暂复活 started/retrying 状态。
     persistedMessagesReloadRequired: recoveredCompactTimelineCount > 0,
+    readFileStateSkippedRangeReadCount: 0,
     readFileStateRestoredCount: readFileStateHydration.restoredCount,
-    readFileStateSkippedRangeReadCount: readFileStateHydration.skippedRangeReadCount,
     readFileStateSkippedUnreadableEditCount: readFileStateHydration.skippedUnreadableEditCount,
     traceId: traceContext.traceId,
   };

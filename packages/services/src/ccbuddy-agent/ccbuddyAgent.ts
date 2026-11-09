@@ -177,6 +177,7 @@ export interface CCbuddyAgentSessionTarget extends CCbuddyAgentWorkspaceTarget {
 }
 
 export interface CCbuddyAgentResumeSessionParams extends CCbuddyAgentSessionTarget {
+  additionalDirectories?: string[];
   model?: ModelSelection;
   thoughtLevel?: string;
   mcpServers?: CCbuddyAgentMcpServer[];
@@ -221,6 +222,8 @@ export type CCbuddyAgentCuaPermissionObservation = CuaPermissionObservation &
   CCbuddyAgentWorkspaceTarget;
 
 export interface CCbuddyAgentCreateSessionParams extends CCbuddyAgentWorkspaceTarget {
+  projectId?: string;
+  additionalDirectories?: string[];
   sessionId?: string;
   sessionTraceId?: TraceId;
   parentSessionId?: string;
@@ -491,6 +494,7 @@ export interface CCbuddyAgentConversationFileRewindPreviewParams extends CCbuddy
 }
 
 export interface CCbuddyAgentConversationCommandParams extends CCbuddyAgentWorkspaceTarget {
+  projectId?: string;
   envelope: CommandEnvelope;
   /** 仅 host 内部用于 Browser Use runtime 边界，不进入 v4 wire envelope。 */
   clientMode?: CCbuddyTaskClientMode;
@@ -611,6 +615,23 @@ export interface CCbuddyAgentStorageStartupSnapshot {
 }
 
 export interface ICCbuddyAgentService {
+  onDynamicSessionLifecycle(
+    params: CCbuddyAgentWorkspaceTarget,
+  ): Event<import("@ccbuddy/shared").SessionLifecycleSnapshot>;
+  getSessionLifecycle(
+    params: CCbuddyAgentSessionTarget,
+  ): Promise<import("@ccbuddy/shared").SessionLifecycleSnapshot | null>;
+  ensureSessionReady(params: CCbuddyAgentSessionTarget): Promise<void>;
+  stopSessionRuntime(params: CCbuddyAgentSessionTarget): Promise<void>;
+  restartSessionRuntime(params: CCbuddyAgentSessionTarget): Promise<void>;
+  measureSessionData(
+    params: import("@ccbuddy/shared/ccbuddy-protocol-v4").V4SessionDataParams,
+  ): Promise<import("@ccbuddy/shared/ccbuddy-protocol-v4").V4SessionDataMeasureResult>;
+  purgeSessionData(
+    params: import("@ccbuddy/shared/ccbuddy-protocol-v4").V4SessionDataParams & {
+      workspace: CCbuddyAgentWorkspaceTarget;
+    },
+  ): Promise<import("@ccbuddy/shared/ccbuddy-protocol-v4").V4SessionDataPurgeResult>;
   /** 控制面不需要账号或模型，且不发送普通协议请求。 */
   prepareStorage(params: CCbuddyAgentWorkspaceTarget): Promise<void>;
   getStorageStartupState(

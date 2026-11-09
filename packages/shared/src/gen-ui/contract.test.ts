@@ -6,9 +6,24 @@ import {
   buildGenUiModelContext,
   stripGenUiModelContext,
   genUiTweakSchema,
+  GEN_UI_STYLE_CONTEXT_KEY,
+  genUiStyleVariablesSchema,
 } from "./contract.js";
 
 describe("Gen UI boundaries", () => {
+  it("isolates CCbuddy presentation variables from standard MCP styles", () => {
+    expect(GEN_UI_STYLE_CONTEXT_KEY).toBe("ccbuddy/genUiStyles");
+    expect(genUiStyleVariablesSchema.parse({ "--gen-ui-primary": "#000000" })).toEqual({
+      "--gen-ui-primary": "#000000",
+    });
+    for (const variables of [
+      { "--color-text-info": "red" },
+      { "--gen-ui-primary": 12 },
+      { "--gen-ui-primary; color": "red" },
+    ]) {
+      expect(genUiStyleVariablesSchema.safeParse(variables).success).toBe(false);
+    }
+  });
   it("accepts executor absolute paths but rejects URLs and document traversal", () => {
     for (const path of ["/project/example.html", "C:\\project\\example.html"]) {
       expect(genUiReferenceSchema.parse({ path }).path).toBe(path);
@@ -40,7 +55,11 @@ describe("Gen UI boundaries", () => {
     expect(genUiWidgetStateSchema.safeParse({ privateContent: circular }).success).toBe(false);
   });
   it("isolates workspace identities and sessions even with the same executor path", () => {
-    const a = { workspacePath: "/project", sessionId: "session", path: "/project/example.html" };
+    const a = {
+      workspacePath: "/project",
+      sessionId: "session",
+      path: "/project/example.html",
+    };
     expect(buildGenUiStateKey(a)).not.toBe(
       buildGenUiStateKey({ ...a, workspaceIdentity: "remote-example" }),
     );
@@ -50,7 +69,10 @@ describe("Gen UI boundaries", () => {
     const text = buildGenUiModelContext([
       {
         path: "/project/example.html",
-        state: { modelContent: { month: 6 }, privateContent: { secret: "private-value" } },
+        state: {
+          modelContent: { month: 6 },
+          privateContent: { secret: "private-value" },
+        },
       },
     ]);
     expect(text).toContain('"month":6');
@@ -74,7 +96,14 @@ describe("Gen UI boundaries", () => {
     ).toContain("bad");
   });
   it("rejects invalid tweak ranges, duplicate IDs and excess controls", () => {
-    const control = { id: "size", label: "Size", type: "slider", min: 0, max: 10, value: 5 };
+    const control = {
+      id: "size",
+      label: "Size",
+      type: "slider",
+      min: 0,
+      max: 10,
+      value: 5,
+    };
     expect(genUiTweakSchema.safeParse({ title: "Design", controls: [control] }).success).toBe(true);
     for (const controls of [
       [{ ...control, value: 11 }],

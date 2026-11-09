@@ -1,4 +1,5 @@
 import { parseRuntimeInputPresentation } from "@ccbuddy/contracts";
+import { attachGenUiContext } from "../../agent/gen-ui-context.js";
 import {
   unpublishedPermissionGrants,
   recoverPendingPermissionGrant,
@@ -1220,16 +1221,19 @@ async function drainPendingInputUnlocked(
       delivery === "guide" && !pendingInput.source && !pendingInput.attachments?.length
         ? parseRuntimeInputPresentation(pendingInput.inputPresentation)
         : undefined;
-    const runtimeEntry = createRuntimeUserEntry(
-      buildUserContentFromTurn(
-        withConversationQuotes(
-          pendingInput.input,
-          pendingInput.intent?.conversationQuotes,
-          pendingInput.intent?.botGroupSource,
+    const runtimeEntry = attachGenUiContext(
+      createRuntimeUserEntry(
+        buildUserContentFromTurn(
+          withConversationQuotes(
+            pendingInput.input,
+            pendingInput.intent?.conversationQuotes,
+            pendingInput.intent?.botGroupSource,
+          ),
+          resolvedAttachments,
         ),
-        resolvedAttachments,
+        runtimeInputMetadata(inputPresentation) ?? realUserRuntimeMetadata(),
       ),
-      runtimeInputMetadata(inputPresentation) ?? realUserRuntimeMetadata(),
+      pendingInput.intent?.genUiContext,
     );
     this.messageHistory.addEntries([runtimeEntry]);
     runtimeEntries.push(runtimeEntry);

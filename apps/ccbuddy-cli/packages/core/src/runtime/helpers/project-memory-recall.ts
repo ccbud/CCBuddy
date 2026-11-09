@@ -17,7 +17,8 @@ import {
 } from "../../memory/recall/index.js";
 import type { ReadFileStateMap } from "../../tool/types.js";
 import {
-  createReadFileStateKey,
+  setReadFileStateEntry,
+  findLatestReadFileState,
   createReadFileStatePathKey,
   normalizeReadFileStateMtimeMs,
 } from "../../tool/read-file-state.js";
@@ -116,7 +117,8 @@ export function consumeSettledProjectMemoryRecall(
   // 修复原因：Recall 正文对模型等价于一次读取，必须在实际注入时同步既有 read-state，供后续 Edit/Write 使用。
   const readAt = new Date();
   for (const memory of memories) {
-    runtime.readFileState.set(createReadFileStateKey(memory.filePath, undefined, memory.limit), {
+    if (findLatestReadFileState(runtime.readFileState, memory.filePath)) continue;
+    setReadFileStateEntry(runtime.readFileState, {
       content: memory.content,
       isPartialView: false,
       limit: memory.limit,

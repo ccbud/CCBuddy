@@ -35,6 +35,7 @@ export const OFFICIAL_CUA_PLUGIN_NAME = "computer-use";
 export const OFFICIAL_CUA_PLUGIN_ID = `${OFFICIAL_CUA_PLUGIN_NAME}@${CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE}`;
 
 export interface OfficialPluginDefinition {
+  componentTypes?: readonly string[];
   // 内容型 plugin (无 MCP server / 无系统依赖) 可以设为 true,
   // 这样用户首次 `/skill <name>` 就能用,不必先 `ccbuddy plugins enable`。
   // 默认 false，避免未明确声明的插件能力随启动启用。

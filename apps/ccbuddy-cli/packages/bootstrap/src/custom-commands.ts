@@ -18,6 +18,7 @@ export interface ListCCbuddyCustomCommandsOptions {
   skipUserConfig?: boolean;
   userConfigPath?: string;
   workingDirectory?: string;
+  additionalDirectories?: readonly string[];
 }
 
 export interface InspectCCbuddyCustomCommandOptions extends ListCCbuddyCustomCommandsOptions {
@@ -92,6 +93,7 @@ function createCustomCommandDiscovery(options: ListCCbuddyCustomCommandsOptions)
       extraResolvedRoots: pluginOutcome.commandRoots,
       disabledPaths: collectDisabledPaths(configResult.config.commandOverrides),
       homeDirectory: options.homeDirectory,
+      additionalDirectories: options.additionalDirectories,
     }),
     workingDirectory,
   };

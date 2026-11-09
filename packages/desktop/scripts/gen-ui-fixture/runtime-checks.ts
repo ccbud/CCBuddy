@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
-import type { BrowserWindow } from "electron";
+import { webContents, type BrowserWindow } from "electron";
+
+export const currentGenUiGuest = () =>
+  webContents.getAllWebContents().find((contents) => contents.getType() === "webview")!;
 
 type Read = (code: string) => Promise<any>;
+export async function checkWidgetGlobals(read: Read) {
+  assert.deepEqual(await read("Object.keys(window.ccbuddy).sort()"), [
+    "sendFollowUpMessage",
+    "setWidgetState",
+    "widgetState",
+  ]);
+  assert.equal(await read("typeof window.openai"), "undefined");
+  assert.equal(await read("typeof window.require"), "undefined");
+}
 const waitFor = (read: Read, predicate: string) =>
   read(`new Promise((resolve,reject)=>{
   const end=Date.now()+4000; const tick=()=>{

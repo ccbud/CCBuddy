@@ -253,6 +253,7 @@ export function useRootWorkspaceActions({
           newTaskTarget.workspaceIdentity ?? undefined,
           {
             groupedDraftPlacement,
+            projectId: typeof request === "string" ? undefined : request?.projectId,
             createSource: typeof request === "string" ? undefined : request?.createSource,
           },
         );

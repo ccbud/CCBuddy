@@ -1,5 +1,15 @@
 # Tool change chain
 
+附加目录发现同步（2026-11-09）：Skill 发现读取项目权威目录并生成限定名；不扩大工具权限，
+不扫描产品状态目录。插件 agent 路径只留 CLI；自定义命令 shell 交给可见 Bash 审批。
+
+Read-state synchronization: one normalized path owns one live view. Tool handlers
+write the view and allocate its snapshot index in the same synchronous step.
+Persisted completed-tool snapshots restore in that order, without reading present-day
+disk bytes. Compaction rereads authorized files and replaces live views only after
+the existing two-stage compact boundary is committed. Both requested and normalized
+paths participate in deny checks; unchanged reads do not create snapshots.
+
 ## Current execution order
 
 The runtime owns the logical workspace identity and supplies it through

@@ -22,7 +22,7 @@ import {
   type ProjectMemoryRetrievalBranch,
 } from "../../memory/project-memory-retrieval-branch.js";
 import {
-  createReadFileStateKey,
+  setReadFileStateEntry,
   normalizeReadFileStateMtimeMs,
 } from "../../tool/read-file-state.js";
 import { resolveEnabledProjectMemoryRoot } from "../helpers/project-memory.js";
@@ -134,6 +134,7 @@ export function createContextBuilderFromSnapshot(
 
   const contextConfig: ContextBuilderConfig = {
     workingDirectory: snapshot.workingDirectory,
+    additionalDirectories: this.config.additionalDirectories,
     envInfo,
     model: options.model,
     presentationSurface: this.config.presentationSurface,
@@ -192,7 +193,8 @@ export async function loadProjectMemoryIndexContent(
     const read = await fileSystemPort.readTextFile({ path: indexPath });
     const formattedContent = formatProjectMemoryIndexContent(read.content);
     if (!formattedContent) return undefined;
-    runtime.readFileState.set(createReadFileStateKey(indexPath, undefined, undefined), {
+    setReadFileStateEntry(runtime.readFileState, {
+      seededFromContext: true,
       content: read.content,
       isPartialView: formattedContent !== read.content,
       limit: undefined,

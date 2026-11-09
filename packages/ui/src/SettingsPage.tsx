@@ -634,6 +634,7 @@ export function SettingsPage({
     return [...names];
   }, [sharedSettings?.recentProjects, workspaceTabs]);
   const memoryEnabled = sharedSettings?.memoryEnabled === true;
+  const toolSearchMode = sharedSettings?.toolSearchMode ?? "off";
   const nativeSearchEnhancementsEnabled = sharedSettings?.nativeSearchEnhancementsEnabled !== false;
   const askUserQuestionAutoResolutionEnabled =
     sharedSettings?.askUserQuestionAutoResolutionEnabled !== false;
@@ -832,6 +833,18 @@ export function SettingsPage({
       setIntegratedTerminalShell(selection);
     },
     [services.settingService],
+  );
+  const handleToolSearchModeChange = useCallback(
+    async (mode: import("@ccbuddy/shared").AppToolSearchMode) => {
+      await runSettingsActionAsync({
+        featureId: "settings.search",
+        action: "change_tool_search_mode",
+        trigger: "select",
+        operation: () => updateSharedSettings({ toolSearchMode: mode }),
+        completed: { resultSource: "shared_settings", valueAfter: mode },
+      });
+    },
+    [updateSharedSettings],
   );
   const handleNativeSearchEnhancementsEnabledChange = useCallback(
     async (enabled: boolean) => {
@@ -1631,6 +1644,8 @@ export function SettingsPage({
                             integratedTerminalShell={integratedTerminalShell}
                             integratedTerminalShellOptions={integratedTerminalShellOptions}
                             nativeSearchEnhancementsEnabled={nativeSearchEnhancementsEnabled}
+                            toolSearchMode={toolSearchMode}
+                            onToolSearchModeChange={handleToolSearchModeChange}
                             httpProxy={httpProxy}
                             httpProxyNoProxy={httpProxyNoProxy}
                             httpProxyCaCertPath={httpProxyCaCertPath}

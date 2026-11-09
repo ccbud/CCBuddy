@@ -6,7 +6,12 @@ import {
 import { mkdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import {
+  projectStorage,
+  createProjectDataRepository,
+  type ProjectMigrationContext,
+} from "#src/project-storage/index.js";
 import {
   isRemoteWorkspaceIdentity,
   normalizeAgentProviderToCCbuddyAgent,
@@ -125,6 +130,7 @@ interface WorkspaceBootstrapScope {
 
 interface TaskIndexWriteRecord {
   meta: CCbuddyTaskMeta;
+  cliFacts?: { meta: CCbuddyTaskMeta; title?: string };
   pinned: boolean;
   archived: boolean;
   deleted: boolean;
@@ -536,6 +542,11 @@ export class TaskIndexRepo {
   constructor(
     private readonly startupDbPath?: string,
     private readonly startupBusyTimeoutMs = 5000,
+    private readonly projectStartup: {
+      readSettings?: () => Promise<ProjectMigrationContext["settings"]>;
+      hostId?: string;
+      backupDirectories?: readonly string[];
+    } = {},
   ) {}
   private db: DatabaseSyncInstance | null = null;
   private dbPath: string | null = null;
@@ -584,15 +595,33 @@ export class TaskIndexRepo {
       this.db.exec("PRAGMA synchronous = NORMAL");
     }
     // Worker 已完成该路径的原始准备，业务连接不再重复全表修复。
-    if (isTasksStoragePrepared(path, this.db)) return;
-    if (!isTasksStorageMigrated(path, this.db)) runTasksDatabaseMigrations(this.db);
-    this.backfillOffPeakTaskMarkers();
-    this.backfillOffPeakGroupMemberships();
-    // Bugfix: 早期版本的列表 task_id 是 wrapper id，真实 CCbuddy session id 在旧列
-    // acp_session_id。直接运行时映射会让 read/send/subscribe 到处变成双 ID 兜底；
-    // 初始化时把索引行迁到真实 session id，后续统一走新协议正常路径。
-    this.migrateLegacyAcpTaskIds();
-    this.cleanupDeletedTaskGroupingReferences();
+    if (!isTasksStoragePrepared(path, this.db)) {
+      if (!isTasksStorageMigrated(path, this.db)) runTasksDatabaseMigrations(this.db);
+      this.backfillOffPeakTaskMarkers();
+      this.backfillOffPeakGroupMemberships();
+      // Bugfix: 早期版本的列表 task_id 是 wrapper id，真实 CCbuddy session id 在旧列
+      // acp_session_id。直接运行时映射会让 read/send/subscribe 到处变成双 ID 兜底；
+      // 初始化时把索引行迁到真实 session id，后续统一走新协议正常路径。
+      this.migrateLegacyAcpTaskIds();
+      this.cleanupDeletedTaskGroupingReferences();
+    }
+    await projectStorage.migrate(this.db, {
+      hostId: this.projectStartup.hostId,
+      settings: await this.projectStartup.readSettings?.(),
+      backupDirectories: this.projectStartup.backupDirectories ?? [
+        join(dirname(path), "migration-backups"),
+      ],
+    });
+  }
+
+  async getProjectRepository() {
+    await this.ensureReady();
+    return projectStorage.repository(this.getDatabase(), this.projectStartup.hostId);
+  }
+
+  async getProjectDataRepository() {
+    await this.ensureReady();
+    return createProjectDataRepository(this.getDatabase(), this.projectStartup.hostId);
   }
 
   private hasColumn(table: string, column: string): boolean {
@@ -1496,6 +1525,22 @@ export class TaskIndexRepo {
   }
 
   private writeRecord(record: TaskIndexWriteRecord): CCbuddyTaskMeta {
+    const db = this.getDatabase();
+    const ownsTransaction = !db.isTransaction;
+    if (ownsTransaction) db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.writeRecordReady(record);
+      if (record.cliFacts)
+        projectStorage.recordTaskFacts(db, record.cliFacts, this.projectStartup.hostId);
+      if (ownsTransaction) db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (ownsTransaction && db.isTransaction) db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private writeRecordReady(record: TaskIndexWriteRecord): CCbuddyTaskMeta {
     // searchable_text 传 undefined 表示"不动现有值"。读一次 row 拿到当前值，
     // 否则 ON CONFLICT 时 excluded.searchable_text 会被赋成空字符串，把已索引正文清空。
     const existing =
@@ -1666,10 +1711,11 @@ export class TaskIndexRepo {
     await this.ensureReady();
     return this.enqueueWrite(params.meta, () => {
       const database = this.getDatabase();
-      if (initializeGroupedAtTop) database.exec("BEGIN IMMEDIATE");
+      // CLI 事实与组织态必须在同一写锁下合并，避免其他窗口的置顶/归档被旧快照覆盖。
+      database.exec("BEGIN IMMEDIATE");
       try {
         const existing = this.getTaskRow(params.meta);
-        const existingMeta = existing ? rowToMeta(existing) : null;
+        const existingMeta = existing && existing.created_at !== 0 ? rowToMeta(existing) : null;
         const titleOverridden = params.titleOverridden ?? existing?.title_overridden === 1;
         // snapshot 来源的 updatedAt 是 runtime sessionStore 里的"最后一次结构变更"时间，
         // 不一定包含 session.titleUpdated / turn.completed 这些事件触发的 Date.now() 增量。
@@ -1710,6 +1756,10 @@ export class TaskIndexRepo {
         };
         const persistedMeta = this.writeRecord({
           meta,
+          cliFacts: {
+            meta: { ...params.meta, updatedAt, status: meta.status },
+            title: params.meta.title,
+          },
           pinned: params.pinned ?? existing?.pinned === 1,
           archived: params.archived ?? existing?.archived === 1,
           deleted: params.deleted ?? existing?.deleted === 1,
@@ -1731,10 +1781,10 @@ export class TaskIndexRepo {
         const initializedGroupedOrder = initializeGroupedAtTop
           ? this.initializeGroupedTaskAtTopReady(meta)
           : false;
-        if (initializeGroupedAtTop) database.exec("COMMIT");
+        database.exec("COMMIT");
         return { meta: persistedMeta, initializedGroupedOrder };
       } catch (error) {
-        if (initializeGroupedAtTop) database.exec("ROLLBACK");
+        if (database.isTransaction) database.exec("ROLLBACK");
         throw error;
       }
     });
@@ -1829,15 +1879,16 @@ export class TaskIndexRepo {
     await this.ensureReady();
     return this.enqueueWrite(meta, () => {
       const existing = this.getTaskRow(meta);
-      if (existing) {
+      if (existing && existing.created_at !== 0) {
         return rowToMeta(existing);
       }
       return this.writeRecord({
         meta,
-        pinned: false,
-        archived: false,
-        deleted: false,
-        titleOverridden: meta.titleOverridden ?? false,
+        cliFacts: { meta, title: meta.title },
+        pinned: existing?.pinned === 1,
+        archived: existing?.archived === 1,
+        deleted: existing?.deleted === 1,
+        titleOverridden: existing?.title_overridden === 1 || (meta.titleOverridden ?? false),
       });
     });
   }
@@ -2014,6 +2065,7 @@ export class TaskIndexRepo {
       };
       return this.writeRecord({
         meta: nextMeta,
+        cliFacts: { meta: nextMeta, title: params.patch.title },
         pinned: row.pinned === 1,
         archived: row.archived === 1,
         deleted: row.deleted === 1,

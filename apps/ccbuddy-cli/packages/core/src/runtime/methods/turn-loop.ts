@@ -1,4 +1,7 @@
 import { getTurnTools } from "./turn-tool-visibility.js";
+import { buildToolSearchAnnouncement } from "../../tool/search/exposure.js";
+import { prepareRuntimeProviderRequest } from "../helpers/runtime-provider-request-messages.js";
+import { persistAnnouncements } from "./context-refresh.js";
 import { appendRuntimeAgentListing } from "../helpers/agent-listing.js";
 import { beginLocalTurnPreparation } from "@ccbuddy/contracts";
 import {
@@ -175,6 +178,20 @@ export async function runRegularTurnLoop(
     }
     // （2026-09-12）：原"回合开始注入 plugin_ui_state reminder"已删除，插件给模型的信息
     // 一律走 ui/update-model-context。
+    const toolSearchAnnouncement = buildToolSearchAnnouncement({
+      model: state.model,
+      mode: this.config.toolSearch?.mode,
+      tools,
+      registry: this.registry,
+      entries: state.turnRequestState.entries,
+    });
+    await persistAnnouncements(
+      this,
+      state.turnRequestState,
+      toolSearchAnnouncement ? [toolSearchAnnouncement] : [],
+      state.turnTraceContext,
+      state.model,
+    );
     const providerEntries = [...state.turnRequestState.entries];
     // Dream 可能在同一 turn 的首个模型请求期间完成；每次 attachment collection 都检查，
     // 才能把一次性更新放进紧随其后的模型请求，而不是延迟到下一次用户输入。
@@ -184,11 +201,14 @@ export async function runRegularTurnLoop(
     const requestEntries = memoryUpdate ? [...providerEntries, memoryUpdate] : providerEntries;
     // 修复原因：provider-visible user ordering projection 会改变最终 latest user 落点，
     // cache-control 必须在 projection 后统一设置，避免 raw synthetic entry 抢占缓存锚点。
-    const providerProjection = buildRuntimeProviderRequestMessages(this, {
+    const prepared = prepareRuntimeProviderRequest(this, {
       entries: requestEntries,
+      tools,
+      registry: this.registry,
       applyCacheControl: true,
       model: state.model,
     });
+    const providerProjection = prepared.projection;
     const { messages } = providerProjection;
     const recordableEntries = filterOutputTokenContinuationEntries(requestEntries);
     const recordableProjection =
@@ -196,6 +216,7 @@ export async function runRegularTurnLoop(
         ? providerProjection
         : buildRuntimeProviderRequestMessages(this, {
             entries: recordableEntries,
+            loadedToolCallIds: prepared.loadedToolCallIds,
             applyCacheControl: true,
             model: state.model,
           });
@@ -224,7 +245,8 @@ export async function runRegularTurnLoop(
       sourceEntries: providerProjection.sourceEntries,
       requestEntries,
       recordedMessages: recordableProjection.messages,
-      tools,
+      tools: prepared.request.tools,
+      toolSearch: prepared.toolSearch,
     });
 
     if (result === "break") {

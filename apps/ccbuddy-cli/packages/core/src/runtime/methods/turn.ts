@@ -529,10 +529,13 @@ export async function executeTurnCommand(
               resolvedAttachments,
               {
                 browserAmbientContext: options?.browserAmbientContext,
+                genUiContext: options?.intent?.genUiContext,
               },
             ).map((entry) => {
               const metadata = runtimeInputMetadata(options?.inputPresentation);
-              return entry.kind !== "attachment" && metadata ? { ...entry, metadata } : entry;
+              return entry.kind !== "attachment" && metadata
+                ? { ...entry, metadata: { ...entry.metadata, ...metadata } }
+                : entry;
             }),
           );
           // /init 和自定义 slash command 会把模型输入展开成较长的内部

@@ -24,12 +24,7 @@ import {
   type ResumeWorkflowRunInput,
   type ResumeWorkflowRunOutput,
 } from "@ccbuddy/contracts";
-import type {
-  ToolEntry,
-  ToolExecutionContext,
-  ToolHandler,
-  ToolHandlerFailure,
-} from "../types.js";
+import type { ToolEntry, ToolExecutionContext, ToolHandler, ToolHandlerFailure } from "../types.js";
 import { workflowRunNotFoundFailure } from "./workflow-run-introspection.js";
 
 const RESUME_WORKFLOW_RUN_TIMEOUT_MS = 15_000;
@@ -175,6 +170,7 @@ function formatResumeWorkflowRunModelContent(output: unknown): ModelMessageConte
 export const resumeWorkflowRunToolEntry: ToolEntry = {
   capability: "Resume a stopped dynamic-workflow run under the same run ID",
   metadata: {
+    shouldDefer: true,
     name: RESUME_WORKFLOW_RUN_TOOL_NAME,
     description: RESUME_WORKFLOW_RUN_DESCRIPTION,
     // 恢复 = 重新启动执行子进程与 actor 会话（完结节点 replay、未完结重派发），与
@@ -197,7 +193,8 @@ export const resumeWorkflowRunToolEntry: ToolEntry = {
   formatModelContent: formatResumeWorkflowRunModelContent,
   permission: {
     permission: "resumeWorkflowRun",
-    reason: "resumeWorkflowRun.runConfirmation: resuming continues executing a stopped workflow run",
+    reason:
+      "resumeWorkflowRun.runConfirmation: resuming continues executing a stopped workflow run",
     riskLevel: "low",
     sideEffectScope: "none",
     // resume 被

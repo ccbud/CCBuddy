@@ -48,6 +48,8 @@ async function createSession(
     throw new V4InputAdmissionRejectedError("proto.invalidPayload", "input must not be empty");
   }
   const { sessionId } = await host.createSessionRecord({
+    sessionId: payload.sessionId,
+    additionalDirectories: payload.additionalDirectories,
     workspaceId: payload.workspaceId,
     ...(payload.permissionScope ? { permissionScope: payload.permissionScope } : {}),
     mcpServers: payload.mcpServers,
@@ -66,7 +68,7 @@ async function createSession(
       if (payload.config.mode === "guarded" || payload.firstInput?.mode === "guarded") {
         // 根因：旧 catch 吞掉模式应用失败后仍提交首轮，Guarded 会静默退化。
         try {
-          await host.closeSession?.(sessionId);
+          await host.deleteSession?.(sessionId);
         } catch (closeError) {
           host.logger?.warn?.("v4 guarded draft cleanup failed", { sessionId, closeError });
         }
@@ -162,21 +164,19 @@ async function renameSession(
 }
 
 /**
- * deleteSession：语义 = closeSession（关闭 + 清理运行时资源），非真删 record——
- * message 库无删除 API，与旧协议路径一致（旧协议的“删除”同样只是 close，历史仍在库里，
- * 只是不再出现在活跃注册表）。
- * 会话注册表仍归宿主，实际关闭走 host.closeSession 过渡钩子（归宿：v4 自持会话注册表，见 ../types.ts）。
+ * deleteSession 先持久化软删除，再释放 runtime；历史正文保留。
+ * 会话注册表仍归宿主，实际关闭走 host.deleteSession 过渡钩子（归宿：v4 自持会话注册表，见 ../types.ts）。
  */
 async function deleteSession(
   host: V4CommandCoreHost,
   envelope: CommandEnvelope,
 ): Promise<CommandResult | undefined> {
   const record = requireRecord(host, envelope.sessionId);
-  if (!host.closeSession) {
+  if (!host.deleteSession) {
     // 关闭不能静默降级：钩子缺失说明 binder 接线不完整，直接失败（ACK failed）。
-    throw new Error("v4 deleteSession requires host.closeSession capability");
+    throw new Error("v4 deleteSession requires host.deleteSession capability");
   }
-  await host.closeSession(record.app.sessionId);
+  await host.deleteSession(record.app.sessionId);
   return undefined;
 }
 

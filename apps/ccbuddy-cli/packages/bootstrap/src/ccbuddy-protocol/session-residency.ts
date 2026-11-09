@@ -1,46 +1,17 @@
 // Session 常驻池的真实事实适配与去激活执行面。
 
-import type { SessionId } from "@ccbuddy/contracts";
 import type {
   SessionDeactivationDecision,
   SessionResidentPoolHost,
 } from "./session-resident-pool.js";
 import type { CCbuddyProtocolAgentServerContext } from "./server-types.js";
 
-export interface SessionResidencyFinalizationOwner {
-  residencyFinalizationCount?: number;
-}
-
-/**
- * residency lease 只覆盖 Bootstrap detached runner 的收尾窗口，避免 pool 回收仍在使用的
- * record。Prompt admission 的 busy/idle authority 已归 Core；activeAbortController 仅是旧命令
- * 路径的兼容取消句柄，不能再作为 prompt 调度锁。
- */
-export function acquireSessionResidencyFinalization(
-  record: SessionResidencyFinalizationOwner,
-): () => void {
-  record.residencyFinalizationCount = (record.residencyFinalizationCount ?? 0) + 1;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    record.residencyFinalizationCount = Math.max(0, (record.residencyFinalizationCount ?? 1) - 1);
-  };
-}
-
-/** 同步登记 lease，再启动 detached runner；同步抛错和异步终态都保证释放。 */
-export function runWithSessionResidencyFinalization<T>(
-  record: SessionResidencyFinalizationOwner,
-  run: () => Promise<T>,
-): Promise<T> {
-  const release = acquireSessionResidencyFinalization(record);
-  try {
-    return run().finally(release);
-  } catch (error) {
-    release();
-    return Promise.reject(error);
-  }
-}
+export {
+  acquireSessionResidencyFinalization,
+  runWithSessionResidencyFinalization,
+  type SessionResidencyFinalizationOwner,
+} from "./session-finalization.js";
+import { getSessionLifecycle, releaseSessionRuntime } from "./session-runtime-lifecycle.js";
 
 /**
  * 只释放 resident runtime，不删除任何持久 session/task 事实。
@@ -59,12 +30,9 @@ export async function deactivateSessionRecord(
   // CommandInbox pin 的拒绝曾发生在 unsubscribe 之后，异常会留下仍在 registry
   // 但收不到 runtime event 的半清 record。所有可预检拒绝必须早于第一个副作用。
   context.v4Gateway?.assertSessionRuntimeDeactivatable(sessionId);
-  record.unsubscribe?.();
-  context.v4Gateway?.deactivateSession(sessionId);
-  context.sessions.delete(sessionId);
-  await record.app.close?.();
-  // 去激活后内存 event store 必须与“从未加载”等价。
-  await record.eventStore.deleteSession(sessionId as SessionId);
+  await getSessionLifecycle(context).dispose(sessionId, () =>
+    releaseSessionRuntime(context, sessionId, "deactivate"),
+  );
 }
 
 export function createSessionResidentPoolHost(
@@ -83,6 +51,8 @@ export function createSessionResidentPoolHost(
         // active/queue 与 registry background task 不能覆盖 title、MCP、memory
         // 等 detached work；统一查询由 runtime 维护，协议 finalization 只补协议所有权。
         hasResidencyBlockingWork:
+          (context.sessionLifecycle !== undefined &&
+            !context.sessionLifecycle.isReady(sessionId)) ||
           record.activeAbortController !== undefined ||
           (record.residencyFinalizationCount ?? 0) > 0 ||
           record.app.runtime.hasResidencyBlockingWork(),

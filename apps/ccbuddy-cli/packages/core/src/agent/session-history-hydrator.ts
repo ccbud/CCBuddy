@@ -1,5 +1,14 @@
 import { parseAgentListingDelta } from "./agent-listing-metadata.js";
 import { runtimeInputMetadata } from "./runtime-input-presentation.js";
+import { ModelCallWrapperSchema } from "@ccbuddy/contracts";
+import {
+  hydrateToolSearchContent,
+  hydrateCompactDiscovery,
+  hydrateToolSearchAnnouncement,
+} from "./tool-search-hydration.js";
+import { parseToolSearchHiddenNames } from "../tool/search/history.js";
+import { genUiModelContextSchema, type GenUiModelContext } from "@ccbuddy/shared/gen-ui";
+import { attachGenUiContext, normalizeGenUiInput } from "./gen-ui-context.js";
 // ============================================================
 // Session History Hydration - rebuild provider-visible context
 // ============================================================
@@ -53,6 +62,7 @@ export interface SessionHistoryHydrationResult {
 }
 
 export async function hydrateMessageHistoryFromSession(input: {
+  logger?: import("@ccbuddy/contracts").Logger;
   artifactStore?: ToolArtifactStorePort;
   branchCutAfterMessageId?: MessageId;
   history: MessageHistory;
@@ -120,15 +130,41 @@ export async function hydrateMessageHistoryFromSession(input: {
         continue;
       }
 
-      const entries = await userEntriesFromParts(parts, input.artifactStore);
+      const metadata = message.info.metadata as Record<string, unknown> | undefined;
+      const intent = (metadata?.conversationInputIntent ?? metadata?.inputIntent) as
+        | Record<string, unknown>
+        | undefined;
+      const context = genUiModelContextSchema.safeParse(intent?.genUiContext);
+      const entries = await userEntriesFromParts(
+        parts,
+        input.artifactStore,
+        context.success ? context.data : undefined,
+      );
       if (entries.length === 0) continue;
+      const boundaryPart = parts.find(isActiveCompactionBoundaryPart);
+      const compactBoundary =
+        boundaryPart?.type === "compaction"
+          ? hydrateCompactDiscovery(boundaryPart.compactBoundary)
+          : undefined;
+      if (compactBoundary && entries[0]) {
+        entries[0] = {
+          ...entries[0],
+          metadata: {
+            ...legacySyntheticRuntimeMetadata(),
+            ...entries[0].metadata,
+            compactBoundary,
+          },
+        };
+      }
       const presentation = runtimeInputMetadata(
         (message.info.metadata as Record<string, unknown> | undefined)?.inputPresentation,
       );
       input.history.addEntries(
         presentation
           ? entries.map((entry) =>
-              entry.kind === "attachment" ? entry : { ...entry, metadata: presentation },
+              entry.kind === "attachment"
+                ? entry
+                : { ...entry, metadata: { ...entry.metadata, ...presentation } },
             )
           : entries,
       );
@@ -156,6 +192,7 @@ export async function hydrateMessageHistoryFromSession(input: {
         (part): ToolCallInput => ({
           id: part.callID,
           input: part.state.input,
+          modelCallWrapper: modelCallWrapperFromPart(part),
           name: providerToolNameFromPart(part),
         }),
       ),
@@ -188,8 +225,18 @@ export async function hydrateMessageHistoryFromSession(input: {
                 attachmentBlocks,
               )
             : undefined;
-        const content = projectedMediaContent ?? part.state.output;
-        input.history.addToolResult(part.callID, providerToolName, content, true);
+        const content =
+          hydrateToolSearchContent(part.state.metadata?.modelContent, input.logger) ??
+          projectedMediaContent ??
+          part.state.output;
+        input.history.addToolResult(
+          part.callID,
+          providerToolName,
+          content,
+          true,
+          false,
+          modelCallWrapperFromPart(part),
+        );
         continue;
       }
 
@@ -202,6 +249,8 @@ export async function hydrateMessageHistoryFromSession(input: {
           providerToolName,
           typeof persistedModelContent === "string" ? persistedModelContent : part.state.error,
           false,
+          true,
+          modelCallWrapperFromPart(part),
         );
         continue;
       }
@@ -287,6 +336,7 @@ function dedupeParts(parts: MessagePart[]): MessagePart[] {
 async function userEntriesFromParts(
   parts: MessagePart[],
   artifactStore: ToolArtifactStorePort | undefined,
+  genUiContext?: GenUiModelContext,
 ): Promise<RuntimeMessageEntry[]> {
   const attachmentBlocks: ModelMessageContentBlock[] = [];
   // 媒体数据块（image/video）统一后置组，恢复顺序对齐 live 主路径 [text, media]。
@@ -306,7 +356,11 @@ async function userEntriesFromParts(
         });
         continue;
       }
-      promptBlocks.push({ type: "text", text: textPartToProviderText(part) });
+      const normalized = part.synthetic
+        ? { text: textPartToProviderText(part) }
+        : normalizeGenUiInput(textPartToProviderText(part), genUiContext);
+      genUiContext ??= normalized.genUiContext;
+      promptBlocks.push({ type: "text", text: normalized.text });
       continue;
     }
 
@@ -360,10 +414,13 @@ async function userEntriesFromParts(
   return [
     ...(shouldRestoreRealUserEnvelope
       ? [
-          {
-            message: { role: "user" as const, content },
-            metadata: userMetadata,
-          },
+          attachGenUiContext(
+            {
+              message: { role: "user" as const, content },
+              metadata: userMetadata,
+            },
+            genUiContext,
+          ),
         ]
       : []),
     ...syntheticAttachmentEntries,
@@ -462,13 +519,21 @@ function syntheticSystemReminderAttachmentFromTextPart(
 ): SyntheticSystemReminderAttachment | undefined {
   if (!part.synthetic) return undefined;
   if (part.text.trim().length === 0) return undefined;
-  if (isProviderWrappedSystemReminderText(part.text)) return undefined;
   const metadata = metadataFromSyntheticTextPart(part);
+  const announcement = metadata.toolSearchAnnouncement;
+  const wrapped = isProviderWrappedSystemReminderText(part.text);
+  if (wrapped && !announcement) return undefined;
   if (!isRestorableSystemReminderAttachmentSource(metadata.source)) return undefined;
 
   return {
     metadata,
-    content: part.text,
+    content:
+      wrapped && announcement
+        ? part.text
+            .trim()
+            .replace(/^<system-reminder>\s*/, "")
+            .replace(/\s*<\/system-reminder>$/, "")
+        : part.text,
   };
 }
 
@@ -557,8 +622,18 @@ function runtimeMessageMetadataFromPartMetadata(
   if (source === "real_user") {
     return realUserRuntimeMetadata();
   }
-  if (source === "legacy_synthetic") {
-    return legacySyntheticRuntimeMetadata();
+  if (source === "legacy_synthetic" || source === "tool_search_announcement") {
+    const announcement = hydrateToolSearchAnnouncement(runtimeMessage.toolSearchAnnouncement);
+    const hiddenNames =
+      announcement &&
+      parseToolSearchHiddenNames(runtimeMessage.toolSearchHiddenNames, announcement);
+    return {
+      ...legacySyntheticRuntimeMetadata(),
+      ...(announcement
+        ? { source: "tool_search_announcement" as const, toolSearchAnnouncement: announcement }
+        : {}),
+      ...(hiddenNames ? { toolSearchHiddenNames: hiddenNames } : {}),
+    };
   }
   if (source === "todo_reminder") {
     return todoReminderRuntimeMetadata();
@@ -572,6 +647,11 @@ function runtimeMessageMetadataFromPartMetadata(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function modelCallWrapperFromPart(part: ToolPart) {
+  const parsed = ModelCallWrapperSchema.safeParse(part.metadata?.modelCallWrapper);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function assistantTextFromParts(parts: MessagePart[]): string {

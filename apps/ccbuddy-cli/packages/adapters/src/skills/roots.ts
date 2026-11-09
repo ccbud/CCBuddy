@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { SkillRoot, SkillSource } from "@ccbuddy/contracts";
 import {
   resolveCcBuddyDataRoot,
@@ -14,6 +14,7 @@ const SKILLS_DIR = "skills";
 const AGENTS_DIR = ".agents";
 
 export interface SkillRootResolutionOptions {
+  additionalDirectories?: readonly string[];
   homeDirectory?: string;
   workspaceIdentity?: string;
   extraRoots?: string[];
@@ -81,6 +82,19 @@ export async function resolveDefaultSkillRoots(
     }
   }
 
+  if (includeCCbuddy) {
+    for (const directory of new Set(
+      (options.additionalDirectories ?? []).map((path) => resolve(path)),
+    )) {
+      if (directory === resolvedWorkingDirectory) continue;
+      roots.push(
+        ...skillRootsForBase(directory, "project", nextPriority).map((item) => ({
+          ...item,
+          namespace: basename(directory),
+        })),
+      );
+    }
+  }
   roots.push(...(options.extraResolvedRoots ?? []));
 
   return roots;

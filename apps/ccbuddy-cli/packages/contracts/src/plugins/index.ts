@@ -99,6 +99,8 @@ export type PluginComponentKind = "agent" | "command" | "skill" | "hook" | "mcp"
 
 export interface PluginComponentItem {
   name: string;
+  /** 发现的 agent 源文件路径；仅供 CLI 加载，不投影到组件详情协议。 */
+  path?: string;
   /** 来自组件 frontmatter / manifest 的描述；缺失时省略，绝不伪造。 */
   description?: string;
 }
@@ -121,6 +123,8 @@ export interface PluginStoreListing {
   /** icon 图片：https URL 或内置插件的本地资源路径。 */
   icon?: string;
   category?: string;
+  /** 官方市场内的维护归属；不参与执行权限和安装来源判定。 */
+  publisherType?: "official" | "community";
   author?: string;
   authorUrl?: string;
   homepage?: string;

@@ -24,11 +24,7 @@ import type {
   ToolInputValidationResult,
   ToolPersistedModelContentInput,
 } from "../types.js";
-import {
-  formatCompactFileSize,
-  projectTask,
-  throwIfAborted,
-} from "./task-output-projection.js";
+import { formatCompactFileSize, projectTask, throwIfAborted } from "./task-output-projection.js";
 
 const TASK_OUTPUT_DEFAULT_LENGTH = 32_000;
 const TASK_OUTPUT_MAX_LENGTH = 160_000;
@@ -88,7 +84,9 @@ export const taskOutputToolEntry: ToolEntry = {
   capability: "read output/logs from a background task",
   maxModelChars: TASK_OUTPUT_PERSIST_THRESHOLD_CHARS,
   metadata: {
+    shouldDefer: true,
     name: TASK_OUTPUT_TOOL_NAME,
+    searchHint: "read output/logs from a background task",
     description: TASK_OUTPUT_PROVIDER_DESCRIPTION,
     readOnly: true,
     destructive: false,

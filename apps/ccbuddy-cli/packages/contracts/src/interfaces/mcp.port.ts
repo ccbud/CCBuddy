@@ -15,6 +15,7 @@ export interface McpServerRuntimeSource {
 }
 
 export interface McpServerConfigBase {
+  alwaysLoad?: boolean;
   enabled?: boolean;
   isolation?: McpServerIsolation;
   protocolVersion?: McpProtocolVersion;
@@ -160,6 +161,8 @@ export const CCBUDDY_MCP_NODE_REPL_CUA_APP_META_KEY = "ccbuddy/nodeReplCuaApp";
 export const CCBUDDY_MCP_SERVER_REQUEST_ID_META_KEY = "ccbuddy/officialMcpServerRequestId";
 
 export interface McpToolDescriptor {
+  alwaysLoad?: boolean;
+  searchHint?: string;
   serverName: string;
   toolName: string;
   name?: string;

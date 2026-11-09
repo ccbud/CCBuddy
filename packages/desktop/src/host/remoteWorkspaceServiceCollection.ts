@@ -2,6 +2,7 @@
 import {
   ServiceCollection,
   IFileService,
+  IProjectService,
   IMediaPreviewService,
   IGitService,
   IGitCheckpointService,
@@ -41,6 +42,7 @@ import {
   type IServiceAccessor,
 } from "@ccbuddy/services";
 import {
+  createRemoteProjectService,
   ConversationShareHttpClient,
   ConversationShareService,
   createSettingService,
@@ -106,6 +108,7 @@ function createUnsupportedRemoteConversationShareService(): IConversationShareSe
 }
 
 export function createRemoteWorkspaceServiceCollection(params: {
+  target: import("@ccbuddy/shared").RemoteTarget;
   clientConfigService: IClientConfigService;
   connectionServices: IServiceAccessor;
   sourceServices?: ServiceCollection;
@@ -315,6 +318,7 @@ export function createRemoteWorkspaceServiceCollection(params: {
               askUserQuestionAutoResolutionEnabled:
                 settings.askUserQuestionAutoResolutionEnabled !== false,
               nativeSearchEnhancementsEnabled: settings.nativeSearchEnhancementsEnabled !== false,
+              toolSearchMode: settings.toolSearchMode ?? "off",
               memoryEnabled: settings.memoryEnabled === true,
               modelContextBudgetStrategy,
               // remote workspace 与本地 Host 保持同一 scope 边界，首次执行不得再次等待 client config。
@@ -360,6 +364,10 @@ export function createRemoteWorkspaceServiceCollection(params: {
   // 因此这里为 remote workspace host 补齐本地全局 channel；文件、终端、CCbuddy Agent 仍来自远端，
   // 设置、凭据、OAuth、模型供应商和 settings-sync 继续读写本机配置。
   const services = new ServiceCollection()
+    .register(
+      IProjectService,
+      createRemoteProjectService({ services: params.connectionServices, target: params.target }),
+    )
     .register(IFileService, params.connectionServices.fileService)
     .register(IGitService, params.connectionServices.gitService)
     .register(IGitCheckpointService, params.connectionServices.gitCheckpointService)
@@ -431,6 +439,7 @@ export function createRemoteWorkspaceServiceCollection(params: {
 }
 
 export function createServerRemoteWorkspaceServiceCollection(params: {
+  target: import("@ccbuddy/shared").RemoteTarget;
   clientConfigService: IClientConfigService;
   connectionServices: IServiceAccessor;
   sourceServices?: ServiceCollection;
@@ -441,6 +450,10 @@ export function createServerRemoteWorkspaceServiceCollection(params: {
   const remoteProviderProvisioningService =
     createRemoteProviderProvisioningExecutorFromWorkspace(params);
   const services = new ServiceCollection()
+    .register(
+      IProjectService,
+      createRemoteProjectService({ services: params.connectionServices, target: params.target }),
+    )
     .register(IFileService, params.connectionServices.fileService)
     .register(
       IMediaPreviewService,

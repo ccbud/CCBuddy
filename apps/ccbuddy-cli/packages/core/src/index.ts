@@ -4,6 +4,7 @@
 
 // Agent components
 export * from "./agent/index.js";
+export { normalizeGenUiInput } from "./agent/gen-ui-context.js";
 
 // Context Builder
 export * from "./context/index.js";

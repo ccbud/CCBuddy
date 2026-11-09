@@ -2,8 +2,11 @@ import { BrowserWindow, clipboard, type WebContents } from "electron";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { PluginSandboxHandle } from "@ccbuddy/shared/mcp-apps";
+import { checkPreviewCorners } from "./preview-corner-checks.js";
+import { checkUnifiedStyles } from "./style-checks.js";
 
 export async function checkCopyButton(win: BrowserWindow, preview = false) {
+  if (preview) await checkPreviewCorners(win);
   const selector = `${preview ? '[role="dialog"] ' : ""}[data-testid="gen-ui-actions"] button`;
   const buttonState = () =>
     win.webContents.executeJavaScript(`(() => {
@@ -53,7 +56,12 @@ export async function checkCapture(
     sandboxId: latestHandle.sandboxId,
     initId: latestHandle.initId,
     viewportSize: { width: viewport.width, height: viewport.height },
-    captureRect: { x: 5, y: 5, width: viewport.width - 10, height: viewport.height - 10 },
+    captureRect: {
+      x: 5,
+      y: 5,
+      width: viewport.width - 10,
+      height: viewport.height - 10,
+    },
   };
   const copyRequest = (value: unknown) =>
     `window.ccbuddyPluginSandbox.copyImage(${JSON.stringify(value)})`;
@@ -63,7 +71,10 @@ export async function checkCapture(
   );
   await assert.rejects(
     win.webContents.executeJavaScript(
-      copyRequest({ ...request, captureRect: { ...request.captureRect, x: -1 } }),
+      copyRequest({
+        ...request,
+        captureRect: { ...request.captureRect, x: -1 },
+      }),
     ),
     /too_small|greater|minimum/,
   );
@@ -140,6 +151,7 @@ export async function checkInlineLayout(win: BrowserWindow, read: (code: string)
   assert.equal(await read("document.documentElement.scrollWidth <= innerWidth"), true);
   await win.webContents.executeJavaScript("document.querySelector('#root').style.width=''");
   await checkNativeScroll(win);
+  await checkUnifiedStyles(win, read);
 }
 
 async function checkParentWidth(win: BrowserWindow, read: (code: string) => Promise<any>) {

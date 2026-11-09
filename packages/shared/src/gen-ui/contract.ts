@@ -8,6 +8,11 @@ export const GEN_UI_CONTEXT_MAX_BYTES = 64 * 1024;
 export const GEN_UI_GLOBALS_EVENT = "ccbuddy:set_globals";
 export const GEN_UI_STATE_CONTEXT_KEY = "ccbuddy/genUiState";
 export const GEN_UI_TWEAK_CONTEXT_KEY = "ccbuddy/genUiTweaks";
+export const GEN_UI_STYLE_CONTEXT_KEY = "ccbuddy/genUiStyles";
+export const genUiStyleVariablesSchema = z.record(
+  z.string().regex(/^--gen-ui-[a-z-]+$/),
+  z.string(),
+);
 export const GEN_UI_STATE_METHOD = "ccbuddy/gen-ui/state";
 export const GEN_UI_FOLLOW_UP_METHOD = "ccbuddy/gen-ui/follow-up";
 export const GEN_UI_TWEAK_METHOD = "ccbuddy/gen-ui/tweak";
@@ -53,7 +58,9 @@ export const genUiScopeSchema = z
   })
   .strict();
 export type GenUiScope = z.infer<typeof genUiScopeSchema>;
-export const genUiStateTargetSchema = genUiScopeSchema.extend({ path: genUiPathSchema });
+export const genUiStateTargetSchema = genUiScopeSchema.extend({
+  path: genUiPathSchema,
+});
 export type GenUiStateTarget = z.infer<typeof genUiStateTargetSchema>;
 
 function serializeJson(value: unknown): string {
@@ -82,7 +89,10 @@ export const genUiWidgetStateSchema = z
       if (new TextEncoder().encode(serialized).byteLength > GEN_UI_STATE_MAX_BYTES) {
         throw new Error("Widget state exceeds 16 KiB");
       }
-      return JSON.parse(serialized) as { modelContent: unknown; privateContent: unknown };
+      return JSON.parse(serialized) as {
+        modelContent: unknown;
+        privateContent: unknown;
+      };
     } catch (error) {
       context.addIssue({
         code: "custom",
@@ -144,7 +154,12 @@ export const genUiTweakControlSchema = z.discriminatedUnion("type", [
         .array(
           z.union([
             z.string().min(1).max(120),
-            z.object({ label: z.string().min(1).max(120), value: z.string().max(120) }).strict(),
+            z
+              .object({
+                label: z.string().min(1).max(120),
+                value: z.string().max(120),
+              })
+              .strict(),
           ]),
         )
         .min(1)
@@ -172,7 +187,10 @@ export const genUiTweakSchema = z
             (option) => (typeof option === "string" ? option : option.value) === control.value,
           ))
       )
-        ctx.addIssue({ code: "custom", message: "Invalid or duplicate tweak control" });
+        ctx.addIssue({
+          code: "custom",
+          message: "Invalid or duplicate tweak control",
+        });
       ids.add(control.id);
     }
   });
@@ -192,8 +210,8 @@ export function buildGenUiScopeKey(scope: GenUiScope): string {
 export function buildGenUiStateKey(target: GenUiStateTarget): string {
   return JSON.stringify([buildGenUiScopeKey(target), target.path]);
 }
-export function buildGenUiModelContext(entries: readonly GenUiStateEntry[]): string {
-  const selected: Array<{ path: string; state: unknown }> = [];
+export function selectGenUiModelContext(entries: readonly GenUiStateEntry[]): GenUiModelContext {
+  const selected: GenUiModelContext = [];
   for (const entry of [...entries]
     .sort((a, b) => a.path.localeCompare(b.path))
     .slice(0, GEN_UI_STATE_MAX_ENTRIES)) {
@@ -207,6 +225,35 @@ export function buildGenUiModelContext(entries: readonly GenUiStateEntry[]): str
       break;
     selected.push(next);
   }
+  return genUiModelContextSchema.parse(selected);
+}
+export const genUiModelContextSchema = z
+  .array(z.object({ path: genUiPathSchema, state: z.unknown() }).strict())
+  .max(GEN_UI_STATE_MAX_ENTRIES)
+  .transform((entries, context) => {
+    try {
+      const serialized = serializeJson(entries);
+      if (
+        new TextEncoder().encode(serialized).byteLength > GEN_UI_CONTEXT_MAX_BYTES ||
+        entries.some(
+          (entry) =>
+            new TextEncoder().encode(serializeJson(entry.state)).byteLength >
+            GEN_UI_STATE_MAX_BYTES,
+        )
+      )
+        throw new Error("Gen UI model context exceeds its size limit");
+      return JSON.parse(serialized) as Array<{ path: string; state: unknown }>;
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        message: error instanceof Error ? error.message : "Invalid Gen UI model context",
+      });
+      return z.NEVER;
+    }
+  });
+export type GenUiModelContext = z.infer<typeof genUiModelContextSchema>;
+export function buildGenUiModelContext(entries: readonly GenUiStateEntry[]): string {
+  const selected = selectGenUiModelContext(entries);
   return selected.length
     ? `<untrusted_gen_ui_state>\n${JSON.stringify(selected).replaceAll("<", "\\u003c")}\n</untrusted_gen_ui_state>`
     : "";
@@ -217,9 +264,7 @@ export function stripGenUiModelContext(content: string): string {
   );
   if (!match) return content;
   try {
-    z.array(z.object({ path: genUiPathSchema, state: z.unknown() }).strict())
-      .max(GEN_UI_STATE_MAX_ENTRIES)
-      .parse(JSON.parse(match[1]!));
+    genUiModelContextSchema.parse(JSON.parse(match[1]!));
     return content.slice(0, match.index);
   } catch {
     return content;

@@ -1,6 +1,37 @@
 import { requestSecurityMessagesEnUS } from "@/request-security-edition/messages.js";
 /** English translations */
 const enUS: Record<string, string> = {
+  "projectManager.remoteTitle": "Remote projects",
+  "projectManager.restart": "Restart task runtime",
+  "projectManager.actions": "Project actions",
+  "projectManager.purge": "Permanently delete project data",
+  "projectManager.purgeConfirm":
+    "Delete data for “{name}” (estimated {bytes} bytes)? Working files are kept. This cannot be undone.",
+  "projectManager.purgeResult":
+    "Freed {freedBytes} bytes; deleted {deletedSessions} sessions; kept {runningSessions} running and {referencedSessions} referenced sessions; {failed} failures.",
+  "projectManager.addRoot": "Add this task’s directory to the target project?",
+  "projectManager.title": "Projects",
+  "projectManager.create": "New project",
+  "projectManager.edit": "Edit project",
+  "projectManager.description":
+    "Group tasks across folders. One absolute directory per line; an empty project gets a directory when first used.",
+  "projectManager.name": "Name",
+  "projectManager.roots": "Directories (one per line)",
+  "projectManager.primary": "Primary directory",
+  "projectManager.save": "Save",
+  "projectManager.cancel": "Cancel",
+  "projectManager.removed": "Removed projects",
+  "projectManager.restore": "Restore project",
+  "projectManager.remove": "Remove project (keep tasks)",
+  "projectManager.newTask": "New task in project",
+  "projectManager.pin": "Toggle pin",
+  "projectManager.up": "Move project up",
+  "projectManager.empty": "No projects in this view",
+  "projectManager.missing": "Directory unavailable",
+  "projectManager.archives": "Archived tasks",
+  "projectManager.archive": "Archive task",
+  "projectManager.unarchive": "Unarchive task",
+  "projectManager.move": "Move task to project",
   "startPlan.recommendation.subagentDescription":
     "Your Start Plan has quota available for {model}. Switch this subagent’s model to the Start Plan?",
   "startPlan.recommendation.preferenceSaveFailed":
@@ -2360,6 +2391,12 @@ const enUS: Record<string, string> = {
     "Applies to new sessions only. On Windows, Bash uses this shell; Auto tries Git Bash, then cmd.exe.",
   "settings.integratedTerminalShell.auto": "Auto",
   "settings.nativeSearchEnhancements": "Enhanced Find and Grep",
+  "settings.toolSearch": "Tool search",
+  "settings.toolSearchDescription":
+    "Load tools on demand. Auto uses local search with your API key; Off sends the full tool catalog. Applies to new sessions and sessions restored after an app restart; active sessions keep their settings.",
+  "settings.toolSearch.auto": "Auto",
+  "settings.toolSearch.local": "Local",
+  "settings.toolSearch.off": "Off",
   "settings.nativeSearchEnhancementsDescription":
     "Use enhanced Find and Grep in new sessions and sessions restored after an app restart. Active sessions keep their current setting; Find remains unchanged on Windows.",
   "settings.memory": "Memory",

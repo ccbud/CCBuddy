@@ -60,6 +60,7 @@ export interface WorkspaceShellCCbuddyState {
 }
 
 export interface CreateTaskOptions {
+  projectId?: string;
   /** 异步预填只能提交到解析 Skill 时的同一新任务目标。 */
   expectedWorkspaceKey?: string;
   provider?: CCbuddyProvider;

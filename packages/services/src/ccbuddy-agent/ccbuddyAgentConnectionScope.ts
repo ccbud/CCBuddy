@@ -218,6 +218,7 @@ function createHello(context: CCbuddyAgentV4ConnectionContext): HelloMessage {
       compression: "none",
       workspaceHookReview: true,
       independentPlanState: true,
+      genUiContext: true,
       // 本 Host 会转发 `workflowRun.*` 键级增量；客户端见到它才能在 clientHello 里回声明
       // （那个 capabilities 是 .strict() 的，反过来会让老 Host 握不上手）。
       workflowRunDeltas: true,

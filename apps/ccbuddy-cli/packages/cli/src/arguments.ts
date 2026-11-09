@@ -64,6 +64,9 @@ export const parseGlobalArgs = (argv: string[]) =>
       "force-mcs": {
         type: "boolean",
       },
+      "toolsearch-mode": {
+        type: "string",
+      },
       mode: {
         type: "string",
       },

@@ -1,3 +1,4 @@
+import type { ToolSearchMode } from "@ccbuddy/contracts";
 import { getDefaultConfigPath, updateUiLocaleInFileConfig } from "@ccbuddy/adapters/config";
 import type { SessionEvent } from "@ccbuddy/contracts";
 import type { CCbuddyAppOptions } from "@ccbuddy/bootstrap";
@@ -53,6 +54,7 @@ export function createTuiSubmitPrompt(
   startupLocale: SupportedLocale = DEFAULT_LOCALE,
   toolDisallowlist?: readonly string[],
   forceMcs = false,
+  toolsearchMode: ToolSearchMode = "off",
   browserUse?: GlobalOptions["browserUse"],
   browserExecutable?: GlobalOptions["browserExecutable"],
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
@@ -158,6 +160,7 @@ export function createTuiSubmitPrompt(
         runtimeConfig: {
           ...(modeState.override ? { mode: modeState.override } : {}),
           ...(toolDisallowlist ? { toolDisallowlist } : {}),
+          toolSearch: { mode: toolsearchMode },
           ...(forceMcs ? { midConversationSystem: { mode: "force" as const } } : {}),
           // 首个 app 与 /new、/resume、fork 都经这里创建，mode 因此在进程内一致。
           ...resolveWorkflowModeRuntimeConfig(workflowMode),

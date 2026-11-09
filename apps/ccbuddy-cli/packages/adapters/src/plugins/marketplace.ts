@@ -68,12 +68,7 @@ const CLAUDE_MARKETPLACE_REFRESH_TIMEOUT_MS = 30_000;
 const MARKETPLACE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const PLUGIN_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const SOURCE_SHA256_PATTERN = /^[a-f0-9]{64}$/u;
-const UNSUPPORTED_MANIFEST_FIELDS = [
-  "channels",
-  "lspServers",
-  "outputStyles",
-  "settings",
-] as const;
+const UNSUPPORTED_MANIFEST_FIELDS = ["channels", "lspServers", "outputStyles", "settings"] as const;
 
 export type MarketplaceSource =
   | { source: "url"; headers?: Record<string, string>; url: string }
@@ -985,6 +980,8 @@ export async function describeMarketplacePlugin(input: {
   marketplace: string;
   name: string;
   storageRoot: string;
+  /** 只包住会写 known/manifest 的懒加载分支；其余只读路径不进锁。 */
+  withWriteLock?: <T>(write: () => Promise<T>) => Promise<T>;
 }): Promise<DescribeMarketplacePluginResult> {
   const diagnostics: PluginValidationDiagnostic[] = [];
   const pluginId = `${input.name}@${input.marketplace}`;
@@ -1012,11 +1009,19 @@ export async function describeMarketplacePlugin(input: {
 
   let manifest: PluginMarketplaceManifest | null = null;
   try {
-    await ensureMarketplaceManifestAvailable({
-      marketplace: input.marketplace,
-      storageRoot: input.storageRoot,
-    });
     manifest = loadMarketplaceManifestSync(input.storageRoot, input.marketplace);
+    if (!manifest) {
+      // Bugfix：describe 曾整体持 storage lock，安装下载期间所有详情都排在锁后。
+      // 只有 manifest 缺失时才写 known/manifest，此时必须与安装、市场刷新串行。
+      const withWriteLock = input.withWriteLock ?? ((write) => write());
+      await withWriteLock(() =>
+        ensureMarketplaceManifestAvailable({
+          marketplace: input.marketplace,
+          storageRoot: input.storageRoot,
+        }),
+      );
+      manifest = loadMarketplaceManifestSync(input.storageRoot, input.marketplace);
+    }
   } catch (error) {
     diagnostics.push(toValidationDiagnostic(error, pluginId));
     return { components: [], diagnostics };
@@ -1246,7 +1251,9 @@ export async function validateLocalPluginPath(input: {
       },
     ];
   }
-  const rootPath = statSync(resolved).isDirectory() ? resolved : resolveManifestRootFromFile(resolved);
+  const rootPath = statSync(resolved).isDirectory()
+    ? resolved
+    : resolveManifestRootFromFile(resolved);
   if (findMarketplaceManifestPath(rootPath)) {
     return validateMarketplaceSource({
       signal: input.signal,
@@ -2143,7 +2150,12 @@ function defaultMarketplaceSourceFromString(
   if (trimmed === "bundled:ccbuddy") {
     return {
       source: "file",
-      path: join(storageRoot, "marketplaces", CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE, MARKETPLACE_FILE),
+      path: join(
+        storageRoot,
+        "marketplaces",
+        CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE,
+        MARKETPLACE_FILE,
+      ),
     };
   }
   if (/^[^/]+\/[^/]+(?:[#@].+)?$/u.test(trimmed) && !trimmed.includes(":")) {
@@ -2328,6 +2340,9 @@ export function parseEntryStoreListing(
   };
 
   const listing: PluginStoreListing = {};
+  if (entry.publisherType === "official" || entry.publisherType === "community") {
+    listing.publisherType = entry.publisherType;
+  }
   const displayName = readString("displayName");
   if (displayName) listing.displayName = displayName;
   const displayNameI18n = readStringMap("displayName_i18n");

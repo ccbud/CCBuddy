@@ -1,8 +1,21 @@
-import type { CCbuddyMessagePart, CCbuddyMessageWithParts, CCbuddyToolState } from "@ccbuddy/shared";
+import type {
+  CCbuddyMessagePart,
+  CCbuddyMessageWithParts,
+  CCbuddyToolState,
+} from "@ccbuddy/shared";
+import { normalizeGenUiInput } from "@ccbuddy/core";
+import { genUiModelContextSchema } from "@ccbuddy/shared/gen-ui";
 import type { MessagePart, MessageWithParts, ToolState } from "@ccbuddy/contracts";
 import { shouldHideInvalidToolCallFromProduct } from "../tool-call-product-visibility.js";
 
 export function mapMessageWithParts(message: MessageWithParts): CCbuddyMessageWithParts {
+  const intent =
+    message.info.metadata?.conversationInputIntent ?? message.info.metadata?.inputIntent;
+  const context = genUiModelContextSchema.safeParse(
+    intent && typeof intent === "object"
+      ? (intent as Record<string, unknown>).genUiContext
+      : undefined,
+  );
   return {
     info:
       message.info.role === "user"
@@ -56,7 +69,20 @@ export function mapMessageWithParts(message: MessageWithParts): CCbuddyMessageWi
         (part) =>
           part.type !== "tool" || !shouldHideInvalidToolCallFromProduct(part.tool, part.metadata),
       )
-      .map(mapMessagePart),
+      .map((part) => {
+        if (
+          message.info.role === "user" &&
+          !message.info.synthetic &&
+          part.type === "text" &&
+          !part.synthetic
+        ) {
+          return mapMessagePart({
+            ...part,
+            text: normalizeGenUiInput(part.text, context.success ? context.data : undefined).text,
+          });
+        }
+        return mapMessagePart(part);
+      }),
   };
 }
 

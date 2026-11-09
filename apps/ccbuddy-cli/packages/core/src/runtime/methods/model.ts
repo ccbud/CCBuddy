@@ -118,6 +118,7 @@ export async function runModelTextRequest(
   const modelRequest = {
     messages: projectedOptions.messages,
     tools: projectedOptions.tools,
+    toolSearchEnabled: projectedOptions.toolSearchEnabled,
     abortSignal: projectedOptions.abortSignal,
     ...(projectedOptions.maxOutputTokens !== undefined
       ? { options: { maxOutputTokens: projectedOptions.maxOutputTokens } }

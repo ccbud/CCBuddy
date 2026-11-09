@@ -158,7 +158,10 @@ export const resolveBuildAliases = ({
     "../../packages/shared/src/model-selection.ts",
   ),
   // 共享 Model Schema 新增的子路径不能被通用 alias 拼到 index.ts 后面。
-  "@ccbuddy/shared/model-config": resolve(rootDirectory, "../../packages/shared/src/model-config.ts"),
+  "@ccbuddy/shared/model-config": resolve(
+    rootDirectory,
+    "../../packages/shared/src/model-config.ts",
+  ),
   // 进程异常边界在 bootstrap 之前使用该轻量契约，不能落入 shared 的通用前缀 alias。
   "@ccbuddy/shared/process-diagnostic": resolve(
     rootDirectory,
@@ -198,6 +201,8 @@ export const resolveBuildAliases = ({
   ),
   // 插件 UI（MCP Apps）协议子路径：adapters/core/contracts 的 dist 引用它，同样要先于通用入口声明。
   "@ccbuddy/shared/mcp-apps": resolve(rootDirectory, "../../packages/shared/src/mcp-apps/index.ts"),
+  // GenUI 上下文使用独立子入口，必须避免通用 alias 将其拼成 index.ts/gen-ui。
+  "@ccbuddy/shared/gen-ui": resolve(rootDirectory, "../../packages/shared/src/gen-ui/index.ts"),
   "@ccbuddy/shared/node": resolve(rootDirectory, "../../packages/shared/src/node.ts"),
   // 通用 alias 会把子入口拼到 index.ts 后，发行实现必须独立解析。
   "@ccbuddy/shared/request-security": resolve(

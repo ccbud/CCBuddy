@@ -1,4 +1,12 @@
+export { createRemoteProjectService } from "./project/index.js";
 import { IGenUiService } from "./gen-ui/contract.js";
+import {
+  createProjectService,
+  createProjectDataPort,
+  createTaskAutoArchiveScheduler,
+  shouldRescanTaskAutoArchive,
+  IProjectService,
+} from "./project/index.js";
 import { createGenUiService } from "./gen-ui/node.js";
 import { channelReplyHostRequestSchema, channelReplyResultSchema } from "@ccbuddy/shared";
 /* eslint-disable max-lines -- host process 服务注册和启动装配需要集中维护，拆散后会更难追踪依赖注入顺序 */
@@ -12,9 +20,10 @@ import {
   NodeModelSelectionConfigRepository,
   PERSONAL_PROVIDER_CONFIG_FILE_NAME,
 } from "@ccbuddy/provider-node";
-import { getAppConfigDir as resolveAppConfigDir } from "./paths.js";
+import { getAppConfigDir as resolveAppConfigDir, getWorkspaceHash } from "./paths.js";
 import {
   buildLocalMediaPreviewUrl,
+  resolveWorkspaceKey,
   type DynamicWorkflowMode,
   type ProviderProvisioningTrigger,
 } from "@ccbuddy/shared";
@@ -653,6 +662,7 @@ const providerProvisioningTriggerDisposers = new WeakMap<
 // （stdioDesktopPresentationSurface 单测稳定复现），Linux 的 unlink-while-open 语义掩盖了泄漏。
 // 与其它侧表一样按 ServiceCollection 登记并在 dispose 时统一 close。
 const sharedSqliteRepos = new WeakMap<ServiceCollection, ReadonlyArray<{ close(): void }>>();
+const projectSchedulerDisposers = new WeakMap<ServiceCollection, () => void>();
 const accountRequestAuthServices = new WeakMap<ServiceCollection, IAccountRequestAuthService>();
 export type OffPeakRequestAuthBuilder = (
   ticketId: string,
@@ -1281,7 +1291,12 @@ export function createLocalServices(options: {
   const systemService = createSystemService();
   // onboarding 资格与任务列表共用同一份全局 tasks-index；repo 懒加载数据库，提前构造不会
   // 增加启动 I/O，后续 session syncer 也继续复用这一实例。
-  const taskIndexRepo = new TaskIndexRepo();
+  const taskIndexRepo = new TaskIndexRepo(undefined, 5000, {
+    readSettings: () => settingService.get(),
+    ...(options?.serviceAuthorityMode && options.serviceAuthorityMode !== "desktop-local"
+      ? { hostId: "local" }
+      : {}),
+  });
   // onboarding 完成记录：userId 由登录态补全（apikey/未登录为 null），见 docs/onboarding-record-spec.md。
   const onboardingRecordService = createOnboardingRecordService({
     loadUserId: async () => (await oauthCredentialRepo.loadActiveUserProfile())?.id ?? null,
@@ -1958,6 +1973,25 @@ export function createLocalServices(options: {
           resolveOffPeakTaskService: () => offPeakTaskServiceForAgent,
         };
   const ccbuddyAgentService = createCCbuddyAgentService({
+    prepareSessionCreation: async (target) => {
+      const prepared = (await taskIndexRepo.getProjectRepository()).reserveCreatedTask({
+        task: { ...target, taskId: target.sessionId },
+        projectId: target.projectId,
+        creationCommand: target.creationCommand,
+        additionalDirectories: target.additionalDirectories,
+      });
+      return { sessionId: prepared.taskId, additionalDirectories: prepared.additionalDirectories };
+    },
+    prepareForkCreation: async (target) => {
+      (await taskIndexRepo.getProjectRepository()).reserveCreatedTask({
+        task: { ...target, taskId: target.sessionId },
+        parentTaskId: target.parentSessionId,
+      });
+    },
+    resolveSessionDirectories: async (target) =>
+      (await projectService.resolveSessionDirectories({ ...target, taskId: target.sessionId }))
+        .additionalDirectories,
+
     ...(agentAccountProviderConfigSource
       ? { accountProviderConfigSource: agentAccountProviderConfigSource }
       : {}),
@@ -2152,6 +2186,7 @@ export function createLocalServices(options: {
               askUserQuestionAutoResolutionEnabled:
                 settings.askUserQuestionAutoResolutionEnabled !== false,
               nativeSearchEnhancementsEnabled: settings.nativeSearchEnhancementsEnabled !== false,
+              toolSearchMode: settings.toolSearchMode ?? "off",
               memoryEnabled: settings.memoryEnabled === true,
               modelContextBudgetStrategy,
               // user-execution 只消费 Shell；共享默认策略是统一 result schema 的兼容占位，
@@ -2272,6 +2307,31 @@ export function createLocalServices(options: {
     });
   const fileService = createFileService({
     workspaceFileSearchFilter: options?.workspaceFileSearchFilter,
+  });
+  const projectService = createProjectService({
+    repository: () => taskIndexRepo.getProjectRepository(),
+    workspaceDirectory: join(resolveAppConfigDir(), "workspace"),
+    singleRootOnly:
+      options?.serviceAuthorityMode === "desktop-attached-remote" ||
+      options?.serviceAuthorityMode === "standalone-server",
+    directories: { home: async () => homedir(), read: (input) => fileService.readdir(input) },
+    ...(options?.serviceAuthorityMode !== "desktop-attached-remote" &&
+    options?.serviceAuthorityMode !== "standalone-server"
+      ? {
+          data: {
+            repository: () => taskIndexRepo.getProjectDataRepository(),
+            port: createProjectDataPort({
+              agent: {
+                measure: (input) => ccbuddyAgentService.measureSessionData(input),
+                purge: (input) => ccbuddyAgentService.purgeSessionData(input),
+              },
+              checkpointDirectory: (path) =>
+                join(resolveAppConfigDir(), "checkpoints", getWorkspaceHash(path)),
+            }),
+          },
+        }
+      : {}),
+    afterChange: () => broadcastService.send({ channel: "project:changed", payload: null }),
   });
   const mediaPreviewService = createMediaPreviewService({
     fileService,
@@ -2540,6 +2600,7 @@ export function createLocalServices(options: {
       IGenUiService,
       createGenUiService({ registerSandbox: options?.registerPluginSandbox }),
     )
+    .register(IProjectService, projectService)
     .register(IPluginUiBridgeService, pluginUiBridgeService)
     .register(IPluginUiSamplingService, pluginUiSamplingService)
     .register(IPluginUiAppToolsService, pluginUiAppToolsService)
@@ -2626,6 +2687,43 @@ export function createLocalServices(options: {
   // 见 sharedSqliteRepos 声明处注释：登记全部 tasks-index sqlite 句柄，dispose 链统一关闭
   sqliteReposToClose.push(taskIndexRepo);
   sharedSqliteRepos.set(services, sqliteReposToClose);
+  const archiveScheduler = createTaskAutoArchiveScheduler({
+    repository: () => taskIndexRepo.getProjectRepository(),
+    readPolicy: async () => {
+      const settings = await settingService.get();
+      return settings.taskAutoArchiveEnabled
+        ? {
+            cutoff: Date.now() - (settings.taskAutoArchiveOlderThanDays ?? 7) * 86_400_000,
+            activeTasks: ccbuddyTaskIndexSyncer.listActiveTasks(),
+          }
+        : null;
+    },
+    afterChange: async () => {
+      const workspaces = new Map(
+        (await taskIndexRepo.listTaskMetas({})).map((task) => [resolveWorkspaceKey(task), task]),
+      );
+      for (const task of workspaces.values())
+        ccbuddyTaskIndexSyncer.emitWorkspaceTaskListChanged(task, undefined, "task_meta_changed");
+      await broadcastService.send({ channel: "project:changed", payload: null });
+    },
+  });
+  const stopArchiveSettings = settingService.onDidUpdate(({ keys }) => {
+    if (shouldRescanTaskAutoArchive(keys))
+      void archiveScheduler
+        .scan()
+        .catch((error) =>
+          createServiceLogger("task-auto-archive").warn(
+            undefined,
+            "设置变更后的自动归档失败",
+            error,
+          ),
+        );
+  });
+  projectSchedulerDisposers.set(services, () => {
+    stopArchiveSettings();
+    archiveScheduler.dispose();
+  });
+  archiveScheduler.start();
   return services;
 }
 
@@ -2708,6 +2806,8 @@ function readTelemetryOAuthUserId(rawUserInfo: string | null): string {
 }
 
 export function disposeServiceResources(services: ServiceCollection): void {
+  projectSchedulerDisposers.get(services)?.();
+  projectSchedulerDisposers.delete(services);
   const content = services.getOptional(ICloudContentService);
   if (content && hasDisposeAllAndWait(content)) void content.disposeAllAndWait().catch(() => {});
   (
@@ -2749,6 +2849,8 @@ export function disposeServiceResources(services: ServiceCollection): void {
 }
 
 export async function disposeServiceResourcesAndWait(services: ServiceCollection): Promise<void> {
+  projectSchedulerDisposers.get(services)?.();
+  projectSchedulerDisposers.delete(services);
   (
     services.getOptional(IGenUiService) as (IGenUiService & { dispose?(): void }) | undefined
   )?.dispose?.();
