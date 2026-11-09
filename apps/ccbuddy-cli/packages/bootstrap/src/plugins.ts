@@ -51,7 +51,10 @@ import type {
 } from "@ccbuddy/contracts";
 import { CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE, isOfficialMarketplaceId } from "@ccbuddy/contracts";
 import { resolveWorkspaceStateRoot } from "@ccbuddy/contracts/workspace-state";
-import { CCBUDDY_CUA_OFFICIAL_PLUGIN_ID, isCCbuddyCuaInternalFeatureEnabled } from "@ccbuddy/shared";
+import {
+  CCBUDDY_CUA_OFFICIAL_PLUGIN_ID,
+  isCCbuddyCuaInternalFeatureEnabled,
+} from "@ccbuddy/shared";
 import { resolveOfficialPluginRoots } from "./app/bundled-plugins.js";
 import {
   DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
@@ -223,6 +226,7 @@ export interface ValidateCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptio
 export interface DescribeCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
   marketplace: string;
   pluginName: string;
+  withWriteLock?: <T>(write: () => Promise<T>) => Promise<T>;
 }
 
 export interface CCbuddyPluginInstallData {
@@ -250,7 +254,9 @@ function countVisibleMarketplacePlugins(
   return plugins.filter((entry) => entry.name !== OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME).length;
 }
 
-export function resolveCCbuddyPlugins(options: ResolveCCbuddyPluginsOptions = {}): PluginLoadOutcome {
+export function resolveCCbuddyPlugins(
+  options: ResolveCCbuddyPluginsOptions = {},
+): PluginLoadOutcome {
   const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
 
   return discoverNodePluginsSync({
@@ -346,7 +352,8 @@ export function getCCbuddyPluginsOverview(
     (def) =>
       suppressed.has(`${def.name}@${CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE}`) &&
       // computer-use 的恢复入口需要 internal 特性开启（与 restoreBuiltinPluginCore 同口径）。
-      (def.name !== "computer-use" || isCCbuddyCuaInternalFeatureEnabled(options.env ?? process.env)),
+      (def.name !== "computer-use" ||
+        isCCbuddyCuaInternalFeatureEnabled(options.env ?? process.env)),
   ).map((def) => {
     const listing = def.listing
       ? parseEntryStoreListing({ name: def.name, ...def.listing })
@@ -357,6 +364,8 @@ export function getCCbuddyPluginsOverview(
       marketplace: CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE,
       version: def.version,
       installed: false,
+      // Bugfix：可恢复条目只带 listing 时丢了 "ui"，卸载后的文档插件从「UI 插件」掉进分类分组。
+      ...(def.componentTypes ? { componentTypes: [...def.componentTypes] } : {}),
       ...(listing ? { listing } : {}),
     };
   });
@@ -910,7 +919,9 @@ async function restoreBuiltinPluginCore(options: RestoreBuiltinPluginOptions): P
   ) {
     // overview 虽然隐藏了恢复入口，但协议调用仍可绕过 UI 写用户配置。
     // 功能开关关闭时在写盘前失败，确保用户配置与插件缓存都保持零痕迹。
-    throw new Error("computer-use built-in plugin requires CCBUDDY_CUA_PRODUCT_HELPER to be enabled");
+    throw new Error(
+      "computer-use built-in plugin requires CCBUDDY_CUA_PRODUCT_HELPER to be enabled",
+    );
   }
   const { configResult } = resolvePluginContext(options);
   await removeSuppressedBuiltinInFileConfig(configResult.sources.user.path, options.pluginId);
@@ -929,7 +940,9 @@ export async function restoreBuiltinPlugin(options: RestoreBuiltinPluginOptions)
   await withPluginStorageLock(pluginStorageRoot, () => restoreBuiltinPluginCore(options));
 }
 
-export async function configureCCbuddyPlugin(options: ConfigureCCbuddyPluginOptions): Promise<void> {
+export async function configureCCbuddyPlugin(
+  options: ConfigureCCbuddyPluginOptions,
+): Promise<void> {
   const normalizedOptions = normalizePluginOptions(options.options);
   const clearOptionKeys = normalizePluginOptionKeys(options.clearOptionKeys);
   const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
@@ -1020,11 +1033,12 @@ export async function describeCCbuddyPlugin(
   options: DescribeCCbuddyPluginOptions,
 ): Promise<DescribeMarketplacePluginResult> {
   const { pluginStorageRoot } = resolvePluginContext(options);
-  ensureDefaultPluginMarketplaces(pluginStorageRoot);
+  // 默认市场登记由 ensureMarketplaceManifestAvailable 在写锁内完成；这里不再无锁写 known 列表。
   return describeMarketplacePlugin({
     marketplace: options.marketplace,
     name: options.pluginName,
     storageRoot: pluginStorageRoot,
+    ...(options.withWriteLock ? { withWriteLock: options.withWriteLock } : {}),
   });
 }
 
@@ -1256,6 +1270,7 @@ function inferComponentTypes(raw: Record<string, unknown>): string[] {
   if ("hooks" in raw) types.push("hook");
   if ("mcpServers" in raw) types.push("mcp");
   if ("lspServers" in raw) types.push("lsp");
+  if (Array.isArray(raw.componentTypes) && raw.componentTypes.includes("ui")) types.push("ui");
   return types;
 }
 
@@ -1271,6 +1286,7 @@ function inferComponentTypesFromMetadata(plugin: PluginMetadata): string[] {
     types.push("mcp");
   }
   if (plugin.hookDetails.length > 0) types.push("hook");
+  if (plugin.uiSurfaces?.length) types.push("ui");
   return types;
 }
 

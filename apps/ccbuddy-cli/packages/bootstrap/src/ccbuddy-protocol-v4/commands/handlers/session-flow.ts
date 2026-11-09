@@ -9,6 +9,7 @@ import type {
 import { isHighspeedProviderId } from "@ccbuddy/shared";
 import { createModelExecutionContext } from "../../../ccbuddy-protocol/model-execution.js";
 import { mapAttachmentRefsToTurnAttachments } from "../attachment-refs.js";
+import { normalizeGenUiInput } from "@ccbuddy/core";
 import {
   applyHeldQueueDisposition,
   hasPromptInput,
@@ -47,10 +48,17 @@ async function sendText(
   host: V4CommandCoreHost,
   envelope: CommandEnvelope,
 ): Promise<CommandResult | undefined> {
-  const rawPayload = envelope.payload as CommandPayloadMap["sendText"];
+  const originalPayload = envelope.payload as CommandPayloadMap["sendText"];
+  const rawPayload = {
+    ...originalPayload,
+    ...normalizeGenUiInput(originalPayload.text, originalPayload.genUiContext),
+  };
   const record = requireRecord(host, envelope.sessionId);
   // Bug 根因：旧校验只看正文，UI 已允许的 attachment-only query 会在 CLI 被误判为空。
-  if (!hasPromptInput(rawPayload.text, rawPayload.attachments) && !rawPayload.conversationQuotes?.length) {
+  if (
+    !hasPromptInput(rawPayload.text, rawPayload.attachments) &&
+    !rawPayload.conversationQuotes?.length
+  ) {
     throw new V4InputAdmissionRejectedError("proto.invalidPayload", "input must not be empty");
   }
   const activeAutomationId = resolveTurnAutomationId({
@@ -73,11 +81,15 @@ async function sendText(
       }
     : rawPayload;
   // canonical intent 必须和 admission 看同一份净荷，否则 transcript 会留下没有凭据的加速标记。
-  const intentEnvelope = dropsHighspeed ? ({ ...envelope, payload } as CommandEnvelope) : envelope;
+  const intentEnvelope = { ...envelope, payload } as CommandEnvelope;
   const attachments = await mapAttachmentRefsToTurnAttachments(record.app, payload.attachments);
   const submittedExecutionState = resolveSubmittedExecutionState(record, payload);
   const submissionIntent = (options: Parameters<typeof inputIntentMetadata>[1]) =>
-    inputIntentMetadata(intentEnvelope, { ...options, ...submittedExecutionState });
+    inputIntentMetadata(intentEnvelope, {
+      ...options,
+      ...submittedExecutionState,
+      genUiContext: payload.genUiContext,
+    });
   const routingMode = host.getInputRoutingMode?.(envelope.sessionId ?? "") ?? null;
   const forceStartNow = payload.requestedDelivery === "startNow";
   // 加速本轮由「标准 Selection 指向加速 Provider + 单次执行材料」表达；判定必须用 Family

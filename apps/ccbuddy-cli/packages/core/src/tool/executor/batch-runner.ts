@@ -45,6 +45,7 @@ export async function executeToolBatch(
           traceContext: options?.traceContext,
           subagentModelOverride: options?.subagentModelOverride,
           model: options?.model,
+          toolSearch: options?.toolSearch,
         }),
       ),
     );
@@ -79,10 +80,12 @@ export async function* executeToolSchedule(
 
     const groupResults = await executeBatch(groupTools, {
       automationTurn: options?.automationTurn,
+      automationId: options?.automationId,
       signal: options?.signal,
       traceContext: options?.traceContext,
       subagentModelOverride: options?.subagentModelOverride,
       model: options?.model,
+      toolSearch: options?.toolSearch,
       maxConcurrency,
     });
     allResults.push(...groupResults);

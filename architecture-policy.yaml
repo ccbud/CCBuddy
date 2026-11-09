@@ -2,6 +2,69 @@ version: 1
 
 # 存量模块先标记为 legacy；新模块或完成迁移的模块设置 managed: true。
 modules:
+  - id: session-lifecycle
+    roots: [apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle]
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle/contract.ts
+    layers: { app: . }
+    owner: conversation
+  - id: protocol-session-data
+    roots: [packages/shared/src/ccbuddy-protocol-v4/session-data]
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/ccbuddy-protocol-v4/session-data/index.ts
+      - packages/shared/src/ccbuddy-protocol-v4/session-data/contract.ts
+    layers: { domain: . }
+    owner: persistence
+  - id: cli-session-data-files
+    roots: [apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files]
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files/index.ts
+      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files/contract.ts
+    layers: { adapters: . }
+    owner: persistence
+  - id: cli-session-data
+    roots: [apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data]
+    managed: true
+    requires: [shared, ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data/contract.ts
+    layers: { app: . }
+    owner: persistence
+  - id: project
+    roots: [packages/services/src/project]
+    managed: true
+    requires: [project-storage, services, shared]
+    publicEntrypoints:
+      - packages/services/src/project/index.ts
+      - packages/services/src/project/contract.ts
+    layers: { adapters: . }
+    owner: conversation
+  - id: sqlite-migrations
+    roots: [packages/shared/src/sqlite-migrations]
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/sqlite-migrations/index.ts
+      - packages/shared/src/sqlite-migrations/contract.ts
+    layers: { adapters: . }
+    owner: persistence
+  - id: project-storage
+    roots: [packages/services/src/project-storage]
+    managed: true
+    requires: [shared, sqlite-migrations]
+    publicEntrypoints:
+      - packages/services/src/project-storage/index.ts
+      - packages/services/src/project-storage/contract.ts
+    layers: { adapters: . }
+    owner: conversation
   - id: rpc
     roots: [packages/rpc/src]
     managed: false
@@ -27,7 +90,7 @@ modules:
   - id: session
     roots: [packages/services/src/session]
     managed: false
-    requires: [shared]
+    requires: [shared, project-storage]
     publicEntrypoints: [packages/services/src/session/contract.ts]
     owner: conversation
   - id: storage

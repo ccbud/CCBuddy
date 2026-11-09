@@ -1,3 +1,4 @@
+import { normalizeGenUiInput } from "@ccbuddy/core";
 import type {
   BackgroundResultOriginMeta,
   HighspeedMessageMetadata,
@@ -48,6 +49,7 @@ interface CanonicalConversationFactBase {
 }
 
 export interface CanonicalUserIntentFact extends CanonicalConversationFactBase {
+  genUiContext?: import("@ccbuddy/contracts").TurnInputIntentMetadata["genUiContext"];
   inputOrigin?: "desktop" | "mobile";
   conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
   botGroupSource?: import("@ccbuddy/shared").BotGroupInputSource;
@@ -220,6 +222,11 @@ function normalizeTurnStarted(
   payload: TurnStartedPayload,
   ids: { runtimeTurnId: string; productTurnId: string },
 ): CanonicalUserIntentFact {
+  const input = normalizeGenUiInput(payload.input, payload.intent?.genUiContext);
+  const intentInput = normalizeGenUiInput(
+    payload.intent?.text ?? payload.input,
+    payload.intent?.genUiContext,
+  );
   const transcriptMessageId = payload.messageId ? String(payload.messageId) : null;
   const origin = userInputOrigin(payload.inputSource);
   // live 使用 runtime turnId、cold 使用 hydrate-turn-N；即使二者指向
@@ -250,8 +257,9 @@ function normalizeTurnStarted(
     origin,
     placement: { lane: "trigger", relation: "withinProductTurn" },
     diagnostics,
-    input: payload.input,
-    intentText: payload.intent?.text ?? payload.input,
+    input: input.text,
+    intentText: intentInput.text,
+    ...(intentInput.genUiContext !== undefined ? { genUiContext: intentInput.genUiContext } : {}),
     intentKind: payload.intent?.kind === "sendGoalCommand" ? "sendGoalCommand" : "sendText",
     turnNumber: payload.turnNumber,
     executionKind: payload.executionKind ?? "agent",

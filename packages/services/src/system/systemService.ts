@@ -350,7 +350,7 @@ export function createSystemService(options: CreateSystemServiceOptions = {}): I
 
   return {
     async info(): Promise<SystemInfo> {
-      return { homedir: homedir(), platform: process.platform };
+      return { homedir: homedir(), platform: process.platform, virtualProjects: true };
     },
 
     async listIntegratedTerminalShells(): Promise<IntegratedTerminalShellOption[]> {

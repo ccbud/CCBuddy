@@ -4,6 +4,8 @@ import {
   GEN_UI_GLOBALS_EVENT,
   GEN_UI_STATE_CONTEXT_KEY,
   GEN_UI_TWEAK_CONTEXT_KEY,
+  GEN_UI_STYLE_CONTEXT_KEY,
+  genUiStyleVariablesSchema,
   GEN_UI_STATE_METHOD,
   GEN_UI_FOLLOW_UP_METHOD,
   GEN_UI_TWEAK_METHOD,
@@ -26,7 +28,10 @@ const app = new App({ name: "ccbuddy-gen-ui", version: "1" }, {}, { autoResize: 
 installGenUiTweakRuntime(async (_name, message) => {
   await ready;
   return app.request(
-    { method: GEN_UI_TWEAK_METHOD, params: genUiTweakMessageSchema.parse(message) },
+    {
+      method: GEN_UI_TWEAK_METHOD,
+      params: genUiTweakMessageSchema.parse(message),
+    },
     genUiTweakResultSchema,
   );
 });
@@ -41,7 +46,8 @@ const update = (context: Record<string, unknown>) => {
   }
   const variables = (context.styles as { variables?: Record<string, string> } | undefined)
     ?.variables;
-  for (const [name, value] of Object.entries(variables ?? {}))
+  const controls = genUiStyleVariablesSchema.parse(context[GEN_UI_STYLE_CONTEXT_KEY] ?? {});
+  for (const [name, value] of Object.entries({ ...variables, ...controls }))
     if (name.startsWith("--")) document.documentElement.style.setProperty(name, value);
   window.dispatchEvent(
     new CustomEvent(GEN_UI_GLOBALS_EVENT, {
@@ -89,7 +95,11 @@ const api = Object.freeze({
     await app.request({ method: GEN_UI_FOLLOW_UP_METHOD, params }, z.object({}));
   },
 });
-Object.defineProperty(window, "ccbuddy", { value: api, writable: false, configurable: false });
+Object.defineProperty(window, "ccbuddy", {
+  value: api,
+  writable: false,
+  configurable: false,
+});
 // guest 的 hover/键盘事件不会冒泡到宿主 DOM；只传展示事件，不增加 Agent 能力。
 const presentation = (params: { hovered?: boolean; escape?: true }) => {
   void ready

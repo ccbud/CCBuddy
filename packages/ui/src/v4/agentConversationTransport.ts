@@ -81,7 +81,7 @@ type ConversationV4AgentService = Pick<
   | "onDynamicLocalTtftFacts"
   | "onAgentRuntimeRestarted"
 > &
-  Partial<Pick<ICCbuddyAgentService, "onAgentRuntimeLifecycle">>;
+  Partial<Pick<ICCbuddyAgentService, "onAgentRuntimeLifecycle" | "onDynamicSessionLifecycle">>;
 
 /**
  * 一条 host 连接（= 一个 workspace）上的 v4 conversation 传输面。
@@ -167,6 +167,11 @@ export function createAgentConversationTransport(
   let upstream: { dispose(): void } | null = null;
   let runtimeRestartUpstream: { dispose(): void } | null = null;
   let runtimeLifecycleUpstream: { dispose(): void } | null = null;
+  const sessionGenerations = new Map<string, number>();
+  const sessionLifecycleListeners = new Set<
+    (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void
+  >();
+  let sessionLifecycleUpstream: { dispose(): void } | null = null;
   let runtimeGeneration = 0;
   const targetWorkspaceKey = target.workspaceIdentity?.trim() || target.workspacePath;
   const lifecycleContext = {
@@ -184,6 +189,37 @@ export function createAgentConversationTransport(
     return bytes;
   };
   return {
+    ...(agentService.onDynamicSessionLifecycle
+      ? {
+          onSessionLifecycle(
+            listener: (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void,
+          ) {
+            sessionLifecycleListeners.add(listener);
+            sessionLifecycleUpstream ??= agentService.onDynamicSessionLifecycle!(target)(
+              (snapshot) => {
+                if (snapshot.state === "stopping") {
+                  const topic = "conversation/" + snapshot.sessionId;
+                  sessionGenerations.set(topic, (sessionGenerations.get(topic) ?? 0) + 1);
+                  for (const [subscriptionId, subscriptionTopic] of topicBySubscriptionId) {
+                    if (subscriptionTopic !== topic) continue;
+                    barrier.forget(subscriptionId);
+                    decoder.discard(topic, subscriptionId);
+                    topicBySubscriptionId.delete(subscriptionId);
+                  }
+                }
+                for (const callback of sessionLifecycleListeners) callback(snapshot);
+              },
+            );
+            return () => {
+              sessionLifecycleListeners.delete(listener);
+              if (!sessionLifecycleListeners.size) {
+                sessionLifecycleUpstream?.dispose();
+                sessionLifecycleUpstream = null;
+              }
+            };
+          },
+        }
+      : {}),
     async subscribe(params: SubscribeParams): Promise<V4ConversationSubscribeResult> {
       const sessionId = parseConversationTopic(params.topic);
       if (!sessionId) {
@@ -204,13 +240,17 @@ export function createAgentConversationTransport(
         await ensureHandshake();
         pending = barrier.begin(params.topic);
         const subscribeRuntimeGeneration = runtimeGeneration;
+        const subscribeSessionGeneration = sessionGenerations.get(params.topic) ?? 0;
         const result = await agentService.subscribeConversationV4({
           ...workspace,
           sessionId,
           ...(params.base ? { base: params.base } : {}),
           ...(params.visibility ? { visibility: params.visibility } : {}),
         });
-        if (subscribeRuntimeGeneration !== runtimeGeneration) {
+        if (
+          subscribeRuntimeGeneration !== runtimeGeneration ||
+          subscribeSessionGeneration !== (sessionGenerations.get(params.topic) ?? 0)
+        ) {
           // 旧 runtime 的迟到 ACK 可能复用新 runtime 的 subId；此处只能
           // 丢本地 pending，不能向新 runtime 盲退订同名 subscription。
           barrier.cancel(pending);
@@ -353,6 +393,7 @@ export function createAgentConversationTransport(
         planEnabled?: boolean;
         config?: { planEnabled?: boolean };
         firstInput?: { planEnabled?: boolean };
+        genUiContext?: unknown[];
       };
       // 旧 Host 会剥掉未知字段；不能把 yolo + Plan 错发成完全访问执行。
       if (
@@ -360,6 +401,13 @@ export function createAgentConversationTransport(
         (payload.planEnabled || payload.config?.planEnabled || payload.firstInput?.planEnabled)
       ) {
         throw new Error("proto.independentPlanUnsupported");
+      }
+      if (
+        envelope.type === "sendText" &&
+        payload.genUiContext?.length &&
+        hello.capabilities.genUiContext !== true
+      ) {
+        throw new Error("proto.genUiContextUnsupported");
       }
       return sendWithConversationDelayE2E(envelope, () =>
         agentService.sendConversationCommandV4({ ...workspace, envelope }),
@@ -389,7 +437,11 @@ export function createAgentConversationTransport(
       });
     },
     // dwf journal 的两个只读查询拆在 agentConversationTransportWorkflowRuns.ts（max-lines 边界）。
-    ...createWorkflowRunTransportMethods({ agentService, ensureHandshake, workspace }),
+    ...createWorkflowRunTransportMethods({
+      agentService,
+      ensureHandshake,
+      workspace,
+    }),
     async fileChanges(
       params: V4ConversationFileChangesParams,
     ): Promise<V4ConversationFileChangesResult> {

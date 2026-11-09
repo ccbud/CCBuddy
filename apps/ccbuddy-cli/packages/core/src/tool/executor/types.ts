@@ -1,3 +1,4 @@
+import type { ToolSearchExecutionContext } from "@ccbuddy/contracts";
 import type {
   AgentExecutionTelemetryPort,
   AgentTelemetryActorKind,
@@ -142,6 +143,10 @@ export interface ToolExecutorOptions {
 }
 
 export interface ToolExecutor {
+  areReadsDeniedWithoutPrompt(
+    filePaths: readonly string[],
+    traceContext: TraceContext,
+  ): Promise<boolean[]>;
   /** 同一权限链供 MCP App 使用；返回审批后的输入，不执行 handler / 不做模型结果投影。 */
   authorizeAppTool?(
     toolCall: ExecutableToolCall,
@@ -175,7 +180,9 @@ export interface ToolExecutor {
 }
 
 export interface ToolExecuteOptions {
+  toolSearch?: ToolSearchExecutionContext;
   automationTurn?: boolean;
+  automationId?: string;
   offPeakTurn?: boolean;
   signal?: AbortSignal;
   traceContext?: TraceContext;
@@ -188,6 +195,7 @@ export interface ToolBatchExecuteOptions extends ToolExecuteOptions {
 }
 
 export interface ToolExecutorDeps {
+  nextReadFileStateSnapshotIndex: () => number;
   agentTelemetry?: AgentExecutionTelemetryPort;
   agentTelemetryActorKind?: AgentTelemetryActorKind;
   registry: ToolRegistry;

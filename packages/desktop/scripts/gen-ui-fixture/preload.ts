@@ -4,6 +4,10 @@ import { installPluginSandboxHostBridge } from "../../src/preload/pluginSandbox/
 installPluginSandboxHostBridge();
 contextBridge.exposeInMainWorld("harness", {
   config: () => ipcRenderer.invoke("fixture-config"),
+  project: (method: string, input: unknown) => ipcRenderer.invoke("fixture-project", method, input),
+  projectDirectories: () => ipcRenderer.invoke("fixture-project-directories"),
+  remoteProject: (method: string, input: unknown, legacy: boolean) =>
+    ipcRenderer.invoke("fixture-remote-project", method, input, legacy),
   bridge: (method: string, input: unknown) => ipcRenderer.invoke("fixture-service", method, input),
   owner: () => ipcRenderer.invoke(PlatformChannels.PluginSandboxOwnerWebContentsId),
   dispose: (id: string, init: number) =>

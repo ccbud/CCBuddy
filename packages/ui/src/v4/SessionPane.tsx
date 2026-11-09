@@ -121,7 +121,7 @@ import {
 import { useWorkflowRunJournalSummaries } from "@/hooks/useWorkflowRunJournalSummaries.js";
 import { usePlanIdentitySnapshot } from "@/hooks/usePlanIdentitySnapshot.js";
 import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
-import { buildGenUiModelContext } from "@ccbuddy/shared/gen-ui";
+import { selectGenUiModelContext } from "@ccbuddy/shared/gen-ui";
 import { useWorkspaceHomePath } from "@/hooks/useWorkspaceHomePath.js";
 import { prepareWorkspaceWithCCbuddySessionService } from "@/hooks/useWorkspacePrepare.js";
 import {
@@ -1497,7 +1497,10 @@ export function SessionPane({
       if (!claimHighspeedCardAutoShare(candidate.cardId, autoShareNow)) continue;
       // 分享卡片改为客户端生成，不再请求后端 share 接口；到期后直接把本地统计发布到左下角。
       browserGlobalNoticeStore?.publish(
-        buildHighspeedShareNotice({ cardId: candidate.cardId, metrics: candidate.metrics }),
+        buildHighspeedShareNotice({
+          cardId: candidate.cardId,
+          metrics: candidate.metrics,
+        }),
       );
       markHighspeedCardAutoShared(candidate.cardId);
     }
@@ -1851,10 +1854,15 @@ export function SessionPane({
         submission && (sessionId === null || targetSessionId === sessionId)
           ? captureAcceptedModelSelection(submission.modelSelection)
           : undefined;
+      const projectId =
+        type === "createSession"
+          ? useCCbuddySessionStore.getState().getWorkspaceState(workspacePath, workspaceIdentity)
+              .draftProjectId
+          : null;
       const envelope = createCommandEnvelope({
         type,
         sessionId: targetSessionId,
-        payload: payload as never,
+        payload: (projectId ? { ...payload, projectId } : payload) as never,
         ...(baseRevision !== undefined ? { baseRevision } : {}),
         ...(baseLogEpoch ? { baseLogEpoch } : {}),
       });
@@ -2453,7 +2461,12 @@ export function SessionPane({
       const childSessionId = await createSelectionSideChat(pendingKey, async () => {
         const ack = await dispatchCommand(
           "createSelectionSideSession",
-          { firstInput: { text, ...(modelSelection ? { modelSelection } : {}) } },
+          {
+            firstInput: {
+              text,
+              ...(modelSelection ? { modelSelection } : {}),
+            },
+          },
           sessionId,
           undefined,
           undefined,
@@ -2559,10 +2572,22 @@ export function SessionPane({
     // 关键词固定同时包含中英文别名，任一 locale 下输入 side / btw / 辅助 都能搜到。
     // `/btw` 是 `/side` 的等价别名，适配不同用户输入习惯，面板中各自独立展示。
     const sharedKeywords = ["side", "btw", "side chat", "auxiliary", "辅助对话", "辅助", "侧边"];
-    const description = intl.formatMessage({ id: "chat.slash.app.side.description" });
+    const description = intl.formatMessage({
+      id: "chat.slash.app.side.description",
+    });
     return [
-      { value: "side", description, keywords: sharedKeywords, run: openNewSelectionSideChat },
-      { value: "btw", description, keywords: sharedKeywords, run: openNewSelectionSideChat },
+      {
+        value: "side",
+        description,
+        keywords: sharedKeywords,
+        run: openNewSelectionSideChat,
+      },
+      {
+        value: "btw",
+        description,
+        keywords: sharedKeywords,
+        run: openNewSelectionSideChat,
+      },
     ].filter((command) => !cliSlashCommandNames.has(command.value));
   }, [
     cliSlashCommandNames,
@@ -2783,8 +2808,11 @@ export function SessionPane({
   // ── 草稿态 v4 draft session 预热（m5）──
   // pane 未绑定会话时后台建 phase=draft 会话作预热载体：配置写 CAS 直达、首发复用。
   // 对外绑定语义不变（shell activeTaskId 仍 null），预热会话只是 pane 内部 effective 订阅目标。
+  const draftProjectId = useCCbuddySessionStore(
+    (state) => state.getWorkspaceState(workspacePath, workspaceIdentity).draftProjectId,
+  );
   const { binding: prewarmBinding } = useDraftSessionPrewarm({
-    enabled: sessionId === null && draftAgentStartupAllowed,
+    enabled: sessionId === null && draftAgentStartupAllowed && !draftProjectId,
     workspaceKey,
     paneId,
     invalidationVersion: draftRuntimeInvalidationVersion,
@@ -3174,6 +3202,7 @@ export function SessionPane({
       let onAcceptedSelection: (() => void) | undefined;
       const prepareHighspeedTurn = prepareHighspeedTurnFrom(highspeedOriginAtSend);
       const dispatchSubmissionCommand = async (...args: Parameters<typeof dispatchCommand>) => {
+        if (args[0] === "sendText") args[1] = { ...args[1], genUiContext: [] };
         if (
           args[0] === "sendText" &&
           args[2] &&
@@ -3181,14 +3210,14 @@ export function SessionPane({
           typeof args[1]?.text === "string"
         ) {
           try {
-            const context = buildGenUiModelContext(
+            const context = selectGenUiModelContext(
               await baseWorkspaceServices.genUiService.listState({
                 workspacePath,
                 workspaceIdentity,
                 sessionId: args[2],
               }),
             );
-            if (context) args[1] = { ...args[1], text: `${args[1].text}\n\n${context}` };
+            args[1] = { ...args[1], genUiContext: context };
           } catch {
             // 状态是辅助上下文；读取失败不能阻断既有 CommandInbox 输入路径。
             logger.warn("[gen-ui] Widget context unavailable");
@@ -3374,7 +3403,10 @@ export function SessionPane({
           }
         }
         const draftConfigPayload = buildDraftCreateConfigPayload(
-          { ...draftConfigRef.current, modelSelection: submission.modelSelection },
+          {
+            ...draftConfigRef.current,
+            modelSelection: submission.modelSelection,
+          },
           appFollowupMode,
         );
         const createAck = await dispatchSubmissionCommand(
@@ -3472,7 +3504,10 @@ export function SessionPane({
         // fallback 有 prewarm 投影时必须以 Agent 当前配置为 base；只有从未拿到投影
         // 才使用冻结的初始化元组。否则 provider fallback 后会把 localStorage 旧模型重新写回。
         const draftConfigPayload = buildDraftCreateConfigPayload(
-          { ...draftConfigRef.current, modelSelection: submission.modelSelection },
+          {
+            ...draftConfigRef.current,
+            modelSelection: submission.modelSelection,
+          },
           appFollowupMode,
         );
         // Highspeed 卡由服务端绑定 task_id，因此首发也必须先创建空 session，拿到真实
@@ -5010,7 +5045,10 @@ export function SessionPane({
       // 按 product turn 身份整轮移除：service 的 issue 已带 productTurnId，
       // 不再用 turnOrdinal 索引 UI 的 per-query 列表（两套编号会错位）。
       deselectShareProductTurn(sessionId, productTurnId);
-      updateShareDockState(sessionId, { disclosureAccepted: false, error: null });
+      updateShareDockState(sessionId, {
+        disclosureAccepted: false,
+        error: null,
+      });
     },
     [deselectShareProductTurn, sessionId, updateShareDockState],
   );
@@ -5068,7 +5106,10 @@ export function SessionPane({
     (rowId: number) => {
       if (sessionId) toggleShareRow(sessionId, rowId);
       if (sessionId) {
-        updateShareDockState(sessionId, { disclosureAccepted: false, error: null });
+        updateShareDockState(sessionId, {
+          disclosureAccepted: false,
+          error: null,
+        });
       }
     },
     [sessionId, toggleShareRow, updateShareDockState],

@@ -5,6 +5,7 @@ import { conversationQuotesSchema } from "../conversationSelection.js";
 // conversation rewind 无独立命令（裁决：= editUserQuery 的 UI 入口）；
 // workspace-only 文件撤销走 applyFileRewind，不截断聊天历史。
 import { z } from "zod";
+import { genUiModelContextSchema } from "../gen-ui/contract.js";
 import { conversationRowTargetSchema, timestampSchema } from "./core.js";
 import { attachmentRefSchema } from "./attachment-ref.js";
 import { v4ConversationFileRewindPreviewResultSchema } from "./transport.js";
@@ -53,6 +54,9 @@ export const commandPayloadSchemas = {
   // firstInput 缺省 → phase=draft 空会话；携带 → 直接 turnHeader+userInput rows。
   createSession: z.object({
     workspaceId: z.string(),
+    sessionId: z.string().min(1).optional(),
+    projectId: z.string().min(1).optional(),
+    additionalDirectories: z.array(z.string().min(1)).max(256).optional(),
     permissionScope: z.literal("session").optional(),
     firstInput: z
       .object({
@@ -92,6 +96,7 @@ export const commandPayloadSchemas = {
   sendText: z
     .object({
       text: z.string(),
+      genUiContext: genUiModelContextSchema.optional(),
       attachments: z.array(attachmentRefSchema).optional(),
       // Desktop Cmd/Ctrl+Enter 只覆盖本次 busy input，不改 session followupMode。
       // startNow 由 CLI 原子抢占当前 turn，不经过 queue admission。
@@ -268,7 +273,10 @@ export const commandPayloadSchemas = {
   // baseRevision：与 cancelBackgroundWork 同类（workflowRuns 面免 revision，假 CAS 失败
   // 只会误伤）。门在 CLI 侧（可恢复集 = cancelled ∪ failed+Interrupted），拒绝以
   // fault.command.workflowRunResumeRejected.<reason> 回 ACK。
-  resumeWorkflowRun: z.object({ workId: z.string(), name: z.string().optional() }),
+  resumeWorkflowRun: z.object({
+    workId: z.string(),
+    name: z.string().optional(),
+  }),
   // startSavedWorkflow：中枢「运行」不再合成
   // 对话文案，直接请 agent 在新会话里启动已保存工作流。与 cancelBackgroundWork / resumeWorkflowRun
   // 同类：不携 baseRevision（workflowRuns 面免 revision，假 CAS 失败只会误伤）。name 由 agent 从

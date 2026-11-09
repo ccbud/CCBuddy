@@ -1,8 +1,28 @@
 import { countContextPrefixMessages } from "../deps.js";
-import type { Model } from "../deps.js";
-import type { RuntimeMessageEntry } from "../../agent/message-history.js";
+import type { Model, TraceContext } from "../deps.js";
+import type { RuntimeAttachmentEntry, RuntimeMessageEntry } from "../../agent/message-history.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { buildContextHistoryEntries } from "./context-history-entries.js";
+import { persistRuntimeReminderMessage } from "./runtime-reminder-persistence.js";
+import { buildProjectionAnchor } from "./projection-anchor.js";
+import { commitTurnRequestEntries } from "./turn-output-token-continuation.js";
+import type { TurnRequestState } from "./turn-loop-state.js";
+
+export async function persistAnnouncements(
+  runtime: AgentRuntimeInternal,
+  state: TurnRequestState,
+  attachments: readonly RuntimeAttachmentEntry[],
+  traceContext: TraceContext,
+  model?: Model,
+): Promise<void> {
+  for (const entry of attachments) {
+    await persistRuntimeReminderMessage.call(runtime, entry, traceContext, {
+      model,
+      anchor: buildProjectionAnchor(traceContext, "synthetic"),
+    });
+    commitTurnRequestEntries(runtime, state, [entry]);
+  }
+}
 
 export function rebuildContextPrefix(
   runtime: AgentRuntimeInternal,

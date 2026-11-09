@@ -134,6 +134,7 @@ function formatListWorkflowRunsModelContent(output: unknown): ModelMessageConten
 export const listWorkflowRunsToolEntry: ToolEntry = {
   capability: "List this project's dynamic-workflow runs, including runs from other sessions",
   metadata: {
+    shouldDefer: true,
     name: LIST_WORKFLOW_RUNS_TOOL_NAME,
     description: LIST_WORKFLOW_RUNS_DESCRIPTION,
     readOnly: true,
@@ -183,7 +184,8 @@ export const listWorkflowRunsToolEntry: ToolEntry = {
   cancellation: {
     supported: false,
     cleanup: "none",
-    userVisibleMessage: "ListWorkflowRuns reads the run journal synchronously and cannot be cancelled",
+    userVisibleMessage:
+      "ListWorkflowRuns reads the run journal synchronously and cannot be cancelled",
   },
   trace: {
     required: true,

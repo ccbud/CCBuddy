@@ -1,8 +1,4 @@
-import {
-  AppBridge,
-  type McpUiStyles,
-  type McpUiHostContext,
-} from "@modelcontextprotocol/ext-apps/app-bridge";
+import { AppBridge, type McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { z } from "zod";
 import type { IGenUiService } from "@ccbuddy/services";
 import type { PluginSandboxPlatformPort, PluginSandboxHandle } from "@ccbuddy/shared/mcp-apps";
@@ -27,7 +23,7 @@ import {
 } from "@/plugin-ui/hostPrimitives.js";
 import type { GenUiCardTarget, GenUiPage, GenUiPageSnapshot } from "../contract.js";
 import { EMPTY_GEN_UI_SNAPSHOT } from "../contract.js";
-import { readGenUiStyleVariables } from "./theme.js";
+import { readGenUiStyleContext } from "./theme.js";
 import { createGenUiTweakRegistry } from "../app/tweaks.js";
 
 export interface GenUiPageInput {
@@ -67,7 +63,10 @@ export function createGenUiPage(input: GenUiPageInput): GenUiPage {
     }
   };
   const fail = (error: unknown) =>
-    update({ phase: "error", error: error instanceof Error ? error.message : String(error) });
+    update({
+      phase: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
   const plane = createPluginUiPagePlane({
     onVisibility: (value) => {
       visible = value;
@@ -78,7 +77,7 @@ export function createGenUiPage(input: GenUiPageInput): GenUiPage {
   const context: McpUiHostContext = {
     displayMode: "inline",
     theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
-    styles: { variables: readGenUiStyleVariables() as McpUiStyles },
+    ...readGenUiStyleContext(),
   };
   const pushContext = () => {
     bridge?.setHostContext({ ...context });
@@ -142,7 +141,10 @@ export function createGenUiPage(input: GenUiPageInput): GenUiPage {
     };
     active.setRequestHandler(
       GEN_UI_STATE_METHOD,
-      { params: z.object({ state: genUiWidgetStateSchema }).strict(), result: z.object({}) },
+      {
+        params: z.object({ state: genUiWidgetStateSchema }).strict(),
+        result: z.object({}),
+      },
       async ({ state }) => {
         current();
         operations++;
@@ -198,7 +200,10 @@ export function createGenUiPage(input: GenUiPageInput): GenUiPage {
       GEN_UI_PRESENTATION_METHOD,
       {
         params: z
-          .object({ hovered: z.boolean().optional(), escape: z.literal(true).optional() })
+          .object({
+            hovered: z.boolean().optional(),
+            escape: z.literal(true).optional(),
+          })
           .strict(),
         result: z.object({}),
       },
@@ -218,7 +223,7 @@ export function createGenUiPage(input: GenUiPageInput): GenUiPage {
   });
   const themes = new MutationObserver(() => {
     context.theme = document.documentElement.classList.contains("dark") ? "dark" : "light";
-    context.styles = { variables: readGenUiStyleVariables() as McpUiStyles };
+    Object.assign(context, readGenUiStyleContext());
     pushContext();
   });
   themes.observe(document.documentElement, {
@@ -300,7 +305,10 @@ export function createGenUiPage(input: GenUiPageInput): GenUiPage {
       }
     },
     setTweaks(values) {
-      update({ tweakValues: { ...snapshot.tweakValues, ...values }, previewOriginal: false });
+      update({
+        tweakValues: { ...snapshot.tweakValues, ...values },
+        previewOriginal: false,
+      });
       projectTweaks();
     },
     previewTweaks(original) {

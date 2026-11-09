@@ -1,3 +1,4 @@
+import type { ToolSearchMode } from "@ccbuddy/contracts";
 import type { RunContext, GlobalOptions } from "@ccbuddy/shared-types";
 import { resolveCCbuddyRuntimeEnv, type DynamicWorkflowMode } from "@ccbuddy/shared";
 import { createNodeClipboardImageReader } from "./clipboard-image.js";
@@ -23,6 +24,7 @@ export const runTuiCommand = async (
   resumeRequest?: CliResumeRequest,
   toolDisallowlist?: readonly string[],
   forceMcs = false,
+  toolsearchMode: ToolSearchMode = "off",
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
 ): Promise<number> => {
   try {
@@ -46,6 +48,7 @@ export const runTuiCommand = async (
       startupLocale,
       toolDisallowlist,
       forceMcs,
+      toolsearchMode,
       options.browserUse,
       options.browserExecutable,
       workflowMode,

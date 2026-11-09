@@ -45,7 +45,11 @@ export {
   getBashUserFacingName,
 } from "./bash-metadata.js";
 import { readStringProperty } from "./bash-metadata.js";
-import { formatBashModelContent, formatPersistedBashModelContent } from "./bash-model-content.js";
+import {
+  formatBashModelContent,
+  formatPersistedBashModelContent,
+  isBashModelContentBounded,
+} from "./bash-model-content.js";
 
 /** session shell selection 尚未初始化时 guarded matcher 采用的文法；与 readonly 判定的假设一致。 */
 const GUARDED_DEFAULT_DIALECT: ExecutionShellSelection["dialect"] = "posix";
@@ -245,7 +249,10 @@ async function executeBashHandler(
     : await runCommand();
 
   if (runResult.kind === "backgrounded") {
-    return toBackgroundedBashOutput(runResult.task, parsed);
+    // auto_on_timeout 只在超时计时器到点时转后台，所以这里记录的就是触发转后台的超时。
+    const timedOutAfterMs =
+      !parsed.run_in_background && eligibleForAutoBackground ? request.timeoutMs : undefined;
+    return toBackgroundedBashOutput(runResult.task, parsed, timedOutAfterMs);
   }
 
   const result = runResult.result;
@@ -292,6 +299,7 @@ function emptyBashOutput(input: BashInput): BashOutput {
 function toBackgroundedBashOutput(
   task: BackgroundExecutionStartResult,
   input: BashInput,
+  timedOutAfterMs: number | undefined,
 ): BashOutput {
   return attachToolExecutionTelemetry(
     {
@@ -300,6 +308,7 @@ function toBackgroundedBashOutput(
       interrupted: false,
       status: "backgrounded",
       backgroundTaskId: task.taskId,
+      ...(timedOutAfterMs !== undefined && timedOutAfterMs > 0 ? { timedOutAfterMs } : {}),
       rawOutputPath: task.outputPath,
       persistedOutputPath: task.outputPath,
       stdoutPersistedOutputPath: task.stdoutPersistedOutputPath,
@@ -433,6 +442,17 @@ async function emitProgressEvent(
   });
 }
 
+function createBashSessionEnv(context: ToolExecutionContext): Record<string, string> {
+  // 工作区根目录是会话创建时的工作目录，不随 `cd` 变化。
+  return {
+    CLAUDE_CODE_SESSION_ID: context.sessionId,
+    CLAUDE_PROJECT_DIR: context.workspaceRoot,
+    CLAUDE_SESSION_ID: context.sessionId,
+    CCBUDDY_PROJECT_DIR: context.workspaceRoot,
+    CCBUDDY_SESSION_ID: context.sessionId,
+  };
+}
+
 function createExecutionRequest(
   input: BashInput,
   context: ToolExecutionContext,
@@ -465,6 +485,10 @@ function createExecutionRequest(
       workspaceRoot: context.workspaceRoot,
     }),
     ...(bashPrelude ? { bashPrelude } : {}),
+    // 会话上下文变量与 hooks 的插件环境一致（configured-runner-input.ts createPluginEnvOverlay）。
+    // 自定义命令的 `!` 块改为转交模型经 Bash 执行后，原来由命令解析阶段执行器提供的这组变量
+    // 只能在这里提供；插件脚本在自身进程里读取会话 ID 区分会话，缺了它会跨会话生效。
+    env: { set: createBashSessionEnv(context) },
     captureCwdAfterSuccess: input.run_in_background ? undefined : true,
     timeoutMs: resolveBashTimeoutMs(input.timeout, timeoutPolicy),
     outputLimit: {
@@ -507,6 +531,8 @@ export const bashToolEntry: ToolEntry = {
   },
   formatModelContent: formatBashModelContent,
   formatPersistedModelContent: formatPersistedBashModelContent,
+  // 失败正文已按字符保留头尾，不再按字节预算落盘。
+  isModelContentBounded: isBashModelContentBounded,
   handler: bashHandler,
   resolveTimeoutBudgetMs: createBashTimeoutBudgetResolver(DEFAULT_BASH_TIMEOUT_POLICY),
   resolvePermissionCapability: resolveBashPermissionCapability,
@@ -610,7 +636,7 @@ function createBashInputJsonSchema(timeoutPolicy: BashTimeoutPolicy): Record<str
       ...properties,
       timeout: {
         ...timeoutProperty,
-        description: `Optional timeout in milliseconds (max ${timeoutPolicy.maxTimeoutMs})`,
+        description: `Optional timeout in milliseconds (max ${timeoutPolicy.maxTimeoutMs} for a foreground command)`,
       },
     },
   };

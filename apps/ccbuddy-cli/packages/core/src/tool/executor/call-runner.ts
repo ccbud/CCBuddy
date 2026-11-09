@@ -1,6 +1,9 @@
+import { toolSearchNameForMode } from "@ccbuddy/contracts";
+import { resolveDeferredToolCall } from "../deferred-call.js";
 import {
   type AgentTelemetryErrorCategory,
   CoreErrorType,
+  HookEventName,
   createChildTraceContext,
   createCoreError,
   createRootTraceContext,
@@ -12,6 +15,7 @@ import {
 import {
   OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION,
   attestOfficialCuaFrameContent,
+  containsOfficialCuaImageRefCredentialText,
 } from "@ccbuddy/ccbuddy-cua/frame-contract";
 import {
   normalizeToolExecutionInput,
@@ -27,11 +31,10 @@ import {
   createPermissionErrorResult,
   createToolHandlerFailureError,
   isToolHandlerFailure,
-  isToolHandlerFailureError,
 } from "./errors.js";
 import { emitToolCallError, emitToolCallResult, emitToolCallStarted } from "./events.js";
 import {
-  formatHookAdditionalContexts,
+  formatToolHookAdditionalContexts,
   runPostToolUseFailureHooks,
   runPostToolUseHooks,
   runPreToolUseHooks,
@@ -41,7 +44,7 @@ import { resolveToolPermission } from "./permission-flow.js";
 import { snapshotPermissionInput } from "./permission-input.js";
 import { buildToolInputResolutionContext } from "./permission-input-adjustments.js";
 import { createMcpToolDisplay, createToolResultDisplay } from "./result-display.js";
-import { appendHookAdditionalContexts, serializeOutput } from "./result-serialization.js";
+import { serializeOutput } from "./result-serialization.js";
 import {
   ToolDeadline,
   executeWithTimeout,
@@ -64,12 +67,34 @@ import type { ExecutableToolCall } from "../types.js";
 import { resolveEmbeddedSearchBranchCapability } from "../../embedded-search/capability.js";
 import { resolveToolEntryModelContract } from "../model-contract.js";
 
+const UNDISCOVERED_TOOL_SCHEMA_EXPLANATION =
+  "\n\nThis tool's schema was not sent to the API — it was not in the discovered-tool set derived from message history. " +
+  "Without the schema in your prompt, typed parameters (arrays, numbers, booleans) get emitted as strings and the client-side parser rejects them. ";
+
 export async function executeToolCall(
   deps: ToolExecutorDeps,
   backgroundTasks: BackgroundTaskTracker,
   toolCall: ExecutableToolCall,
   options?: ToolExecuteOptions,
 ): Promise<ToolExecutionResult> {
+  const admission = resolveDeferredToolCall(toolCall, options?.toolSearch, deps.registry);
+  if (admission.error) {
+    const result = createErrorResult(admission.call, admission.error);
+    await emitToolCallError(
+      deps,
+      toolCall.id,
+      options?.traceContext ??
+        deps.traceContext ??
+        createRootTraceContext({ sessionId: deps.sessionId, turnId: deps.turnId }),
+      deps.turnId,
+      result.error,
+    );
+    return result;
+  }
+  // 历史只保存一份原始目标参数；执行/Hook 可修改的对象在执行入口独立复制。
+  toolCall = admission.call.modelCallWrapper
+    ? { ...admission.call, input: structuredClone(admission.call.input) }
+    : admission.call;
   const totalStartedAt = Date.now();
   const entry = isEmptyToolName(toolCall.name) ? undefined : deps.registry.get(toolCall.name);
   const canonicalToolCall =
@@ -105,6 +130,7 @@ async function executeToolCallImpl(
         model,
       })
     : undefined;
+  const pluginId = entry?.metadata.mcpPresentation?.pluginId;
   const canonicalToolCall =
     entry && toolCall.name !== entry.metadata.name
       ? { ...toolCall, name: entry.metadata.name }
@@ -134,14 +160,21 @@ async function executeToolCallImpl(
         },
       ),
     );
-    if (emptyToolName) {
-      // 空名在 admission 阶段停止会让模型永远收不到配对结果。复用
-      // registry-miss 生命周期，但 provider 内容严格保留模型返回的原始空白名称。
-      result.modelContent = `<tool_use_error>Error: No such tool available: ${toolCall.name}</tool_use_error>`;
-    }
+    // 空名在 admission 阶段停止会让模型永远收不到配对结果。复用
+    // registry-miss 生命周期，provider 内容严格保留模型返回的原始名称（含空白名称）。
+    // 修复原因：非空的未知工具名只发 `Tool not found: X` 时没有 tool_use_error 包装。
+    result.modelContent = `<tool_use_error>Error: No such tool available: ${toolCall.name}</tool_use_error>`;
     // registry miss 发生在 handler/ToolCallStarted 之前；旧代码只把失败
     // 返回给 provider，没有发布 ToolCallError，V4 tool row 因而永久停在 inputStreaming。
-    await emitToolCallError(deps, toolCall.id, traceContext, turnId, result.error);
+    await emitToolCallError(
+      deps,
+      toolCall.id,
+      traceContext,
+      turnId,
+      result.error,
+      undefined,
+      pluginId,
+    );
     deps.logger?.warn("Tool call rejected because the tool is not registered", {
       ...traceContextToLogContext(traceContext),
       event: "tool.call.not_found",
@@ -165,7 +198,15 @@ async function executeToolCallImpl(
         error instanceof Error ? error.message : "Tool instance is unavailable",
       ),
     );
-    await emitToolCallError(deps, canonicalToolCall.id, traceContext, turnId, result.error);
+    await emitToolCallError(
+      deps,
+      canonicalToolCall.id,
+      traceContext,
+      turnId,
+      result.error,
+      undefined,
+      pluginId,
+    );
     return result;
   }
   if (lifetime)
@@ -200,10 +241,35 @@ async function executeToolCallImpl(
     );
     if (initialInputValidation) {
       const result = createErrorResult(canonicalToolCall, initialInputValidation);
+      const search = options?.toolSearch;
+      // 延迟 schema 未加载只提供纠错提示，不增加工具执行拒绝条件。
+      if (
+        search?.enabled &&
+        !search.discovered.has(canonicalToolCall.name) &&
+        search.catalog.some((tool) => tool.name === canonicalToolCall.name && tool.deferred)
+      ) {
+        // 原提示省略了类型退化原因；完整解释与 schema 一并提供，避免只引导盲目重试。
+        result.modelContent =
+          (result.modelContent ?? initialInputValidation.message) +
+          UNDISCOVERED_TOOL_SCHEMA_EXPLANATION +
+          `Load the tool first: call ${toolSearchNameForMode(search.mode)} with query "select:${canonicalToolCall.name}", then retry this call. ` +
+          `For reference, this tool's input schema is: ${JSON.stringify(entry.inputSchema)}` +
+          (search.mode === "local"
+            ? `\nCall DeferredToolCall with {name: "${canonicalToolCall.name}", input: {...}}.`
+            : "");
+      }
       // schema 失败与 registry miss 同属 handler/ToolCallStarted 之前的早退；旧代码
       // 只把失败回灌模型，没有发布 ToolCallError，V4 tool row 因而在整个 turn 里停在
       // inputStreaming（CreateWorkflow 卡持续显示「正在编写工作流」），模型重试后又叠一张。
-      await emitToolCallError(deps, canonicalToolCall.id, traceContext, turnId, result.error);
+      await emitToolCallError(
+        deps,
+        canonicalToolCall.id,
+        traceContext,
+        turnId,
+        result.error,
+        undefined,
+        pluginId,
+      );
       telemetry?.finishFailed("validation", "parse", result.error);
       return result;
     }
@@ -218,7 +284,15 @@ async function executeToolCallImpl(
         canonicalToolCall,
         createToolHandlerFailureError(canonicalToolCall, toolInputValidation),
       );
-      await emitToolCallError(deps, canonicalToolCall.id, traceContext, turnId, result.error);
+      await emitToolCallError(
+        deps,
+        canonicalToolCall.id,
+        traceContext,
+        turnId,
+        result.error,
+        undefined,
+        pluginId,
+      );
       // 工具专属校验以普通失败结果返回，不走 handler 执行的 try/catch 失败收口。
       // 先发出 ToolCallError 更新工具行，再显式标记遥测失败，避免被记录为 abandoned。
       telemetry?.finishFailed("validation", "parse", result.error);
@@ -240,7 +314,15 @@ async function executeToolCallImpl(
           canonicalToolCall,
           createToolHandlerFailureError(canonicalToolCall, resolution),
         );
-        await emitToolCallError(deps, canonicalToolCall.id, traceContext, turnId, result.error);
+        await emitToolCallError(
+          deps,
+          canonicalToolCall.id,
+          traceContext,
+          turnId,
+          result.error,
+          undefined,
+          pluginId,
+        );
         telemetry?.finishFailed("validation", "parse", result.error);
         return result;
       }
@@ -256,8 +338,19 @@ async function executeToolCallImpl(
       traceContext,
       options?.signal,
     );
+    // 在各出口按需格式化：成功路径要先做凭据过滤再格式化（见下）；超长 context 会落盘，提前算好会多写一次文件。
+    const formatPreToolHookContexts = () =>
+      formatToolHookAdditionalContexts(
+        deps,
+        HookEventName.PreToolUse,
+        canonicalToolCall,
+        preToolHookResult.additionalContexts,
+        traceContext,
+      );
+    // 成功路径已过滤、已格式化的 Pre 上下文；之后再抛错时 catch 复用它。
+    let formattedSafePreContexts: string[] | undefined;
     if (preToolHookResult.permissionBehavior === "deny" || preToolHookResult.preventContinuation) {
-      const result = appendPreToolAdditionalContextsToErrorResult(
+      const result = withHookAdditionalContexts(
         withPlanExitDeniedTurnStop(
           createPermissionErrorResult(
             canonicalToolCall,
@@ -278,7 +371,7 @@ async function executeToolCallImpl(
             toolName: canonicalToolCall.name,
           },
         ),
-        preToolHookResult.additionalContexts,
+        await formatPreToolHookContexts(),
       );
       telemetry?.setPermissionDecision("denied");
       telemetry?.finishDenied("policy_denied");
@@ -293,12 +386,12 @@ async function executeToolCallImpl(
       });
       const hookInputValidation = validateInput(executionInput, entry);
       if (hookInputValidation) {
-        // Hook 修改后的输入校验失败会在 handler 前直接返回，旧分支没有走
-        // PreToolUse context 的统一追加逻辑，导致模型只看到 schema error，看不到 Hook
+        // Hook 修改后的输入校验失败会在 handler 前直接返回，旧分支没有带上
+        // PreToolUse context，导致模型只看到 schema error，看不到 Hook
         // 已产生的诊断上下文；与 deny、permission-deny 的提前失败契约不一致。
-        const result = appendPreToolAdditionalContextsToErrorResult(
+        const result = withHookAdditionalContexts(
           createErrorResult(canonicalToolCall, hookInputValidation),
-          preToolHookResult.additionalContexts,
+          await formatPreToolHookContexts(),
         );
         telemetry?.finishFailed("validation", "parse", result.error);
         return result;
@@ -328,7 +421,7 @@ async function executeToolCallImpl(
       },
     );
     if (!permissionResult.allowed) {
-      const result = appendPreToolAdditionalContextsToErrorResult(
+      const result = withHookAdditionalContexts(
         withWorkflowRefineDeniedFollowUp(
           withPlanExitDeniedTurnStop(permissionResult.result, {
             mode,
@@ -337,7 +430,7 @@ async function executeToolCallImpl(
           }),
           { toolName: canonicalToolCall.name },
         ),
-        preToolHookResult.additionalContexts,
+        await formatPreToolHookContexts(),
       );
       if (result.error?.type === CoreErrorType.PermissionDenied) {
         telemetry?.finishDenied("user_denied");
@@ -402,8 +495,10 @@ async function executeToolCallImpl(
       });
       const context: ToolExecutionContext = {
         toolCallId: canonicalToolCall.id,
+        toolSearch: options?.toolSearch,
         telemetry,
         automationTurn: options?.automationTurn,
+        automationId: options?.automationId,
         offPeakTurn: options?.offPeakTurn,
         traceContext,
         traceId,
@@ -448,7 +543,10 @@ async function executeToolCallImpl(
         runtimeTaskRegistry: deps.runtimeTaskRegistry,
         readFileState: deps.readFileState,
         recordReadFileStateMetadata: (metadata) => {
-          readFileStateMetadata = metadata;
+          readFileStateMetadata = {
+            ...metadata,
+            snapshotIndex: deps.nextReadFileStateSnapshotIndex(),
+          };
         },
         recordSkillTelemetryMetadata: (metadata) => {
           skillTelemetryMetadata = metadata;
@@ -509,11 +607,37 @@ async function executeToolCallImpl(
         traceContext,
         options?.signal,
       );
-      serialization = appendHookAdditionalContexts(
-        serialization,
-        [...preToolHookResult.additionalContexts, ...postToolHookResult.additionalContexts],
-        modelOutputEntry,
+      // 修复原因：Hook 文本原来拼进 tool result、占用它的预算；现在 tool result 只放工具原文，
+      // Hook 文本由结算写成这批结果之后的附件。
+      // 官方 CUA 帧的 image_ref 凭据不能经 Hook 文本进入模型上下文：去掉这类 context 并按截断记账。
+      const isCredentialSafe = (context: string) =>
+        modelOutputEntry.modelContentProtection !== OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION ||
+        !containsOfficialCuaImageRefCredentialText(context);
+      const safePreContexts = preToolHookResult.additionalContexts.filter(isCredentialSafe);
+      const safePostContexts = postToolHookResult.additionalContexts.filter(isCredentialSafe);
+      if (
+        safePreContexts.length < preToolHookResult.additionalContexts.length ||
+        safePostContexts.length < postToolHookResult.additionalContexts.length
+      ) {
+        serialization = { ...serialization, truncated: true };
+      }
+      formattedSafePreContexts = await formatToolHookAdditionalContexts(
+        deps,
+        HookEventName.PreToolUse,
+        canonicalToolCall,
+        safePreContexts,
+        traceContext,
       );
+      const hookAdditionalContexts = [
+        ...formattedSafePreContexts,
+        ...(await formatToolHookAdditionalContexts(
+          deps,
+          HookEventName.PostToolUse,
+          canonicalToolCall,
+          safePostContexts,
+          traceContext,
+        )),
+      ];
       const display = createToolResultDisplay(canonicalToolCall.name, output, {
         mcp: entry.metadata.mcpPresentation,
         officialCua: entry.modelContentProtection === OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION,
@@ -550,6 +674,7 @@ async function executeToolCallImpl(
           output,
           display,
           modelContent: finalModelContent,
+          ...(hookAdditionalContexts.length > 0 ? { hookAdditionalContexts } : {}),
           ...(readFileStateMetadata ? { readFileStateMetadata } : {}),
           performance: perf,
           serialization,
@@ -570,6 +695,7 @@ async function executeToolCallImpl(
         display,
         perf,
         skillTelemetryMetadata,
+        pluginId,
       );
 
       await backgroundTasks.trackBackgroundTask(canonicalToolCall, output, traceContext, turnId);
@@ -598,30 +724,27 @@ async function executeToolCallImpl(
         traceContext,
         options?.signal,
       );
-      let result = createErrorResult(
-        canonicalToolCall,
-        error instanceof Error ? error : new Error(String(error)),
-        durationMs,
+      // 修复原因：Hook 文本原来以 UI 摘要为底拼进失败结果，有 Hook 与没有 Hook 时模型看到的
+      // 错误不同。现在 tool result 只放 createErrorResult 的原文，Hook 文本另成附件。
+      let result = withHookAdditionalContexts(
+        createErrorResult(
+          canonicalToolCall,
+          error instanceof Error ? error : new Error(String(error)),
+          durationMs,
+        ),
+        [
+          // 修复原因：成功路径格式化之后再抛错（例如官方 CUA 帧校验失败、写结果事件失败）时，
+          // 重新格式化会用未过滤的上下文，把被过滤的凭据送进附件，超长上下文还会再落盘一次。
+          ...(formattedSafePreContexts ?? (await formatPreToolHookContexts())),
+          ...(await formatToolHookAdditionalContexts(
+            deps,
+            HookEventName.PostToolUseFailure,
+            canonicalToolCall,
+            failureHookResult.additionalContexts,
+            traceContext,
+          )),
+        ],
       );
-      const baseModelContent = result.error
-        ? isToolHandlerFailureError(error) && typeof result.modelContent === "string"
-          ? result.modelContent
-          : result.error.message
-        : undefined;
-      if (failureHookResult.additionalContexts.length > 0 && baseModelContent) {
-        result.modelContent = [
-          baseModelContent,
-          formatHookAdditionalContexts([
-            ...preToolHookResult.additionalContexts,
-            ...failureHookResult.additionalContexts,
-          ]),
-        ].join("\n\n");
-      } else if (preToolHookResult.additionalContexts.length > 0 && baseModelContent) {
-        result.modelContent = [
-          baseModelContent,
-          formatHookAdditionalContexts(preToolHookResult.additionalContexts),
-        ].join("\n\n");
-      }
       result = withAutomationCreateLimitTurnStop(result, {
         error,
         toolName: canonicalToolCall.name,
@@ -636,6 +759,7 @@ async function executeToolCallImpl(
         turnId,
         result.error,
         skillTelemetryMetadata,
+        pluginId,
       );
 
       deps.logger?.error(
@@ -720,18 +844,15 @@ function errorCategoryForToolError(type: string | undefined): AgentTelemetryErro
   }
 }
 
-function appendPreToolAdditionalContextsToErrorResult(
+/**
+ * 成功、失败与提前返回的失败（PreToolUse 拒绝、Hook 改写后校验失败、权限拒绝）都带上 Hook context。
+ * PreToolUse deny 和权限拒绝会在 handler 前提前返回，旧逻辑只在 handler 的成功/异常路径带 context，
+ * 导致 Hook 明明返回了 additionalContext，模型却看不到。
+ */
+function withHookAdditionalContexts(
   result: ToolExecutionResult,
-  additionalContexts: string[],
+  hookAdditionalContexts: readonly string[],
 ): ToolExecutionResult {
-  if (result.success || !result.error || additionalContexts.length === 0) return result;
-
-  // PreToolUse deny 和权限拒绝会在 handler 前提前返回，旧逻辑只在 handler 的
-  // 成功/异常路径追加 context，导致 Hook 明明返回了 additionalContext，模型却看不到。
-  const baseModelContent =
-    typeof result.modelContent === "string" ? result.modelContent : result.error.message;
-  return {
-    ...result,
-    modelContent: [baseModelContent, formatHookAdditionalContexts(additionalContexts)].join("\n\n"),
-  };
+  if (hookAdditionalContexts.length === 0) return result;
+  return { ...result, hookAdditionalContexts: [...hookAdditionalContexts] };
 }

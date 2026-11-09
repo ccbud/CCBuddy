@@ -155,6 +155,7 @@ export interface CCbuddyTaskIndexSyncer {
    * 订阅者只需要订阅一次即可收到全部事件。
    */
   getWorkspaceEmitter(workspace: WorkspaceEventInput): Emitter<CCbuddyWorkspaceEvent>;
+  listActiveTasks(): Array<{ workspacePath: string; workspaceIdentity?: string; taskId: string }>;
   /** 订阅 workspace 维度事件流。adapter.onDynamicWorkspaceEvent 直接转发到这里。 */
   onDynamicWorkspaceEvent(workspace: WorkspaceEventInput): Event<CCbuddyWorkspaceEvent>;
   /**
@@ -1772,6 +1773,18 @@ export function createCCbuddyTaskIndexSyncer(
     emitWorkspaceTaskListChanged,
 
     getWorkspaceEmitter,
+
+    listActiveTasks() {
+      return [...workspaceIngests.values()].flatMap((state) =>
+        state.runtimeGeneration === null
+          ? []
+          : [...state.summaries.values()].flatMap((summary) =>
+              summary.phase === "running" || summary.phase === "prewarming"
+                ? [{ ...state.target, taskId: summary.sessionId }]
+                : [],
+            ),
+      );
+    },
 
     onDynamicWorkspaceEvent(workspace: WorkspaceEventInput) {
       // 任务列表挂载会为所有 restored workspace 调用本入口。监听事件不代表

@@ -312,6 +312,7 @@ export type TurnInputSourceMetadata =
   | { kind: "genUi"; path: string; title?: string };
 
 export interface TurnInputIntentMetadata {
+  genUiContext?: import("@ccbuddy/shared/gen-ui").GenUiModelContext;
   planEnabled?: boolean;
   conversationQuotes?: Array<{
     text: string;

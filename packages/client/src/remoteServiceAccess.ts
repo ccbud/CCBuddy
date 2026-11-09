@@ -1,4 +1,5 @@
 import { IGenUiService } from "@ccbuddy/services";
+import { IProjectService } from "@ccbuddy/services";
 import { ProxyChannel, type IChannelClient } from "@ccbuddy/rpc";
 import {
   IFileService,
@@ -94,6 +95,7 @@ export class RemoteServiceAccess implements IServiceAccessor {
   readonly skillSyncService: ISkillSyncService;
   readonly mcpSyncService: IMcpSyncService;
   readonly genUiService: IGenUiService;
+  readonly projectService: IProjectService;
   readonly pluginUiBridgeService: IPluginUiBridgeService;
   readonly pluginUiSamplingService: IPluginUiSamplingService;
   readonly pluginUiAppToolsService: IPluginUiAppToolsService;
@@ -216,6 +218,9 @@ export class RemoteServiceAccess implements IServiceAccessor {
     );
     this.genUiService = ProxyChannel.toService<IGenUiService>(
       channelClient.getChannel(IGenUiService.channelName),
+    );
+    this.projectService = ProxyChannel.toService<IProjectService>(
+      channelClient.getChannel(IProjectService.channelName),
     );
     this.pluginUiBridgeService = ProxyChannel.toService<IPluginUiBridgeService>(
       channelClient.getChannel(IPluginUiBridgeService.channelName),

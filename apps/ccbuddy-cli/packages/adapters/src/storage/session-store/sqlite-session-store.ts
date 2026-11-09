@@ -99,6 +99,7 @@ import * as scriptWorkflowRunRepository from "./repositories/script-workflow-run
 import * as sessionEntryRepository from "./repositories/session-entries.js";
 import * as sessionInputRepository from "./repositories/session-inputs.js";
 import * as sessionRepository from "./repositories/sessions.js";
+import * as sessionDataRepository from "./repositories/session-data.js";
 import * as todoRepository from "./repositories/todos.js";
 import * as usageRepository from "./repositories/usage.js";
 
@@ -579,6 +580,21 @@ export class SqliteSessionStore
   async updateSession(input: UpdateSessionInput): Promise<SessionInfo> {
     this.throwBeforeWrite();
     return sessionRepository.updateSession(this.db, input);
+  }
+
+  async softDeleteSession(sessionID: SessionId, timeDeleted = Date.now()): Promise<void> {
+    this.throwBeforeWrite();
+    sessionDataRepository.softDeleteSession(this.db, sessionID, timeDeleted);
+  }
+  async listOwnedSessionTrees(sessionIDs: SessionId[]): Promise<Map<SessionId, SessionId[]>> {
+    return sessionDataRepository.listOwnedSessionTrees(this.db, sessionIDs);
+  }
+  async listArtifactReferrers(sessionIDs: SessionId[]): Promise<Map<SessionId, SessionId[]>> {
+    return sessionDataRepository.listArtifactReferrers(this.db, sessionIDs);
+  }
+  async purgeSessions(sessionIDs: SessionId[]): Promise<void> {
+    this.throwBeforeWrite();
+    sessionDataRepository.purgeSessions(this.db, sessionIDs);
   }
 
   async getSession(sessionID: SessionId): Promise<SessionInfo | null> {

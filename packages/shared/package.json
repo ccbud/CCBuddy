@@ -18,6 +18,7 @@
     "./process-diagnostic": "./src/process-diagnostic.ts",
     "./runtime-env": "./src/runtimeEnv.ts",
     "./runtime-tool-runtime": "./src/runtime-tool-runtime.ts",
+    "./sqlite-migrations": "./src/sqlite-migrations/index.ts",
     "./workspace-hook-discovery": "./src/workspace-hook-discovery.ts",
     "./workspace-hook-mutation": "./src/workspace-hook-mutation.ts",
     "./workspace-hook-review-monotonicity": "./src/workspace-hook-review-monotonicity.ts",

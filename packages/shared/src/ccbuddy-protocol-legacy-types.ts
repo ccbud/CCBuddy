@@ -144,6 +144,7 @@ export const ccbuddySessionGoalVerificationTimelineSchema = z
 export const ccbuddySessionInfoSchema = z
   .object({
     sessionId: nonEmptyString,
+    directorySessionId: nonEmptyString.optional(),
     workspace: ccbuddyWorkspaceRefSchema,
     parentSessionId: nonEmptyString.optional(),
     traceId: nonEmptyString.optional(),

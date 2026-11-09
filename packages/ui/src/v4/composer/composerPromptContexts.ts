@@ -3,7 +3,6 @@ import {
   parsePromptCodeComments,
   type CodeCommentComposerAttachment,
 } from "@/lib/codeCommentContext.js";
-import { stripGenUiModelContext } from "@ccbuddy/shared/gen-ui";
 import {
   buildPromptWithConversationSelections,
   parsePromptConversationSelections,
@@ -79,7 +78,7 @@ export function parseComposerPromptContexts(
   pptxElements: PptxElementReference[];
   pluginUiContexts: PluginUiModelContext[];
 } {
-  const plugin = parsePromptPluginUiContexts(stripGenUiModelContext(content));
+  const plugin = parsePromptPluginUiContexts(content);
   const pptx = parsePromptPptxElementReferences(plugin.visibleContent);
   const web = parsePromptWebElementContexts(pptx.visibleContent, workspace);
   const code = parsePromptCodeComments(web.visibleContent, workspace);

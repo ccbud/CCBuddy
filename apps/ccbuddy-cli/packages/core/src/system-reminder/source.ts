@@ -20,6 +20,10 @@ export type SystemReminderProviderVisibility = "provider_visible" | "provider_hi
 export const SYSTEM_REMINDER_PREFIX_SOURCES = ["context_prefix", "skills_listing"] as const;
 
 export const SYSTEM_REMINDER_PERSISTED_SOURCES = [
+  "read_truncation_notice",
+  "tool_hook_context",
+  "tool_search_announcement",
+  "gen_ui_state",
   "agent_listing_delta",
   "todo_reminder",
   "task_status",
@@ -78,6 +82,7 @@ const SYSTEM_REMINDER_TAG_PATTERN = /<\/?system-reminder\b/i;
 const SYSTEM_REMINDER_NESTED_TAG_PATTERN = /<\/?system-reminder\b/gi;
 const SYSTEM_REMINDER_TRAILING_NEWLINE_SOURCES = new Set<SystemReminderSource>(["context_prefix"]);
 const NON_MID_CONVERSATION_SYSTEM_SOURCES = new Set<SystemReminderSource>([
+  "gen_ui_state",
   "context_prefix",
   "resume_referenced_session_context",
   // Fork 和辅助对话边界必须位于新问题之前；走 MCS 会被移到问题之后，改变上下文顺序。
@@ -90,6 +95,20 @@ const NON_MID_CONVERSATION_SYSTEM_SOURCES = new Set<SystemReminderSource>([
 ]);
 
 const SYSTEM_REMINDER_DESCRIPTORS: Record<SystemReminderSource, DescriptorShape> = {
+  read_truncation_notice: descriptor(
+    "current_turn",
+    "resume_history",
+    true,
+    "sr.read_truncation_notice",
+  ),
+  tool_hook_context: descriptor("current_turn", "resume_history", true, "sr.tool_hook_context"),
+  tool_search_announcement: descriptor(
+    "current_turn",
+    "resume_history",
+    true,
+    "sr.tool_search_announcement",
+  ),
+  gen_ui_state: descriptor("current_turn", "resume_history", true, "sr.gen_ui_state"),
   agent_listing_delta: descriptor("current_turn", "resume_history", true, "sr.agent_listing_delta"),
   incoming_message: descriptor("mid_turn_event", "mid_turn_event", true, "sr.incoming_message"),
   bot_topic_context: descriptor(

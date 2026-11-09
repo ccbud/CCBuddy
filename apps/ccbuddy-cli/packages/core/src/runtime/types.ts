@@ -1,6 +1,10 @@
-import type { RequestVerificationReason } from "@ccbuddy/shared";
+import type { ToolSearchExecutionContext, ToolSearchMode } from "@ccbuddy/contracts";
+import type { ExecutionState, RequestVerificationReason } from "@ccbuddy/shared";
 import type { GetAgentDefinitions, LoadAgentDefinitions } from "../subagent/definitions.js";
-import type { RuntimeInputPresentation, TurnExecutionModelFallbackReason } from "@ccbuddy/contracts";
+import type {
+  RuntimeInputPresentation,
+  TurnExecutionModelFallbackReason,
+} from "@ccbuddy/contracts";
 /* eslint-disable max-lines -- Runtime 类型集中承载 core/runtime 对外结构，拆分需要单独迁移。 */
 import { PermissionService, ToolScheduler } from "./deps.js";
 import type {
@@ -119,6 +123,7 @@ import type { WorkspaceHookRuntimeAdmissionPort } from "../hooks/workspace-hook-
 // -----------------------------------------------
 
 export interface AgentRuntimeConfig {
+  toolSearch?: { mode?: ToolSearchMode };
   /** shared-host CUA request routing metadata; desktop is the safe default. */
   clientMode?: "desktop-continuous" | "web-remote-replayable";
   deliveryKind?: "desktop-continuous" | "web-remote-replayable";
@@ -246,6 +251,7 @@ export interface AgentRuntimeConfig {
   language?: string;
   outputStyle?: OutputStylePromptConfig;
   agentName?: string; // Default: "ccbuddy-agent"
+  additionalDirectories?: readonly string[];
   workingDirectory?: string; // Required for context builder
   /**
    * 调用方传入的实际工作区路径表示，用于 session 持久化与本地身份恢复。
@@ -764,7 +770,9 @@ export interface PermissionDecisionResult {
 }
 
 export interface ExecuteToolsOptions {
+  toolSearch?: ToolSearchExecutionContext;
   automationTurn?: boolean;
+  automationId?: string;
   offPeakTurn?: boolean;
   signal?: AbortSignal;
   traceContext?: TraceContext;
@@ -851,6 +859,7 @@ export interface ProviderContextUsageSnapshot {
 }
 
 export interface RunModelTextRequestOptions {
+  toolSearchEnabled?: boolean;
   abortSignal?: AbortSignal;
   assistantMessageId: MessageId;
   events: SessionEvent[];

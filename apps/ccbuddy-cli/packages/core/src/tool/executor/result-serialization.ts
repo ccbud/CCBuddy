@@ -1,31 +1,23 @@
 import {
   CoreErrorType,
   createCoreError,
-  modelMessageContentToText,
   traceContextToLogContext,
   type ModelMessageContent,
   type ModelMessageContentBlock,
   type ToolResultBudget,
   type TraceContext,
 } from "@ccbuddy/contracts";
-import {
-  OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION,
-  containsOfficialCuaImageRefCredentialText,
-} from "@ccbuddy/ccbuddy-cua/frame-contract";
+import { OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION } from "@ccbuddy/ccbuddy-cua/frame-contract";
 import type { ToolEntry, ToolResultSerialization } from "../types.js";
-import { formatHookAdditionalContexts } from "./hook-flow.js";
+import { formatGenericPersistedOutputContent } from "../result-persistence-format.js";
 import {
-  formatGenericPersistedOutputContent,
-  isPersistedOutputContent,
-} from "../result-persistence-format.js";
-import {
-  appendHookToPersistedArtifactPreview,
-  appendHookToStringContent,
-  appendHookWithoutReorderingStructuredContent,
   fitContentWithSuffix,
+  isEmptyModelContent,
   OfficialCuaFrameContractError,
-  projectHookAugmentedModelContent,
   projectOfficialCuaStructuredContent,
+  projectToolReferenceContent,
+  stringifyModelContentForSerialization,
+  stringifyOutputForModel,
 } from "./result-content-projection.js";
 import type { ToolExecutorDeps } from "./types.js";
 import { isRecord } from "./utils.js";
@@ -80,6 +72,32 @@ export async function serializeOutput(
     Math.min(effectiveBudget.maxModelBytes, effectiveBudget.maxInlineBytes),
   );
   const artifactPath = findArtifactPath(output);
+  if (entry.isModelContentBounded?.(output) === true) {
+    // 修复原因：Bash 失败结果已按字符保留采集段的头尾（约 1 万字符），中文等多字节文本仍会超过
+    // 30000 字节预算，被再次落盘成只有 2KB 开头的预览，模型看不到头尾截断后保留的结尾部分。
+    return {
+      content,
+      modelContent,
+      originalBytes,
+      returnedBytes: originalBytes,
+      truncated: false,
+      budgetStrategy: effectiveBudget.strategy,
+      artifactPath,
+    };
+  }
+  const referenceProjection = projectToolReferenceContent(
+    modelContent,
+    maxModelBytes,
+    effectiveBudget.preview?.direction ?? "head",
+  );
+  if (referenceProjection) {
+    return {
+      ...referenceProjection,
+      originalBytes,
+      budgetStrategy: effectiveBudget.strategy,
+      artifactPath,
+    };
+  }
   const shouldPersistArtifact =
     (originalBytes > maxModelBytes || exceedsCharacterBudget) &&
     effectiveBudget.artifact?.enabled === true &&
@@ -217,59 +235,6 @@ export async function serializeOutput(
   };
 }
 
-export function appendHookAdditionalContexts(
-  serialization: ToolResultSerialization,
-  additionalContexts: string[],
-  entry: ToolEntry,
-): ToolResultSerialization {
-  if (additionalContexts.length === 0) return serialization;
-  const filteredAdditionalContexts =
-    entry.modelContentProtection === OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION
-      ? additionalContexts.filter((context) => !containsOfficialCuaImageRefCredentialText(context))
-      : additionalContexts;
-  const omittedFrameCredential = filteredAdditionalContexts.length !== additionalContexts.length;
-  if (filteredAdditionalContexts.length === 0) {
-    return omittedFrameCredential ? { ...serialization, truncated: true } : serialization;
-  }
-  const hookContext = formatHookAdditionalContexts(filteredAdditionalContexts);
-  const suffix = `\n\n${hookContext}`;
-  const maxModelBytes = resolveMaxModelBytes(entry);
-  if (
-    entry.modelContentProtection === OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION &&
-    hasImageBlock(serialization.modelContent ?? serialization.content)
-  ) {
-    const projected = appendHookWithoutReorderingStructuredContent(
-      serialization,
-      hookContext,
-      suffix,
-      maxModelBytes,
-    );
-    return omittedFrameCredential ? { ...projected, truncated: true } : projected;
-  }
-  const previewDirection = entry.resultBudget?.preview?.direction ?? "head";
-  const artifactPreview = isPersistedArtifactPreview(serialization);
-  const contentProjection = artifactPreview
-    ? appendHookToPersistedArtifactPreview(serialization.content, suffix, maxModelBytes)
-    : appendHookToStringContent(serialization.content, suffix, maxModelBytes, previewDirection);
-
-  const projected = {
-    ...serialization,
-    content: contentProjection.content,
-    modelContent: projectHookAugmentedModelContent({
-      artifactPreview,
-      contentProjection,
-      hookContext,
-      maxModelBytes,
-      modelContent: serialization.modelContent ?? serialization.content,
-      previewDirection,
-      suffix,
-    }),
-    returnedBytes: Buffer.byteLength(contentProjection.content, "utf8"),
-    truncated: serialization.truncated || contentProjection.truncated,
-  };
-  return omittedFrameCredential ? { ...projected, truncated: true } : projected;
-}
-
 function hasImageBlock(content: ModelMessageContent): content is ModelMessageContentBlock[] {
   return Array.isArray(content) && content.some((block) => block.type === "image");
 }
@@ -284,11 +249,6 @@ function structuredMediaBytes(content: ModelMessageContent): number {
       return total + Buffer.byteLength(block.dataUrl, "utf8");
     return total;
   }, 0);
-}
-
-function resolveMaxModelBytes(entry: ToolEntry): number {
-  const budget = entry.resultBudget ?? DEFAULT_RESULT_BUDGET;
-  return Math.max(0, Math.min(budget.maxModelBytes, budget.maxInlineBytes));
 }
 
 async function tryWriteToolArtifact(
@@ -346,41 +306,6 @@ function formatPersistedOutputContent(input: {
     originalBytes: input.originalBytes,
     persistedPath: input.persistedPath,
   });
-}
-
-function isEmptyModelContent(content: ModelMessageContent): boolean {
-  if (typeof content === "string") return content.trim() === "";
-  if (content.length === 0) return true;
-  return content.every((block) => {
-    if (block.type !== "text") return false;
-    return typeof block.text !== "string" || block.text.trim() === "";
-  });
-}
-
-function stringifyOutputForModel(output: unknown, entry: ToolEntry): ModelMessageContent {
-  if (entry.formatModelContent) return entry.formatModelContent(output);
-  if (typeof output === "string") return output;
-  if (output === undefined) return "";
-
-  try {
-    return JSON.stringify(output) ?? "";
-  } catch {
-    return String(output);
-  }
-}
-
-function stringifyModelContentForSerialization(content: ModelMessageContent): string {
-  return typeof content === "string" ? content : modelMessageContentToText(content);
-}
-
-function isPersistedArtifactPreview(serialization: ToolResultSerialization): boolean {
-  return (
-    serialization.budgetStrategy === "artifact" &&
-    serialization.truncated &&
-    typeof serialization.artifactPath === "string" &&
-    serialization.artifactPath.length > 0 &&
-    isPersistedOutputContent(serialization.content)
-  );
 }
 
 function findArtifactPath(output: unknown): string | undefined {

@@ -1,3 +1,4 @@
+import { ToolSearchModeSchema } from "@ccbuddy/contracts";
 import { extractDisallowedToolsArgs, parseGlobalArgs } from "./arguments.js";
 import { createNodeLoggerFactory } from "@ccbuddy/adapters";
 import { getRuntimeInfo, type PresentationSurface } from "@ccbuddy/core";
@@ -405,6 +406,14 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     browserExecutable,
     outputFormat,
   );
+  const parsedToolsearchMode = ToolSearchModeSchema.safeParse(
+    parsed.values["toolsearch-mode"] ?? "off",
+  );
+  if (!parsedToolsearchMode.success) {
+    ctx.stderr.write("--toolsearch-mode must be one of auto, native, local, off.\n");
+    return 1;
+  }
+  const toolsearchMode = parsedToolsearchMode.data;
   const forceMcs = parsed.values["force-mcs"] === true;
   let targetRequest: CliTargetRequest | undefined;
   try {
@@ -527,6 +536,7 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       resumeRequest,
       toolDisallowlist,
       forceMcs,
+      toolsearchMode,
       presentationSurface,
       workflowMode,
     );
@@ -544,6 +554,7 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       resumeRequest,
       toolDisallowlist,
       forceMcs,
+      toolsearchMode,
       presentationSurface,
       workflowMode,
     );
@@ -594,6 +605,7 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
         resumeRequest,
         toolDisallowlist,
         forceMcs,
+        toolsearchMode,
         workflowMode,
       );
     default:

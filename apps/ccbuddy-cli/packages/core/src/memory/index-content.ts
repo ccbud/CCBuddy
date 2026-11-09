@@ -1,5 +1,6 @@
 import { Lexer } from "marked";
 
+export const MEMORY_INDEX_FILE_NAME = "MEMORY.md";
 const MEMORY_INDEX_LINE_LIMIT = 200;
 const MEMORY_INDEX_CHARACTER_LIMIT = 25_000;
 const LEADING_FRONTMATTER_PATTERN = /^---\s*\n[\s\S]*?---\s*\n?/u;

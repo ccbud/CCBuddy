@@ -1,4 +1,11 @@
+import {
+  sessionLifecycleParamsSchema,
+  sessionLifecycleActivationParamsSchema,
+  ccbuddyRuntimeCapabilitiesParamsSchema,
+} from "@ccbuddy/shared";
+import { getSessionLifecycle } from "./session-runtime-lifecycle.js";
 import { querySessionDebug } from "./session-debug.js";
+import { measureSessionData, purgeSessionData } from "./session-data/index.js";
 import { createNodeNetworkCapture } from "@ccbuddy/shared/node";
 import { networkCaptureControlSchema, ccbuddyProtocolNotifications } from "@ccbuddy/shared";
 import {
@@ -441,7 +448,9 @@ export class CCbuddyProtocolAgentServer {
   }
 
   /** production NDJSON 取完整 batch；只有全部 write 成功后才调 commit。 */
-  takePostResponseBatch(requestId: CCbuddyProtocolRequestId): CCbuddyProtocolPostResponseBatch | null {
+  takePostResponseBatch(
+    requestId: CCbuddyProtocolRequestId,
+  ): CCbuddyProtocolPostResponseBatch | null {
     const batch = this.postResponseOutbox.get(requestId) ?? null;
     this.postResponseOutbox.delete(requestId);
     return batch;
@@ -495,9 +504,15 @@ export class CCbuddyProtocolAgentServer {
       // subscribe hydration、workspace 配置与 resume 都可能跨 await。若只看
       // session 当前状态，sampler 会在 handler 持有旧 record 时把它关闭。进程级 lease
       // 覆盖整个 request；能识别的 sessionIds 额外用于冷恢复闸门与 LRU touch。
-      releaseResidencyOperation = await this.context.sessionResidentPool?.acquireOperation(
-        collectResidencySessionIds(request.params),
-      );
+      const lifecycleQuery = request.method === ccbuddyProtocolMethods.sessionLifecycleGetState;
+      const lifecycleMutation =
+        request.method === ccbuddyProtocolMethods.sessionLifecycleStop ||
+        request.method === ccbuddyProtocolMethods.sessionLifecycleRestart ||
+        request.method === ccbuddyProtocolMethods.sessionLifecycleEnsureReady;
+      if (!lifecycleQuery)
+        releaseResidencyOperation = await this.context.sessionResidentPool?.acquireOperation(
+          lifecycleMutation ? undefined : collectResidencySessionIds(request.params),
+        );
       const result = await this.dispatchRequest(request);
       return this.ok(request.id, result);
     } catch (error) {
@@ -566,6 +581,30 @@ export class CCbuddyProtocolAgentServer {
         return await this.requireV4Gateway().rowsRange(request.params);
       case V4_METHODS.conversationPlans:
         return await this.requireV4Gateway().plans(request.params);
+      case ccbuddyProtocolMethods.sessionLifecycleGetState: {
+        const { sessionId } = sessionLifecycleParamsSchema.parse(request.params);
+        return getSessionLifecycle(this.context).getState(sessionId);
+      }
+      case ccbuddyProtocolMethods.sessionLifecycleStop: {
+        const { sessionId } = sessionLifecycleParamsSchema.parse(request.params);
+        await getSessionLifecycle(this.context).stop(sessionId);
+        return { completed: true };
+      }
+      case ccbuddyProtocolMethods.sessionLifecycleEnsureReady:
+      case ccbuddyProtocolMethods.sessionLifecycleRestart: {
+        const { sessionId, workspace } = sessionLifecycleActivationParamsSchema.parse(
+          request.params,
+        );
+        const lifecycle = getSessionLifecycle(this.context);
+        if (request.method === ccbuddyProtocolMethods.sessionLifecycleEnsureReady)
+          await lifecycle.ensureReady(sessionId, workspace);
+        else await lifecycle.restart(sessionId, workspace);
+        return { completed: true };
+      }
+      case V4_METHODS.sessionDataMeasure:
+        return await measureSessionData(this.context, request.params);
+      case V4_METHODS.sessionDataPurge:
+        return await purgeSessionData(this.context, request.params);
       case V4_METHODS.backgroundBashOutput:
         return await this.requireV4Gateway().backgroundBashOutput(request.params);
       case V4_METHODS.conversationFileChanges:
@@ -667,8 +706,9 @@ export class CCbuddyProtocolAgentServer {
           await notifyWorkspaceHookTrustGrantSessions({
             // dispatch 层的 params 是弱类型；grant 内部已用同一 schema parse 过，这里
             // safeParse 只为取出 workspaceKey 做匹配，失败即跳过通知（防御，正常必成功）。
-            grantedWorkspaceKey: ccbuddyWorkspaceHookTrustGrantParamsSchema.safeParse(request.params)
-              .success
+            grantedWorkspaceKey: ccbuddyWorkspaceHookTrustGrantParamsSchema.safeParse(
+              request.params,
+            ).success
               ? ccbuddyWorkspaceHookTrustGrantParamsSchema.parse(request.params).workspace
                   .workspaceKey
               : undefined,
@@ -769,8 +809,12 @@ export class CCbuddyProtocolAgentServer {
         return await getPluginsOverview(this.context, request.params);
       case ccbuddyProtocolMethods.processChildProcesses:
         return listChildProcesses(this.context.deps.mcpTelemetry?.listProcesses() ?? []);
-      case ccbuddyProtocolMethods.runtimeCapabilities:
-        return { independentPlanState: true };
+      case ccbuddyProtocolMethods.runtimeCapabilities: {
+        const params = ccbuddyRuntimeCapabilitiesParamsSchema.parse(request.params ?? {});
+        this.context.sessionDirectorySourceEnabled ||=
+          params.hostCapabilities?.sessionDirectorySource === true;
+        return { independentPlanState: true, genUiContext: true, sessionDirectorySource: true };
+      }
       case ccbuddyProtocolMethods.pluginsMarketplaceAdd:
         return await this.withPluginOperationSignal(request, (signal) =>
           addPluginMarketplace(this.context, request.params, signal),

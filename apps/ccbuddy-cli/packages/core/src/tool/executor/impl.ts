@@ -12,7 +12,7 @@ import { BackgroundTaskTracker } from "./background-tasks.js";
 import { executeToolBatch, executeToolSchedule } from "./batch-runner.js";
 import { executeToolCall } from "./call-runner.js";
 import { runPreToolUseHooks } from "./hook-flow.js";
-import { resolveToolPermission } from "./permission-flow.js";
+import { areReadsDeniedWithoutPrompt, resolveToolPermission } from "./permission-flow.js";
 import type {
   ToolBatchExecuteOptions,
   ToolExecuteOptions,
@@ -23,8 +23,16 @@ import type {
 import { validateInput } from "./validation.js";
 
 export class ToolExecutorImpl implements ToolExecutor {
+  private readFileStateSnapshotCount = 0;
   private readonly deps: ToolExecutorDeps;
   private readonly backgroundTasks: BackgroundTaskTracker;
+
+  areReadsDeniedWithoutPrompt(
+    filePaths: readonly string[],
+    traceContext: TraceContext,
+  ): Promise<boolean[]> {
+    return areReadsDeniedWithoutPrompt(this.deps, filePaths, traceContext);
+  }
 
   constructor(options: ToolExecutorOptions) {
     this.deps = {
@@ -69,6 +77,7 @@ export class ToolExecutorImpl implements ToolExecutor {
       modelCatalogPort: options.modelCatalogPort,
       runtimeTaskRegistry: options.runtimeTaskRegistry,
       readFileState: options.readFileState ?? new Map(),
+      nextReadFileStateSnapshotIndex: () => this.readFileStateSnapshotCount++,
       hasLoadedSkill: options.hasLoadedSkill,
       subagentBackgroundBashMaxMs: options.subagentBackgroundBashMaxMs,
       bashShellSelection: options.bashShellSelection,

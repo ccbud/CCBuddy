@@ -174,9 +174,7 @@ function createMissingConfiguredPluginInfos(
         rootPath: "",
         packageStatus: "missing",
         ...(enabledSource ? { enabledSource } : {}),
-        ...(optionSources && Object.keys(optionSources).length > 0
-          ? { optionSources }
-          : {}),
+        ...(optionSources && Object.keys(optionSources).length > 0 ? { optionSources } : {}),
       },
     ];
   });
@@ -189,9 +187,7 @@ export function normalizePluginRootForComparison(
   const resolvedRoot = resolvePath(rootPath);
   // Windows 路径不区分大小写，且配置与 loader 可能分别返回正斜杠和反斜杠。
   // 若直接做字符串比较，会把同一个 Workspace plugins.dirs 根误判为无归属。
-  return platform === "win32"
-    ? resolvedRoot.replaceAll("\\", "/").toLowerCase()
-    : resolvedRoot;
+  return platform === "win32" ? resolvedRoot.replaceAll("\\", "/").toLowerCase() : resolvedRoot;
 }
 
 function toPluginDiagnostic(diagnostic: PluginDiagnostic): CCbuddyPluginDiagnostic {
@@ -218,9 +214,7 @@ export async function listPlugins(
     logger: context.logger,
     workingDirectory: params.workspace.workspacePath,
   });
-  const plugins = outcome.plugins.map((plugin) =>
-    toPluginInfo(plugin, configResult),
-  );
+  const plugins = outcome.plugins.map((plugin) => toPluginInfo(plugin, configResult));
   return {
     plugins: [
       ...plugins,
@@ -501,14 +495,13 @@ export async function describePlugin(
 ): Promise<CCbuddyPluginsDescribeResult> {
   const params = parseParams(ccbuddyPluginsDescribeParamsSchema, rawParams);
   const pluginStorageRoot = resolvePluginStorageRoot(params.workspace.workspacePath);
-  const result = await withPluginStorageLock(pluginStorageRoot, async () =>
-    describeCCbuddyPlugin({
-      logger: context.logger,
-      marketplace: params.marketplace,
-      pluginName: params.pluginName,
-      workingDirectory: params.workspace.workspacePath,
-    }),
-  );
+  const result = await describeCCbuddyPlugin({
+    logger: context.logger,
+    marketplace: params.marketplace,
+    pluginName: params.pluginName,
+    withWriteLock: (write) => withPluginStorageLock(pluginStorageRoot, write),
+    workingDirectory: params.workspace.workspacePath,
+  });
   const components: CCbuddyPluginComponentGroup[] = result.components.map((group) => ({
     kind: group.kind,
     items: group.items.map((item) => ({

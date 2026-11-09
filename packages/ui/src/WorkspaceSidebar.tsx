@@ -1,4 +1,5 @@
 /* eslint-disable max-lines -- 归档视图开关沿用现有 sidebar 结构，先保持同文件收口。 */
+import { ProjectSidebar } from "@/ProjectSidebar.js";
 import {
   memo,
   useCallback,
@@ -1448,6 +1449,16 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                       strategy={verticalListSortingStrategy}
                     >
                       <div data-purpose-section-list="true">
+                        <ProjectSidebar onCreateTask={onCreateTask} onSelectTask={onSelectTask} />
+                        {workspaceRemoteSessionId && (
+                          <ProjectSidebar
+                            key={workspaceRemoteSessionId}
+                            remoteSessionId={workspaceRemoteSessionId}
+                            onSelectRemoteProject={_onSelectRemoteProject}
+                            onCreateTask={onCreateTask}
+                            onSelectTask={onSelectTask}
+                          />
+                        )}
                         {purposeSectionPreferences.sectionOrder.map((sectionId) =>
                           sectionId === "projects" ? (
                             <WorkspacePurposeSection

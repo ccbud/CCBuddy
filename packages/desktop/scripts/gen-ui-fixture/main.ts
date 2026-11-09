@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol, webContents } from "electron";
+import { installProjectFixture } from "./project-service.js";
 import {
   checkCapture,
   checkStaleCapture,
@@ -6,10 +7,17 @@ import {
   checkCopyButton,
 } from "./presentation-checks.js";
 import { checkStandalone } from "./standalone-checks.js";
+import { checkInputSnapshot } from "./context-checks.js";
+import { exitWithFailure } from "./failure-artifacts.js";
+import { checkToolSearchSetting } from "./settings-checks.js";
+import { createReactFixtureActions } from "./react-actions.js";
+import { checkLoading } from "./preview-corner-checks.js";
 import {
   checkRuntimeWidgets,
   checkCalendarAndCarousel,
   checkTweakLifecycle,
+  checkWidgetGlobals,
+  currentGenUiGuest as currentGuest,
 } from "./runtime-checks.js";
 import { prepareOutputFiles } from "./output-files.js";
 import { installOfflineChecks } from "./offline-checks.js";
@@ -34,7 +42,7 @@ app.on("web-contents-created", (_, contents) =>
 const deadline = setTimeout(() => {
   process.stderr.write("Gen UI E2E deadline exceeded\n");
   app.exit(1);
-}, 45_000);
+}, 75_000);
 void app
   .whenReady()
   .then(async () => {
@@ -42,7 +50,10 @@ void app
       rendererDir: root,
       aliasDir: root,
       preloadPath: join(root, "guest.cjs"),
-      logger: { info() {}, warn: (...args) => process.stderr.write(JSON.stringify(args) + "\n") },
+      logger: {
+        info() {},
+        warn: (...args) => process.stderr.write(JSON.stringify(args) + "\n"),
+      },
     });
     const win = new BrowserWindow({
       show: true,
@@ -65,8 +76,13 @@ void app
       else pending.push(result.sandboxId);
     });
     win.webContents.on("did-attach-webview", (_, guest) =>
-      sandbox.attachGuest({ guest, hostWebContents: win.webContents, sandboxId: pending.shift()! }),
+      sandbox.attachGuest({
+        guest,
+        hostWebContents: win.webContents,
+        sandboxId: pending.shift()!,
+      }),
     );
+    await installProjectFixture(root);
     const output = await prepareOutputFiles(root);
     const service = createGenUiService({
       stateRoot: join(root, "state"),
@@ -89,8 +105,6 @@ void app
     ipcMain.handle("fixture-gesture", () => false);
     await win.loadFile(join(root, "host.html"));
     await win.webContents.executeJavaScript("window.harnessReady");
-    const currentGuest = () =>
-      webContents.getAllWebContents().find((contents) => contents.getType() === "webview")!;
     let guest = currentGuest();
     let frame = guest.mainFrame.frames.find((value) => value.url.includes("/instance/"))!;
     assert.ok(frame);
@@ -101,13 +115,7 @@ void app
     await read(
       "new Promise(resolve => globalThis.lucide ? resolve() : document.getElementById('ccbuddy-visualization-lucide').addEventListener('load', resolve, {once:true}))",
     );
-    assert.deepEqual(await read("Object.keys(window.ccbuddy).sort()"), [
-      "sendFollowUpMessage",
-      "setWidgetState",
-      "widgetState",
-    ]);
-    assert.equal(await read("typeof window.openai"), "undefined");
-    assert.equal(await read("typeof window.require"), "undefined");
+    await checkWidgetGlobals(read);
     await read(
       "window.ccbuddy.setWidgetState({modelContent:{count:7},privateContent:{secret:'local'}})",
     );
@@ -116,9 +124,18 @@ void app
     assert.equal(currentGuest().id, guest.id);
     assert.equal(await read("window.starts"), 1);
     assert.equal(await read("window.ccbuddy.widgetState.modelContent.count"), 7);
+    await checkInputSnapshot(
+      service,
+      {
+        workspacePath: output.workspacePath,
+        workspaceIdentity: "ssh:fixture:/workspace",
+        sessionId: "fixture",
+      },
+      output.paths.fixture!,
+    );
     assert.equal(
       await read("getComputedStyle(document.querySelector('.card')).borderWidth"),
-      "0px",
+      "1px",
     );
     win.focus();
     await checkRuntimeWidgets(read);
@@ -171,14 +188,7 @@ void app
     assert.equal(await read("document.querySelector('h1').textContent"), "Updated heading");
     await checkStaleCapture(win, guest);
     await win.loadFile(join(root, "react.html"));
-    const waitHost = async (predicate: string) =>
-      win.webContents.executeJavaScript(
-        `new Promise((resolve,reject)=>{const end=Date.now()+8000;const tick=()=>{if(${predicate})resolve(true);else if(Date.now()>end)reject(new Error(${JSON.stringify(`React fixture condition timed out: ${predicate}`)}));else requestAnimationFrame(tick)};tick()})`,
-      );
-    const clickHost = async (text: string) =>
-      win.webContents.executeJavaScript(
-        `(() => { const button = [...document.querySelectorAll('button')].find(node => (node.textContent === ${JSON.stringify(text)} || node.getAttribute("aria-label") === ${JSON.stringify(text)})); if(!button) throw new Error('button not found'); button.click(); })()`,
-      );
+    const { waitHost, clickHost } = createReactFixtureActions(win);
     await waitHost(`window.showReply`);
     const streaming = await win.webContents.executeJavaScript("window.inspectReact()");
     assert.equal(streaming.reads, 0);
@@ -187,7 +197,7 @@ void app
       await win.webContents.executeJavaScript("document.querySelectorAll('webview').length"),
       0,
     );
-    await win.webContents.executeJavaScript("window.showReply('complete')");
+    await checkLoading(win, waitHost);
     await waitHost(`document.querySelector('[data-gen-ui-phase="ready"]')`);
     assert.equal(
       await win.webContents.executeJavaScript("document.body.textContent.includes('::visualize')"),
@@ -378,26 +388,15 @@ void app
     await waitHost(
       `window.inspectReact().ports === 0 && window.inspectReact().states === 0 && !document.querySelector('webview')`,
     );
+    await checkToolSearchSetting(win, waitHost);
     service.dispose();
     win.destroy();
     await checkStandalone(root);
     offline.assertNoNetwork();
     clearTimeout(deadline);
     process.stdout.write(
-      "Gen UI Electron E2E passed: isolation, state, anchors, styles, tooltip, tabs, icons, calendar, carousel, Tweak lifecycle, follow-up, theme, replay, reload, standalone and historical remount\n",
+      "Gen UI / Projects / ToolSearch Electron E2E passed: isolation, state, anchors, styles, tooltip, tabs, icons, calendar, carousel, Tweak lifecycle, follow-up, theme, replay, reload, standalone and historical remount\n",
     );
     app.exit(0);
   })
-  .catch(async (error) => {
-    process.stderr.write(String(error.stack ?? error));
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win) {
-      await writeFile(join(root, "failure.png"), (await win.webContents.capturePage()).toPNG());
-      process.stderr.write(
-        await win.webContents.executeJavaScript(
-          `JSON.stringify({scrollY, anchors:[...document.querySelectorAll('[data-testid="gen-ui-anchor"]')].map(node=>node.getBoundingClientRect().toJSON()), views:[...document.querySelectorAll('webview')].map(node=>({rect:node.getBoundingClientRect().toJSON(),style:node.getAttribute('style')}))})`,
-        ),
-      );
-    }
-    app.exit(1);
-  });
+  .catch((error) => exitWithFailure(root, error));

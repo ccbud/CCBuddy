@@ -21,3 +21,22 @@ export function ensureIndependentPlanSupport(
   checks.set(client, check);
   return check;
 }
+const genUiChecks = new WeakMap<object, Promise<void>>();
+
+export function ensureGenUiContextSupport(
+  client: Pick<CCbuddyProtocolClient, "request">,
+): Promise<void> {
+  const cached = genUiChecks.get(client);
+  if (cached) return cached;
+  const check = client
+    .request(ccbuddyProtocolMethods.runtimeCapabilities, {}, ccbuddyRuntimeCapabilitiesSchema)
+    .then((result) => {
+      if (result.genUiContext !== true) throw new Error("proto.genUiContextUnsupported");
+    })
+    .catch((cause: unknown) => {
+      genUiChecks.delete(client);
+      throw new Error("proto.genUiContextUnsupported", { cause });
+    });
+  genUiChecks.set(client, check);
+  return check;
+}

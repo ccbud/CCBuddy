@@ -107,6 +107,7 @@ export interface OptimisticCommand {
 }
 
 export interface ConversationStoreState {
+  lifecycle?: import("@ccbuddy/shared").SessionLifecycleSnapshot;
   status: ConversationStoreStatus;
   snapshot: ConversationSnapshot | null;
   subscriptionId: string | null;
@@ -318,6 +319,8 @@ export class ConversationProjectionStore {
   private readonly offRuntimeLifecycle: (() => void) | null = null;
   private runtimeRecycleRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private runtimeRecycleRetryAttempt = 0;
+  private lifecycleRequiresReconnect = false;
+  private readonly offSessionLifecycle: (() => void) | undefined;
   private sessionOpenRendererTiming: SessionOpenRendererTiming = {};
   private initialSubscribeAckAt: number | null = null;
   private planQueryInFlight = false;
@@ -343,6 +346,9 @@ export class ConversationProjectionStore {
     private readonly rowPool: ConversationRowPool = new ConversationRowPool(),
   ) {
     liveProjectionStores.add(this);
+    this.offSessionLifecycle = transport.onSessionLifecycle?.((snapshot) =>
+      this.handleSessionLifecycle(snapshot),
+    );
     this.offAssemblyFault = transport.onAssemblyFault((fault) => {
       if (fault.topic === this.topic) {
         this.handleAssemblyFault(fault.subscriptionId, fault.deliveryKind, fault.reasonCode);
@@ -370,6 +376,39 @@ export class ConversationProjectionStore {
       this.offRuntimeRestart = transport.onRuntimeRestart((reason) =>
         this.handleRuntimeRestart(reason),
       );
+    }
+  }
+
+  private handleSessionLifecycle(
+    snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot,
+  ): void {
+    if (this.closed || snapshot.sessionId !== parseConversationTopic(this.topic)) return;
+    if (this.state.lifecycle && snapshot.revision <= this.state.lifecycle.revision) return;
+    this.setState({ lifecycle: snapshot });
+    if (snapshot.state === "stopping" || snapshot.state === "faulted") {
+      this.lifecycleRequiresReconnect = true;
+      this.generation += 1;
+      this.clearRuntimeRecycleRetry();
+      this.discardRecovery();
+      this.awaitingInitial = null;
+      this.subscriptionHasAppliedBase = false;
+      this.setState({
+        subscriptionId: null,
+        status: snapshot.state === "faulted" ? "error" : "connecting",
+        lastError: snapshot.lastError?.message ?? null,
+      });
+    } else if (snapshot.state === "unloaded") {
+      this.setState({
+        status: "error",
+        lastError: snapshot.lastError?.message ?? "fault.sessionLifecycle.unloaded",
+      });
+    } else if (
+      snapshot.state === "ready" &&
+      this.lifecycleRequiresReconnect &&
+      this.connectInFlight === 0
+    ) {
+      this.lifecycleRequiresReconnect = false;
+      void this.connect({ forceSnapshot: true });
     }
   }
 
@@ -530,6 +569,15 @@ export class ConversationProjectionStore {
       this.setState({ status: "error", lastError: message });
     } finally {
       this.connectInFlight -= 1;
+      if (
+        !this.closed &&
+        this.connectInFlight === 0 &&
+        this.lifecycleRequiresReconnect &&
+        this.state.lifecycle?.state === "ready"
+      ) {
+        this.lifecycleRequiresReconnect = false;
+        void this.connect({ forceSnapshot: true });
+      }
     }
   }
 
@@ -572,6 +620,8 @@ export class ConversationProjectionStore {
   /** workspace-dispose 当场：旧 runtime 已死，新的尚不存在，不可重订阅。 */
   private handleRuntimeUnavailable(): void {
     if (this.closed) return;
+    this.lifecycleRequiresReconnect = false;
+    this.setState({ lifecycle: undefined });
     this.clearRuntimeRecycleRetry();
     this.discardRecovery();
     this.awaitingInitial = null;
@@ -1023,6 +1073,10 @@ export class ConversationProjectionStore {
 
   private handleRuntimeRestart(reason?: "runtimeRestart" | "transportReplaced"): void {
     if (this.closed) return;
+    if (reason !== "transportReplaced") {
+      this.lifecycleRequiresReconnect = false;
+      this.setState({ lifecycle: undefined });
+    }
     // transport 已先失效旧 ownership/assembler；旧 transport/runtime subId 不得再 unsubscribe，
     // 直接 fresh subscribe，保留旧 snapshot 直到新 snapshot 原子替换。
     this.generation += 1;
@@ -1404,6 +1458,7 @@ export class ConversationProjectionStore {
     });
     this.closed = true;
     this.offAssemblyFault();
+    this.offSessionLifecycle?.();
     this.offRuntimeRestart?.();
     this.offRuntimeLifecycle?.();
     this.clearRuntimeRecycleRetry();

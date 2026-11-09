@@ -357,4 +357,16 @@ export {
 export { createHighspeedMockTransport } from "./highspeed/highspeedMockTransport.js";
 
 export { IGenUiService } from "./gen-ui/contract.js";
+export { IProjectService } from "./project/contract.js";
+export type {
+  ProjectTree,
+  ProjectTask,
+  ProjectTaskRef,
+  VirtualProject,
+  ProjectRoot,
+  SaveProjectInput,
+  ProjectDirectories,
+  ProjectDataMeasure,
+  ProjectDataDeleteResult,
+} from "./project/contract.js";
 export type { GenUiPrepareParams } from "./gen-ui/contract.js";

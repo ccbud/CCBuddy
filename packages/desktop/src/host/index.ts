@@ -1710,6 +1710,7 @@ async function createWindowRemoteConnectionHandle(params: {
   const services =
     params.target.kind === "server"
       ? createServerRemoteWorkspaceServiceCollection({
+          target: params.target,
           clientConfigService,
           connectionServices: connection.services,
           sourceServices: activeServices ?? undefined,
@@ -1735,6 +1736,7 @@ async function createWindowRemoteConnectionHandle(params: {
             },
           );
           return createRemoteWorkspaceServiceCollection({
+            target: params.target,
             clientConfigService,
             localOnboardingRecordService,
             connectionServices: backendConnection.services,

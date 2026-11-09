@@ -219,6 +219,7 @@ export interface V4GatewayHost {
     sessionId: string,
     resumeThoughtLevel?: string,
     workspace?: CCbuddyWorkspaceRef,
+    additionalDirectories?: string[],
   ): Promise<ColdSessionResumeOutcome>;
   /**
    * 下行物理帧出口（宿主负责投递：stdio notification / MessagePort / ws）。
@@ -1435,6 +1436,7 @@ export class ConversationV4Gateway {
             sessionId,
             params.resumeThoughtLevel,
             params.workspace,
+            params.additionalDirectories,
           )
         : await this.hydratePublisher(sessionId);
     const cliSessionRestoreMs = !isLiveConversation
@@ -2722,11 +2724,11 @@ export class ConversationV4Gateway {
   }
 
   /** 会话关闭：清 publisher 与其全部订阅调度；hydration 标记同清（重开走冷启动重建）；
-   *  并从其 workspace index 移除该会话（session.removed 推给列表订阅者）。 */
-  disposeSession(sessionId: string): void {
+   *  只有已持久化软删除才从 workspace index 移除；普通关闭不能伪造删除事实。 */
+  disposeSession(sessionId: string, options: { deleted?: boolean } = {}): void {
     this.cleanupSessionRuntime(sessionId, {
       clearCommandInbox: false,
-      notifyIndexRemoved: true,
+      notifyIndexRemoved: options.deleted === true,
     });
   }
 
@@ -2735,6 +2737,25 @@ export class ConversationV4Gateway {
    * 移除会话（不发 session.removed）——去激活是纯内存优化，侧边栏列表项必须原样
    * 保留，再次订阅经冷恢复透明重建。
    */
+  async releaseSessionProjection(sessionId: string): Promise<void> {
+    const hydration = this.hydrationInFlight.get(sessionId);
+    this.disposeSession(sessionId);
+    await Promise.allSettled([hydration]);
+    this.disposeSession(sessionId);
+  }
+
+  async finishSessionRelease(sessionId: string): Promise<void> {
+    await this.inbox.resetReleasedSession(sessionId);
+    this.disposeSession(sessionId);
+  }
+
+  forgetIndexedSession(sessionId: string): void {
+    for (const workspaceId of this.indexPublishers.keys()) {
+      if (this.indexPublishers.get(workspaceId)?.removeSession(sessionId))
+        this.flushIndex(workspaceId);
+    }
+  }
+
   deactivateSession(sessionId: string): void {
     this.cleanupSessionRuntime(sessionId, {
       clearCommandInbox: true,
@@ -2940,6 +2961,7 @@ export class ConversationV4Gateway {
     sessionId: string,
     resumeThoughtLevel?: string,
     workspace?: CCbuddyWorkspaceRef,
+    additionalDirectories?: string[],
   ): Promise<ConversationTopicPublisher> {
     const existingFlight = this.readyFlights.get(sessionId);
     if (existingFlight) return existingFlight;
@@ -2949,6 +2971,7 @@ export class ConversationV4Gateway {
         sessionId,
         resumeThoughtLevel,
         workspace,
+        additionalDirectories,
       );
       return this.hydratePublisher(sessionId, persistedMessages);
     });

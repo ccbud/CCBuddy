@@ -30,6 +30,11 @@ async function unsubscribeIgnoringFailure(
  * 最新 proxy，旧 proxy 的监听先同步解除，避免新旧 Store 竞争同一 topic ownership。
  */
 export class ReplaceableConversationTransport implements ConversationTransport {
+  private readonly sessionLifecycleListeners = new Set<
+    (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void
+  >();
+  private offSessionLifecycle: (() => void) | null = null;
+  private readonly topicBySubscriptionId = new Map<string, string>();
   private readonly frameListeners = new Set<FrameListener>();
   private readonly assemblyFaultListeners = new Set<AssemblyFaultListener>();
   private readonly runtimeRestartListeners = new Set<RuntimeRestartListener>();
@@ -57,6 +62,35 @@ export class ReplaceableConversationTransport implements ConversationTransport {
     };
   };
 
+  onSessionLifecycle(
+    listener: (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void,
+  ): () => void {
+    this.sessionLifecycleListeners.add(listener);
+    this.bindSessionLifecycleListener();
+    return () => {
+      this.sessionLifecycleListeners.delete(listener);
+      if (!this.sessionLifecycleListeners.size) {
+        this.offSessionLifecycle?.();
+        this.offSessionLifecycle = null;
+      }
+    };
+  }
+
+  private bindSessionLifecycleListener(): void {
+    if (this.offSessionLifecycle || !this.sessionLifecycleListeners.size) return;
+    this.offSessionLifecycle =
+      this.current.onSessionLifecycle?.((snapshot) => {
+        if (snapshot.state === "stopping") {
+          for (const [subscriptionId, topic] of this.topicBySubscriptionId) {
+            if (topic !== "conversation/" + snapshot.sessionId) continue;
+            this.transportBySubscriptionId.delete(subscriptionId);
+            this.topicBySubscriptionId.delete(subscriptionId);
+          }
+        }
+        for (const listener of this.sessionLifecycleListeners) listener(snapshot);
+      }) ?? null;
+  }
+
   constructor(private current: ConversationTransport) {
     if (!current.onRuntimeLifecycle) {
       this.onRuntimeLifecycle = undefined;
@@ -73,6 +107,7 @@ export class ReplaceableConversationTransport implements ConversationTransport {
     for (const [subscriptionId, owner] of this.transportBySubscriptionId) {
       if (owner !== previous) continue;
       this.transportBySubscriptionId.delete(subscriptionId);
+      this.topicBySubscriptionId.delete(subscriptionId);
       void unsubscribeIgnoringFailure(previous, subscriptionId);
     }
 
@@ -94,6 +129,7 @@ export class ReplaceableConversationTransport implements ConversationTransport {
       throw new Error("fault.subscription.transportReplaced");
     }
     this.transportBySubscriptionId.set(result.ack.subscriptionId, owner);
+    this.topicBySubscriptionId.set(result.ack.subscriptionId, params.topic);
     return result;
   }
 
@@ -112,6 +148,7 @@ export class ReplaceableConversationTransport implements ConversationTransport {
   unsubscribe(subscriptionId: string): ReturnType<ConversationTransport["unsubscribe"]> {
     const owner = this.transportBySubscriptionId.get(subscriptionId) ?? this.current;
     this.transportBySubscriptionId.delete(subscriptionId);
+    this.topicBySubscriptionId.delete(subscriptionId);
     return owner.unsubscribe(subscriptionId);
   }
 
@@ -257,6 +294,7 @@ export class ReplaceableConversationTransport implements ConversationTransport {
   }
 
   private bindCurrentListeners(): void {
+    this.bindSessionLifecycleListener();
     this.bindFrameListener();
     this.bindAssemblyFaultListener();
     this.bindRuntimeRestartListener();
@@ -284,6 +322,7 @@ export class ReplaceableConversationTransport implements ConversationTransport {
       for (const [subscriptionId, subscriptionOwner] of this.transportBySubscriptionId) {
         if (subscriptionOwner === owner) {
           this.transportBySubscriptionId.delete(subscriptionId);
+          this.topicBySubscriptionId.delete(subscriptionId);
         }
       }
       for (const listener of this.runtimeRestartListeners) listener();
@@ -299,6 +338,8 @@ export class ReplaceableConversationTransport implements ConversationTransport {
   }
 
   private detachCurrentListeners(): void {
+    this.offSessionLifecycle?.();
+    this.offSessionLifecycle = null;
     this.offFrame?.();
     this.offFrame = null;
     this.offAssemblyFault?.();

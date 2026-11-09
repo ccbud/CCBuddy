@@ -181,6 +181,8 @@ Choose the smallest composition that fits.
 
 ### Surfaces and layout
 
+Use the host typography scale: body and controls use the body size; h1 is body +4px, h2 +2px, h3–h6 the body size. Container radii step down xl → lg → md → sm through visible card/widget nesting. Layout wrappers do not add a level. Controls use the matching parent radius automatically. Primary controls are neutral; chart series and links retain their separate accent colors.
+
 - `.card`: The only card-like HTML surface. Use its base class unchanged for a necessary numeric summary, selected-item summary, or bounded interactive field. Before adding a fill, border, radius, or shadow to any layout container, either use `.card` or leave it transparent and unframed; never recreate card chrome on rows, panels, tiles, sections, or wrappers. Keep charts, maps, diagrams, tables, controls, and the whole visualization unframed. Never nest cards; show 2-4 summaries near the top only when useful. Structural groupings and repeated content are not bounded interactive fields. Organize them with layout or visual marks, not container chrome.
 - `.viz-stat`: Use a summary `.card` with one muted label, one `.viz-stat-value`, and at most one short context or delta line.
 - `.viz-grid`: Use for peer metrics or choices instead of a custom grid. It creates as many equal-width columns as fit and stacks when narrow. Never use it for the whole visual or a horizontally scrolling card row. Keep groups to 2-3 columns at 736px and controls in a separate row.
@@ -201,8 +203,26 @@ Choose the smallest composition that fits.
 
 ```html
 <div class="nav nav-pills" role="tablist" aria-label="Platform">
-  <button class="nav-link active" id="mac" role="tab" aria-controls="mac-panel" aria-selected="true" type="button">macOS</button>
-  <button class="nav-link" id="linux" role="tab" aria-controls="linux-panel" aria-selected="false" type="button">Linux</button>
+  <button
+    class="nav-link active"
+    id="mac"
+    role="tab"
+    aria-controls="mac-panel"
+    aria-selected="true"
+    type="button"
+  >
+    macOS
+  </button>
+  <button
+    class="nav-link"
+    id="linux"
+    role="tab"
+    aria-controls="linux-panel"
+    aria-selected="false"
+    type="button"
+  >
+    Linux
+  </button>
 </div>
 <div id="mac-panel" role="tabpanel" aria-labelledby="mac">macOS content</div>
 <div id="linux-panel" role="tabpanel" aria-labelledby="linux" hidden>Linux content</div>
@@ -214,6 +234,7 @@ Choose the smallest composition that fits.
 
 - Place related inputs and buttons on one row, aligned at their vertical centers. Put labels and values on a separate row above them.
 - `.btn`: Use for a content-sized secondary action. Add `.btn-primary` for one main action per control group or `.btn-ghost` for low emphasis.
+- `.btn-secondary`: Use for a filled secondary action. `.btn-xs`, `.btn-sm`, `.btn-lg` select 20px, 24px, 32px minimum heights; default is 28px. Touch targets retain their minimum size.
 - `.btn-block`: Add to a `.btn` only when the action should intentionally fill the available inline space. Never use it for ordinary row actions.
 - `<a>`: Use for links. Add `.btn` to style a link as a button.
 - `[data-tooltip]`: Use for concise supplementary plain text on static or dynamic triggers; the sandbox handles hover, focus, and touch and creates `.tooltip` elements. Keep essential content visible and triggers labeled. Never use `title`, custom markup, or initialization. Example: `<button type="button" data-tooltip="Reset view">Reset</button>`.
@@ -224,6 +245,7 @@ Choose the smallest composition that fits.
 - `.form-control`: Pair a native text, date, file, or color input—or a textarea—with `.form-label`.
 - `.form-control-color`: Add to `.form-control` for a compact native color input.
 - `.form-select`: Pair a native select with `.form-label`.
+- Ordinary fields use 36px height. Add `.form-control-sm` / `.form-select-sm` for compact 28px fields, or `.form-control-xs` / `.form-select-xs` for 24px inline fields. Keep default fields for ordinary forms.
 - `.form-range`: Pair a native range with a visible label; put its current value and units immediately before it.
 
 ### Tables

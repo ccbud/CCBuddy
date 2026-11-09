@@ -1,4 +1,5 @@
 import { PERMISSION_FULL_ACCESS_OPTION_ID } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import { normalizeGenUiInput } from "@ccbuddy/core";
 // ProductProjection —— CLI 权威投影第二 reducer。
 // 输入：CLI 事件日志（SessionEvent，权威事实源）；输出：ConversationDelta[]。
 // 快照推进复用协议规范 apply（applyConversationDeltas）——投影演进与 delta 流
@@ -315,6 +316,7 @@ export interface ConversationEditTarget {
   transcriptMessageId: string;
   coveredByStableCompact: boolean;
   intent: {
+    genUiContext?: import("@ccbuddy/contracts").TurnInputIntentMetadata["genUiContext"];
     inputOrigin?: "desktop" | "mobile";
     conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
     botGroupSource?: CanonicalUserIntentFact["botGroupSource"];
@@ -2160,6 +2162,7 @@ export class ProductProjection {
               intent: {
                 kind: fact.intentKind,
                 text: fact.intentText,
+                genUiContext: fact.genUiContext,
                 ...(fact.sourceCommandId ? { sourceCommandId: fact.sourceCommandId } : {}),
                 ...(fact.inputOrigin ? { inputOrigin: fact.inputOrigin } : {}),
                 ...(fact.conversationQuotes ? { conversationQuotes: fact.conversationQuotes } : {}),
@@ -3644,7 +3647,7 @@ export class ProductProjection {
           : payload.intent?.kind === "sendGoalCommand" || payload.commandKind === "sendGoalCommand"
             ? ("sendGoalCommand" as const)
             : (existing?.kind ?? ("sendText" as const)),
-      text: payload.input,
+      ...normalizeGenUiInput(payload.input, payload.intent?.genUiContext ?? existing?.genUiContext),
       sourceCommandId:
         payload.intent?.sourceCommandId ??
         existing?.sourceCommandId ??
@@ -3813,6 +3816,7 @@ export class ProductProjection {
             ? { fallbackReasonCode: queueItem.delivery.fallbackReasonCode }
             : {}),
           attachmentRefs: queueItem.attachments,
+          genUiContext: queueItem.genUiContext,
         };
         return [
           {
@@ -3827,6 +3831,7 @@ export class ProductProjection {
 
     const deltas: ConversationDelta[] = [];
     for (const item of items) {
+      const normalizedInput = normalizeGenUiInput(item.text, item.intent?.genUiContext);
       const delivery =
         item.delivery ?? this.deliveryByPendingInputId.get(item.pendingInputId) ?? "queue";
       // queue 消费 = product turn 边界（每条一轮：收口上一段
@@ -3850,8 +3855,8 @@ export class ProductProjection {
         kind: "userInput" as const,
         text:
           item.intent?.conversationQuotes || item.intent?.botGroupSource
-            ? (item.intent.text ?? item.text)
-            : item.text,
+            ? normalizeGenUiInput(item.intent.text ?? item.text, item.intent.genUiContext).text
+            : normalizedInput.text,
         origin: "realUser" as const,
         ...(delivery === "guide" ? { guided: true as const } : {}),
         ...(item.intent?.sourceCommandId ? { sourceCommandId: item.intent.sourceCommandId } : {}),
@@ -3879,7 +3884,9 @@ export class ProductProjection {
               coveredByStableCompact: false,
               intent: {
                 kind: item.intent?.kind === "sendGoalCommand" ? "sendGoalCommand" : "sendText",
-                text: item.intent?.text ?? item.text,
+                text: normalizeGenUiInput(item.intent?.text ?? item.text, item.intent?.genUiContext)
+                  .text,
+                genUiContext: normalizedInput.genUiContext,
                 ...(item.intent?.sourceCommandId
                   ? { sourceCommandId: item.intent.sourceCommandId }
                   : {}),

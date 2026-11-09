@@ -137,6 +137,9 @@ export interface ConversationTransport {
     }) => void,
   ): () => void;
   /** CLI runtime 或承载 proxy 换代；transport 已先清 ownership/barrier/assembler。 */
+  onSessionLifecycle?(
+    listener: (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void,
+  ): () => void;
   onRuntimeRestart(listener: (reason?: "runtimeRestart" | "transportReplaced") => void): () => void;
   /**
    * CLI runtime 存活态。unavailable 在 workspace-dispose 当场到达（此时新 runtime 尚不存在，

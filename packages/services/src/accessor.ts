@@ -1,4 +1,5 @@
 import type { IGenUiService } from "./gen-ui/contract.js";
+import type { IProjectService } from "./project/contract.js";
 import { IOffPeakTaskService } from "./session/offPeakTask.js";
 import type { IHighspeedCardService } from "./highspeed/highspeedCard.js";
 import type { IPluginUiBridgeService } from "./plugin-ui-bridge/contract.js";
@@ -90,6 +91,7 @@ export interface IServiceAccessor {
   readonly mcpSyncService: IMcpSyncService;
   /** 插件 UI 桥；web 或旧 host 可不提供，UI 据此回退普通 MCP 卡片。 */
   readonly genUiService?: IGenUiService;
+  readonly projectService?: IProjectService;
   readonly pluginUiBridgeService?: IPluginUiBridgeService;
   /** 页面 sampling；只有桌面本地任务开放。 */
   readonly pluginUiSamplingService?: IPluginUiSamplingService;

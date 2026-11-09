@@ -143,7 +143,10 @@ export interface MessageProjectionAnchor {
   goalBoundary?: StableForkGoalBoundaryMetadata;
 }
 
+export type SessionLastOutcome = "completed" | "error" | "interrupted";
+
 export interface SessionInfo {
+  lastOutcome?: SessionLastOutcome;
   id: SessionId;
   projectID: ProjectId;
   workspaceID?: WorkspaceId;
@@ -170,6 +173,7 @@ export interface SessionInfo {
     titleUpdated?: number;
     compacting?: number;
     archived?: number;
+    deleted?: number;
   };
 }
 
@@ -247,6 +251,7 @@ export interface ForkCommitBundle {
 }
 
 export interface UpdateSessionInput {
+  lastOutcome?: SessionLastOutcome;
   id: SessionId;
   directory?: string;
   path?: string | null;
@@ -1104,6 +1109,10 @@ export interface SessionStorePort {
   commitSharedContextImportBundle?(bundle: SharedContextImportCommitBundle): Promise<SessionInfo>;
   transitionSharedContextImport?(input: SharedContextImportTransition): Promise<boolean>;
   updateSession(input: UpdateSessionInput): Promise<SessionInfo>;
+  softDeleteSession?(sessionID: SessionId, timeDeleted?: number): Promise<void>;
+  listOwnedSessionTrees?(sessionIDs: SessionId[]): Promise<Map<SessionId, SessionId[]>>;
+  listArtifactReferrers?(sessionIDs: SessionId[]): Promise<Map<SessionId, SessionId[]>>;
+  purgeSessions?(sessionIDs: SessionId[]): Promise<void>;
   getSession(sessionID: SessionId): Promise<SessionInfo | null>;
   listSessions(input?: ListSessionsInput): Promise<SessionInfo[]>;
   /**

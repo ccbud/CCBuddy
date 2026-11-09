@@ -191,6 +191,7 @@ export interface WorkspaceCCbuddyUIState {
   groupedDraftTask: GroupedDraftTaskState | null;
   /** 用户发起当前草稿的入口；预热不改变来源。 */
   draftCreateSource: SessionCreateSource;
+  draftProjectId: string | null;
   /** 首发创建后、grouped sqlite order 落地前，真实 task 继承草稿锚点的本地定位。 */
   promotedGroupedDraftTaskByTaskId: Record<string, GroupedDraftTaskState>;
   /** 当前 workspace 选中的 CCbuddy Agent provider */
@@ -267,6 +268,7 @@ export interface CCbuddySessionStoreState {
     options?: {
       groupedDraftPlacement?: GroupedDraftTaskPlacement;
       createSource?: SessionCreateSource;
+      projectId?: string;
     },
   ) => void;
   clearGroupedDraftTask: (workspacePath: string, workspaceIdentity?: string) => void;
@@ -535,6 +537,7 @@ export function createDefaultWorkspaceState(
     optimisticTaskListByTaskId: {},
     groupedDraftTask: null,
     draftCreateSource: "session",
+    draftProjectId: null,
     promotedGroupedDraftTaskByTaskId: {},
     selectedProvider,
     selectedSupplierKey: buildNativeSupplierKey(selectedProvider),

@@ -11,7 +11,10 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 import { writeBundledOfficialMarketplacePartitionSync } from "@ccbuddy/adapters";
 import { CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE, type Logger } from "@ccbuddy/contracts";
-import { isCCbuddyCuaInternalFeatureEnabled, CCBUDDY_CUA_OFFICIAL_PLUGIN_ID } from "@ccbuddy/shared";
+import {
+  isCCbuddyCuaInternalFeatureEnabled,
+  CCBUDDY_CUA_OFFICIAL_PLUGIN_ID,
+} from "@ccbuddy/shared";
 import {
   createOfficialPluginCacheRetryBudget,
   getOfficialPluginCacheRetryAttempts,
@@ -633,9 +636,11 @@ export function candidateBaseDirs(): string[] {
   // 修复原因：Electron app-server 运行在 resources/glm/ccbuddy.cjs，官方插件资源也随桌面包
   // stage 到同级 packages/*-plugin。候选目录必须优先看入口文件目录，避免生产态退回到
   // monorepo-only 的 __dirname 查找假设。
-  return [entrypointDir(), runtimeDir(), process.cwd()].filter(
-    (dir): dir is string => typeof dir === "string",
-  );
+  return [...bundleBaseDirs(), process.cwd()];
+}
+
+export function bundleBaseDirs(): string[] {
+  return [entrypointDir(), runtimeDir()].filter((dir): dir is string => typeof dir === "string");
 }
 
 function runtimeDir(): string | undefined {

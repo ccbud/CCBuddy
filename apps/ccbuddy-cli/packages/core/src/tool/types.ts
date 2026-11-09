@@ -1,3 +1,4 @@
+import type { ToolSearchExecutionContext, ModelCallWrapper } from "@ccbuddy/contracts";
 import type { McpToolUiDescriptor } from "@ccbuddy/shared/mcp-apps";
 // ============================================================
 // Tool Types - Core tool types for registry and executor
@@ -67,6 +68,9 @@ import type {
 // -----------------------------------------------
 
 export interface ToolMetadata {
+  shouldDefer?: boolean;
+  alwaysLoad?: boolean;
+  searchHint?: string;
   name: string;
   description?: string;
   modelInstructions?: readonly string[];
@@ -134,6 +138,8 @@ export interface BackgroundTaskControlPort {
 }
 
 export interface ToolExecutionContext {
+  automationId?: string;
+  toolSearch?: ToolSearchExecutionContext;
   toolCallId: string;
   /**
    * 当前 Tool 的实时观测写入器。Handler 只能通过窄接口写事实，不能接触原始 OTel Span。
@@ -215,6 +221,9 @@ export interface ToolEmbeddedSearchContext {
 }
 
 export interface ReadFileStateEntry {
+  requestedPath?: string;
+  seededFromContext?: true;
+  restoredFromSession?: true;
   path: string;
   content: string;
   offset?: number;
@@ -296,7 +305,17 @@ export type ToolHandler<TInput = unknown, TOutput = unknown> = (
 // Tool Entry
 // -----------------------------------------------
 
+export interface ToolBatchNotice {
+  source: import("../system-reminder/source.js").SystemReminderSource;
+  content: string;
+}
+
 export interface ToolEntry extends ToolContractDeclaration {
+  formatBatchNotice?: (
+    output: unknown,
+  ) =>
+    | { source: import("../system-reminder/source.js").SystemReminderSource; content: string }
+    | undefined;
   /** 宿主资源在审批之前固定归属；所有返回路径均释放，撤销信号进入现有取消链。 */
   retainExecution?: (callId: string) => { signal: AbortSignal; release(): void };
   aliases?: readonly string[];
@@ -364,6 +383,7 @@ export interface ToolEntry extends ToolContractDeclaration {
     context: ToolInputResolutionContext,
   ) => ToolInputAdjustmentResult;
   formatModelContent?: (output: unknown) => ModelMessageContent;
+  isModelContentBounded?: (output: unknown) => boolean;
   formatPersistedModelContent?: (
     input: ToolPersistedModelContentInput,
   ) => ModelMessageContent | undefined;
@@ -445,6 +465,7 @@ export interface ToolExecutionModelContext {
 // -----------------------------------------------
 
 export interface ToolExecutionResult {
+  hookAdditionalContexts?: string[];
   toolCallId: string;
   toolName: string;
   success: boolean;
@@ -507,6 +528,7 @@ export interface ToolBatchResult {
 // -----------------------------------------------
 
 export interface ExecutableToolCall {
+  modelCallWrapper?: ModelCallWrapper;
   id: string;
   name: string;
   input: unknown;

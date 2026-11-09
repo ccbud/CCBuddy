@@ -93,7 +93,7 @@ function buildInstructionContent(instructions: ResolvedUserInstructions): string
   return sections.length > 0 ? sections.join("\n\n") : null;
 }
 
-function normalizedInstructionSources(
+export function normalizedInstructionSources(
   instructions: ResolvedUserInstructions,
 ): ResolvedUserInstructionSource[] {
   if (instructions.sources && instructions.sources.length > 0) {

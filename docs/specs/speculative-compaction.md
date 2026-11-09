@@ -12,8 +12,11 @@ current request is below the normal auto-compaction threshold but has reached
 80% of it, the runtime may start a background summary of the older rounds
 selected by the existing auto-compaction selector. It does so only when the
 selected history contains at least two rounds and a user-configured model is
-already selected. The first pass uses that same model, has no tools, and records
-its provider usage separately. It must not select a default or fallback model.
+already selected. The first pass uses that same model and never executes tools;
+its provider usage is recorded separately. Request rendering shares the normal
+ToolSearch exposure contract, so provider-visible native references always have
+the matching tool descriptors. This does not authorize a tool execution: the
+summary response must still be text-only. It must not select a default or fallback model.
 
 The candidate contains a cloned entry snapshot, the exact model instance, and
 the compaction instructions. It holds only a summary or a pending request in

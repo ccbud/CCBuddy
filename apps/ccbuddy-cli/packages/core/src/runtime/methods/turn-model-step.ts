@@ -1,3 +1,4 @@
+import type { ToolSearchExecutionContext } from "@ccbuddy/contracts";
 import { getTurnTools } from "./turn-tool-visibility.js";
 
 import { beginLocalTurnPreparation } from "@ccbuddy/contracts";
@@ -102,6 +103,7 @@ export async function runModelBackedTurnStep(
     recordedMessages: RunModelTextRequestOptions["messages"];
     requestEntries: readonly RuntimeMessageEntry[];
     tools: ModelToolContract[];
+    toolSearch?: ToolSearchExecutionContext;
   },
 ): Promise<ModelStepResult> {
   const assistantMessageId = createMessageId();
@@ -147,6 +149,7 @@ async function runModelBackedTurnStepImpl(
     recordedMessages: RunModelTextRequestOptions["messages"];
     requestEntries: readonly RuntimeMessageEntry[];
     tools: ModelToolContract[];
+    toolSearch?: ToolSearchExecutionContext;
   },
   assistantMessageId: MessageId,
 ): Promise<ModelStepResult> {
@@ -215,6 +218,7 @@ async function runModelBackedTurnStepImpl(
   const streamingToolCoordinator = createStreamingToolCoordinator(this, state, {
     assistantMessageId,
     model,
+    toolSearch: options.toolSearch,
     traceContext: modelTraceContext,
   });
   const networkEventStartIndex = state.events.length;
@@ -264,6 +268,7 @@ async function runModelBackedTurnStepImpl(
       onStreamToolCall: (toolCall) => streamingToolCoordinator.accept(toolCall),
       streamRecovery: streamRecoveryRequest,
       tools: options.tools,
+      toolSearchEnabled: options.toolSearch?.mode === "native",
       traceContext: modelTraceContext,
     });
     throwIfTurnAborted(state.turnAbortSignal);
@@ -688,7 +693,9 @@ async function runModelBackedTurnStepImpl(
     toolCallCount: toolCalls.length,
   });
 
-  const executableToolCalls = toolCalls.filter((toolCall) => !toolCall.providerExecuted);
+  const executableToolCalls = toolCalls
+    .filter((toolCall) => !toolCall.providerExecuted)
+    .map((toolCall) => streamingToolCoordinator.admit(toolCall));
   const streamedToolResults = await streamingToolCoordinator.drain(executableToolCalls);
   if (outputTokenContinuation !== "none") {
     // 首次命中 output-limit 时，当前 request 可能带有一次性的 project-memory attachment；
@@ -768,6 +775,7 @@ async function runModelBackedTurnStepImpl(
     recordModelHistoryRound(state);
   }
   const toolStepResult = await executeToolCallsForModelStep.call(this, state, {
+    toolSearch: options.toolSearch,
     assistantCreatedAt,
     assistantMessageId,
     modelTraceContext,

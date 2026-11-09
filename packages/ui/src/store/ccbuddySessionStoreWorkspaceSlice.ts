@@ -517,6 +517,7 @@ export function createWorkspaceSlice(set: SetFn) {
       options?: {
         groupedDraftPlacement?: GroupedDraftTaskPlacement;
         createSource?: SessionCreateSource;
+        projectId?: string;
       },
     ) => {
       const normalizedProvider = provider
@@ -597,6 +598,7 @@ export function createWorkspaceSlice(set: SetFn) {
               ...current,
               activeTaskId: null,
               groupedDraftTask: nextGroupedDraftTask,
+              draftProjectId: options?.projectId ?? null,
               draftCreateSource:
                 options?.createSource ?? (options?.groupedDraftPlacement ? "group" : "session"),
               draftRuntime: { status: "idle", error: null },

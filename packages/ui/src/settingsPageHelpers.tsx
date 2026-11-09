@@ -1,5 +1,6 @@
 /* oxlint-disable eslint(max-lines) -- settings helper 聚合多个设置分组；终端、网络与自动归档多侧能力暂时超过行数限制。 */
 import type {
+  AppToolSearchMode,
   IntegratedTerminalShellOption,
   IntegratedTerminalShellSelection,
   LocalePreference,
@@ -24,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select.js";
 import { Switch } from "@/components/ui/switch.js";
+import { ToolSearchModeSetting } from "@/settings/ToolSearchModeSetting.js";
 import { Input } from "@/components/ui/input.js";
 import { Button } from "@/components/ui/button.js";
 import { SettingsBadge, SettingsGroupCard, SettingsRow } from "@/settings/SettingsPageParts.js";
@@ -65,6 +67,8 @@ export function GeneralSectionContent({
   terminalFontFamily = "",
   integratedTerminalShell = { mode: "auto" },
   integratedTerminalShellOptions = [],
+  toolSearchMode = "off",
+  onToolSearchModeChange,
   nativeSearchEnhancementsEnabled,
   httpProxy = "",
   httpProxyNoProxy = "",
@@ -129,6 +133,8 @@ export function GeneralSectionContent({
   terminalFontFamily: string;
   integratedTerminalShell?: IntegratedTerminalShellSelection;
   integratedTerminalShellOptions?: IntegratedTerminalShellOption[];
+  toolSearchMode?: AppToolSearchMode;
+  onToolSearchModeChange: (mode: AppToolSearchMode) => Promise<void>;
   nativeSearchEnhancementsEnabled: boolean;
   httpProxy?: string;
   httpProxyNoProxy?: string;
@@ -442,6 +448,7 @@ export function GeneralSectionContent({
             }
           />
         ) : null}
+        <ToolSearchModeSetting value={toolSearchMode} onChange={onToolSearchModeChange} />
         <SettingsRow
           label={intl.formatMessage({
             id: "settings.nativeSearchEnhancements",

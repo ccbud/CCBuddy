@@ -1,3 +1,4 @@
+import { closeSessionRuntime } from "./session-runtime-lifecycle.js";
 import { readBackgroundBashOutputFromOwner } from "./background-work-owner.js";
 // v4 网关 binder。
 // 定位：ConversationV4Gateway 是域无关的通道运行时，本文件把它绑到协议服务器上下文：
@@ -15,7 +16,7 @@ import {
   type CCbuddySessionContextUsage,
   type CCbuddyWorkspaceRef,
 } from "@ccbuddy/shared";
-import { createExternalTurnFaultError } from "@ccbuddy/core";
+import { createExternalTurnFaultError, normalizeGenUiInput } from "@ccbuddy/core";
 import {
   V4_NOTIFICATIONS,
   conversationInputIntentSchema,
@@ -247,6 +248,7 @@ async function previewConversationFileRewind(
 }
 
 interface InputCommandForAdmission {
+  genUiContext?: ConversationInputIntent["genUiContext"];
   inputOrigin?: "desktop" | "mobile";
   conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
   botGroupSource?: ConversationInputIntent["botGroupSource"];
@@ -329,6 +331,7 @@ export function resolveInputCommandForAdmission(
       text: string;
       attachments?: AttachmentRef[];
       context_refs?: ConversationInputIntent["sharedContextRefs"];
+      genUiContext?: ConversationInputIntent["genUiContext"];
       highspeedMeta?: ConversationInputIntent["highspeed"];
       inputOrigin?: "desktop" | "mobile";
       conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
@@ -336,7 +339,9 @@ export function resolveInputCommandForAdmission(
     };
     return {
       kind: envelope.type,
-      text: payload.text,
+      ...(envelope.type === "sendText"
+        ? normalizeGenUiInput(payload.text, payload.genUiContext)
+        : { text: payload.text }),
       attachments: payload.attachments ?? [],
       ...(payload.context_refs ? { sharedContextRefs: payload.context_refs } : {}),
       ...(payload.highspeedMeta ? { highspeed: payload.highspeedMeta } : {}),
@@ -365,6 +370,9 @@ export function resolveInputCommandForAdmission(
     canonical.intent.provenance?.sourceCommandId ?? canonical.intent.sourceCommandId;
   return {
     kind: canonical.intent.kind,
+    ...(canonical.intent.genUiContext !== undefined
+      ? { genUiContext: canonical.intent.genUiContext }
+      : {}),
     ...(canonical.intent.inputOrigin ? { inputOrigin: canonical.intent.inputOrigin } : {}),
     ...((payload.conversationQuotes ?? canonical.intent.conversationQuotes)
       ? { conversationQuotes: payload.conversationQuotes ?? canonical.intent.conversationQuotes }
@@ -429,6 +437,7 @@ function buildForkInitialInput(
     ...(input.conversationQuotes ? { conversationQuotes: input.conversationQuotes } : {}),
     ...(input.botGroupSource ? { botGroupSource: input.botGroupSource } : {}),
     text: input.text,
+    ...(input.genUiContext !== undefined ? { genUiContext: input.genUiContext } : {}),
     attachments: input.attachments,
     delivery: {
       requested,
@@ -871,6 +880,7 @@ export function createConversationV4Gateway(
         clientId: envelope.clientId || "cli",
         kind,
         text: input.text ?? "",
+        ...(input.genUiContext !== undefined ? { genUiContext: input.genUiContext } : {}),
         attachments: attachmentRefs,
         ...(input.sharedContextRefs ? { sharedContextRefs: input.sharedContextRefs } : {}),
         delivery: {
@@ -907,6 +917,9 @@ export function createConversationV4Gateway(
             admittedDelivery: conversationInputIntent.delivery.admitted,
             ...(fallbackReasonCode ? { fallbackReasonCode } : {}),
             attachmentRefs,
+            ...(conversationInputIntent.genUiContext !== undefined
+              ? { genUiContext: conversationInputIntent.genUiContext }
+              : {}),
             ...(conversationInputIntent.sharedContextRefs
               ? { sharedContextRefs: conversationInputIntent.sharedContextRefs }
               : {}),
@@ -1211,27 +1224,20 @@ export function createConversationV4Gateway(
     },
     // deleteSession 的执行面：内联旧 closeSession op 的 4 步（不 import 旧 op——
     // 语义与 server-operations.ts closeSession 对齐，随会话注册表归 v4 后收编）。
-    closeSession: async (sessionId) => {
-      const record = context.sessions.get(sessionId);
-      if (!record) {
-        // handler 已校验存在性；此处只兜并发竞态（重复删除幂等成功）。
-        return;
-      }
-      record.unsubscribe?.();
-      await record.app.close?.();
-      // v4 通道：会话关闭同时清 publisher / 订阅调度；重开会话走 snapshot 冷启动。
-      // disposeSession 必须在注册表删除之前调用——
-      // gateway 靠 getSessionWorkspaceId（读 context.sessions）定位 workspace 才能把
-      // session.removed 推给 sessions-index 订阅者；先 delete 再 dispose 时 workspaceId
-      // 恒为 null，删除会话后侧栏列表项永不消失（e2e conversation-session-v4-sidebar 抓出）。
-      context.v4Gateway?.disposeSession(sessionId);
+    deleteSession: async (sessionId) => {
+      if (!context.deps.sessionStore?.softDeleteSession)
+        throw new Error("Session soft deletion is unavailable");
+      await context.deps.sessionStore.softDeleteSession(sessionId as SessionId);
+      await closeSessionRuntime(context, sessionId, true);
+      context.v4Gateway?.forgetIndexedSession(sessionId);
       queuedTurnExecutions.delete(sessionId);
-      context.sessions.delete(sessionId);
     },
     // createSession 的执行面：record 建立/事件接线/catalog 同步/失败自清理全在旧
     // createSession op 内（半初始化 record 的回收顺序修过 bug，不重复实现）。
     // 语义决策（draft persistence / firstInput 走原生 prompt turn）在原生 handler。
     createSessionRecord: async ({
+      sessionId,
+      additionalDirectories,
       workspaceId,
       mcpServers,
       offPeakToolEnabled,
@@ -1251,6 +1257,8 @@ export function createConversationV4Gateway(
       // shared parser 统一兼容 WSL legacy 与显式 user identity；非远程格式继续按
       // 本地 workspacePath 处理。
       const created = await createSessionRecordForV4(context, {
+        sessionId,
+        additionalDirectories,
         workspace: resolveWorkspaceRefFromId(workspaceId),
         // 群任务已经由首条真实需求触发，先落盘隔离授权，再开放任务与配置。
         // 普通 Desktop draft 仍保持 deferred。
@@ -1604,6 +1612,7 @@ export function createConversationV4Gateway(
       sessionId,
       resumeThoughtLevel,
       workspace?: CCbuddyWorkspaceRef,
+      additionalDirectories?: string[],
     ) => {
       const persisted = await context.deps.sessionStore?.getSession(sessionId as SessionId);
       if (!persisted) {
@@ -1623,6 +1632,7 @@ export function createConversationV4Gateway(
           // 已知的 workspace 身份。旧 session 没有 attachment 上下文时仍走原有持久化回退。
           ...(workspace ? { workspace } : {}),
           ...(resumeThoughtLevel ? { thoughtLevel: resumeThoughtLevel } : {}),
+          ...(additionalDirectories !== undefined ? { additionalDirectories } : {}),
         },
         { reusePersistedMessages: true },
       );

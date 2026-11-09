@@ -20,12 +20,7 @@ import {
   type ResolveWorkflowQuestionInput,
   type ResolveWorkflowQuestionOutput,
 } from "@ccbuddy/contracts";
-import type {
-  ToolEntry,
-  ToolExecutionContext,
-  ToolHandler,
-  ToolHandlerFailure,
-} from "../types.js";
+import type { ToolEntry, ToolExecutionContext, ToolHandler, ToolHandlerFailure } from "../types.js";
 
 const RESOLVE_WORKFLOW_QUESTION_TIMEOUT_MS = 15_000;
 /** 输出只有一段确认文案，24k 绰绰有余（照 ResumeWorkflowRun）。 */
@@ -101,9 +96,7 @@ const resolveWorkflowQuestionHandler: ToolHandler = async (
   input,
   context: ToolExecutionContext,
 ) => {
-  const parsed = ResolveWorkflowQuestionInputSchema.parse(
-    input,
-  ) as ResolveWorkflowQuestionInput;
+  const parsed = ResolveWorkflowQuestionInputSchema.parse(input) as ResolveWorkflowQuestionInput;
 
   const port = context.dynamicWorkflowRunPort;
   if (port === undefined || typeof port.resolveQuestion !== "function") {
@@ -132,6 +125,7 @@ function formatResolveWorkflowQuestionModelContent(output: unknown): ModelMessag
 export const resolveWorkflowQuestionToolEntry: ToolEntry = {
   capability: "Answer a blocking question escalated by a subagent inside a running workflow run",
   metadata: {
+    shouldDefer: true,
     name: RESOLVE_WORKFLOW_QUESTION_TOOL_NAME,
     description: RESOLVE_WORKFLOW_QUESTION_DESCRIPTION,
     // 作答会让一个停驻的 actor 带着这段文字继续干活——不是只读。

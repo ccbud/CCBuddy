@@ -342,6 +342,8 @@ export const TID_SETTINGS_BACK_BUTTON = "settings-back-button";
 export const TID_SETTINGS_SECTION_NAV = "settings-section-nav";
 /** 常规设置中的增强 Find/Grep 开关 */
 export const TID_SETTINGS_NATIVE_SEARCH_SWITCH = "settings-native-search-switch";
+export const TID_SETTINGS_TOOL_SEARCH_SELECT = "settings-tool-search-select";
+export const TID_SETTINGS_TOOL_SEARCH_OPTION = "settings-tool-search-option";
 /** 常规设置中的数据存储路径只读输入框 */
 export const TID_SETTINGS_DATA_BASE_DIR_INPUT = "settings-data-base-dir-input";
 /** 常规设置中的数据存储路径目录选择按钮 */

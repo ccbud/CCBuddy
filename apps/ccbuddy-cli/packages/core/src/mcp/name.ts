@@ -1,4 +1,8 @@
 import type { McpToolDescriptor } from "@ccbuddy/contracts";
+export const MCP_TOOL_NAME_PREFIX = "mcp__";
+export function isMcpToolName(name: string): boolean {
+  return name.startsWith(MCP_TOOL_NAME_PREFIX);
+}
 
 export function toMcpToolName(
   descriptor: Pick<McpToolDescriptor, "name" | "serverName" | "toolName">,

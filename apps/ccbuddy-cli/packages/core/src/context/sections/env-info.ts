@@ -29,8 +29,12 @@ const CLEAN_GIT_STATUS = "(clean)";
 const DIRTY_GIT_STATUS = "(dirty)";
 const UNKNOWN_GIT_STATUS = "(unknown)";
 
-export function buildEnvInfoSection(envInfo: EnvInfo, model?: Model): ContextSection {
-  const content = buildEnvInfoContent(envInfo, model);
+export function buildEnvInfoSection(
+  envInfo: EnvInfo,
+  model?: Model,
+  additionalDirectories?: readonly string[],
+): ContextSection {
+  const content = buildEnvInfoContent(envInfo, model, additionalDirectories);
 
   return {
     name: "Environment Info",
@@ -63,12 +67,19 @@ export function buildGitSystemContextSection(envInfo: EnvInfo): ContextSection |
   };
 }
 
-function buildEnvInfoContent(info: EnvInfo, model?: Model): string {
+function buildEnvInfoContent(
+  info: EnvInfo,
+  model?: Model,
+  additionalDirectories?: readonly string[],
+): string {
   const hasGitRepository = isEnvInfoGitRepository(info);
   const lines: string[] = [
     ENVIRONMENT_HEADING,
     "You have been invoked in the following environment:",
     `- ${WORKING_DIRECTORY_LABEL}: ${info.cwd}`,
+    ...(additionalDirectories?.length
+      ? [`- Additional working directories: ${JSON.stringify(additionalDirectories)}`]
+      : []),
     `- ${IS_GIT_REPOSITORY_LABEL}: ${hasGitRepository ? YES_LABEL : NO_LABEL}`,
     `- ${PLATFORM_LABEL}: ${info.platform}`,
     `- ${SHELL_LABEL}: ${info.shell}`,
