@@ -44,10 +44,11 @@ jobs:
           packages/desktop/test/legacy-native-update.test.mjs
           packages/desktop/test/prepare-main-release.test.mjs
           apps/ccbuddy-cli/packages/cli/scripts/build.test.mjs
-      - name: Test desktop history platform integration
+      - name: Test desktop history and update install lifecycle
         run: >-
           pnpm exec vitest run
           packages/desktop/src/renderer/src/desktopPlatform.test.ts
+          packages/desktop/test/auto-updater-install.test.ts
           --config packages/ui/vitest.config.ts
 
   macos-package:
@@ -78,6 +79,8 @@ jobs:
         run: |
           pnpm --filter @ccbuddy/desktop run prepare:runtime-assets
           pnpm build:bootstrap
+      - name: Test real Electron asynchronous update quit
+        run: pnpm exec tsx --test packages/desktop/test/auto-updater-quit.electron.test.mjs
       - name: Package and verify unsigned ZIP and DMG
         run: |
           pnpm --filter @ccbuddy/desktop run bundle -- --os mac --arch arm64 --skip-prepare --skip-build
