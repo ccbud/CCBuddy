@@ -44,6 +44,7 @@ jobs:
           packages/desktop/test/legacy-native-update.test.mjs
           packages/desktop/test/prepare-main-release.test.mjs
           apps/ccbuddy-cli/packages/cli/scripts/build.test.mjs
+          packages/desktop/test/node-sqlite-bundle.test.mjs
       - name: Test desktop history and update install lifecycle
         run: >-
           pnpm exec vitest run
@@ -79,6 +80,12 @@ jobs:
         run: |
           pnpm --filter @ccbuddy/desktop run prepare:runtime-assets
           pnpm build:bootstrap
+      - name: Verify Node builtin protocols in production bundles
+        run: >-
+          node packages/desktop/scripts/verify-node-builtin-imports.mjs
+          packages/desktop/out/main
+          packages/desktop/out/host
+          packages/desktop/out/scheduler
       - name: Test real Electron asynchronous update quit
         run: pnpm exec tsx --test packages/desktop/test/auto-updater-quit.electron.test.mjs
       - name: Package and verify unsigned ZIP and DMG
