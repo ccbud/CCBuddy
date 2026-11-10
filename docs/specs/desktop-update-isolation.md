@@ -51,6 +51,42 @@ The visible-target predicate narrows the Main state to `update-available` or
 that preserves an existing target reads that same state and channel without
 changing the update state machine or synthesizing another target.
 
+### Install handoff and asynchronous quit
+
+Main owns the single `quitAndInstallInFlight` guard. It covers both awaited
+Host/Agent shutdown preparation and the native install handoff, not merely the
+synchronous `quitAndInstall()` call. A successful handoff keeps the guard set
+until the process exits. Subsequent `before-quit` events must pass through and
+duplicate install requests must not start another installer or shutdown barrier.
+Do not release the guard in `finally`: macOS Squirrel requests quit asynchronously
+after the handoff returns, and clearing it early makes Main cancel each quit and
+start another install indefinitely.
+
+Preparation rejection, a synchronous handoff exception, or a non-ignored updater
+error releases the guard through the existing failure path. Invalid ready state
+is cleared as before; retry requires a newly valid staged update. A failed
+background check that preserves a ready target must not release an ongoing
+install. No timeout, forced exit, second install owner, or renderer state is added.
+
+```text
+install request → Main guard acquired → await existing Host/Agent shutdown
+                                     ├─ failure → existing failure handling → retryable
+                                     └─ native handoff → guard remains held
+                                                          ├─ before-quit → allow exit
+                                                          └─ updater error → failure handling
+```
+
+Regression coverage must exercise the real updater module's IPC and event
+handlers with a native quit arriving after the handoff returns, duplicate
+requests during preparation and after handoff, preparation/handoff errors,
+asynchronous updater failure and retry, and an ordinary quit that initiates
+exactly one install. Native installers and release replacement are controlled
+test ports, not invoked against an installed user application.
+A separate macOS smoke test runs the production updater module in a real Electron
+process with a controlled installer that requests `app.quit()` on a later event
+loop turn. It must reach `will-quit` after one preparation and one handoff. PR CI
+runs this check alongside, not in place of, the macOS packaging checks.
+
 ```text
 build-time new CCbuddy manifest URL → desktop main policy → initAutoUpdater
                                              ├─ no URL: disabled state

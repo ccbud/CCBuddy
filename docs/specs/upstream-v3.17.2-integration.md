@@ -416,3 +416,15 @@ standalone-server 与远端附着 Host 均保持单 root、禁本机彻底删除
   完整 runtime-assets 准备与 macOS 安装包构建作为本次修复的验收路径。
 - 本地 Node 24.14.0：根 typecheck/lint/fmt/架构检查通过，打包相关测试 29/29，
   Desktop 历史平台集成测试通过；生产配置的 runtime-assets 准备及 Desktop/Web 构建通过。
+
+### 2.0.17 安装包启动回归
+
+- SQLite 迁移基础设施的 backup/restore 使用 Node 内置 `node:sqlite`，不依赖 npm
+  `sqlite` 包。tsup 默认剥离 `node:` 前缀，使发布产物出现 `from "sqlite"`，
+  在 Main 模块链接阶段就崩溃；不是用户安装操作或数据库迁移执行失败。
+- Main、Host、Scheduler 的 Node ESM 构建必须保留内置模块协议。修正在构建边界完成，
+  不改迁移语义，不通过安装同名 npm 包、复制 node_modules 或修改用户安装目录规避。
+  不改变 sandbox preload 的 CommonJS 兼容策略。
+- 使用实际 tsup 目标配置打包并加载 SQLite 迁移公共入口，覆盖三个 Node ESM 目标；
+  生产构建完成后扫描实际产物的模块引用，拒绝丢失协议的 prefix-only Node 内置模块。
+  检查进入 PR CI，补齐只打包 ZIP/DMG 而未验证该启动链接错误的门禁缺口。

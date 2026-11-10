@@ -504,9 +504,15 @@ async function quitAndInstallUpdate(rejectUnavailable = false) {
     // 3.3.0 的 Windows 自定义 PowerShell delayed launcher 在 detached/hidden
     // 模式下可能只创建 powershell.exe，却没有稳定执行到安装器启动，用户看到应用关闭但版本不变。
     // 这里恢复 electron-updater 原生安装入口，避免把“launcher 进程创建成功”误当成更新已接管。
+    // macOS 原生退出晚于此调用返回；成功交接后必须保持标记，
+    // 否则 before-quit 会拦截原生退出并再次安装，形成无限循环。
     autoUpdater.quitAndInstall();
-  } finally {
+  } catch (error) {
     quitAndInstallInFlight = false;
+    handleAutoUpdateFailure(error, "quit and install failed");
+    if (rejectUnavailable) {
+      throw error;
+    }
   }
 }
 
@@ -1057,6 +1063,8 @@ function handleAutoUpdateFailure(error: unknown, source: string) {
     sendManualCheckResult({ kind: "error", message });
     return;
   }
+  // 只有实际失败收敛才解除安装交接；保留 ready 的后台检查失败不能打断原生退出。
+  quitAndInstallInFlight = false;
   if (menuState.kind === "update-downloaded" && readyUpdateVersion) {
     const failedReadyVersion = readyUpdateVersion;
     // macOS Squirrel 可能在 update-downloaded 后才发现包无法 stage。
