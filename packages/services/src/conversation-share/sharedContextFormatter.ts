@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 
-import type { ConversationRow } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type { WireConversationRow } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 
 import { ConversationShareServiceError } from "#src/conversation-share/conversationShare.js";
 
 export interface SharedContextFormatterInputV1 {
   share: { shareId: string; title: string };
-  rows: ConversationRow[];
+  rows: WireConversationRow[];
   installedArtifacts: Array<{
     artifactId: string;
     workspaceRelativePath: string;

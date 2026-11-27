@@ -1,4 +1,4 @@
-import type { TurnInputIntentMetadata } from "@ccbuddy/contracts";
+import { PLUGIN_DISCOVERY_INPUT, type TurnInputIntentMetadata } from "@ccbuddy/contracts";
 import type { ModelSelection } from "@ccbuddy/shared";
 import type {
   AttachmentRef,
@@ -10,7 +10,6 @@ import type {
 import { commandAdmissionOf } from "./executor.js";
 
 export interface CanonicalCommandIntent {
-  genUiContext?: TurnInputIntentMetadata["genUiContext"];
   inputOrigin?: "desktop" | "mobile";
   conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
   botGroupSource?: TurnInputIntentMetadata["botGroupSource"];
@@ -26,6 +25,7 @@ export interface CanonicalCommandIntent {
   admittedDelivery?: TurnInputIntentMetadata["admittedDelivery"];
   fallbackReasonCode?: string;
   attachmentRefs?: readonly AttachmentRef[];
+  genUiContext?: TurnInputIntentMetadata["genUiContext"];
   sharedContextRefs?: TurnInputIntentMetadata["sharedContextRefs"];
   provenance?: TurnInputIntentMetadata["provenance"];
   source?: TurnInputIntentMetadata["source"];
@@ -35,7 +35,6 @@ export function inputIntentMetadata(
   envelope: CommandEnvelope,
   options: {
     text: string;
-    genUiContext?: TurnInputIntentMetadata["genUiContext"];
     inputOrigin?: "desktop" | "mobile";
     conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
     botGroupSource?: TurnInputIntentMetadata["botGroupSource"];
@@ -46,6 +45,7 @@ export function inputIntentMetadata(
     modelSelection?: ModelSelection;
     mode?: SubmissionMode;
     planEnabled?: boolean;
+    genUiContext?: TurnInputIntentMetadata["genUiContext"];
     sharedContextRefs?: TurnInputIntentMetadata["sharedContextRefs"];
     source?: TurnInputIntentMetadata["source"];
   },
@@ -56,7 +56,10 @@ export function inputIntentMetadata(
       ? (envelope.payload as CommandPayloadMap["sendText"]).highspeedMeta
       : undefined;
   return {
-    ...(options.inputOrigin ? { inputOrigin: options.inputOrigin } : {}),
+    ...(envelope.pluginDiscoveryUi === true ? { [PLUGIN_DISCOVERY_INPUT]: true as const } : {}),
+    ...((envelope.inputOrigin ?? options.inputOrigin)
+      ? { inputOrigin: envelope.inputOrigin ?? options.inputOrigin }
+      : {}),
     ...(options.conversationQuotes ? { conversationQuotes: options.conversationQuotes } : {}),
     ...(options.botGroupSource ? { botGroupSource: options.botGroupSource } : {}),
     sourceCommandId: envelope.commandId,
@@ -71,7 +74,6 @@ export function inputIntentMetadata(
     // live intent 过去只带 kind/来源，projection 只能回退可见 command 文案；
     // goal 的 displayText（如 `/GoAl replace X`）不是 runtime 已解析的 canonical objective。
     text: options.text,
-    ...(options.genUiContext !== undefined ? { genUiContext: options.genUiContext } : {}),
     ...(options.modelSelection ? { modelSelection: options.modelSelection } : {}),
     ...(options.mode ? { mode: options.mode } : {}),
     ...(options.planEnabled !== undefined ? { planEnabled: options.planEnabled } : {}),
@@ -87,6 +89,7 @@ export function inputIntentMetadata(
           : "startNow"),
     ...(options.fallbackReasonCode ? { fallbackReasonCode: options.fallbackReasonCode } : {}),
     ...(options.attachmentRefs ? { attachmentRefs: [...options.attachmentRefs] } : {}),
+    ...(options.genUiContext !== undefined ? { genUiContext: options.genUiContext } : {}),
     ...(options.sharedContextRefs ? { sharedContextRefs: [...options.sharedContextRefs] } : {}),
     ...(highspeed ? { highspeed } : {}),
     ...(options.source ? { source: options.source } : {}),
@@ -103,7 +106,10 @@ export function inputIntentMetadataFromCanonical(
   const originalSourceCommandId =
     canonical.provenance?.sourceCommandId ?? canonical.sourceCommandId;
   return {
-    ...(canonical.inputOrigin ? { inputOrigin: canonical.inputOrigin } : {}),
+    ...(envelope.pluginDiscoveryUi === true ? { [PLUGIN_DISCOVERY_INPUT]: true as const } : {}),
+    ...((envelope.inputOrigin ?? canonical.inputOrigin)
+      ? { inputOrigin: envelope.inputOrigin ?? canonical.inputOrigin }
+      : {}),
     ...(canonical.conversationQuotes ? { conversationQuotes: canonical.conversationQuotes } : {}),
     ...(canonical.botGroupSource ? { botGroupSource: canonical.botGroupSource } : {}),
     sourceCommandId: envelope.commandId,
@@ -111,7 +117,6 @@ export function inputIntentMetadataFromCanonical(
     clientId: envelope.clientId || canonical.clientId || "cli",
     kind: canonical.kind,
     text,
-    ...(canonical.genUiContext !== undefined ? { genUiContext: canonical.genUiContext } : {}),
     ...(canonical.modelSelection ? { modelSelection: canonical.modelSelection } : {}),
     ...(canonical.mode ? { mode: canonical.mode } : {}),
     ...(canonical.planEnabled !== undefined ? { planEnabled: canonical.planEnabled } : {}),
@@ -121,6 +126,7 @@ export function inputIntentMetadataFromCanonical(
     admittedDelivery: canonical.admittedDelivery ?? "startNow",
     ...(canonical.fallbackReasonCode ? { fallbackReasonCode: canonical.fallbackReasonCode } : {}),
     ...(canonical.attachmentRefs ? { attachmentRefs: [...canonical.attachmentRefs] } : {}),
+    ...(canonical.genUiContext !== undefined ? { genUiContext: canonical.genUiContext } : {}),
     ...(canonical.sharedContextRefs ? { sharedContextRefs: [...canonical.sharedContextRefs] } : {}),
     ...(canonical.source ? { source: canonical.source } : {}),
     ...(originalSourceCommandId
@@ -149,7 +155,6 @@ export function inputIntentMetadataFromQueueItem(
     clientId: item.clientId,
     kind: item.kind,
     text: canonicalText,
-    ...(item.genUiContext !== undefined ? { genUiContext: item.genUiContext } : {}),
     ...(item.modelSelection ? { modelSelection: item.modelSelection } : {}),
     ...(item.mode ? { mode: item.mode } : {}),
     ...(item.planEnabled !== undefined ? { planEnabled: item.planEnabled } : {}),
@@ -162,6 +167,7 @@ export function inputIntentMetadataFromQueueItem(
       ? { fallbackReasonCode: item.delivery.fallbackReasonCode }
       : {}),
     attachmentRefs: item.attachments,
+    ...(item.genUiContext !== undefined ? { genUiContext: item.genUiContext } : {}),
     ...(item.sharedContextRefs ? { sharedContextRefs: [...item.sharedContextRefs] } : {}),
     ...(item.highspeed ? { highspeed: item.highspeed } : {}),
     ...(item.source ? { source: item.source } : {}),

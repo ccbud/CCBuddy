@@ -85,10 +85,28 @@ export async function runHooksCommand(
     return 0;
   } catch (error) {
     const reasonCode = error instanceof Error ? error.message : String(error);
+    // 因入口脚本不存在或无法读取被整体拒绝时，两种输出都列出是哪些条目（spec §12.9）。
+    const unavailableItems = (error as { unavailableItems?: unknown } | undefined)
+      ?.unavailableItems;
     if (parsed.values.json) {
-      ctx.stdout.write(`${JSON.stringify({ accepted: false, reasonCode }, null, 2)}\n`);
+      ctx.stdout.write(
+        `${JSON.stringify(
+          {
+            accepted: false,
+            reasonCode,
+            ...(Array.isArray(unavailableItems) ? { unavailableItems } : {}),
+          },
+          null,
+          2,
+        )}\n`,
+      );
     } else {
       ctx.stderr.write(`Error: ${reasonCode}\n`);
+      if (Array.isArray(unavailableItems)) {
+        ctx.stderr.write(
+          `Entry script missing or unreadable:\n${unavailableItems.map((item) => `  ${String(item)}`).join("\n")}\n`,
+        );
+      }
     }
     return 1;
   }
@@ -128,6 +146,19 @@ function looksLikeWorkspaceIdentity(value: string): boolean {
   return /^(?:local|remote|ssh|container|wsl):/u.test(value);
 }
 
+/**
+ * 提示命令里的 `--workspace` 参数。受管 worktree 的 workspaceIdentity 是 Trust identity（源仓库路径，D23），
+ * 直接回填会让后续 grant 去审核源仓库的 bundle；本地路径一律回填当前 workspacePath，远程 identity 原样。
+ */
+export function workspaceTrustCommandArgument(status: {
+  workspaceIdentity: string;
+  workspacePath: string;
+}): string {
+  return looksLikeWorkspaceIdentity(status.workspaceIdentity)
+    ? status.workspaceIdentity
+    : status.workspacePath;
+}
+
 function formatHuman(status: WorkspaceHookTrustCliStatus, action: string): string {
   const lines = [
     `Workspace Hook Trust (${action})`,
@@ -148,10 +179,17 @@ function formatHuman(status: WorkspaceHookTrustCliStatus, action: string): strin
   if (status.reasonCode === "workspace_hooks_pending_trust" && status.bundleDigest) {
     lines.push(
       "Pretrust exact declarations with:",
-      `  ccbuddy hooks trust grant --workspace ${quote(status.workspaceIdentity)} --hook-digest <sha256>`,
-      "Or trust every currently enabled declaration in this exact bundle with:",
-      `  ccbuddy hooks trust grant --workspace ${quote(status.workspaceIdentity)} --all-current --bundle-digest ${status.bundleDigest}`,
+      `  ccbuddy hooks trust grant --workspace ${quote(workspaceTrustCommandArgument(status))} --hook-digest <sha256>`,
     );
+    // 含入口不可用的启用条目时 --all-current 必然被拒，不再推荐。
+    if (
+      !status.items.some((item) => item.configuredEnabled && item.trustState === "blocked_untrusted")
+    ) {
+      lines.push(
+        "Or trust every currently enabled declaration in this exact bundle with:",
+        `  ccbuddy hooks trust grant --workspace ${quote(workspaceTrustCommandArgument(status))} --all-current --bundle-digest ${status.bundleDigest}`,
+      );
+    }
   }
   if (status.reasonCode === "workspace_hooks_trust_store_corrupt") {
     // 损坏 store 下 grant/revoke 都会被拒绝；恢复指引必须是修复文件本身。

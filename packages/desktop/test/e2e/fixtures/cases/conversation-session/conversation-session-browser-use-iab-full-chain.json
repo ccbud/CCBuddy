@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-browser-use-iab-full-chain",
+  "spec": "./test/e2e/conversation-session/browser-use/conversation-session-browser-use-iab-full-chain.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-browser-use-iab-full-chain.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "upstream-browser-use-iab-title",
+      "description": "Browser Use case 内固定标题响应，避免异步标题请求污染主链 matcher。",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "标题不是本用例产品语义，只需稳定返回并与 Browser tool continuation 隔离。"
+    },
+    {
+      "id": "upstream-browser-use-iab-bootstrap",
+      "description": "在 fresh kernel 初始化 Browser client、创建真实 IAB tab，并把 stable id 与 snapshot 返回模型。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "稳定驱动真实 BrowserControl 链路，并让下一次模型响应只能从真实 tool result 恢复 stable tab id。"
+    },
+    {
+      "id": "upstream-browser-use-iab-action",
+      "description": "在新 fresh kernel 重新初始化 Browser client，用上一条 tool result 的动态 stable id 恢复 tab，再覆盖 locator、CUA、click 与截图。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "验证不依赖跨 cell binding 的 tab/page 连续性，同时稳定覆盖 actionability、trusted guest input、页面副作用、显式图片和 viewport 回读。"
+    },
+    {
+      "id": "upstream-browser-use-iab-final",
+      "description": "正常完成 turn，触发独立轮尾自动截图。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "稳定形成 normal completion，验证显式 emitImage 不抑制 Browser turn-end screenshot。"
+    },
+    {
+      "id": "upstream-browser-use-iab-shot-title",
+      "description": "轮尾截图用例的标题生成固定响应。",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "标题不是本用例的产品语义；固定响应避免标题请求误命中主请求。"
+    },
+    {
+      "id": "upstream-browser-use-iab-shot-open",
+      "description": "轮尾截图用例：一次 Node REPL 调用打开测试页面。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "一轮只打开一次页面并正常完成，产生轮尾截图；冷恢复前后各续发一次，比较请求里的工具调用和已发送消息。"
+    },
+    {
+      "id": "upstream-browser-use-iab-shot-final",
+      "description": "轮尾截图用例：页面打开后正常完成，触发轮尾截图。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "一轮只打开一次页面并正常完成，产生轮尾截图；冷恢复前后各续发一次，比较请求里的工具调用和已发送消息。"
+    },
+    {
+      "id": "upstream-browser-use-iab-shot-follow-live",
+      "description": "轮尾截图用例冷恢复前的续发。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "一轮只打开一次页面并正常完成，产生轮尾截图；冷恢复前后各续发一次，比较请求里的工具调用和已发送消息。"
+    },
+    {
+      "id": "upstream-browser-use-iab-shot-follow-cold",
+      "description": "轮尾截图用例冷恢复后的续发。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "一轮只打开一次页面并正常完成，产生轮尾截图；冷恢复前后各续发一次，比较请求里的工具调用和已发送消息。"
+    }
+  ]
+}

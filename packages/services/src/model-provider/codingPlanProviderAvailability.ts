@@ -10,6 +10,10 @@ import {
   type ProviderFamilyDomain,
   type ProviderFamilyConnectionSelectionSettings,
 } from "@ccbuddy/shared";
+import type {
+  OAuthAccountMaterial,
+  OAuthStartPlanMaterial,
+} from "#src/oauth/repo/oauthCredentialRepo.js";
 import { type BigModelTeamPlanBizContext } from "#src/bigmodel/teamPlanApiKey.js";
 import {
   fetchPersonalCodingPlanEntitlement,
@@ -53,6 +57,9 @@ interface CodingPlanAvailabilityCredentialService {
 
 interface CodingPlanAvailabilityContext {
   apiClient?: ApiClient;
+  accountMaterial?: OAuthAccountMaterial | null;
+  /** Start 只用共享 CCbuddy JWT；与付费套餐材料分开，无关联的国内账号也能解析。 */
+  startPlanMaterial?: OAuthStartPlanMaterial | null;
   credentialService?: CodingPlanAvailabilityCredentialService;
   providerFamilyConnectionSelections?: ProviderFamilyConnectionSelectionSettings;
 }
@@ -232,13 +239,17 @@ async function validateSelectedTeamPlanAvailability(
   }
   const { projectId } = selectedTeamContext;
   const oauthProvider = family === "zai" ? ZAI_PROVIDER_ID : BIGMODEL_PROVIDER_ID;
-  const token = (
-    await context.credentialService?.load(`oauth:${oauthProvider}:access_token`)
-  )?.trim();
+  const token =
+    context.accountMaterial !== undefined
+      ? context.accountMaterial?.accessToken
+      : (await context.credentialService?.load(`oauth:${oauthProvider}:access_token`))?.trim();
   if (!token) {
     return { kind: "unavailable", reason: "coding_plan_not_connected" };
   }
-  const ccbuddyJwtToken = (await context.credentialService?.load(CCBUDDY_JWT_TOKEN_KEY))?.trim();
+  const ccbuddyJwtToken =
+    context.accountMaterial !== undefined
+      ? context.accountMaterial?.ccbuddyJwtToken
+      : (await context.credentialService?.load(CCBUDDY_JWT_TOKEN_KEY))?.trim();
   // BigModel 旧版本可能把 ccbuddyjwttoken 误写进 oauth access token；
   // 但 Z.ai 的 business JWT 本身就是合法 Bearer token，不能套用这个 stale-token 防御。
   if (family === "bigmodel" && ccbuddyJwtToken && token === ccbuddyJwtToken) {
@@ -444,6 +455,10 @@ async function resolveStartPlanAuthorization(
   provider: CodingPlanAvailabilityProvider,
   context: CodingPlanAvailabilityContext,
 ): Promise<StartPlanAuthorization> {
+  if (context.startPlanMaterial !== undefined) {
+    const jwt = context.startPlanMaterial?.ccbuddyJwtToken;
+    return { value: jwt ? `Bearer ${jwt}` : "", missingReason: "coding_plan_not_authenticated" };
+  }
   if (provider.family === "bigmodel") {
     const ccbuddyJwtToken = await resolveBigModelStartPlanCCbuddyJwt({
       credentialService: context.credentialService,

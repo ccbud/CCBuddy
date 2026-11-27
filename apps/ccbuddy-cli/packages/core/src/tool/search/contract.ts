@@ -19,3 +19,5 @@ export {
   TOOL_SEARCH_NAME,
   LOCAL_TOOL_SEARCH_NAME,
 } from "@ccbuddy/contracts";
+export { ToolSearchAnnouncementSchema, ToolSearchMcpDeltaSchema } from "@ccbuddy/contracts";
+export type { ToolSearchExecutionContext, ToolSearchLiveView } from "@ccbuddy/contracts";

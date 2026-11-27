@@ -1,4 +1,5 @@
 import type { Locale, SkillScope } from "@ccbuddy/shared";
+import { toZhOrEnLocale } from "@ccbuddy/shared";
 
 interface SkillDisplayCandidate {
   name: string;
@@ -12,6 +13,7 @@ const OFFICIAL_BUILTIN_PLUGIN_NAMES = new Set([
   "android-emulator",
   "browser",
   "browser-use",
+  "design",
   "document-skills",
   "documents",
   "pdf",
@@ -30,6 +32,7 @@ const OFFICIAL_PLUGIN_PATH_MARKERS = [
   "\\ccbuddy-plugins-official\\",
   "/android-emulator-plugin/",
   "/browser-use-plugin/",
+  "/design-plugin/",
   "/document-skills-plugin/",
   "/documents-plugin/",
   "/pdf-plugin/",
@@ -43,7 +46,8 @@ const OFFICIAL_PLUGIN_PATH_MARKERS = [
   "/ccbuddy-guide-plugin/",
 ];
 
-const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
+// 内置 Skill 描述只有中英两套；其它界面语言用英文。
+const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<"zh-CN" | "en-US", string>> = {
   "android-dev": {
     "zh-CN": "通过 android-emulator MCP 工具构建、运行、检查并轻量自动化 Android 应用。",
     "en-US":
@@ -60,6 +64,12 @@ const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
     "en-US":
       "Control CCbuddy's built-in browser to open, inspect, click, type, screenshot, or verify webpages and local development targets.",
   },
+  design: {
+    "zh-CN":
+      "设计工作流：交付物是写入工作区的 HTML 设计稿、可交互原型或 HTML 演示稿时使用，覆盖需求理解、新建与改版、品牌配色、视觉探索与审查。对话内的交互视图用 visualize，.pptx 文件交给 presentations。",
+    "en-US":
+      "Design workflow for workspace deliverables: HTML design files, interactive prototypes, and HTML slide decks, covering intake, new designs and redesigns, color and brand, exploration, and review. Use visualize for in-chat views and presentations for .pptx files.",
+  },
   "dispatching-parallel-agents": {
     "zh-CN": "面对 2 个以上彼此独立、无共享状态或顺序依赖的任务时使用。",
     "en-US":
@@ -70,6 +80,12 @@ const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
       "完整的 DOCX 文档创建、编辑与分析能力，支持修订、批注、格式保持和文本提取。适用于创建新文档、修改内容、处理修订、添加批注或其它专业 Word 文档任务。",
     "en-US":
       "Create, edit, and analyze DOCX documents with revisions, comments, formatting preservation, and text extraction. Use for new documents, edits, revision handling, comments, and professional Word document work.",
+  },
+  "docx-viewer": {
+    "zh-CN":
+      "在 Word 文档侧栏与用户一起查看和讨论 .docx 文件。适用于打开、阅读、审阅或询问工作区中的 Word 文档，用户提到在查看器中选中或引用的内容，或需要检查刚生成的文档。",
+    "en-US":
+      "View and discuss Word (.docx) files with the user in the Documents side panel. Use to open, read, review, or ask about a workspace Word document, when the user refers to a selection or reference in the viewer, or to check a document you just produced.",
   },
   "executing-plans": {
     "zh-CN": "已有书面实现计划，并要在带评审检查点的独立会话中执行时使用。",
@@ -92,11 +108,23 @@ const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
     "en-US":
       "Professional PDF toolkit for reports, creative visuals, academic LaTeX, and existing-PDF workflows. Supports reports, posters, papers, resumes, extraction, merge, split, forms, and conversion.",
   },
+  "pdf-viewer": {
+    "zh-CN":
+      "在 PDF 侧栏与用户一起查看和讨论 PDF 文件。适用于打开、阅读、审阅或询问工作区中的 PDF，用户提到在查看器中选中或引用的内容，或需要检查刚生成的 PDF。",
+    "en-US":
+      "View and discuss PDF files with the user in the PDF side panel. Use to open, read, review, or ask about a workspace PDF, when the user refers to a selection or reference in the viewer, or to check a PDF you just produced.",
+  },
   pptx: {
     "zh-CN":
       "检查并窄范围更新从 PPTX 预览区选择的元素。通过完整文件指纹和 OOXML 定位校验 shape 文本或表格单元格，冲突时停止而不猜测。",
     "en-US":
       "Inspect and narrowly update elements selected in PPTX Preview Pane. Verifies the whole-file fingerprint and OOXML locator for shape or table-cell text, and stops on conflicts instead of guessing.",
+  },
+  "pptx-viewer": {
+    "zh-CN":
+      "在演示文稿侧栏与用户一起查看和讨论 .pptx 演示文稿。适用于一起打开、审阅或询问工作区中的演示文稿，用户提到在查看器中选中或引用的幻灯片或元素，或需要检查刚生成的演示文稿。",
+    "en-US":
+      "View and discuss PowerPoint (.pptx) decks with the user in the Presentations side panel. Use to open, review, or ask about a workspace deck together, when the user refers to a slide or shape selected or referenced in the viewer, or to check a deck you just produced.",
   },
   "receiving-code-review": {
     "zh-CN":
@@ -172,6 +200,12 @@ const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
     "en-US":
       "Use when creating new skills, editing existing skills, or verifying skills work before deployment.",
   },
+  "xlsx-viewer": {
+    "zh-CN":
+      "在电子表格侧栏与用户一起查看和讨论 .xlsx 工作簿。适用于一起打开、浏览或询问工作区中的工作簿，用户提到在查看器中选中或引用的单元格，或需要检查刚生成的工作簿。",
+    "en-US":
+      "View and discuss Excel (.xlsx) workbooks with the user in the Spreadsheets side panel. Use to open, browse, or ask about a workspace workbook together, when the user refers to cells selected or referenced in the viewer, or to check a workbook you just produced.",
+  },
 };
 
 export function resolveSkillSourceLabel(scope: SkillScope, locale?: Locale): string {
@@ -190,7 +224,7 @@ export function resolveSkillDisplayDescription(
   locale?: Locale,
 ): string {
   const localized = isOfficialBuiltinSkill(skill)
-    ? BUILTIN_SKILL_DESCRIPTIONS[skill.name]?.[locale ?? "en-US"]
+    ? BUILTIN_SKILL_DESCRIPTIONS[skill.name]?.[toZhOrEnLocale(locale)]
     : undefined;
   return localized ?? skill.description;
 }

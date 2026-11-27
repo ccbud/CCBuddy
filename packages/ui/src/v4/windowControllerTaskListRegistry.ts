@@ -18,6 +18,12 @@ import { logger } from "@/logger.js";
 export interface WindowControllerTaskListRegistry {
   subscribe(listener: () => void): () => void;
   getRevision(): number;
+  getDirectoryRevision(): number;
+  getSourceRevision(): number;
+  readActivities(): Array<{
+    address: WindowHostControllerTaskRow["address"];
+    activity: NonNullable<WindowHostControllerTaskRow["activity"]>;
+  }>;
   list(
     queryKey: string,
     version: WindowControllerTaskListVersion,
@@ -35,6 +41,19 @@ export interface WindowControllerTaskListVersion {
 
 const registries = new WeakMap<object, WindowControllerTaskListRegistry>();
 
+function directoryFacts(row: WindowHostControllerTaskRow): string {
+  // 活动的时间、状态与阻塞摘要也会覆盖 meta，不能把这些变化误判为目录失效。
+  // 没有 live activity 时仍保留完整持久事实；首次接入或撤销 live 的边界也会刷新。
+  const facts = row.activity
+    ? Object.fromEntries(
+        Object.entries(row.meta).filter(
+          ([key]) => key !== "updatedAt" && key !== "status" && key !== "pendingInteraction",
+        ),
+      )
+    : row.meta;
+  return JSON.stringify([row.address, row.membership, row.sourceAvailability, facts]);
+}
+
 function taskAddressKey(address: WindowHostControllerTaskRow["address"]): string {
   return JSON.stringify([
     address.remoteSessionId ?? "local",
@@ -47,6 +66,7 @@ function queryContainsWorkspace(
   query: CCbuddyTaskListQuery,
   address: WindowHostControllerTaskRow["address"],
 ): boolean {
+  if (query.workspaceScopes === "host") return !address.sourceServerId && !address.remoteSessionId;
   const workspaceKey = address.workspaceIdentity?.trim() || address.workspacePath;
   return query.workspaceScopes.some(
     (scope) => (scope.workspaceIdentity?.trim() || scope.workspacePath) === workspaceKey,
@@ -85,6 +105,8 @@ export function getWindowControllerTaskListRegistry(
   >();
   const taskRows = new Map<string, WindowHostControllerTaskRow>();
   let revision = 0;
+  let directoryRevision = 0;
+  let sourceRevision = 0;
   let started = false;
   let generation = 0;
   let notificationScheduled = false;
@@ -146,11 +168,16 @@ export function getWindowControllerTaskListRegistry(
         seq: frame.toSeq,
       });
       if (frame.topic === CONTROLLER_WORKSPACES_TOPIC) {
-        // workspace facts 不出现在 task list result；source 上下线/移除会另发 tasks-index delta。
+        // Source 换代需要重新建立观察，即使 scope 和可见任务集合没有变化。
+        sourceRevision += 1;
+        directoryRevision += 1;
+        notifyOnce();
         return;
       }
       const taskFrame = frame as WindowHostControllerTaskFrame;
       if (taskFrame.payload.kind === "snapshot") {
+        directoryRevision += 1;
+        sourceRevision += 1;
         taskRows.clear();
         for (const row of taskFrame.payload.snapshot.tasks) {
           taskRows.set(taskAddressKey(row.address), row);
@@ -162,6 +189,12 @@ export function getWindowControllerTaskListRegistry(
           const key = taskAddressKey(address);
           const previous = taskRows.get(key);
           const next = delta.op === "task.upserted" ? delta.task : undefined;
+          if (!previous || !next || directoryFacts(previous) !== directoryFacts(next)) {
+            directoryRevision += 1;
+          }
+          if (previous && next && previous.sourceAvailability !== next.sourceAvailability) {
+            sourceRevision += 1;
+          }
           if (next) taskRows.set(key, next);
           else taskRows.delete(key);
 
@@ -173,6 +206,7 @@ export function getWindowControllerTaskListRegistry(
             // 因此对当前 workspace 保守失效，避免 timeline/active 留下陈旧项。
             if (
               !previous ||
+              cached.query.kind === "all" ||
               matchesTaskListMembershipKind(previous.membership, cached.query.kind) ||
               (next && matchesTaskListMembershipKind(next.membership, cached.query.kind))
             ) {
@@ -215,7 +249,23 @@ export function getWindowControllerTaskListRegistry(
     getRevision() {
       return revision;
     },
+    getDirectoryRevision() {
+      return directoryRevision;
+    },
+    getSourceRevision() {
+      return sourceRevision;
+    },
+    readActivities() {
+      return Array.from(taskRows.values()).flatMap((row) =>
+        row.sourceAvailability === "online" && row.activity
+          ? [{ address: row.address, activity: row.activity }]
+          : [],
+      );
+    },
     list(queryKey, version, query) {
+      // 未打开工作区不在 Controller 的 source 订阅中，不能用它的 delta 保证全局缓存有效。
+      // 搜索每次读取 Host；hook 只订阅目录变化，流式 activity 不触发全库搜索。
+      if (query.workspaceScopes === "host") return controller.listTaskList(query);
       const versionKey = cacheVersionKey(version);
       const cached = queryCache.get(queryKey);
       if (cached?.versionKey === versionKey) return cached.promise;

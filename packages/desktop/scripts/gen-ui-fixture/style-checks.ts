@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import type { BrowserWindow } from "electron";
+import { webContents, type BrowserWindow } from "electron";
 import { checkCompactButtons } from "./compact-button-checks.js";
 import { checkControlStates } from "./control-state-checks.js";
-import { currentGenUiGuest } from "./runtime-checks.js";
 
+/** 用真实 guest computed style 验证 token 同步和容器层级，不用 CSS 字符串模拟浏览器。 */
 export async function checkUnifiedStyles(win: BrowserWindow, read: (code: string) => Promise<any>) {
   win.focus();
-  const guest = currentGenUiGuest();
+  const guest = webContents
+    .getAllWebContents()
+    .find((contents) => contents.getType() === "webview")!;
+  // 自动化窗口未必拥有系统焦点；通过 CDP 强制伪类，由 Chromium 验证焦点样式。
   guest.debugger.attach("1.3");
   const { targetInfos } = await guest.debugger.sendCommand("Target.getTargets");
   const url = guest.mainFrame.frames.find((frame) => frame.url.includes("/instance/"))!.url;
@@ -90,7 +93,7 @@ export async function checkUnifiedStyles(win: BrowserWindow, read: (code: string
             const toggle=root.querySelector('.form-switch input');toggle.click();
             const outline=root.querySelector('.btn');outline.setAttribute('aria-pressed','true');
             input.focus();
-            const result={active:document.activeElement?.outerHTML,border:css.borderColor,background:css.backgroundColor,
+            const result={focusVisible:input.matches(':focus-visible'),active:document.activeElement?.outerHTML,focused:document.hasFocus(),border:css.borderColor,background:css.backgroundColor,
               placeholder:getComputedStyle(input,'::placeholder').color,checked,mixed,switchColor:getComputedStyle(toggle).backgroundColor,
               selected:getComputedStyle(outline).backgroundColor,indeterminateMark:getComputedStyle(check,'::before').height};
             input.blur();outline.removeAttribute('aria-pressed');check.checked=false;check.indeterminate=false;toggle.checked=false;return result;

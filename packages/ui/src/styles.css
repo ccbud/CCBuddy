@@ -6,6 +6,7 @@
 @import "katex/dist/katex.min.css";
 @import "./highspeed/highspeed-activation.css";
 @import "./highspeed/highspeed-share.css";
+@import "./nativeMediaControls.css";
 @source "../../../node_modules/streamdown/dist/*.js"; /* 感觉这行也是不好使呢*/
 
 @plugin "@tailwindcss/typography";
@@ -40,6 +41,19 @@
  * 通过独立平台 variant 使用真实 Window Controls Overlay 安全区；普通 Web 不继承该规则。 */
 @custom-variant platform-windows-desktop (&:where(.platform-windows-desktop, .platform-windows-desktop *));
 
+/* 手机等窄屏 Web（含手机远控）专用布局。桌面端最小窗口 480px，只用 max-sm 会误伤桌面窄窗口；
+ * 这里要求根节点没有任何 desktop 平台标记，保证桌面端与宽屏 Web 的布局完全不变。
+ * spec：docs/settings-narrow-layout.md */
+@custom-variant compact-web {
+  @media (width < 40rem) {
+    &:where(
+      :root:not(.platform-mac-desktop, .platform-windows-desktop, .platform-linux-desktop) *
+    ) {
+      @slot;
+    }
+  }
+}
+
 /*
  * 修复原因：当前 UI 直接使用了 shadcn 的 radix-mira 风格组件源码，这些组件大量依赖
  * data-active / data-horizontal / data-vertical 这类语义 variant。
@@ -73,7 +87,13 @@ body,
 }
 
 :root {
+  --shadow-composer-soft: 0 0 #0000;
+  --shadow-status-panel: 0 4px 20px rgb(0 0 0 / 8%);
   --ui-font-size: 14px;
+  --color-remote-continuity-panel: #202124;
+  --color-remote-continuity-panel-surface: #2c2d30;
+  --color-remote-continuity-panel-foreground: #f8f8f8;
+  --color-remote-continuity-panel-subtle: #a7a7ad;
 }
 
 body {
@@ -81,15 +101,13 @@ body {
   overflow: hidden;
 }
 
-/* Bug 根因：窗口 hidden 时 CSS 动画无法结算，DocumentTimeline 会持有期间被移除的元素及整棵子树，
- * 后台流式输出时内存无上限累积、恢复可见才释放。hidden 期间禁用动画，不再创建新的动画对象。
- * 标记由 installDocumentHiddenMotionPause 维护，见 docs/performance/hidden-document-motion-pause.md。 */
-html[data-document-hidden] *,
-html[data-document-hidden] *::before,
-html[data-document-hidden] *::after {
-  transition: none !important;
-  animation: none !important;
+/* 本机 macOS 专属偏好：关闭时不覆盖系统默认，Web/远控不继承桌面渲染策略。 */
+:root.platform-mac-desktop.font-smoothing-enabled {
+  -webkit-font-smoothing: antialiased;
 }
+
+/* 后台不全局禁用动画：none 会取消动画，回前台后重建，干扰组件生命周期。
+ * 动画由组件自身管理，见 docs/performance/hidden-document-motion-pause.md。 */
 
 /* Bugfix：中文模板描述按单字断行会拆开“简报”等词组，并把标点挤到下一行。
  * Chromium 支持时启用短语级换行；其它环境保留正常断行，避免 keep-all 在窄屏产生溢出。 */
@@ -106,33 +124,6 @@ html[data-document-hidden] *::after {
   }
 }
 
-.side-pane-open-tab-shell {
-  container: side-pane-open-tab / inline-size;
-}
-
-@container side-pane-open-tab (min-width: 480px) {
-  .side-pane-open-tab-content {
-    max-width: 34rem;
-  }
-
-  .side-pane-open-tab-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  }
-
-  .side-pane-open-tab-button {
-    flex-direction: column;
-    gap: 0.375rem;
-    height: 5.5rem;
-    justify-content: center;
-  }
-
-  .side-pane-open-tab-button-label {
-    flex: 0 1 auto;
-    text-align: center;
-  }
-}
-
 #root {
   /* Bugfix: Windows 桌面窗口拉伸后，根节点如果只靠内容撑开，Chromium 偶发会把新尺寸区域留给宿主底层。
    * 这里把 React 挂载点固定成完整动态视口，让桌面/Web/手机端都从根节点开始明确铺满可视区。 */
@@ -144,10 +135,20 @@ html[data-document-hidden] *::after {
  * Bugfix: 部分浏览器 / Electron 运行环境会在 focus-visible 时叠加系统级高亮边框，
  * 表现为和产品主题无关的黄色描边，看起来像“随机冒出来的无障碍样式”。
  * 这里在全局层同时清掉 outline 和 focus ring 对应的 box-shadow，避免系统高亮和组件局部 ring 混用。
+ * 曾按对话框、远程控件和设置导航强制恢复 outline，导致组合输入出现双框；保留组件原有焦点样式，不再全局叠加。
  */
 *:focus,
 *:focus-visible {
   outline: none !important;
+}
+
+.composer-status-popover {
+  box-shadow: var(--shadow-status-panel);
+}
+
+/* 状态面板自身会接收焦点；只清焦点光环，不能清掉浮层原有外投影。 */
+*:focus:not(.composer-status-popover),
+*:focus-visible:not(.composer-status-popover) {
   box-shadow: none !important;
   -webkit-box-shadow: none !important;
 }
@@ -156,7 +157,91 @@ html[data-document-hidden] *::after {
   *:focus,
   *:focus-visible {
     outline: none !important;
+  }
+  *:focus:not(.composer-status-popover),
+  *:focus-visible:not(.composer-status-popover) {
     box-shadow: none !important;
+  }
+}
+
+/*
+ * 中日韩汉字共用码位，字形由字体决定：--font-mono 为中文在 monospace 前写死了 SC 字体，
+ * 日文/韩文界面会因此显示中文字形（如「直」「骨」）。<html lang> 由 CCbuddyIntlProvider 跟随界面语言写入，
+ * 这里按 lang 把对应语言的字体排到 SC 前面；无衬线正文走 system-ui，浏览器会按 lang 自动选日/韩字形。
+ * 日文界面例外：汉字先交给下方的 CCbuddy Han JP / SC 字体，再回到 system-ui，
+ * 见下方「CCbuddy Han」规则与 docs/ui/ja-locale-han-font-pairing.md。
+ */
+:root:lang(ja) {
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP",
+    "Noto Sans JP", "Microsoft YaHei UI", "PingFang SC", monospace;
+}
+
+:root:lang(ko) {
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans CJK KR", "Noto Sans KR",
+    "Microsoft YaHei UI", "PingFang SC", monospace;
+}
+
+/*
+ * Bugfix: macOS 日文界面（lang=ja）下显示中文内容时，同一句话被两种字体混排：日文字体里有的汉字用
+ * Hiragino，缺的简体字（这、问、题……）回退到苹方。两者字面大小和字重档位不同，font-weight: 500 时
+ * Hiragino 按 W3、苹方按 Medium 渲染，看起来像字号不一致。system-ui 的回退链由系统决定，
+ * 写在它后面的字体不会生效，所以用带 unicode-range 的 @font-face 只接管汉字和 CJK 标点：
+ * 日文汉字仍用 Hiragino Sans（保持日文字形），缺的简体字用同家族的 Hiragino Sans GB 补，
+ * 西文和假名不在 unicode-range 内，仍走原有系统字体。只引用本地字体，Windows / Linux 上找不到时
+ * 自动失效并回到原有回退。见 docs/ui/ja-locale-han-font-pairing.md。
+ */
+@font-face {
+  font-family: "CCbuddy Han JP";
+  font-weight: 400;
+  src: local("HiraginoSans-W3"), local("Hiragino Sans W3");
+  unicode-range: U+2E80-2FDF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "CCbuddy Han JP";
+  font-weight: 700;
+  src: local("HiraginoSans-W6"), local("Hiragino Sans W6");
+  unicode-range: U+2E80-2FDF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "CCbuddy Han SC";
+  font-weight: 400;
+  src: local("HiraginoSansGB-W3"), local("Hiragino Sans GB W3");
+  unicode-range: U+2E80-2FDF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "CCbuddy Han SC";
+  font-weight: 700;
+  src: local("HiraginoSansGB-W6"), local("Hiragino Sans GB W6");
+  unicode-range: U+2E80-2FDF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+}
+
+:root:lang(ja) {
+  --font-sans:
+    "CCbuddy Han JP", "CCbuddy Han SC", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --default-font-family: var(--font-sans);
+}
+
+/*
+ * 日文界面里显式标了其他语言的局部元素（如语言选择列表里 lang="zh-CN" 的「简体中文」）
+ * 是特意要按本语言显示字形的，不能被上面的 Hiragino 字体栈接管，这里恢复默认字体栈，
+ * 让浏览器按元素自身的 lang 选字形。放在 base 层是为了不压过 font-mono 等工具类
+ * （不分层的规则优先级高于所有 @layer，会把等宽字体也改掉）。
+ */
+@layer base {
+  :root:lang(ja) [lang]:not(:lang(ja)) {
+    --font-sans:
+      ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+      "Segoe UI Symbol", "Noto Color Emoji";
+    --default-font-family: var(--font-sans);
+    font-family: var(--font-sans);
   }
 }
 
@@ -168,6 +253,11 @@ html[data-document-hidden] *::after {
   --font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  /* 设置页直接恢复通用大字号会绕过 UI 字号体系；专用 token 保留默认 24px / 30px，并跟随界面字号缩放。 */
+  --text-ui-settings-title: calc(var(--ui-font-size) + 10px);
+  --text-ui-settings-title--line-height: calc(4 / 3);
+  --text-ui-settings-title-lg: calc(var(--ui-font-size) + 16px);
+  --text-ui-settings-title-lg--line-height: 1.2;
   --text-ui-xl: calc(var(--ui-font-size) + 4px);
   --text-ui-lg: calc(var(--ui-font-size) + 2px);
   --text-ui-base: var(--ui-font-size);
@@ -187,6 +277,13 @@ html[data-document-hidden] *::after {
   --color-background-alt: color-mix(in oklab, var(--color-neutral-100) 60%, transparent);
   --color-background-win-alt: var(--color-neutral-200);
   --color-brand: var(--color-sky-400);
+  --color-resize-handle: var(--color-sky-500);
+  /* 未读提醒不能复用 brand：Zai 的黑白品牌色会丢失 Sky 提醒色。 */
+  --color-workspace-admission-unread: var(--color-sky-500);
+  /* Composer 语音输入录音胶囊：按设计稿取 sky 色系十六进制值（浅色底色 Sky 100、波形 Sky 600）。
+     不引用 var(--color-sky-*)：Tailwind 4 的 sky 色板是 oklch，渲染值与设计稿有偏差（如 sky-600 为 #0084d1）。 */
+  --color-voice-input-surface: #e0f2fe;
+  --color-voice-input-wave: #0284c7;
   --color-icon-blue: var(--color-terminal-bright-blue);
   --color-icon-purple: var(--color-terminal-bright-magenta);
   --color-trajectory-user: #2563eb;
@@ -210,6 +307,7 @@ html[data-document-hidden] *::after {
   --color-panel: var(--color-neutral-100);
   --color-sidebar: var(--color-neutral-100);
   --color-surface: color-mix(in oklab, var(--color-neutral-950) 3%, transparent);
+  --color-user-message-bubble: color-mix(in oklab, var(--color-neutral-950) 5%, transparent);
   --color-surface-hover: color-mix(in oklab, var(--color-neutral-950) 5%, transparent);
   --color-markdown-inline-code: var(--color-tag);
   --color-card: var(--color-white);
@@ -281,8 +379,13 @@ html[data-document-hidden] *::after {
   --color-interaction-ask-fill: color-mix(in oklab, var(--color-green-500) 20%, transparent);
   --color-interaction-confirmation-surface: var(--color-green-50);
   --color-interaction-confirmation-foreground: var(--color-green-700);
+  --color-success-surface: var(--color-green-50);
+  --color-success-surface-foreground: var(--color-green-700);
+  --color-progress-surface: var(--color-blue-50);
+  --color-progress-surface-foreground: var(--color-blue-700);
   --color-foreground: var(--color-neutral-700);
-  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-700) 60%, transparent);
+  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-700) 70%, transparent);
+  --color-remote-foreground-muted: #595959;
   --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-700) 40%, transparent);
   --lucide-subtlest-opacity: 0.4;
   --color-foreground-inverse: var(--color-white);
@@ -295,6 +398,10 @@ html[data-document-hidden] *::after {
   --color-warning: var(--color-yellow-600);
   --color-feedback-privacy-hint: var(--color-yellow-600);
   --color-warning-foreground: var(--color-foreground-inverse);
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  --color-warning-surface-foreground: var(--color-yellow-800);
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+  --color-destructive-surface-foreground: var(--color-red-800);
   --color-diff-added: var(--color-green-600);
   --color-diff-added-foreground: var(--color-foreground-inverse);
   --color-diff-removed: var(--color-red-600);
@@ -313,6 +420,15 @@ html[data-document-hidden] *::after {
   --color-tooltip-tag: var(--color-neutral-200);
   --color-tooltip-tag-foreground: color-mix(in oklab, var(--color-neutral-950) 60%, transparent);
   --color-tag: var(--color-neutral-200);
+  --color-remote-ssh-surface: var(--color-sky-50);
+  --color-remote-ssh-foreground: var(--color-sky-700);
+  --color-remote-ssh-border: var(--color-sky-200);
+  --color-remote-wsl-surface: var(--color-green-50);
+  --color-remote-wsl-foreground: var(--color-green-700);
+  --color-remote-wsl-border: var(--color-green-200);
+  --color-remote-docker-surface: var(--color-violet-50);
+  --color-remote-docker-foreground: var(--color-violet-700);
+  --color-remote-docker-border: var(--color-violet-200);
   --color-file-node: color-mix(in oklab, var(--color-sky-600) 14%, transparent);
   --color-file-node-hover: color-mix(in oklab, var(--color-sky-600) 20%, transparent);
   --color-file-node-foreground: var(--color-sky-600);
@@ -342,6 +458,11 @@ html[data-document-hidden] *::after {
   --color-background-alt: color-mix(in oklab, var(--color-neutral-800) 60%, transparent);
   --color-background-win-alt: var(--color-neutral-800);
   --color-brand: var(--color-sky-500);
+  --color-resize-handle: var(--color-sky-400);
+  --color-workspace-admission-unread: var(--color-sky-400);
+  /* 深色主题：设计稿底色 Sky 950、波形 Sky 300 */
+  --color-voice-input-surface: #082f49;
+  --color-voice-input-wave: #7dd3fc;
   --color-trajectory-user: #60a5fa;
   --color-trajectory-assistant: #2dd4bf;
   --color-trajectory-reasoning: #a78bfa;
@@ -361,6 +482,7 @@ html[data-document-hidden] *::after {
   --color-panel: var(--color-neutral-900);
   --color-sidebar: var(--color-neutral-950);
   --color-surface: color-mix(in oklab, var(--color-white) 5%, transparent);
+  --color-user-message-bubble: color-mix(in oklab, var(--color-white) 8%, transparent);
   --color-surface-hover: color-mix(in oklab, var(--color-white) 10%, transparent);
   --color-card: var(--color-neutral-800);
   --color-card-selected: var(--color-neutral-700);
@@ -435,8 +557,13 @@ html[data-document-hidden] *::after {
     transparent
   );
   --color-interaction-confirmation-foreground: var(--color-green-300);
+  --color-success-surface: color-mix(in oklab, var(--color-green-950) 45%, transparent);
+  --color-success-surface-foreground: var(--color-green-300);
+  --color-progress-surface: var(--color-blue-950);
+  --color-progress-surface-foreground: var(--color-blue-300);
   --color-foreground: var(--color-neutral-200);
   --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-200) 60%, transparent);
+  --color-remote-foreground-muted: #b3b3b3;
   --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-200) 30%, transparent);
   --lucide-subtlest-opacity: 0.3;
   --color-foreground-inverse: var(--color-white);
@@ -449,6 +576,10 @@ html[data-document-hidden] *::after {
   --color-warning: var(--color-yellow-500);
   --color-feedback-privacy-hint: var(--color-yellow-300);
   --color-warning-foreground: var(--color-foreground-inverse);
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  --color-warning-surface-foreground: var(--color-yellow-400);
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 16%, transparent);
+  --color-destructive-surface-foreground: var(--color-red-300);
   --color-diff-added: var(--color-green-500);
   --color-diff-added-foreground: var(--color-foreground-inverse);
   --color-diff-removed: var(--color-red-500);
@@ -467,6 +598,15 @@ html[data-document-hidden] *::after {
   --color-tooltip-tag: var(--color-neutral-800);
   --color-tooltip-tag-foreground: color-mix(in oklab, var(--color-neutral-50) 60%, transparent);
   --color-tag: var(--color-neutral-700);
+  --color-remote-ssh-surface: color-mix(in oklab, var(--color-sky-500) 18%, transparent);
+  --color-remote-ssh-foreground: var(--color-sky-300);
+  --color-remote-ssh-border: var(--color-sky-700);
+  --color-remote-wsl-surface: color-mix(in oklab, var(--color-green-500) 18%, transparent);
+  --color-remote-wsl-foreground: var(--color-green-300);
+  --color-remote-wsl-border: var(--color-green-700);
+  --color-remote-docker-surface: color-mix(in oklab, var(--color-violet-500) 18%, transparent);
+  --color-remote-docker-foreground: var(--color-violet-300);
+  --color-remote-docker-border: var(--color-violet-700);
   --color-file-node: color-mix(in oklab, var(--color-sky-400) 18%, transparent);
   --color-file-node-hover: color-mix(in oklab, var(--color-sky-400) 24%, transparent);
   --color-file-node-foreground: var(--color-sky-300);
@@ -490,6 +630,7 @@ html[data-document-hidden] *::after {
 }
 
 .theme-zai-light {
+  --shadow-composer-soft: 0 1px 3px rgb(0 0 0 / 4%), 0 6px 18px rgb(0 0 0 / 4%);
   --animated-gradient-text-strong: rgba(13, 13, 13, 1);
   --animated-gradient-text-soft: rgba(13, 13, 13, 0.22);
   --color-background: #f8f8f8;
@@ -515,6 +656,7 @@ html[data-document-hidden] *::after {
   --color-panel: #ffffff;
   --color-sidebar: #f0f0f0;
   --color-surface: rgba(13, 13, 13, 0.03);
+  --color-user-message-bubble: rgba(13, 13, 13, 0.05);
   --color-surface-hover: rgba(13, 13, 13, 0.05);
   --color-card: #ffffff;
   --color-card-selected: var(--color-input);
@@ -581,9 +723,14 @@ html[data-document-hidden] *::after {
   --color-interaction-ask-fill: rgba(70, 191, 114, 0.2);
   --color-interaction-confirmation-surface: #eaf7ee;
   --color-interaction-confirmation-foreground: #166b32;
-  --color-foreground: var(--color-neutral-800);
-  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-800) 60%, transparent);
-  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-800) 40%, transparent);
+  --color-success-surface: #eaf7ee;
+  --color-success-surface-foreground: #166b32;
+  --color-progress-surface: var(--color-blue-50);
+  --color-progress-surface-foreground: var(--color-blue-700);
+  --color-foreground: var(--color-neutral-900);
+  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-900) 70%, transparent);
+  --color-remote-foreground-muted: #595959;
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-900) 40%, transparent);
   --lucide-subtlest-opacity: 0.4;
   --color-foreground-inverse: #ffffff;
   --color-success: #1e8a3e;
@@ -595,6 +742,10 @@ html[data-document-hidden] *::after {
   --color-warning: #e07b00;
   --color-feedback-privacy-hint: var(--color-yellow-600);
   --color-warning-foreground: #ffffff;
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  --color-warning-surface-foreground: #914e00;
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+  --color-destructive-surface-foreground: #b42020;
   --color-diff-added: #1e8a3e;
   --color-diff-added-foreground: #ffffff;
   --color-diff-removed: #e03131;
@@ -613,6 +764,15 @@ html[data-document-hidden] *::after {
   --color-tooltip-tag: #e6e6e6;
   --color-tooltip-tag-foreground: #5c5c5c;
   --color-tag: #e6e6e6;
+  --color-remote-ssh-surface: #ebf4ff;
+  --color-remote-ssh-foreground: #0867ce;
+  --color-remote-ssh-border: #bad9ff;
+  --color-remote-wsl-surface: #eaf7ee;
+  --color-remote-wsl-foreground: #166b32;
+  --color-remote-wsl-border: #b7e0c2;
+  --color-remote-docker-surface: #f2efff;
+  --color-remote-docker-foreground: #6047b4;
+  --color-remote-docker-border: #d4caff;
   --color-file-node: rgba(26, 112, 184, 0.1);
   --color-file-node-hover: rgba(26, 112, 184, 0.16);
   --color-file-node-foreground: #1a70b8;
@@ -661,6 +821,7 @@ html[data-document-hidden] *::after {
   --color-panel: #202020;
   --color-sidebar: #161616;
   --color-surface: rgba(255, 255, 255, 0.05);
+  --color-user-message-bubble: rgba(255, 255, 255, 0.08);
   --color-surface-hover: rgba(255, 255, 255, 0.1);
   --color-card: #2b2b2b;
   --color-card-selected: var(--color-input);
@@ -727,8 +888,13 @@ html[data-document-hidden] *::after {
   --color-interaction-ask-fill: rgba(70, 191, 114, 0.24);
   --color-interaction-confirmation-surface: rgba(70, 191, 114, 0.16);
   --color-interaction-confirmation-foreground: #87d9a4;
-  --color-foreground: var(--color-neutral-300);
+  --color-success-surface: rgba(70, 191, 114, 0.16);
+  --color-success-surface-foreground: #87d9a4;
+  --color-progress-surface: rgba(70, 130, 240, 0.16);
+  --color-progress-surface-foreground: var(--color-blue-300);
+  --color-foreground: var(--color-neutral-100);
   --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-300) 60%, transparent);
+  --color-remote-foreground-muted: #b3b3b3;
   --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
   --lucide-subtlest-opacity: 0.3;
   --color-foreground-inverse: #000000;
@@ -742,6 +908,10 @@ html[data-document-hidden] *::after {
   --color-warning: #ff8a30;
   --color-feedback-privacy-hint: var(--color-yellow-300);
   --color-warning-foreground: #000000;
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  --color-warning-surface-foreground: #ffa159;
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 16%, transparent);
+  --color-destructive-surface-foreground: #ff8585;
   --color-diff-added: #46bf72;
   --color-diff-added-foreground: #000000;
   --color-diff-removed: #ff5c5c;
@@ -760,6 +930,15 @@ html[data-document-hidden] *::after {
   --color-tooltip-tag: #363636;
   --color-tooltip-tag-foreground: #adadad;
   --color-tag: #363636;
+  --color-remote-ssh-surface: rgba(64, 153, 255, 0.16);
+  --color-remote-ssh-foreground: #8fc0ff;
+  --color-remote-ssh-border: rgba(64, 153, 255, 0.42);
+  --color-remote-wsl-surface: rgba(70, 191, 114, 0.16);
+  --color-remote-wsl-foreground: #87d9a4;
+  --color-remote-wsl-border: rgba(70, 191, 114, 0.42);
+  --color-remote-docker-surface: rgba(159, 132, 255, 0.16);
+  --color-remote-docker-foreground: #bfaaff;
+  --color-remote-docker-border: rgba(159, 132, 255, 0.42);
   --color-file-node: rgba(112, 174, 224, 0.16);
   --color-file-node-hover: rgba(112, 174, 224, 0.22);
   --color-file-node-foreground: #8fc5ef;
@@ -874,6 +1053,10 @@ html[data-document-hidden] *::after {
     backface-visibility: hidden;
   }
 
+  .animated-gradient-text-foreground {
+    --animated-gradient-text-strong: var(--color-foreground);
+  }
+
   .animated-gradient-text-subtle {
     --animated-gradient-text-strong: var(--color-foreground-subtle);
   }
@@ -882,43 +1065,6 @@ html[data-document-hidden] *::after {
     /* Bug 根因：accelerated turn 只改了工时文案，内部思考和工具仍继承普通扫光色。 */
     --animated-gradient-text-strong: var(--color-icon-purple);
     --animated-gradient-text-soft: color-mix(in srgb, var(--color-icon-purple) 22%, transparent);
-  }
-
-  .cua-group-gradient-text {
-    display: inline-block;
-    background: linear-gradient(
-      90deg,
-      var(--animated-gradient-text-strong) 0%,
-      var(--animated-gradient-text-soft) 40%,
-      var(--animated-gradient-text-soft) 60%,
-      var(--animated-gradient-text-strong) 100%
-    );
-    background-size: 200% 100%;
-    background-clip: text;
-    -webkit-background-clip: text;
-    color: transparent;
-    -webkit-text-fill-color: transparent;
-    animation: cua-group-gradient-flow 1s linear infinite;
-    animation-delay: 0.5s;
-    will-change: background-position;
-    transform: translateZ(0);
-    backface-visibility: hidden;
-  }
-
-  @keyframes cua-group-gradient-flow {
-    0% {
-      background-position: 100% 0;
-    }
-
-    100% {
-      background-position: -100% 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .cua-group-gradient-text {
-      animation: none;
-    }
   }
 
   @keyframes gradient-flow {
@@ -956,6 +1102,24 @@ html[data-document-hidden] *::after {
     animation: none;
     left: 0;
     width: 100%;
+  }
+}
+
+@keyframes ccbuddy-turn-navigator-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ccbuddy-turn-navigator-enter {
+    animation: ccbuddy-turn-navigator-enter 180ms ease-out;
   }
 }
 
@@ -1022,30 +1186,63 @@ html[data-document-hidden] *::after {
   }
 }
 
-@keyframes ccbuddy-stream-marker-in {
-  0% {
-    color: transparent;
-  }
+/* 流式动效统一口径。DESIGN.md 的 Motion 要求 fast / low-drama，
+   逐词浮现尤其不能长：900ms 会让后面的词压着前面的还没淡完，叠成一片糊。
+   Bugfix：逐词最初和整块入场共用 180ms + cubic-bezier(0.16, 1, 0.3, 1)。这条曲线开头极陡，
+   词出现后第一帧（30ms）就到 69% 不透明，同时处在渐变中的词只有 1–2 帧，肉眼看就是直接出现。
+   逐词浮现要靠尾部好几帧的词处在不同透明度，形成渐隐的尾巴才看得出来，所以逐词单独用
+   300ms + ease-out（低于 90% 不透明的约 7 帧）；整块入场是一次性的，保留原来的急起曲线。 */
+:root {
+  --ccbuddy-reveal-duration: 300ms;
+  --ccbuddy-reveal-ease: ease-out;
+  --ccbuddy-enter-duration: 260ms;
+  --ccbuddy-enter-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
 
-  100% {
-    color: var(--color-foreground-subtlest);
+/* 逐字 / 逐词浮现。只动 opacity：文本从第一帧起就占满最终位置，高度恒定，
+   不触发 ResizeObserver，也就不会撞进虚拟滚动测高和底部跟随。
+   刻意不加 will-change：每个单元一个 span，提升合成层反而拖垮长消息。
+   排期写在 --ccbuddy-reveal-delay 上（跨帧的浮现时钟，见 message.tsx 的 planRevealSchedule）。
+   Bugfix：最初用 @keyframes 绑在新词上，但词在下一帧（30ms）就从 new 变成 settled，
+   选择器不再命中，动画被立即移除，淡入只播了一帧。transition 只要 transition-property
+   仍含 opacity 就会跑完，所以 settled 也保留同一条 transition；@starting-style 只作用于
+   元素首次挂载，new 只决定挂载时是否从透明开始。 */
+[data-ccbuddy-reveal] {
+  transition: opacity var(--ccbuddy-reveal-duration) var(--ccbuddy-reveal-ease)
+    var(--ccbuddy-reveal-delay, 0ms);
+}
+
+@starting-style {
+  [data-ccbuddy-reveal="new"] {
+    opacity: 0;
+  }
+}
+
+/* 列表圆点 / 序号是 li::marker 伪元素，包不到 span；::marker 不支持 opacity，所以过渡 color。
+   Bugfix：2026-06 曾用 keyframes 做过圆点淡入，重写打字机时一起删掉，之后圆点一直随 li 挂载直接出现。
+   这里沿用正文同一套 transition + @starting-style：属性从 new 变成 settled 时过渡不被取消
+   （Electron 44.7 / Chrome 152 探针实测）。unlayered 的 @starting-style 能盖过 Tailwind 分层的
+   marker:text-foreground-subtlest，颜色从透明插值到它，中间不会先变黑。
+   延迟用单独的变量名：li 上的值不能被里面 settled 的字继承。时长与正文共用 --ccbuddy-reveal-duration。 */
+[data-ccbuddy-reveal-marker]::marker {
+  transition: color var(--ccbuddy-reveal-duration) var(--ccbuddy-reveal-ease)
+    var(--ccbuddy-reveal-marker-delay, 0ms);
+}
+
+@starting-style {
+  [data-ccbuddy-reveal-marker="new"]::marker {
+    color: transparent;
   }
 }
 
 [data-ccbuddy-stream-animate="true"] {
-  animation: ccbuddy-stream-text-in 900ms cubic-bezier(0.16, 1, 0.3, 1)
+  animation: ccbuddy-stream-text-in var(--ccbuddy-enter-duration) var(--ccbuddy-enter-ease)
     var(--ccbuddy-stream-animation-delay, 0ms) both;
   will-change: opacity;
 }
 
-[data-ccbuddy-stream-marker-animate="true"]::marker {
-  animation: ccbuddy-stream-marker-in 900ms cubic-bezier(0.16, 1, 0.3, 1)
-    var(--ccbuddy-stream-animation-delay, 0ms) both;
-}
-
-[data-ccbuddy-tool-stream-animate="true"],
 [data-ccbuddy-chat-loading-animate="true"] {
-  animation: ccbuddy-stream-text-in 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: ccbuddy-stream-text-in var(--ccbuddy-enter-duration) var(--ccbuddy-enter-ease) both;
   will-change: opacity;
 }
 
@@ -1081,9 +1278,12 @@ html[data-document-hidden] *::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  [data-ccbuddy-reveal],
+  [data-ccbuddy-reveal-marker]::marker {
+    transition: none;
+  }
+
   [data-ccbuddy-stream-animate="true"],
-  [data-ccbuddy-stream-marker-animate="true"]::marker,
-  [data-ccbuddy-tool-stream-animate="true"],
   [data-ccbuddy-chat-loading-animate="true"],
   [data-ccbuddy-collapsible-animate-close="true"][data-state="closed"],
   [data-ccbuddy-collapsible-animate-close="true"][data-state="closed"] > * {
@@ -2213,4 +2413,114 @@ html[data-document-hidden] *::after {
 
 .prompt-mention[data-mention-category="plugins"]::before {
   border-radius: var(--radius-sm);
+}
+
+/* 文件视图保留任务面板用于位移动效，延伸横线必须随原面板一起隐藏。 */
+[data-workspace-shell]:has([data-project-sidebar-panel="navigation"][aria-hidden="true"])
+  [data-sidebar-divider-extension] {
+  display: none;
+}
+
+/* 连续圆角下增大半径，保留不支持 corner-shape 的浏览器原有回退。 */
+@supports (corner-shape: squircle) {
+  [data-v4-user-input-bubble] {
+    corner-shape: squircle;
+    border-radius: 24px;
+  }
+
+  [data-composer-layout] {
+    corner-shape: squircle;
+    border-radius: 32px;
+  }
+}
+
+[data-v4-user-input-bubble] {
+  border-width: 0;
+  border-top-right-radius: 12px;
+  background-color: var(--color-user-message-bubble);
+}
+
+@supports (corner-shape: squircle) {
+  [data-v4-user-input-bubble] {
+    border-top-right-radius: 24px;
+  }
+}
+
+/* thumb 伪元素需继承容器颜色；每个真实子元素重置透明，隔离嵌套滚动区。 */
+@property --ccbuddy-scrollbar-thumb {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+:is([data-project-sidebar-panel], [data-workspace-conversation-frame], [data-workspace-side-frame]),
+:is([data-project-sidebar-panel], [data-workspace-conversation-frame], [data-workspace-side-frame])
+  * {
+  --ccbuddy-scrollbar-thumb: transparent;
+  scrollbar-color: auto;
+}
+:is(
+  [data-project-sidebar-panel],
+  [data-workspace-conversation-frame],
+  [data-workspace-side-frame]
+)::-webkit-scrollbar-thumb,
+:is([data-project-sidebar-panel], [data-workspace-conversation-frame], [data-workspace-side-frame])
+  *::-webkit-scrollbar-thumb {
+  background-color: var(--ccbuddy-scrollbar-thumb);
+}
+[data-scrollbar-active] {
+  --ccbuddy-scrollbar-thumb: var(--color-border);
+}
+
+/* 只在滑块本身悬停/拖动时增强反馈，不改变轨道与内容尺寸。 */
+:is(
+    [data-project-sidebar-panel],
+    [data-workspace-conversation-frame],
+    [data-workspace-side-frame]
+  )::-webkit-scrollbar-thumb:hover,
+:is([data-project-sidebar-panel], [data-workspace-conversation-frame], [data-workspace-side-frame])
+  *::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--color-foreground) 30%, transparent);
+}
+:is(
+    [data-project-sidebar-panel],
+    [data-workspace-conversation-frame],
+    [data-workspace-side-frame]
+  )::-webkit-scrollbar-thumb:active,
+:is([data-project-sidebar-panel], [data-workspace-conversation-frame], [data-workspace-side-frame])
+  *::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in oklab, var(--color-foreground) 45%, transparent);
+}
+
+[data-scrollbar-hover]::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--color-foreground) 30%, transparent);
+}
+[data-scrollbar-dragging]::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--color-foreground) 45%, transparent);
+}
+
+[data-scrollbar-active][data-scrollbar-hover] {
+  --ccbuddy-scrollbar-thumb: color-mix(in oklab, var(--color-foreground) 30%, transparent);
+}
+[data-scrollbar-active][data-scrollbar-dragging] {
+  --ccbuddy-scrollbar-thumb: color-mix(in oklab, var(--color-foreground) 45%, transparent);
+}
+/* 文字填充与图标分别控制，避免箭头和身份头像随摘要文字变色；扫光保留自身透明填充。 */
+@media (hover: hover) {
+  .summary-hover-text:hover {
+    -webkit-text-fill-color: var(--color-foreground);
+  }
+  .summary-hover-text:hover [data-summary-preserve-color] {
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* 外层分组、工具和思考统一补足到 16px；只有明确标记的组内列表保持 4px。 */
+[data-conversation-work-items] > * + * {
+  padding-top: 12px;
+}
+
+[data-conversation-work-items="group"]
+  > :is(.summary-hover-text, :has(.summary-hover-text)):not([data-consecutive-summary-group])
+  + :is(.summary-hover-text, :has(.summary-hover-text)):not([data-consecutive-summary-group]) {
+  padding-top: 0;
 }

@@ -229,10 +229,7 @@ export function isCollectionInPhase(
   return nodeIds.length === 0 || nodeIds.some((nodeId) => executableNodeIds.has(nodeId));
 }
 
-function isCollectionRelevant(
-  collection: WorkflowGraphCollection,
-  graph: WorkflowGraph,
-): boolean {
+function isCollectionRelevant(collection: WorkflowGraphCollection, graph: WorkflowGraph): boolean {
   return collectionNodeIdsForGraph(collection, graph).length > 0;
 }
 

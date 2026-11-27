@@ -1,24 +1,36 @@
-import { parseAgentListingDelta } from "./agent-listing-metadata.js";
-import { runtimeInputMetadata } from "./runtime-input-presentation.js";
-import { ModelCallWrapperSchema } from "@ccbuddy/contracts";
+import { genUiModelContextSchema, type GenUiModelContext } from "@ccbuddy/shared/gen-ui";
+import { attachGenUiContext, normalizeGenUiInput } from "./message-history.js";
+import { ModelCallWrapperSchema, ToolSearchDeliverySchema } from "@ccbuddy/contracts";
 import {
   hydrateToolSearchContent,
   hydrateCompactDiscovery,
   hydrateToolSearchAnnouncement,
+  hydrateToolSearchMcpDelta,
 } from "./tool-search-hydration.js";
-import { parseToolSearchHiddenNames } from "../tool/search/history.js";
-import { genUiModelContextSchema, type GenUiModelContext } from "@ccbuddy/shared/gen-ui";
-import { attachGenUiContext, normalizeGenUiInput } from "./gen-ui-context.js";
+import {
+  isToolSearchAnnouncementMetadata,
+  parseToolSearchHiddenNames,
+} from "../tool/search/history.js";
+import { parseAgentListingDelta } from "./agent-listing-metadata.js";
+import { parseSkillsListingDelta } from "../skills/listing-metadata.js";
+import { parseEnvironmentAnnouncement } from "../context/sections/env-info.js";
+import { parseInstructionAnnouncement } from "../context/sections/instruction-files.js";
+import { runtimeInputMetadata } from "./runtime-input-presentation.js";
 // ============================================================
 // Session History Hydration - rebuild provider-visible context
 // ============================================================
 
-import { modelMessageContentToText, selectActiveConversationBranch } from "@ccbuddy/contracts";
+import {
+  STREAM_RECOVERY_DISCARDED_ERROR_NAME,
+  hasOrderedAssistantBlocks,
+  isBrowserTurnScreenshotPart,
+  modelMessageContentToText,
+  selectActiveConversationBranch,
+} from "@ccbuddy/contracts";
 import type {
-  FilePart,
+  Logger,
   MessagePart,
   MessageWithParts,
-  ModelMessageContent,
   ModelMessageContentBlock,
   ModelReasoningContentBlock,
   MessageId,
@@ -30,22 +42,31 @@ import {
   wrapSystemReminderForSource,
   type SystemReminderSource,
 } from "../system-reminder/source.js";
-import {
-  buildPromptAttachmentReminderBodies,
-  type PromptAttachmentReminderInput,
-} from "../system-reminder/prompt-attachment.js";
 import { persistedTokenUsageBaseline } from "./message-history-usage.js";
 import {
+  isProviderExecutedToolPartMetadata,
+  withCompactGroupKey,
+} from "../runtime/provider-tool-rounds/contract.js";
+import {
+  buildAssistantEntries,
+  createRuntimeAssistantEntry,
+  createRuntimeToolResultEntry,
+  INTERRUPT_MARKER_SOURCE,
+  OUTPUT_TOKEN_CONTINUATION_SOURCE,
   isKnownSystemReminderSource,
   legacySyntheticRuntimeMetadata,
   realUserRuntimeMetadata,
+  buildUserMessageEntries,
+  type UserMessageAttachment,
   systemReminderAttachmentEntry,
   systemReminderRuntimeMetadata,
   todoReminderRuntimeMetadata,
+  withSignedReasoningReset,
   type MessageHistory,
   type RuntimeMessageEntry,
   type RuntimeMessageMetadata,
   type RuntimeMessageSource,
+  type AssistantHistoryBlock,
   type ToolCallInput,
 } from "./message-history.js";
 import { compactActiveSessionMessages, isActiveCompactionBoundaryPart } from "./compact-session.js";
@@ -62,7 +83,7 @@ export interface SessionHistoryHydrationResult {
 }
 
 export async function hydrateMessageHistoryFromSession(input: {
-  logger?: import("@ccbuddy/contracts").Logger;
+  logger?: Logger;
   artifactStore?: ToolArtifactStorePort;
   branchCutAfterMessageId?: MessageId;
   history: MessageHistory;
@@ -94,10 +115,25 @@ export async function hydrateMessageHistoryFromSession(input: {
         !(
           part.type === "text" &&
           part.synthetic &&
-          metadataFromSyntheticTextPart(part).source === "bot_topic_context"
+          (metadataFromSyntheticTextPart(part).source === "bot_topic_context" ||
+            // 旧状态正文包含已移除工具的指令，只过滤恢复投影，不改写存储。
+            part.metadata?.source === "mcp_server_status" ||
+            (isRecord(part.metadata?.runtimeMessage) &&
+              part.metadata.runtimeMessage.source === "mcp_server_status"))
         ),
     );
     partCount += parts.length;
+    // 条目时间取这条持久化记录的时间（assistant 取完成时间），与 live 加入历史的时间对应；
+    // 静默提醒按它计时（meta-user-context.md「Silent-turn reminder」）。
+    // TODO(silent-reminder-entry-time): 带工具调用的 assistant，live 在工具执行前记时间，time.completed 在工具
+    // 结算后才写，冷恢复后晚一个工具批次。db 没有“响应结束”这个时刻，方案与取舍见
+    // docs/issues/silent-reminder-entry-time/01-tool-call-response-time-after-cold-resume.md。
+    const time =
+      message.info.role === "assistant"
+        ? (message.info.time.completed ?? message.info.time.created)
+        : message.info.time.created;
+    const timed = <T extends RuntimeMessageEntry>(entries: T[]): T[] =>
+      entries.map((entry) => ({ ...entry, time }));
 
     if (message.info.role === "user") {
       const sharedContextStatus =
@@ -119,26 +155,27 @@ export async function hydrateMessageHistoryFromSession(input: {
       // user <system-reminder>，后续 mid-conversation system projection 会失去 attachment source。
       const syntheticAttachment = syntheticSystemReminderAttachmentFromParts(parts);
       if (syntheticAttachment) {
-        input.history.addEntries([
-          {
-            kind: "attachment",
-            content: syntheticAttachment.content,
-            metadata: syntheticAttachment.metadata,
-          },
-        ]);
+        input.history.addEntries(timed([syntheticAttachment]));
         appliedMessageCount++;
         continue;
       }
 
-      const metadata = message.info.metadata as Record<string, unknown> | undefined;
-      const intent = (metadata?.conversationInputIntent ?? metadata?.inputIntent) as
-        | Record<string, unknown>
-        | undefined;
-      const context = genUiModelContextSchema.safeParse(intent?.genUiContext);
+      const intent =
+        message.info.metadata?.conversationInputIntent ?? message.info.metadata?.inputIntent;
+      const context = genUiModelContextSchema.safeParse(
+        intent && typeof intent === "object"
+          ? (intent as Record<string, unknown>).genUiContext
+          : undefined,
+      );
+      const presentation = runtimeInputMetadata(
+        (message.info.metadata as Record<string, unknown> | undefined)?.inputPresentation,
+      );
       const entries = await userEntriesFromParts(
         parts,
         input.artifactStore,
         context.success ? context.data : undefined,
+        // 空闲整批的每条通知是一个文本 part，按块读回，与 live 写入的 content 相同。
+        presentation?.inputPresentation === "task_notification",
       );
       if (entries.length === 0) continue;
       const boundaryPart = parts.find(isActiveCompactionBoundaryPart);
@@ -156,108 +193,185 @@ export async function hydrateMessageHistoryFromSession(input: {
           },
         };
       }
-      const presentation = runtimeInputMetadata(
-        (message.info.metadata as Record<string, unknown> | undefined)?.inputPresentation,
-      );
+      const delivery = ToolSearchDeliverySchema.safeParse(
+        message.info.metadata?.toolSearchDelivery,
+      ).data;
+      if (boundaryPart && delivery && entries[0] && entries[0].kind !== "attachment")
+        entries[0] = { ...entries[0], toolSearchDelivery: delivery };
       input.history.addEntries(
-        presentation
-          ? entries.map((entry) =>
-              entry.kind === "attachment"
-                ? entry
-                : { ...entry, metadata: { ...entry.metadata, ...presentation } },
-            )
-          : entries,
+        timed(
+          presentation
+            ? entries.map((entry) =>
+                entry.kind === "attachment"
+                  ? entry
+                  : { ...entry, metadata: { ...entry.metadata, ...presentation } },
+              )
+            : entries,
+        ),
       );
       appliedMessageCount++;
       continue;
     }
 
-    const text = assistantTextFromParts(parts);
-    const reasoning = assistantReasoningFromParts(parts);
-    const toolParts = selectToolPartsForHistory(parts.filter(isToolPart));
+    // 断流重试 / 执行模型回退作废的 attempt：正文、思考和服务端内置工具轮次从不进入 live history
+    // （服务端轮次在流中提前落盘），冷恢复必须同样剔除；退回前已结算的本地工具调用与结果
+    // 已提交到 live history，继续保留。不能靠「作废消息恰好没有这些 part」的隐式前提。
+    // 浏览器轮尾截图 part 只用于展示，live 从不把它放进模型历史。以前冷恢复会把它变成一个
+    // 工具调用加结果，导致冷恢复请求和 live 不同；这里跳过它，UI 仍然从原始 parts 显示。
+    const assistantParts = (
+      message.info.error?.name === STREAM_RECOVERY_DISCARDED_ERROR_NAME
+        ? parts.filter(
+            (part) =>
+              part.type !== "text" &&
+              part.type !== "reasoning" &&
+              !(isToolPart(part) && isProviderExecutedToolPartMetadata(part.metadata)),
+          )
+        : parts
+    ).filter((part) => !isBrowserTurnScreenshotPart(part));
+
+    const assistantModel =
+      message.info.modelId && message.info.providerId
+        ? { modelId: message.info.modelId, providerId: message.info.providerId }
+        : undefined;
+
+    // 签名修复后成功的那一步：标记回到这条消息拆出的第一条 assistant，与 live 提交时一致。
+    const markRepaired = (entries: RuntimeMessageEntry[]) =>
+      message.info.metadata?.signedReasoningReset === true
+        ? withSignedReasoningReset(entries)
+        : entries;
+
+    if (hasOrderedAssistantBlocks(assistantParts)) {
+      // 有序消息与 live 共用 buildAssistantEntries（docs/design/v2/model/assistant-block-order.md）。
+      const toolParts = selectToolPartsForHistory(
+        assistantParts.filter(
+          (part): part is ToolPart =>
+            isToolPart(part) && !isProviderExecutedToolPartMetadata(part.metadata),
+        ),
+      );
+      const entries = buildAssistantEntries({
+        blocks: [
+          ...orderedContentBlocksFromParts(assistantParts),
+          ...assistantParts.filter(isToolPart).flatMap((part): AssistantHistoryBlock[] =>
+            isProviderExecutedToolPartMetadata(part.metadata)
+              ? [
+                  {
+                    kind: "provider_tool",
+                    call: {
+                      id: part.callID,
+                      input: part.state.input,
+                      name: part.tool,
+                      blockIndex: part.blockIndex,
+                    },
+                    result: providerToolResultFromPart(part),
+                  },
+                ]
+              : [],
+          ),
+          ...toolParts.map(
+            (part): AssistantHistoryBlock => ({
+              kind: "tool",
+              call: { ...toolCallInputFromPart(part), blockIndex: part.blockIndex },
+            }),
+          ),
+        ],
+        model: assistantModel,
+        tokens: message.info.tokens,
+        groupKey: message.info.id,
+        keepEmptyFinal: persistedTokenUsageBaseline(message.info.tokens) !== undefined,
+      });
+      if (entries.length === 0) continue;
+      // 修复原因：有序分支曾不挂已交付定义，冷恢复请求丢失移除后仍须保留的定义，历史里的
+      // tool_reference 也被当成失效改写。与 live 提交（commitTurnRequestEntries）一致，
+      // 挂在第一条非空的 assistant entry 上。
+      const delivery = ToolSearchDeliverySchema.safeParse(
+        message.info.metadata?.toolSearchDelivery,
+      ).data;
+      const deliveryIndex = delivery
+        ? entries.findIndex(
+            (entry) =>
+              entry.message.role === "assistant" &&
+              (entry.message.content.length > 0 || (entry.message.toolCalls?.length ?? 0) > 0),
+          )
+        : -1;
+      if (delivery && deliveryIndex >= 0)
+        entries[deliveryIndex] = { ...entries[deliveryIndex]!, toolSearchDelivery: delivery };
+      input.history.addEntries(timed(markRepaired(entries)));
+      appliedMessageCount++;
+      interruptedToolCount += await addToolResultsFromParts(input, toolParts, time);
+      continue;
+    }
+    // 服务端内置工具在流中按顺序落盘：工具 part 之前的 reasoning/text 属于同一轮。
+    // 与 live history 一致，每轮回放为 assistant(text, [工具]) + tool(结果)，剩下的走原逻辑。
+    const { rounds: providerRounds, remainingParts } = splitProviderToolRoundParts(assistantParts);
+    // 这条消息拆出的所有 assistant entry 共用分组键：compact 按数据库消息定持久化边界，两边组数才一致。
+    const compactGroupKey = providerRounds.length > 0 ? message.info.id : undefined;
+    input.history.addEntries(
+      timed(
+        markRepaired(
+          withCompactGroupKey(
+            providerRounds.flatMap((round) => {
+              const toolPart = round.toolPart;
+              return [
+                createRuntimeAssistantEntry(
+                  assistantTextFromParts(round.parts),
+                  [{ id: toolPart.callID, input: toolPart.state.input, name: toolPart.tool }],
+                  assistantReasoningFromParts(round.parts),
+                  assistantModel,
+                ),
+                createRuntimeToolResultEntry(
+                  toolPart.callID,
+                  toolPart.tool,
+                  providerToolResultFromPart(toolPart).output,
+                  providerToolResultFromPart(toolPart).isError,
+                ),
+              ];
+            }),
+            compactGroupKey,
+          ),
+        ),
+      ),
+    );
+
+    const text = assistantTextFromParts(remainingParts);
+    const reasoning = assistantReasoningFromParts(remainingParts);
+    const toolParts = selectToolPartsForHistory(remainingParts.filter(isToolPart));
+    // 有服务端内置工具轮次时，持久化 usage 是服务端多轮请求的合计，不能当上下文估算锚点；
+    // 与 live 一致不挂 tokens，也不为它保留空 assistant。
+    const contextUsage = compactGroupKey ? undefined : message.info.tokens;
     // live history 会保留带合法 provider usage 的空 assistant 作为估算锚点，
     // 旧 hydration 却无条件丢弃它，导致重启前后的 context estimate 不一致。
     if (
       text.trim().length === 0 &&
       reasoning.length === 0 &&
       toolParts.length === 0 &&
-      !persistedTokenUsageBaseline(message.info.tokens)
+      !persistedTokenUsageBaseline(contextUsage)
     ) {
+      if (providerRounds.length > 0) appliedMessageCount++;
       continue;
     }
 
-    input.history.addAssistant(
+    const finalToolCalls = toolParts.map(toolCallInputFromPart);
+    // 已交付的工具定义随这条 assistant 恢复；上游把入口改成 entry 构造后，仍挂在同一条记录上。
+    const delivery = ToolSearchDeliverySchema.safeParse(
+      message.info.metadata?.toolSearchDelivery,
+    ).data;
+    const assistantEntry = createRuntimeAssistantEntry(
       text,
-      toolParts.map(
-        (part): ToolCallInput => ({
-          id: part.callID,
-          input: part.state.input,
-          modelCallWrapper: modelCallWrapperFromPart(part),
-          name: providerToolNameFromPart(part),
-        }),
-      ),
+      finalToolCalls,
       reasoning,
-      message.info.modelId && message.info.providerId
-        ? { modelId: message.info.modelId, providerId: message.info.providerId }
-        : undefined,
-      message.info.tokens,
+      assistantModel,
+      contextUsage,
+    );
+    const finalEntries = withCompactGroupKey(
+      [delivery ? { ...assistantEntry, toolSearchDelivery: delivery } : assistantEntry],
+      compactGroupKey,
+    );
+    input.history.addEntries(
+      timed(providerRounds.length > 0 ? finalEntries : markRepaired(finalEntries)),
     );
     appliedMessageCount++;
 
-    for (const part of toolParts) {
-      const providerToolName = providerToolNameFromPart(part);
-      if (part.state.status === "completed") {
-        // live tool result 使用结构化媒体，但旧恢复只读取 output 摘要，
-        // 导致模型切换或冷恢复后丢失 Read/MCP 产生的真实媒体。
-        const attachmentBlocks = part.state.attachments
-          ? await Promise.all(
-              part.state.attachments.map((attachment) =>
-                filePartToContentBlock(attachment, input.artifactStore),
-              ),
-            )
-          : [];
-        // 旧 completed part 也可能有 attachments；只有完整有效的 layout 才能证明
-        // 它们属于新的 provider-visible 媒体内容，缺失或损坏时必须保留 legacy output。
-        const projectedMediaContent =
-          attachmentBlocks.length > 0
-            ? projectPersistedToolMediaContent(
-                part.state.metadata?.modelContentLayout,
-                attachmentBlocks,
-              )
-            : undefined;
-        const content =
-          hydrateToolSearchContent(part.state.metadata?.modelContent, input.logger) ??
-          projectedMediaContent ??
-          part.state.output;
-        input.history.addToolResult(
-          part.callID,
-          providerToolName,
-          content,
-          true,
-          false,
-          modelCallWrapperFromPart(part),
-        );
-        continue;
-      }
-
-      if (part.state.status === "error") {
-        const persistedModelContent = part.state.metadata?.modelContent;
-        // 实时链路使用 ToolExecutionResult.modelContent，但旧恢复逻辑只重放
-        // 面向 UI / 日志的 state.error；优先使用持久化字符串并兼容旧 session。
-        input.history.addToolResult(
-          part.callID,
-          providerToolName,
-          typeof persistedModelContent === "string" ? persistedModelContent : part.state.error,
-          false,
-          true,
-          modelCallWrapperFromPart(part),
-        );
-        continue;
-      }
-
-      interruptedToolCount++;
-      input.history.addToolResult(part.callID, providerToolName, INTERRUPTED_TOOL_RESULT, false);
-    }
+    interruptedToolCount += await addToolResultsFromParts(input, toolParts, time);
   }
 
   return {
@@ -266,6 +380,116 @@ export async function hydrateMessageHistoryFromSession(input: {
     messageCount: activeMessages.length,
     partCount,
   };
+}
+
+async function addToolResultsFromParts(
+  input: { artifactStore?: ToolArtifactStorePort; history: MessageHistory; logger?: Logger },
+  toolParts: readonly ToolPart[],
+  time: number,
+): Promise<number> {
+  let interruptedToolCount = 0;
+  const addToolResult = (...args: Parameters<typeof createRuntimeToolResultEntry>) =>
+    input.history.addEntries([{ ...createRuntimeToolResultEntry(...args), time }]);
+  for (const part of toolParts) {
+    const toolName = historyToolNameFromPart(part);
+    const modelCallWrapper = modelCallWrapperFromPart(part);
+    if (part.state.status === "completed") {
+      // live tool result 使用结构化媒体，但旧恢复只读取 output 摘要，
+      // 导致模型切换或冷恢复后丢失 Read/MCP 产生的真实媒体。
+      const attachmentBlocks = part.state.attachments
+        ? await Promise.all(
+            part.state.attachments.map((attachment) =>
+              filePartToContentBlock(attachment, input.artifactStore),
+            ),
+          )
+        : [];
+      // 旧 completed part 也可能有 attachments；只有完整有效的 layout 才能证明
+      // 它们属于新的 provider-visible 媒体内容，缺失或损坏时必须保留 legacy output。
+      const projectedMediaContent =
+        attachmentBlocks.length > 0
+          ? projectPersistedToolMediaContent(
+              part.state.metadata?.modelContentLayout,
+              attachmentBlocks,
+            )
+          : undefined;
+      const content =
+        hydrateToolSearchContent(part.state.metadata?.modelContent, input.logger) ??
+        projectedMediaContent ??
+        part.state.output;
+      // 修复原因：原来固定传 isError=false，错误结果冷恢复后丢掉 live 请求里的 is_error。按结算时存下的
+      // providerIsError 还原；旧 part 没有这个标记，按成功结果回放，不按输出文字推断。
+      addToolResult(
+        part.callID,
+        toolName,
+        content,
+        part.state.metadata?.providerIsError === true,
+        modelCallWrapper,
+      );
+      continue;
+    }
+
+    if (part.state.status === "error") {
+      const persistedModelContent = part.state.metadata?.modelContent;
+      // 实时链路使用 ToolExecutionResult.modelContent，但旧恢复逻辑只重放
+      // 面向 UI / 日志的 state.error；优先使用持久化字符串并兼容旧 session。
+      addToolResult(
+        part.callID,
+        toolName,
+        typeof persistedModelContent === "string" ? persistedModelContent : part.state.error,
+        true,
+        modelCallWrapper,
+      );
+      continue;
+    }
+
+    interruptedToolCount++;
+    addToolResult(part.callID, toolName, INTERRUPTED_TOOL_RESULT, true, modelCallWrapper);
+  }
+  return interruptedToolCount;
+}
+
+function toolCallInputFromPart(part: ToolPart): ToolCallInput {
+  return {
+    id: part.callID,
+    input: part.state.input,
+    modelCallWrapper: modelCallWrapperFromPart(part),
+    name: historyToolNameFromPart(part),
+  };
+}
+
+function providerToolResultFromPart(part: ToolPart): { output: string; isError: boolean } {
+  return {
+    output:
+      part.state.status === "completed"
+        ? part.state.output
+        : part.state.status === "error"
+          ? part.state.error
+          : INTERRUPTED_TOOL_RESULT,
+    isError: part.state.status === "error",
+  };
+}
+
+function orderedContentBlocksFromParts(parts: MessagePart[]): AssistantHistoryBlock[] {
+  const blocks: AssistantHistoryBlock[] = [];
+  for (const part of parts) {
+    if (part.type === "reasoning") {
+      blocks.push({
+        kind: "content",
+        block: {
+          type: "reasoning",
+          text: part.text,
+          providerOptions: part.metadata ? { ...part.metadata } : undefined,
+          blockIndex: part.blockIndex,
+        },
+      });
+    } else if (part.type === "text" && !part.ignored) {
+      blocks.push({
+        kind: "content",
+        block: { type: "text", text: part.text, blockIndex: part.blockIndex },
+      });
+    }
+  }
+  return blocks;
 }
 
 export function activeSessionMessages(
@@ -337,52 +561,32 @@ async function userEntriesFromParts(
   parts: MessagePart[],
   artifactStore: ToolArtifactStorePort | undefined,
   genUiContext?: GenUiModelContext,
+  keepTextBlocks = false,
 ): Promise<RuntimeMessageEntry[]> {
-  const attachmentBlocks: ModelMessageContentBlock[] = [];
-  // 媒体数据块（image/video）统一后置组，恢复顺序对齐 live 主路径 [text, media]。
-  const inlineMediaBlocks: ModelMessageContentBlock[] = [];
+  const attachments: UserMessageAttachment[] = [];
   const promptBlocks: ModelMessageContentBlock[] = [];
   const syntheticAttachmentEntries: RuntimeMessageEntry[] = [];
-  const promptAttachmentEntries: RuntimeMessageEntry[] = [];
 
   for (const part of parts) {
     if (part.type === "text" && !part.ignored) {
       const syntheticAttachment = syntheticSystemReminderAttachmentFromTextPart(part);
       if (syntheticAttachment) {
-        syntheticAttachmentEntries.push({
-          kind: "attachment",
-          content: syntheticAttachment.content,
-          metadata: syntheticAttachment.metadata,
-        });
+        syntheticAttachmentEntries.push(syntheticAttachment);
         continue;
       }
-      const normalized = part.synthetic
+      const input = part.synthetic
         ? { text: textPartToProviderText(part) }
-        : normalizeGenUiInput(textPartToProviderText(part), genUiContext);
-      genUiContext ??= normalized.genUiContext;
-      promptBlocks.push({ type: "text", text: normalized.text });
+        : normalizeGenUiInput(part.text, genUiContext);
+      if (input.genUiContext !== undefined) genUiContext = input.genUiContext;
+      promptBlocks.push({ type: "text", text: input.text });
       continue;
     }
 
     if (part.type === "file") {
-      const block = await filePartToContentBlock(part, artifactStore);
-      // local_ref 是附件恢复历史时的唯一路径句柄，不能因为 metadata_only 过滤。
-      if (block.type === "text") {
-        const promptAttachmentInput = promptAttachmentReminderInputForFilePart(part, block);
-        if (promptAttachmentInput) {
-          const reminderBody =
-            buildPromptAttachmentReminderBodies(promptAttachmentInput).join("\n");
-          promptAttachmentEntries.push(
-            systemReminderAttachmentEntry("prompt_attachment", reminderBody),
-          );
-          continue;
-        }
-      }
-      if (block.type === "image" || block.type === "video") {
-        inlineMediaBlocks.push(block);
-      } else {
-        attachmentBlocks.push(block);
-      }
+      attachments.push({
+        ...part,
+        contentBlock: await filePartToContentBlock(part, artifactStore),
+      });
       continue;
     }
 
@@ -391,12 +595,15 @@ async function userEntriesFromParts(
     }
   }
 
-  const content = contentFromUserBlocks(
-    [...attachmentBlocks, ...promptBlocks, ...inlineMediaBlocks],
-    {
-      preserveBlocks: attachmentBlocks.length > 0 || inlineMediaBlocks.length > 0,
-    },
-  );
+  const prompt =
+    attachments.length > 0 || (keepTextBlocks && promptBlocks.length > 1)
+      ? promptBlocks
+      : promptBlocks
+          .map((block) => (block.type === "text" ? block.text : ""))
+          .filter(Boolean)
+          .join("\n\n");
+  const [userEntry, ...promptAttachmentEntries] = buildUserMessageEntries(prompt, attachments);
+  const content = userEntry.message.content;
   const hasUserContent = modelMessageContentToText(content).trim().length > 0;
   const userMetadata = metadataFromUserParts(parts);
   // 文本附件从原始 file part 恢复为 prompt_attachment 后，空正文的
@@ -411,14 +618,12 @@ async function userEntriesFromParts(
   ) {
     return [];
   }
+  // 页面状态挂回所属输入，与热态同形；输入本身没有恢复时，状态也不发出。
   return [
     ...(shouldRestoreRealUserEnvelope
       ? [
           attachGenUiContext(
-            {
-              message: { role: "user" as const, content },
-              metadata: userMetadata,
-            },
+            { message: { role: "user" as const, content }, metadata: userMetadata },
             genUiContext,
           ),
         ]
@@ -426,54 +631,6 @@ async function userEntriesFromParts(
     ...syntheticAttachmentEntries,
     ...promptAttachmentEntries,
   ];
-}
-
-function contentFromUserBlocks(
-  blocks: readonly ModelMessageContentBlock[],
-  options: { preserveBlocks?: boolean } = {},
-): ModelMessageContent {
-  if (options.preserveBlocks) {
-    return blocks.map((block) => ({ ...block })) as ModelMessageContentBlock[];
-  }
-  const textBlocks = blocks.filter(
-    (block): block is Extract<ModelMessageContentBlock, { type: "text" }> => block.type === "text",
-  );
-  if (blocks.length === textBlocks.length) {
-    return textBlocks
-      .map((block) => block.text)
-      .filter(Boolean)
-      .join("\n\n");
-  }
-  return blocks.map((block) => ({ ...block })) as ModelMessageContentBlock[];
-}
-
-function promptAttachmentReminderInputForFilePart(
-  part: FilePart,
-  block: Extract<ModelMessageContentBlock, { type: "text" }>,
-): (PromptAttachmentReminderInput & { content: string; kind: "file" | "inline_text" }) | undefined {
-  if (!part.mime.startsWith("text/")) return undefined;
-  if (!part.source) {
-    return {
-      content: block.text,
-      kind: "inline_text",
-      label: part.filename,
-      preview: part.metadata?.preview,
-    };
-  }
-  if (part.metadata?.storageKind !== "inline") return undefined;
-  if (
-    part.metadata.recoverability !== "provider_ready" &&
-    part.metadata.recoverability !== "preview_only"
-  ) {
-    return undefined;
-  }
-  if (part.metadata.preview?.text !== block.text) return undefined;
-  return {
-    content: block.text,
-    kind: "file",
-    label: part.source.text.value ?? part.filename,
-    preview: part.metadata.preview,
-  };
 }
 
 function textPartToProviderText(part: Extract<MessagePart, { type: "text" }>): string {
@@ -498,10 +655,7 @@ function textPartToProviderText(part: Extract<MessagePart, { type: "text" }>): s
   return part.text;
 }
 
-interface SyntheticSystemReminderAttachment {
-  metadata: RuntimeMessageMetadata;
-  content: string;
-}
+type SyntheticSystemReminderAttachment = ReturnType<typeof systemReminderAttachmentEntry>;
 
 function syntheticSystemReminderAttachmentFromParts(
   parts: MessagePart[],
@@ -518,22 +672,26 @@ function syntheticSystemReminderAttachmentFromTextPart(
   part: Extract<MessagePart, { type: "text" }>,
 ): SyntheticSystemReminderAttachment | undefined {
   if (!part.synthetic) return undefined;
-  if (part.text.trim().length === 0) return undefined;
   const metadata = metadataFromSyntheticTextPart(part);
-  const announcement = metadata.toolSearchAnnouncement;
+  // 无正文的目录状态结算仍需恢复，否则冷恢复会重复公告已经结算的 pending。
+  const announcement = isToolSearchAnnouncementMetadata(metadata);
+  if (part.text.trim().length === 0 && !announcement) return undefined;
+  // 只凭已校验的公告身份适配旧包装，不从普通用户正文推断提醒来源。
   const wrapped = isProviderWrappedSystemReminderText(part.text);
   if (wrapped && !announcement) return undefined;
   if (!isRestorableSystemReminderAttachmentSource(metadata.source)) return undefined;
 
   return {
-    metadata,
-    content:
+    ...systemReminderAttachmentEntry(
+      metadata.source,
       wrapped && announcement
         ? part.text
             .trim()
             .replace(/^<system-reminder>\s*/, "")
             .replace(/\s*<\/system-reminder>$/, "")
         : part.text,
+    ),
+    metadata,
   };
 }
 
@@ -615,23 +773,40 @@ function runtimeMessageMetadataFromPartMetadata(
   const presentation = runtimeInputMetadata(runtimeMessage.inputPresentation);
   if (presentation) return presentation;
   const source = runtimeMessage.source;
+  if (source === "environment") {
+    const environment = parseEnvironmentAnnouncement(runtimeMessage.environment);
+    return { source, ...(environment ? { environment } : {}) };
+  }
   if (source === "agent_listing_delta") {
     const delta = parseAgentListingDelta(runtimeMessage.agentListingDelta);
     return { source, ...(delta ? { agentListingDelta: delta } : {}) };
   }
+  if (source === "skills_listing") {
+    // 通用分支只保留 source；冷恢复丢了指纹会把整份列表再发一次，所以单独解析增量。
+    const delta = parseSkillsListingDelta(runtimeMessage.skillsListingDelta);
+    return { source, ...(delta ? { skillsListingDelta: delta } : {}) };
+  }
+  if (source === "context_prefix") {
+    const instructions = parseInstructionAnnouncement(runtimeMessage.instructions);
+    return { source, ...(instructions ? { instructions } : {}) };
+  }
   if (source === "real_user") {
     return realUserRuntimeMetadata();
+  }
+  if (source === INTERRUPT_MARKER_SOURCE || source === OUTPUT_TOKEN_CONTINUATION_SOURCE) {
+    return { source };
   }
   if (source === "legacy_synthetic" || source === "tool_search_announcement") {
     const announcement = hydrateToolSearchAnnouncement(runtimeMessage.toolSearchAnnouncement);
     const hiddenNames =
       announcement &&
       parseToolSearchHiddenNames(runtimeMessage.toolSearchHiddenNames, announcement);
+    const mcpDelta = hydrateToolSearchMcpDelta(runtimeMessage.toolSearchMcpDelta);
     return {
       ...legacySyntheticRuntimeMetadata(),
-      ...(announcement
-        ? { source: "tool_search_announcement" as const, toolSearchAnnouncement: announcement }
-        : {}),
+      ...(mcpDelta ? { toolSearchMcpDelta: mcpDelta } : {}),
+      ...(announcement || mcpDelta ? { source: "tool_search_announcement" as const } : {}),
+      ...(announcement ? { toolSearchAnnouncement: announcement } : {}),
       ...(hiddenNames ? { toolSearchHiddenNames: hiddenNames } : {}),
     };
   }
@@ -647,11 +822,6 @@ function runtimeMessageMetadataFromPartMetadata(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function modelCallWrapperFromPart(part: ToolPart) {
-  const parsed = ModelCallWrapperSchema.safeParse(part.metadata?.modelCallWrapper);
-  return parsed.success ? parsed.data : undefined;
 }
 
 function assistantTextFromParts(parts: MessagePart[]): string {
@@ -686,7 +856,37 @@ function isToolPart(part: MessagePart): part is ToolPart {
   return part.type === "tool";
 }
 
-function providerToolNameFromPart(part: ToolPart): string {
+function splitProviderToolRoundParts(parts: MessagePart[]): {
+  rounds: Array<{ parts: MessagePart[]; toolPart: ToolPart }>;
+  remainingParts: MessagePart[];
+} {
+  if (
+    !parts.some((part) => isToolPart(part) && isProviderExecutedToolPartMetadata(part.metadata))
+  ) {
+    return { rounds: [], remainingParts: parts };
+  }
+  const rounds: Array<{ parts: MessagePart[]; toolPart: ToolPart }> = [];
+  const remainingParts: MessagePart[] = [];
+  let pending: MessagePart[] = [];
+  for (const part of parts) {
+    if (isToolPart(part) && isProviderExecutedToolPartMetadata(part.metadata)) {
+      rounds.push({ parts: pending, toolPart: part });
+      pending = [];
+    } else if (part.type === "text" || part.type === "reasoning") {
+      pending.push(part);
+    } else {
+      remainingParts.push(part);
+    }
+  }
+  return { rounds, remainingParts: [...remainingParts, ...pending] };
+}
+
+function modelCallWrapperFromPart(part: ToolPart) {
+  const parsed = ModelCallWrapperSchema.safeParse(part.metadata?.modelCallWrapper);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function historyToolNameFromPart(part: ToolPart): string {
   const providerToolName = part.metadata?.providerToolName;
   // 空字符串在 cold hydration 中曾只能依赖 non-empty ToolPart.tool；
   // 必须按字段存在性恢复原值，不能用 truthy 判断把空名重新覆盖成占位值。

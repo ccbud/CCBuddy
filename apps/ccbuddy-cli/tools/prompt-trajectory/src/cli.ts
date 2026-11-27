@@ -14,9 +14,9 @@ interface CliOptions {
   apiKey?: string;
   apiKeyEnv?: string;
   casesDir?: string;
-  ccRequestPath?: string;
   fixturePath?: string;
   inputPath?: string;
+  ignoreToolSearchChanges?: boolean;
   modelId?: string;
   outDir?: string;
   outRoot?: string;
@@ -30,11 +30,13 @@ const command = process.argv[2];
 const options = parseOptions(process.argv.slice(3));
 
 try {
+  if (options.ignoreToolSearchChanges && command !== "derive" && command !== "model-io") {
+    throw new Error("--ignore-tool-search-changes is only supported by derive and model-io.");
+  }
   if (command === "record") {
     requireOption(options.fixturePath, "--fixture");
     requireOption(options.outDir, "--out");
     await recordPromptTrajectory({
-      ccRequestPath: options.ccRequestPath,
       fixturePath: options.fixturePath,
       outDir: options.outDir,
     });
@@ -43,7 +45,6 @@ try {
     const outDir =
       options.outDir ?? (await createTimestampedPromptDirectory(options.outRoot ?? "out"));
     await recordPromptTrajectoryFromFixture({
-      ccRequestPath: options.ccRequestPath,
       fixture: promptFixtureFromText({
         modelOptions: readModelOptions(options),
         name: "command-line-prompt",
@@ -62,7 +63,7 @@ try {
   } else if (command === "derive") {
     requireOption(options.outDir, "--out");
     await writeDerivedTrajectories({
-      ccRequestPath: options.ccRequestPath,
+      ignoreToolSearchChanges: options.ignoreToolSearchChanges,
       inputPath: options.inputPath ?? join(options.outDir, "trajectory.jsonl"),
       outDir: options.outDir,
     });
@@ -70,11 +71,14 @@ try {
     requireOption(options.inputPath, "--input");
     requireOption(options.outDir, "--out");
     await writeModelIoAnthropicTrajectory({
+      ignoreToolSearchChanges: options.ignoreToolSearchChanges,
       inputPath: options.inputPath,
       outDir: options.outDir,
       querySource: options.querySource,
     });
-    console.log(`Converted model-io JSONL into ${join(options.outDir, "anthropic_trajectory.json")}`);
+    console.log(
+      `Converted model-io JSONL into ${join(options.outDir, "anthropic_trajectory.json")}`,
+    );
   } else {
     printUsageAndExit();
   }
@@ -108,10 +112,10 @@ function parseOptions(args: readonly string[]): CliOptions {
       options.outRoot = readValue();
     } else if (arg === "--input") {
       options.inputPath = readValue();
-    } else if (arg === "--cc-request") {
-      options.ccRequestPath = readValue();
     } else if (arg === "--query-source") {
       options.querySource = readValue();
+    } else if (arg === "--ignore-tool-search-changes") {
+      options.ignoreToolSearchChanges = true;
     } else if (arg === "--model") {
       options.modelId = readValue();
     } else if (arg === "--upstream-base-url" || arg === "--base-url") {
@@ -161,10 +165,10 @@ function readModelOptions(options: CliOptions): SharedModelOptions {
 
 function printUsageAndExit(): never {
   console.error(`Usage:
-  pnpm --filter @ccbuddy/prompt-trajectory record -- --fixture <fixture.json> --out <dir> [--cc-request <path>]
+  pnpm --filter @ccbuddy/prompt-trajectory record -- --fixture <fixture.json> --out <dir>
   pnpm --filter @ccbuddy/prompt-trajectory record:prompt -- --prompt <text> --model <provider/model> --upstream-base-url <url> [--out <dir>] [--api-key-env <env>]
   pnpm --filter @ccbuddy/prompt-trajectory run:testcases -- [--cases <dir>] [--out-root out] --model <provider/model> --upstream-base-url <url> [--api-key-env <env>]
-  pnpm --filter @ccbuddy/prompt-trajectory derive -- --out <dir> [--input <trajectory.jsonl>] [--cc-request <path>]
-  pnpm --filter @ccbuddy/prompt-trajectory model-io -- --input <model-io.jsonl> --out <dir> [--query-source main_turn]`);
+  pnpm --filter @ccbuddy/prompt-trajectory derive -- --out <dir> [--input <trajectory.jsonl>] [--ignore-tool-search-changes]
+  pnpm --filter @ccbuddy/prompt-trajectory model-io -- --input <model-io.jsonl> --out <dir> [--query-source main_turn] [--ignore-tool-search-changes]`);
   process.exit(1);
 }

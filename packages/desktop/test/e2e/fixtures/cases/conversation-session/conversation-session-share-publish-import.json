@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-share-publish-import",
+  "spec": "./test/e2e/conversation-session/sharing/conversation-session-share-publish-import.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-share-publish-import.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-share-session-b-title",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "SHARE27 验证 A/B 分享状态隔离，需要不同固定标题；通用标题会使数据前置条件失效。"
+    },
+    {
+      "id": "conversation-session-share-publish-import-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "conversation-share-local-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "Share UI assertions only need a completed terminal turn before publication."
+    },
+    {
+      "id": "conversation-share-local-main-second",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "Share UI assertions only need a completed terminal turn before publication."
+    },
+    {
+      "id": "conversation-share-local-session-b",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "Share UI assertions only need a completed terminal turn before publication."
+    },
+    {
+      "id": "conversation-share-uri-file-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "The case verifies URI text passes share preflight."
+    },
+    {
+      "id": "conversation-share-uri-data-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "The case verifies URI text passes share preflight."
+    },
+    {
+      "id": "conversation-share-preview-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "The case verifies share candidate discovery and warning projection."
+    },
+    {
+      "id": "conversation-share-reject-text",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "SHARE-E2E-04 needs a plain completed turn that stays shareable after the artifact turn is deselected."
+    },
+    {
+      "id": "conversation-share-reject-preview",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "SHARE-E2E-04 needs a PDF preview card so the server can reject its upload."
+    },
+    {
+      "id": "conversation-share-artifact-limit-text",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "SHARE-E2E-05 needs a plain completed turn without artifacts so deselecting the PDF turn clears the artifact count limit."
+    },
+    {
+      "id": "conversation-share-artifact-limit-preview",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "SHARE-E2E-05 needs one PDF preview card so the selected turns exceed a zero artifact count limit."
+    }
+  ]
+}

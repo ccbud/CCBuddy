@@ -10,7 +10,7 @@
     "./cua-permission-broker": "./src/cua-permission-broker/index.ts",
     "./node": "./src/node.ts",
     "./process/processTreeTerminator": "./src/process/processTreeTerminator.ts",
-    "./storage-startup": "./src/storage-startup.ts"
+    "./storage-startup": "./src/project-storage/startup-entry.ts"
   },
   "scripts": {
     "lint": "oxlint",
@@ -22,6 +22,7 @@
     "@ccbuddy/provider": "workspace:*",
     "@ccbuddy/provider-node": "workspace:*",
     "@ccbuddy/rpc": "workspace:*",
+    "@ccbuddy/session-control": "workspace:*",
     "@ccbuddy/shared": "workspace:*",
     "@larksuiteoapi/node-sdk": "1.64.0",
     "chokidar": "4.0.3",

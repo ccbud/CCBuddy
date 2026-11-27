@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-worker-effective-selection",
+  "spec": "./test/e2e/conversation-session/models/conversation-session-worker-effective-selection.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-worker-effective-selection.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-worker-effective-selection-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "w99-explicit-parent-tool",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "确定性触发子执行；验证真实 Worker 解析和请求，不测试模型自主决策。"
+    },
+    {
+      "id": "w99-explicit-parent-final",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "Account 子请求由既有隔离 Coding Plan 数据面返回固定文本；父结果仅证明工具完成。"
+    }
+  ]
+}

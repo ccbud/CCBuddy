@@ -1,3 +1,9 @@
+import { createServiceLogger } from "@ccbuddy/services/node";
+import { createHash } from "node:crypto";
+import {
+  collectDesktopActivityNotifications,
+  type DesktopActivityNotification,
+} from "./sessionActivityNotifications.js";
 import type { IDisposable } from "@ccbuddy/rpc";
 import {
   CCBUDDY_AGENT_RUNTIME_UNAVAILABLE_CODE,
@@ -12,6 +18,8 @@ import {
   type SessionsIndexTopicWireCandidate,
   type SessionSummary,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+
+const notificationLogger = createServiceLogger("window-host-activity");
 
 const SUBSCRIBER_SCOPE = "window-controller";
 const MAX_STAGED_WIRES = 1_024;
@@ -52,6 +60,10 @@ export function createWindowHostSessionsIndexObserver(options: {
   agentService: SessionsIndexAgentService;
   target: { workspacePath: string; workspaceIdentity?: string };
   onSessionsChange: (sessions: SessionSummary[]) => void;
+  onRunStarted?: (
+    run: import("./sessionActivityNotifications.js").DesktopActivityRunStarted,
+  ) => void;
+  onNotification?: (event: DesktopActivityNotification) => void;
   onError?: (error: unknown) => void;
 }): WindowHostSessionsIndexObserver {
   const workspace = {
@@ -63,6 +75,7 @@ export function createWindowHostSessionsIndexObserver(options: {
   const workspaceKey = options.target.workspaceIdentity?.trim() || options.target.workspacePath;
   const topic = sessionsIndexTopic(workspaceKey);
   const summaries = new Map<string, SessionSummary>();
+  const notificationRuns = new Map<string, string>();
   const assembler = new TopicWireFrameAssembler(sessionsIndexTopicFrameSchema);
   let activeSubscriptionId: string | null = null;
   let cursor: { logEpoch: string; seq: number } | null = null;
@@ -108,12 +121,19 @@ export function createWindowHostSessionsIndexObserver(options: {
     assemblyTimer.unref?.();
   };
 
-  const applyFrame = (frame: SessionsIndexTopicFrame): void => {
+  const applyFrame = (frame: SessionsIndexTopicFrame, live: boolean): void => {
     if (frame.payload.kind === "snapshot") {
       summaries.clear();
+      // recovery 快照只重建基线；仍在运行的任务沿用实时开始时建立的 owner，
+      // 否则 gap 恢复后的终态会因 run_not_observed 被永久跳过。
+      const running = new Set<string>();
       for (const session of frame.payload.snapshot.sessions) {
         summaries.set(session.sessionId, session);
+        if (session.phase === "running" || session.phase === "prewarming")
+          running.add(session.sessionId);
       }
+      for (const sessionId of notificationRuns.keys())
+        if (!running.has(sessionId)) notificationRuns.delete(sessionId);
       cursor = { logEpoch: frame.payload.snapshot.logEpoch, seq: frame.toSeq };
       recovering = false;
       clearRecoveryTimer();
@@ -125,8 +145,48 @@ export function createWindowHostSessionsIndexObserver(options: {
       return;
     }
     for (const delta of frame.payload.deltas) {
-      if (delta.op === "session.upserted") summaries.set(delta.session.sessionId, delta.session);
-      else summaries.delete(delta.sessionId);
+      if (delta.op === "session.upserted") {
+        if (live && !recovering) {
+          const previous = summaries.get(delta.session.sessionId);
+          const next = delta.session;
+          const workspaceId = createHash("sha256").update(workspaceKey).digest("hex");
+          if (
+            (next.phase === "running" || next.phase === "prewarming") &&
+            previous?.phase !== "running" &&
+            previous?.phase !== "prewarming"
+          ) {
+            const runId = String(next.lastActivityAt);
+            notificationRuns.set(next.sessionId, runId);
+            options.onRunStarted?.({
+              workspace_id: workspaceId,
+              session_id: next.sessionId,
+              run_id: runId,
+            });
+          }
+          const runId = notificationRuns.get(next.sessionId);
+          for (const event of collectDesktopActivityNotifications(workspaceId, previous, next)) {
+            const fields = {
+              event_id: event.event_id,
+              session_id: event.session_id,
+              kind: event.kind,
+              run_id: runId ?? null,
+            };
+            if (!runId) {
+              notificationLogger.info(undefined, "event skipped", {
+                ...fields,
+                reason: "run_not_observed",
+              });
+              continue;
+            }
+            notificationLogger.info(undefined, "event generated", fields);
+            options.onNotification?.({ ...event, run_id: runId });
+          }
+        }
+        summaries.set(delta.session.sessionId, delta.session);
+      } else {
+        summaries.delete(delta.sessionId);
+        notificationRuns.delete(delta.sessionId);
+      }
     }
     cursor = { ...cursor, seq: frame.toSeq };
     publish();
@@ -144,7 +204,7 @@ export function createWindowHostSessionsIndexObserver(options: {
     let faulted = false;
     for (const event of events) {
       if (event.kind === "fault") faulted = true;
-      else applyFrame(event.frame);
+      else applyFrame(event.frame, event.deliveryKind === "online");
     }
     if (faulted) requestRecovery();
     scheduleAssemblyExpiry();

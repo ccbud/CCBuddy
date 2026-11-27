@@ -1,9 +1,13 @@
 {
+  "compilerOptions": {
+    "paths": { "@desktop/*": ["./src/*"] }
+  },
   "files": [],
   "references": [
     { "path": "./tsconfig.main.json" },
     { "path": "./tsconfig.host.json" },
     { "path": "./tsconfig.scheduler.json" },
+    { "path": "./tsconfig.extension-host.json" },
     { "path": "./tsconfig.preload.json" },
     { "path": "./tsconfig.renderer.json" }
   ]

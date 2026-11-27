@@ -1,0 +1,81 @@
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { materializeCCbuddyBuiltinProviderConfig, PERSONAL_PROVIDER_CONFIG_FILE_NAME, CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV, CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV, } from "@ccbuddy/provider-node";
+export const SEA_CCBUDDY_BUILTIN_PROVIDER_CONFIG_ASSET_KEY = "ccbuddy-provider/ccbuddy-builtin.json";
+export function createCliProviderRefreshReporter(_stderr = process.stderr) {
+    return {
+        onBuiltinRefreshError(_error) { },
+        onBuiltinRefreshResult(_event) { },
+    };
+}
+/** 为运行 Core 或写入模型选择的 CLI Entry 定位同一 Environment 的 Provider Config。 */
+export async function prepareCliProviderRuntimeEnv(options) {
+    if (!requiresProviderRuntime(options.argv))
+        return {};
+    const explicitCCbuddyBuiltin = options.env[CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV]?.trim();
+    const explicitPersonal = options.env[CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV]?.trim();
+    const dataBaseDir = options.dataBaseDir ?? options.env.CCBUDDY_DATA_BASE_DIR?.trim() ?? homedir();
+    if (explicitCCbuddyBuiltin && explicitPersonal) {
+        return {
+            [CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV]: explicitCCbuddyBuiltin,
+            [CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV]: explicitPersonal,
+        };
+    }
+    const ccbuddyBuiltinFilePath = explicitCCbuddyBuiltin ??
+        (await resolveBundledCCbuddyBuiltinProviderConfig({
+            dataBaseDir,
+            entrypoint: options.entrypoint ?? process.argv[1],
+            sea: options.sea ?? getSeaProviderConfigAssets(),
+        }));
+    const personalFilePath = explicitPersonal ?? join(dataBaseDir, ".ccbuddy", "v2", PERSONAL_PROVIDER_CONFIG_FILE_NAME);
+    return {
+        [CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV]: ccbuddyBuiltinFilePath,
+        [CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV]: personalFilePath,
+    };
+}
+function requiresProviderRuntime(argv) {
+    if (argv.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) {
+        return false;
+    }
+    if (argv.some((arg) => arg === "--prompt" ||
+        arg.startsWith("--prompt=") ||
+        arg === "--target" ||
+        arg.startsWith("--target="))) {
+        return true;
+    }
+    const command = argv[0];
+    if (command === undefined || command.startsWith("-"))
+        return true;
+    return (command === "tui" ||
+        command === "app-server" ||
+        command === "agent-server" ||
+        command === "login" ||
+        command === "logout");
+}
+async function resolveBundledCCbuddyBuiltinProviderConfig(input) {
+    if (input.sea?.isSea()) {
+        const content = input.sea.getAsset(SEA_CCBUDDY_BUILTIN_PROVIDER_CONFIG_ASSET_KEY, "utf8");
+        return materializeCCbuddyBuiltinProviderConfig({
+            environmentConfigRoot: join(input.dataBaseDir, ".ccbuddy", "v2"),
+            content,
+        });
+    }
+    const entrypoint = input.entrypoint?.trim();
+    if (!entrypoint)
+        throw new Error("无法定位 CLI CCbuddy Built-in Provider Config：缺少入口路径");
+    // 全局 bin 可以是软链接，随包配置必须相对真实入口定位。
+    const entryDirectory = dirname(realpathSync(resolve(entrypoint)));
+    const candidates = [
+        join(entryDirectory, "provider", "ccbuddy-builtin.json"),
+        resolve(entryDirectory, "../../../../../config/provider/ccbuddy-builtin.json"),
+    ];
+    const candidate = candidates.find((filePath) => existsSync(filePath));
+    if (candidate)
+        return candidate;
+    throw new Error(`无法定位 CLI CCbuddy Built-in Provider Config：${candidates.join(", ")}`);
+}
+function getSeaProviderConfigAssets() {
+    const getBuiltinModule = process.getBuiltinModule;
+    return getBuiltinModule?.("node:sea");
+}

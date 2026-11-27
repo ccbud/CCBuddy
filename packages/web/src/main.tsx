@@ -4,7 +4,6 @@ import {
   Root,
   CCbuddyIntlProvider,
   generateMobileDeviceFingerprint,
-  installDocumentHiddenMotionPause,
   playTaskNotificationSound,
   setStreamClientId,
   type Theme,
@@ -52,7 +51,6 @@ function resolveWebThemePreference(defaultTheme: Theme = "zai-dark"): Theme {
   document.documentElement.classList.toggle("theme-zai-dark", dark);
 }
 
-installDocumentHiddenMotionPause();
 setStreamClientId(generateMobileDeviceFingerprint());
 const root = createRoot(document.getElementById("root")!);
 const webAuthService = createWebAuthService();
@@ -212,7 +210,6 @@ function createWebPlatform(): IPlatformService {
       Promise.reject(new Error("Temporary text attachments require a desktop host")),
     onRemoteConnectionLog: () => () => {},
     onRemoteSessionClosed: () => () => {},
-    onBotRemoteWorkspaceReconnected: () => () => {},
     activateOrSetWorkspace: () => Promise.resolve({ activated: false }),
     // 普通 Web 当前只支持 server 的本地工作区，沿用已有能力边界。
     connectRemote: (options: RemoteTarget) =>

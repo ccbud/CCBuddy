@@ -1,16 +1,17 @@
-import type { Locale } from "@ccbuddy/shared";
+import { resolveLocaleFromLanguageTag, toZhOrEnLocale, type Locale } from "@ccbuddy/shared";
 import { PlatformChannels } from "@ccbuddy/shared";
 import type { PluginSandboxHandle, PluginSandboxRegisterInput } from "@ccbuddy/shared/mcp-apps";
 import {
   BrowserWindow,
   clipboard,
-  nativeImage,
+  ClipboardItem,
   MessageChannelMain,
   app,
   dialog,
   session as electronSession,
   webContents as electronWebContents,
   ipcMain,
+  nativeTheme,
   systemPreferences,
   type WebContents,
 } from "electron";
@@ -24,6 +25,7 @@ import type { PluginSandboxAssetSource } from "./protocol.js";
 import { createPluginSandboxRegistry } from "./registry.js";
 import { preparePluginSandboxSession } from "./session.js";
 import { sandboxCaptureSchema, scaleCaptureRect } from "./capture.js";
+import { DesktopBrowserScreenshotActivityController } from "@desktop/main/browserView/browserScreenshotActivityController.js";
 
 export interface PluginSandboxHost {
   clearBrowserData(): Promise<void>;
@@ -59,11 +61,47 @@ export function installPluginSandboxHost(input: {
   registry?: PluginSandboxRegistryPort;
   /** 注册表容量（缺省 64）；e2e L05 用 1 验证配额拒绝。 */
   registryMaxEntries?: number;
+  /** 当前界面语言；权限确认框跟随界面语言而不是系统语言（未注入时才回退系统语言）。 */
+  getApplicationLocale?: () => Locale;
 }): PluginSandboxHost {
   if (installedHost) return installedHost;
   const detachByKey = new Map<string, () => void>();
   const watchedOwners = new Set<number>();
   const guests = new Map<string, WebContents>();
+  const activity = new DesktopBrowserScreenshotActivityController({
+    fromId: (id) => BrowserWindow.fromId(id),
+    fromWebContentsId: (id) => electronWebContents.fromId(id) ?? null,
+    log: (message) => input.logger?.warn(message),
+  });
+  const executions = new Map<string, { lease?: ReturnType<typeof activity.acquire> }>();
+  const releaseExecution = (sandboxId: string) => {
+    executions.get(sandboxId)?.lease?.release();
+    executions.delete(sandboxId);
+  };
+  const syncExecution = (sandboxId: string) => {
+    const state = executions.get(sandboxId);
+    const guest = guests.get(sandboxId);
+    if (!state || state.lease || !guest || guest.isDestroyed() || guest.isLoadingMainFrame())
+      return;
+    const owner = guest.hostWebContents;
+    const win = owner && BrowserWindow.fromWebContents(owner);
+    if (!win) return;
+    state.lease = activity.acquire({
+      windowId: win.id,
+      webContentsId: guest.id,
+      requestId: sandboxId,
+      reason: "plugin-execution",
+    });
+    // 隐藏页面仅需低频推进；不能全局关闭 backgroundThrottling，否则同窗空闲 guest 也会跑帧。
+    state.lease?.markPrepared?.();
+    state.lease?.invalidated?.addEventListener(
+      "abort",
+      () => {
+        if (executions.get(sandboxId) === state) releaseExecution(sandboxId);
+      },
+      { once: true },
+    );
+  };
   const stopping = new WeakMap<WebContents, Promise<void>>();
   const partitions = new Set<string>();
   let clearing = false;
@@ -101,6 +139,7 @@ export function installPluginSandboxHost(input: {
   // partition 持久且按可信 App 身份隔离：dispose 关闭 guest 和端口，
   // 不撤 protocol handler、不清存储；存储清理走已有清除所有数据入口。
   const onDispose = (record: PluginSandboxRecord) => {
+    releaseExecution(record.sandboxId);
     detachByKey.get(record.sandboxId)?.();
     detachByKey.delete(record.sandboxId);
     const guest = guests.get(record.sandboxId);
@@ -118,8 +157,9 @@ export function installPluginSandboxHost(input: {
     });
 
   // 页面浏览器权限闸门：确认框由 main 原生弹出，父窗口是登记该沙箱的宿主窗口，页面无法伪造。
+  // 确认框文案只有中英两套：中文界面用中文，其它界面语言用英文。
   const resolveLocale = (): Locale =>
-    app.getLocale().toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+    toZhOrEnLocale(input.getApplicationLocale?.() ?? resolveLocaleFromLanguageTag(app.getLocale()));
   const permissions = createPluginSandboxPermissionGate({
     registry,
     async prompt({ record, permissions: pending }) {
@@ -199,6 +239,8 @@ export function installPluginSandboxHost(input: {
         registry,
         assets,
         permissions,
+        // 应用主题经 setTitleBarTheme 同步到 nativeTheme（跟随系统时为 system），这里读到的就是当前生效主题。
+        resolveInitialTheme: () => (nativeTheme.shouldUseDarkColors ? "dark" : "light"),
         logger: input.logger,
       });
       // 每个沙箱登记一次一条，供排 renderer / host / main 三段握手用。
@@ -225,8 +267,14 @@ export function installPluginSandboxHost(input: {
         return;
       }
       guests.set(sandboxId, guest);
+      // dom-ready / did-finish-load 回调时仍可能处于 loading，早到的活动请求会被上面的守卫跳过。
+      // 以真正停止加载的事件承接待处理请求，不能依赖插件或 session 再发一次活动请求。
+      guest.on("did-stop-loading", () => syncExecution(sandboxId));
       guest.once("destroyed", () => {
-        if (guests.get(sandboxId) === guest) guests.delete(sandboxId);
+        if (guests.get(sandboxId) === guest) {
+          releaseExecution(sandboxId);
+          guests.delete(sandboxId);
+        }
       });
       // H14：宿主 webContents 销毁（窗口关闭 / 崩溃）时释放它名下全部登记；每个 owner 只挂一次。
       if (!watchedOwners.has(hostWebContents.id)) {
@@ -253,6 +301,31 @@ export function installPluginSandboxHost(input: {
   };
 
   ipcMain.handle(PlatformChannels.PluginSandboxOwnerWebContentsId, (event) => event.sender.id);
+  ipcMain.handle(
+    PlatformChannels.PluginSandboxExecutionActive,
+    (event, sandboxId: unknown, initId: unknown, active: unknown) => {
+      if (
+        typeof sandboxId !== "string" ||
+        typeof initId !== "number" ||
+        typeof active !== "boolean"
+      )
+        throw new Error("Invalid sandbox execution request");
+      const record = registry.get(sandboxId);
+      if (
+        !record ||
+        record.ownerWebContentsId !== event.sender.id ||
+        record.initId !== initId ||
+        record.contentKind === "gen-ui"
+      )
+        throw new Error("Sandbox execution is no longer available");
+      if (!active) {
+        releaseExecution(sandboxId);
+        return;
+      }
+      if (!executions.has(sandboxId)) executions.set(sandboxId, {});
+      syncExecution(sandboxId);
+    },
+  );
   ipcMain.handle(PlatformChannels.PluginSandboxCopyImage, async (event, value: unknown) => {
     const request = sandboxCaptureSchema.parse(value);
     const record = registry.get(request.sandboxId);
@@ -271,11 +344,12 @@ export function installPluginSandboxHost(input: {
     // 截图期间页面可能释放或换代；旧请求不得把错误页面的图像写入剪贴板。
     if (!isCurrent()) throw new Error("Sandbox capture is no longer available");
     const cropped = captured.crop(scaleCaptureRect(request, captured.getSize()));
-    clipboard.writeImage(
-      process.platform === "win32"
-        ? nativeImage.createFromBitmap(cropped.toBitmap(), cropped.getSize())
-        : cropped,
-    );
+    // Electron 44 移除同步 writeImage；以 PNG 保留图像编码，等待原生写入后才确认复制成功。
+    await clipboard.write([
+      new ClipboardItem({
+        "image/png": new Blob([Uint8Array.from(cropped.toPNG())], { type: "image/png" }),
+      }),
+    ]);
   });
   ipcMain.handle(
     PlatformChannels.PluginSandboxDispose,

@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import type { PluginSandboxRegisterInput } from "@ccbuddy/shared/mcp-apps";
 import { describe, expect, it, vi } from "vitest";
 import { createPluginSandboxProtocolHandler } from "./protocol.js";
 import { createPluginSandboxRegistry } from "./registry.js";
@@ -7,16 +8,12 @@ const fragment = `<html><head><!--__CCBUDDY_GEN_UI_STYLES__--><script src="__CCB
 function fixture(kind: "gen-ui" | "mcp-app", html = fragment, missing = false) {
   const registry = createPluginSandboxRegistry();
   const instance = { runtimeId: "a", generation: 1, token: "one", appIdentity: "a".repeat(64) };
-  const handle = registry.register({
-    instance,
-    contentKind: kind,
-    ownerWebContentsId: 1,
-    workspacePath: "/repo",
-    sessionId: "s",
-    scopeId: "view",
-    html,
-    ...(kind === "mcp-app" ? { pluginId: "p", serverName: "m" } : {}),
-  });
+  const base = { instance, ownerWebContentsId: 1, workspacePath: "/repo", scopeId: "view", html };
+  const input: PluginSandboxRegisterInput =
+    kind === "gen-ui"
+      ? { ...base, contentKind: "gen-ui", sessionId: "s" }
+      : { ...base, sessionId: "s", pluginId: "p", serverName: "m" };
+  const handle = registry.register(input);
   const resources: Record<string, string> = {
     "visualize.css": "/* preset styles */",
     "visualize.html": "<!--__INLINE_VISUALIZATION_FRAGMENT__--><script>innerKit()</script>",

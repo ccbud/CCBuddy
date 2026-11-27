@@ -6,8 +6,8 @@ import { z } from "zod";
 import { toToolJsonSchema } from "./json-schema.js";
 
 const nonEmptyString = z.string().trim().min(1);
-// contracts 仍使用 Zod 3，而 shared protocol 使用 Zod 4；跨版本 schema 实例不可组合。
-// 字段契约与 shared ModelSelection 保持逐叶一致，后续统一 Zod 版本后删除本地声明。
+// 字段契约与 shared ModelSelection 保持逐叶一致。本地声明来自 contracts 使用 zod 3 的时期；两边现在是同一个
+// zod 4，改为直接复用 shared schema 会改动 tools 段字节，留作后续。
 const cronModelSelectionSchema = z
   .object({
     providerId: nonEmptyString,
@@ -235,6 +235,11 @@ export const CronListInputSchema = z.object({}).strict();
 export type CronListInput = z.infer<typeof CronListInputSchema>;
 export const CronListInputJsonSchema = toToolJsonSchema(CronListInputSchema);
 
+// CronPauseSelf 没有任何模型可控输入：暂停目标只能是执行器注入的本轮 automationId。
+export const CronPauseSelfInputSchema = z.object({}).strict();
+export type CronPauseSelfInput = z.infer<typeof CronPauseSelfInputSchema>;
+export const CronPauseSelfInputJsonSchema = toToolJsonSchema(CronPauseSelfInputSchema);
+
 export const CronDeleteInputSchema = z
   .object({
     id: nonEmptyString.describe("Automation id returned by CronCreate or CronList"),
@@ -244,9 +249,9 @@ export type CronDeleteInput = z.infer<typeof CronDeleteInputSchema>;
 export const CronDeleteInputJsonSchema = toToolJsonSchema(CronDeleteInputSchema);
 
 /**
- * 自定义重复规则的 contract 层镜像 schema（zod v3）。
- * 与 @ccbuddy/shared 的 CCbuddyAutomationScheduleRule 结构同步——此处不 import shared，
- * 避免 agent contracts 的 zod v3 与 shared zod v4 交叉依赖（同 browser-control 镜像约定）。
+ * 自定义重复规则的 contract 层镜像 schema。
+ * 与 @ccbuddy/shared 的 CCbuddyAutomationScheduleRule 结构同步（镜像来自 contracts 使用 zod 3 的时期；两边现在是
+ * 同一个 zod 4，改为直接复用会改动 tools 段字节，留作后续）。
  * cronExpr 保留为兼容展示，调度以本字段为权威；会话侧长间隔 carrier 归一化后由本字段承载。
  */
 export const CronAutomationScheduleRuleSchema = z
@@ -322,3 +327,13 @@ export const CronDeleteOutputSchema = z
   .strict();
 export type CronDeleteOutput = z.infer<typeof CronDeleteOutputSchema>;
 export const CronDeleteOutputJsonSchema = toToolJsonSchema(CronDeleteOutputSchema);
+
+export const CronPauseSelfOutputSchema = z
+  .object({
+    paused: z.boolean(),
+    id: nonEmptyString,
+    message: nonEmptyString,
+  })
+  .strict();
+export type CronPauseSelfOutput = z.infer<typeof CronPauseSelfOutputSchema>;
+export const CronPauseSelfOutputJsonSchema = toToolJsonSchema(CronPauseSelfOutputSchema);

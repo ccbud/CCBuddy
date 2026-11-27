@@ -4,8 +4,10 @@ import {
   getModelProviderFamilySpec,
   resolveModelProviderFamilyIdByProviderId,
 } from "@ccbuddy/shared";
-import { thoughtLevelLabelId } from "@/chat-input-toolbar/thoughtLevelOptions.js";
-import { useWorkflowSubagentModelProviderName } from "@/hooks/useWorkflowSubagentModelProviderName.js";
+// 分享页通过 ToolPresentation 复用本渲染器；从 thoughtLevelOptions 引入会经 display → CodingPlan 拉进
+// @ccbuddy/provider 闭包，导致 web-share 构建失败，因此直接依赖纯词表模块。
+import { thoughtLevelLabelId } from "@/chat-input-toolbar/thoughtLevelLabels.js";
+import { useToolPresentationCapabilities } from "@/ToolCallBlocks/presentationCapabilities.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
 import { FallbackToolCallBlock } from "@/ToolCallBlocks/renderers/fallback.js";
@@ -253,7 +255,7 @@ function groupModelsByProvider(models: ListModelsEntryView[]): ListModelsGroup[]
 export function ListModelsToolCallBlock(context: ToolCallBlockRenderContext) {
   const { intl } = useCCbuddyIntl();
   const { toolCall } = context.toolCallNode;
-  const providerName = useWorkflowSubagentModelProviderName(context.workspacePath);
+  const providerName = useToolPresentationCapabilities().modelProviderName;
 
   const result = useMemo(() => readListModelsResult(toolCall), [toolCall]);
 

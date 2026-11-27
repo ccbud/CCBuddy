@@ -13,8 +13,9 @@ import type {
   CommandResult,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import type { SteerTurnOptions, SubmitPromptOptions } from "../../../app/types.js";
-import { runWithSessionResidencyFinalization } from "../../../ccbuddy-protocol/session-residency.js";
+import { runWithSessionResidencyFinalization } from "../../../session-execution/index.js";
 import { inputIntentMetadata } from "../input-intent.js";
+import { MODEL_UNAVAILABLE_REASON_CODE, resolveModelUnavailableMessage } from "../prompt-turn.js";
 import { requireRecord } from "../record-access.js";
 import type { V4CommandCoreHost, V4SessionRecordView } from "../types.js";
 import {
@@ -32,7 +33,8 @@ export class V4GoalCompactRejectedError extends Error {
       | "compactOperationLock"
       | "restoreWarning"
       | "guard.planGoalMutuallyExclusive"
-      | "emptyObjective",
+      | "emptyObjective"
+      | typeof MODEL_UNAVAILABLE_REASON_CODE,
     message: string,
   ) {
     super(message);
@@ -46,7 +48,7 @@ export class V4GoalCompactRejectedError extends Error {
 const manualCompactControllers = new WeakSet<AbortController>();
 
 /**
- * compact：手动上下文压缩（v4 payload 为空对象，无 instructions 变体）。
+ * compact：手动上下文压缩，模型选择固定在命令接收边界，无 instructions 变体。
  *
  * barrier 语义：
  * 1. running/goal verifier/goal continuation/tool work → typed compact intent 入 FIFO。
@@ -80,12 +82,19 @@ async function compact(
     throw new V4GoalCompactRejectedError("restoreWarning", record.restoreWarning.message);
   }
 
+  // 旧 compact 没有携带选择，导致菜单 B 被忽略；旧客户端也在此固定会话选择，
+  // 不能等模型就绪或排队结束后再读可变 Session。只取模型，不消费草稿模式/Plan。
+  const payload = envelope.payload as CommandPayloadMap["compact"];
+  const modelSelection = structuredClone(
+    resolveSubmittedExecutionState(record, payload).modelSelection,
+  );
   const routingMode = host.getInputRoutingMode?.(record.app.sessionId) ?? null;
   const busy = Boolean(record.activeAbortController) || Boolean(activeTurn);
   if (busy || routingMode === "enqueue" || routingMode === "guide" || routingMode === "choice") {
     const intent = inputIntentMetadata(envelope, {
       requestedDelivery: "queue",
       text: "/compact",
+      modelSelection,
     });
     const queueOptions = {
       commandKind: "compact" as const,
@@ -113,7 +122,14 @@ async function compact(
     return undefined;
   }
 
-  await startManualCompact(host, record, envelope.commandId);
+  await startManualCompact(host, record, {
+    inputId: envelope.commandId,
+    intent: inputIntentMetadata(envelope, {
+      requestedDelivery: "startNow",
+      text: "/compact",
+      modelSelection,
+    }),
+  });
   return undefined;
 }
 
@@ -121,15 +137,19 @@ async function compact(
 export async function startManualCompact(
   host: V4CommandCoreHost,
   record: V4SessionRecordView,
-  inputId: string,
-  foregroundPromotionLeaseId?: string,
+  params: {
+    inputId: string;
+    intent: NonNullable<SubmitPromptOptions["intent"]>;
+    foregroundPromotionLeaseId?: string;
+  },
 ): Promise<void> {
   if (record.restoreWarning) {
     throw new V4GoalCompactRejectedError("restoreWarning", record.restoreWarning.message);
   }
-  // 冷恢复后用户可能直接触发 /compact（不先经 sendText），compact 的后台模型请求
-  // 同样需要模型就绪检查——钩子（见 types.ts）。
-  await host.ensureModelReady?.(record);
+  // 冷恢复后用户可能直接触发 /compact（不先经 sendText），排队的 compact 提升时也不再经过
+  // sendText 的 preflight；与 sendText 共用同一份模型准入，模型不在 Registry 时在接纳前拒绝，
+  // 不让 Core 建模失败后以 Registry 内部文案结束 compact。
+  rejectUnavailableModel(record, params.intent.modelSelection);
   const abortController = new AbortController();
   // compact 的真实模型请求在后台执行，但 Stop 仍通过
   // record.activeAbortController 中断。不登记 controller，压缩中的请求会跑到自然结束。
@@ -137,9 +157,8 @@ export async function startManualCompact(
   manualCompactControllers.add(abortController);
   void runWithSessionResidencyFinalization(record, () =>
     runCompactTurnInBackground(host, record, {
+      ...params,
       abortController,
-      foregroundPromotionLeaseId,
-      inputId,
     }),
   ).catch(() => {
     // 后台 compact 的错误经事件流（CompactStarted/终态 marker）降级上报；兜底防 unhandled rejection。
@@ -153,6 +172,7 @@ async function runCompactTurnInBackground(
     abortController: AbortController;
     foregroundPromotionLeaseId?: string;
     inputId: string;
+    intent: NonNullable<SubmitPromptOptions["intent"]>;
   },
 ): Promise<void> {
   const startedAt = Date.now();
@@ -167,6 +187,7 @@ async function runCompactTurnInBackground(
     await record.app.submitPrompt("/compact", {
       abortSignal: params.abortController.signal,
       inputId: params.inputId,
+      intent: params.intent,
     });
   } catch (error) {
     lifecycleStatus = params.abortController.signal.aborted ? "cancelled" : "failed";
@@ -316,6 +337,11 @@ export async function applyGoalCommand(
     intent?: SteerTurnOptions["intent"];
   },
 ): Promise<void> {
+  // 目标写入后会立刻后台续跑；模型准入必须先于 held queue 裁决与 setTarget，避免先改目标再拒绝。
+  rejectUnavailableModel(
+    record,
+    params.intent?.modelSelection ?? record.app.runtime?.getSessionModelSelection?.(),
+  );
   // held choice 裁决（同 sendText；sendGoalCommand）。
   await applyHeldQueueDisposition(
     host,
@@ -411,6 +437,8 @@ async function resumeGoal(
       "Plan and Goal cannot be active at the same time.",
     );
   }
+  // 恢复目标后会用会话常驻模型续跑；同样先于状态写入做模型准入。
+  rejectUnavailableModel(record, record.app.runtime?.getSessionModelSelection?.());
   const target = await record.app.updateTargetStatus("active");
   if (!target) {
     host.logger?.info?.("v4 resumeGoal without target, noop", {
@@ -426,10 +454,19 @@ async function resumeGoal(
   return undefined;
 }
 
+/** goal/compact 组内统一的模型准入拒绝；判定本体在 prompt-turn 的模型准入，与 sendText 完全一致。 */
+function rejectUnavailableModel(
+  record: V4SessionRecordView,
+  selection: Parameters<typeof resolveModelUnavailableMessage>[1],
+): void {
+  const message = resolveModelUnavailableMessage(record, selection);
+  if (message) throw new V4GoalCompactRejectedError(MODEL_UNAVAILABLE_REASON_CODE, message);
+}
+
 /**
  * goal 变更后的续跑（旧 continueGoalAfterChange 搬运，set/resume 两处共用）：
  * plan 模式或已有 active turn 时不续跑（只落库目标，用户后续显式推进）；
- * 否则模型就绪检查 → 上锁 → 后台 continueActiveTarget。
+ * 否则上锁 → 后台 continueActiveTarget。模型准入已在目标写入前完成。
  */
 async function continueGoalAfterChange(
   host: V4CommandCoreHost,
@@ -445,7 +482,6 @@ async function continueGoalAfterChange(
   // continueActiveTarget 是 App 的必选能力；能否继续只取决于当前模式和是否已有活跃 turn。
   const canContinue = !isPlanMode && !record.activeAbortController;
   if (canContinue) {
-    await host.ensureModelReady?.(record);
     const abortController = new AbortController();
     record.activeAbortController = abortController;
     void runWithSessionResidencyFinalization(record, () =>

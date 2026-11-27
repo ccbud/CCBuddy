@@ -2,67 +2,125 @@ version: 1
 
 # 存量模块先标记为 legacy；新模块或完成迁移的模块设置 managed: true。
 modules:
-  - id: session-lifecycle
-    roots: [apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle]
+  # windows-runtime-host：由 architecture:adopt 登记
+  - id: windows-runtime-host
+    roots:
+      - packages/services/src/windows-runtime-host
     managed: true
-    requires: [shared]
+    requires: [services]
     publicEntrypoints:
-      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle/index.ts
-      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle/contract.ts
-    layers: { app: . }
+      - packages/services/src/windows-runtime-host/index.ts
+      - packages/services/src/windows-runtime-host/contract.ts
+    layers:
+      adapters: .
+    owner: runtime
+  - id: session-control
+    roots: [packages/session-control/src, packages/session-control/vitest.config.ts]
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/session-control/src/contract.ts
+      - packages/session-control/src/application/cli/index.ts
+      - packages/session-control/src/application/app/index.ts
+      - packages/session-control/src/testing/index.ts
+    layers: { contract: contract, domain: domain, app: application }
     owner: conversation
-  - id: protocol-session-data
-    roots: [packages/shared/src/ccbuddy-protocol-v4/session-data]
+  - id: app-control-protocol
+    roots: [packages/shared/src/app-control]
     managed: true
-    requires: []
+    requires: [session-control]
     publicEntrypoints:
-      - packages/shared/src/ccbuddy-protocol-v4/session-data/index.ts
-      - packages/shared/src/ccbuddy-protocol-v4/session-data/contract.ts
-    layers: { domain: . }
-    owner: persistence
-  - id: cli-session-data-files
-    roots: [apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files]
+      - packages/shared/src/app-control/index.ts
+      - packages/shared/src/app-control/contract.ts
+    layers: { contract: . }
+    owner: conversation
+  - id: app-control
+    roots: [packages/services/src/app-control]
     managed: true
-    requires: []
+    requires:
+      [
+        session-control,
+        shared,
+        services,
+        session,
+        project,
+        project-storage,
+        provider,
+        remote-projects,
+      ]
     publicEntrypoints:
-      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files/index.ts
-      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files/contract.ts
+      - packages/services/src/app-control/index.ts
+      - packages/services/src/app-control/contract.ts
+      - packages/services/src/app-control/discovery-directory.ts
     layers: { adapters: . }
-    owner: persistence
-  - id: cli-session-data
-    roots: [apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data]
+    owner: conversation
+  - id: cli-session-control-tools
+    roots: [apps/ccbuddy-cli/packages/core/src/tool/session-control]
+    managed: true
+    requires: [session-control, ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/tool/session-control/contract.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/session-control/index.ts
+    layers: { app: . }
+    owner: agent
+  - id: cli-session-control-bootstrap
+    roots: [apps/ccbuddy-cli/packages/bootstrap/src/session-control]
+    managed: true
+    requires:
+      [session-control, app-control-protocol, shared, ccbuddy-cli, cli-session-control-tools]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-control/contract.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-control/index.ts
+    layers: { adapters: . }
+    owner: agent
+  - id: cli-session-control-runtime
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/cli-session-control
+      - apps/ccbuddy-cli/packages/bootstrap/tests/cli-session-control/vitest.config.ts
+    managed: true
+    requires: [session-control, ccbuddy-cli, cli-active-transcript]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/cli-session-control/contract.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/cli-session-control/index.ts
+    layers: { adapters: . }
+    owner: agent
+  - id: cli-active-transcript
+    roots: [apps/ccbuddy-cli/packages/bootstrap/src/active-transcript]
     managed: true
     requires: [shared, ccbuddy-cli]
     publicEntrypoints:
-      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data/index.ts
-      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data/contract.ts
-    layers: { app: . }
-    owner: persistence
-  - id: project
-    roots: [packages/services/src/project]
-    managed: true
-    requires: [project-storage, services, shared]
-    publicEntrypoints:
-      - packages/services/src/project/index.ts
-      - packages/services/src/project/contract.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/active-transcript/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/active-transcript/contract.ts
     layers: { adapters: . }
     owner: conversation
-  - id: sqlite-migrations
-    roots: [packages/shared/src/sqlite-migrations]
+  - id: cli-session-fork-commit
+    roots: [apps/ccbuddy-cli/packages/core/src/runtime/session-fork-commit]
     managed: true
-    requires: []
+    requires: [shared, ccbuddy-cli]
     publicEntrypoints:
-      - packages/shared/src/sqlite-migrations/index.ts
-      - packages/shared/src/sqlite-migrations/contract.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/session-fork-commit/index.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/session-fork-commit/contract.ts
+    layers: { app: . }
+    owner: conversation
+  - id: cli-conversation-materialization
+    roots: [apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol-v4/materialization]
+    managed: true
+    requires: [shared, ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol-v4/materialization/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol-v4/materialization/contract.ts
     layers: { adapters: . }
-    owner: persistence
-  - id: project-storage
-    roots: [packages/services/src/project-storage]
+    owner: conversation
+  - id: app-control-navigation
+    roots: [packages/desktop/src/app-control-navigation]
     managed: true
-    requires: [shared, sqlite-migrations]
+    requires: [app-control, shared, desktop, services]
     publicEntrypoints:
-      - packages/services/src/project-storage/index.ts
-      - packages/services/src/project-storage/contract.ts
+      - packages/desktop/src/app-control-navigation/contract.ts
+      - packages/desktop/src/app-control-navigation/index.ts
+      - packages/desktop/src/app-control-navigation/host.ts
+      - packages/desktop/src/app-control-navigation/main.ts
+      - packages/desktop/src/app-control-navigation/renderer.ts
     layers: { adapters: . }
     owner: conversation
   - id: rpc
@@ -90,8 +148,14 @@ modules:
   - id: session
     roots: [packages/services/src/session]
     managed: false
-    requires: [shared, project-storage]
-    publicEntrypoints: [packages/services/src/session/contract.ts]
+    requires: [shared]
+    publicEntrypoints:
+      - packages/services/src/session/contract.ts
+      - packages/services/src/session/taskIndexRepo.ts
+      - packages/services/src/session/automationRepo.ts
+      - packages/services/src/session/offPeakTaskRepo.ts
+      - packages/services/src/session/tasksDatabase/migrations.ts
+      - packages/services/src/session/tasksDatabase/prepared.ts
     owner: conversation
   - id: storage
     roots: [packages/services/src/storage]
@@ -128,9 +192,239 @@ modules:
   - id: e2e-report
     roots: [packages/e2e-report/src]
     managed: false
+  # design-runtime：内置浏览器设计模式注入页面的运行时（docs/browser-use/2026-11-03-browser-design-mode-spec.md）
+  - id: design-runtime
+    roots: [packages/design-runtime/src]
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/design-runtime/src/index.ts
+      - packages/design-runtime/src/contract.ts
+    layers: { app: "." }
+    owner: browser
   - id: ccbuddy-cli
     roots: [apps/ccbuddy-cli]
     managed: false
+  # sqlite-migrations：由 architecture:adopt 登记
+  # Agent runtime 退出诊断：desktop 稳定性上报与 Host 退出提示共用的纯函数判定。
+  - id: agent-crash-diagnostic
+    roots: [packages/shared/src/agent-crash-diagnostic]
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/agent-crash-diagnostic/index.ts
+      - packages/shared/src/agent-crash-diagnostic/contract.ts
+    layers: { app: "." }
+    owner: desktop
+  - id: conversation-telemetry-engine
+    roots: [packages/shared/src/conversation-telemetry, packages/shared/vitest.config.ts]
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/shared/src/conversation-telemetry/index.ts
+      - packages/shared/src/conversation-telemetry/contract.ts
+      - packages/shared/src/conversation-telemetry/messageTelemetry.ts
+      - packages/shared/src/conversation-telemetry/providerTelemetryIdentity.ts
+      - packages/shared/src/conversation-telemetry/remoteTelemetryEvent.ts
+    layers: { app: "." }
+    owner: conversation
+  - id: conversation-telemetry-service
+    roots: [packages/services/src/conversation-telemetry]
+    managed: true
+    requires: [shared, services, rpc, conversation-telemetry-engine]
+    publicEntrypoints:
+      - packages/services/src/conversation-telemetry/remoteConversationTelemetry.ts
+      - packages/services/src/conversation-telemetry/contract.ts
+    layers: { app: "." }
+    owner: conversation
+  - id: sqlite-migrations
+    roots:
+      - packages/shared/src/sqlite-migrations
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/sqlite-migrations/index.ts
+      - packages/shared/src/sqlite-migrations/contract.ts
+    layers:
+      adapters: .
+    owner: persistence
+  # project-storage：由 architecture:adopt 登记
+  - id: project-storage
+    roots:
+      - packages/services/src/project-storage
+      - packages/services/src/session/tasksDatabase
+    managed: true
+    requires:
+      - shared
+      - sqlite-migrations
+      - services
+      - session
+      - task-groups
+    publicEntrypoints:
+      - packages/services/src/session/tasksDatabase/migrations.ts
+      - packages/services/src/session/tasksDatabase/prepared.ts
+      - packages/services/src/project-storage/index.ts
+      - packages/services/src/project-storage/contract.ts
+      - packages/services/src/project-storage/startup.ts
+      - packages/services/src/project-storage/startup-entry.ts
+    layers:
+      adapters: .
+    owner: conversation
+  # project：由 architecture:adopt 登记
+  - id: project
+    roots:
+      - packages/services/src/project
+    managed: true
+    requires: [project-storage, services, shared]
+    publicEntrypoints:
+      - packages/services/src/project/index.ts
+      - packages/services/src/project/contract.ts
+    layers:
+      adapters: .
+    owner: conversation
+  # task-facts：由 architecture:adopt 登记
+  - id: task-facts
+    roots:
+      - packages/services/src/task-facts
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/services/src/task-facts/index.ts
+      - packages/services/src/task-facts/contract.ts
+      - packages/services/src/task-facts/repairSubagentTaskIndex.ts
+    layers:
+      app: .
+    owner: conversation
+  # project-sidebar：由 architecture:adopt 登记
+  - id: project-sidebar
+    roots:
+      - packages/ui/src/project-sidebar
+    managed: true
+    requires:
+      - resource-manager
+      - services
+      - shared
+      - ui
+      - conversation-workspace-target
+      - web-remote-control-ui
+      - remote-connection-flow
+      - data-sync
+      - managed-worktree-ui
+      # 分组会话行复用同一张悬停卡片（docs/ui/task-row-hover-details.md）。
+      - task-row-hover
+      # 主导航挂 nav.primary 插槽组件（docs/plugins/extension-host.md §16.4）。
+      - extension-slots
+    publicEntrypoints:
+      - packages/ui/src/project-sidebar/index.tsx
+      - packages/ui/src/project-sidebar/contract.ts
+      - packages/ui/src/project-sidebar/remote-project-connection.ts
+      - packages/ui/src/project-sidebar/useSavedWorkflowProjectOptions.ts
+      - packages/ui/src/project-sidebar/RemoteProjectMenu.tsx
+      - packages/ui/src/project-sidebar/WorkspaceDragOverlay.tsx
+      - packages/ui/src/project-sidebar/useRemoteProjectConnectionPresentation.ts
+      - packages/ui/src/project-sidebar/OfflineRemoteProjectRows.tsx
+      - packages/ui/src/project-sidebar/RemoteConversationDisconnected.tsx
+    layers:
+      contract: contract.ts
+      ui: .
+    owner: conversation
+  # remote-projects：由 architecture:adopt 登记
+  - id: remote-projects
+    roots:
+      - packages/services/src/remote-projects
+    managed: true
+    requires: [services, shared, project-storage]
+    publicEntrypoints:
+      - packages/services/src/remote-projects/index.ts
+      - packages/services/src/remote-projects/contract.ts
+    layers:
+      adapters: .
+    owner: conversation
+  # startup-storage：由 architecture:adopt 登记
+  - id: startup-storage
+    roots:
+      - packages/services/src/startup-storage
+    managed: true
+    requires:
+      - sqlite-migrations
+    publicEntrypoints:
+      - packages/services/src/startup-storage/index.ts
+      - packages/services/src/startup-storage/contract.ts
+    layers:
+      adapters: .
+    owner: persistence
+  # workspace-config-catalog：由 architecture:adopt 登记
+  - id: workspace-config-catalog
+    roots:
+      - packages/ui/src/workspace-config-catalog
+    managed: true
+    requires: [services, shared, ui]
+    publicEntrypoints:
+      - packages/ui/src/workspace-config-catalog/index.ts
+      - packages/ui/src/workspace-config-catalog/contract.ts
+    layers:
+      contract: contract.ts
+      app: catalog.ts
+      ui: .
+    owner: configuration
+  # project-catalog：由 architecture:adopt 登记
+  - id: project-catalog
+    roots:
+      - packages/services/src/project-catalog
+    managed: true
+    requires: [project, remote-projects]
+    publicEntrypoints:
+      - packages/services/src/project-catalog/index.ts
+      - packages/services/src/project-catalog/contract.ts
+    layers:
+      contract: contract.ts
+      domain: selection-id.ts
+      app: .
+    owner: conversation
+  # bot-project-runtime：由 architecture:adopt 登记
+  - id: bot-project-runtime
+    roots:
+      - packages/services/src/bot-project-runtime
+    managed: true
+    requires: [services, shared, remote-projects]
+    publicEntrypoints:
+      - packages/services/src/bot-project-runtime/index.ts
+      - packages/services/src/bot-project-runtime/contract.ts
+    layers:
+      contract: contract.ts
+      app: .
+    owner: conversation
+  # project-workspace-navigation：由 architecture:adopt 登记
+  - id: project-workspace-navigation
+    roots:
+      - packages/services/src/project-workspace-navigation
+    managed: true
+    requires: [project, project-catalog, remote-projects, shared]
+    publicEntrypoints:
+      - packages/services/src/project-workspace-navigation/index.ts
+      - packages/services/src/project-workspace-navigation/contract.ts
+    layers:
+      contract: contract.ts
+      app: .
+    owner: conversation
+  # conversation-workspace-target：由 architecture:adopt 登记
+  - id: conversation-workspace-target
+    roots:
+      - packages/ui/src/conversation-workspace-target
+    managed: true
+    requires: [shared, ui]
+    publicEntrypoints:
+      - packages/ui/src/conversation-workspace-target/index.ts
+      - packages/ui/src/conversation-workspace-target/contract.ts
+      - packages/ui/src/conversation-workspace-target/purpose.ts
+      - packages/ui/src/conversation-workspace-target/sourceIdentity.ts
+      - packages/ui/src/conversation-workspace-target/workbenchTarget.ts
+      - packages/ui/src/conversation-workspace-target/usePluginCreator.ts
+      - packages/ui/src/conversation-workspace-target/PluginAddMenu.tsx
+    layers:
+      contract: contract.ts
+      app: .
+    owner: conversation
 
   - id: gen-ui-protocol
     roots: [packages/shared/src/gen-ui]
@@ -182,13 +476,16 @@ modules:
       domain: "."
     owner: plugin
   - id: mcp-ui
-    roots: [apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/mcp-ui]
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/mcp-ui
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/sample-model.ts
     managed: true
     requires: [ccbuddy-cli, shared, mcp-apps-protocol]
     publicEntrypoints:
       [
         apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/mcp-ui/index.ts,
         apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/mcp-ui/contract.ts,
+        apps/ccbuddy-cli/packages/core/src/runtime/methods/sample-model.ts,
       ]
     layers:
       app: "."
@@ -231,7 +528,7 @@ modules:
   - id: plugin-ui
     roots: [packages/ui/src/plugin-ui]
     managed: true
-    requires: [ui, shared, mcp-apps-protocol, plugin-ui-bridge, plugin-sandbox]
+    requires: [ui, shared, services, mcp-apps-protocol, plugin-ui-bridge, plugin-sandbox]
     publicEntrypoints:
       [
         packages/ui/src/plugin-ui/index.ts,
@@ -245,16 +542,1798 @@ modules:
       ui: components
     layerOrder: [domain, app, adapters, ui]
     owner: plugin
+  # remote-connection-flow：由 architecture:adopt 登记
+  - id: remote-connection-flow
+    roots:
+      - packages/ui/src/remote-connection-flow
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/remote-connection-flow/index.ts
+      - packages/ui/src/remote-connection-flow/contract.ts
+      - packages/ui/src/remote-connection-flow/ui/RemoteConnectionProgress.tsx
+    layers:
+      app: .
+      ui: ui
+    layerOrder: [app, ui]
+    owner: remote
+  # project-workflow：由 architecture:adopt 登记
+  - id: project-workflow
+    roots:
+      - packages/ui/src/project-workflow
+    managed: true
+    requires:
+      - shared
+      - ui
+      - project-sidebar
+    publicEntrypoints:
+      - packages/ui/src/project-workflow/contract.ts
+      - packages/ui/src/project-workflow/useWorkflowRunSave.ts
+      - packages/ui/src/project-workflow/WorkflowRunSaveControls.tsx
+      - packages/ui/src/project-workflow/WorkflowRunPaneSaveSlots.tsx
+    layers:
+      app: .
+    owner: conversation
+  # host-database-startup：由 architecture:adopt 登记
+  - id: host-database-startup
+    roots:
+      - packages/desktop/src/host/database-startup
+    managed: true
+    requires:
+      - project-storage
+      - shared
+      - desktop
+    publicEntrypoints:
+      - packages/desktop/src/host/database-startup/contract.ts
+      - packages/desktop/src/host/database-startup/tasksStorageWorker.ts
+      - packages/desktop/src/host/database-startup/hostDatabaseStartup.ts
+      - packages/desktop/src/host/database-startup/storagePreparationProcesses.ts
+    layers:
+      adapters: .
+    owner: persistence
+  # cli-subagent-config：由 architecture:adopt 登记
+  - id: cli-subagent-config
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/runtime-subagents
+      - apps/ccbuddy-cli/packages/bootstrap/tests/runtime-subagents
+    managed: true
+    requires:
+      - shared
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/runtime-subagents/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/runtime-subagents/contract.ts
+    layers:
+      domain: .
+    owner: agent
+  # cli-session-execution：由 architecture:adopt 登记
+  - id: cli-session-execution
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-execution
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/interaction-response-race.ts
+      - apps/ccbuddy-cli/packages/bootstrap/tests/session-execution
+      - apps/ccbuddy-cli/packages/core/src/runtime/permission-full-access.ts
+      - apps/ccbuddy-cli/packages/adapters/src/storage/session-store/repositories/permission-full-access.ts
+      - apps/ccbuddy-cli/packages/contracts/src/interfaces/permission-full-access.ts
+      - apps/ccbuddy-cli/packages/core/tests/permission-full-access.test.ts
+      - apps/ccbuddy-cli/packages/bootstrap/tests/draft-permission-full-access.test.ts
+    managed: true
+    requires:
+      - shared
+      - ccbuddy-cli
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-execution/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-execution/contract.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/permission-full-access.ts
+    layers:
+      app: .
+    owner: conversation
+  # web-remote-relay：由 architecture:adopt 登记
+  - id: web-remote-relay
+    roots:
+      - packages/shared/src/web-remote-relay
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/web-remote-relay/index.ts
+      - packages/shared/src/web-remote-relay/contract.ts
+    layers:
+      contract: contract.ts
+      domain: domain
+      adapters: .
+    owner: remote
+    layerOrder:
+      - contract
+      - domain
+      - app
+      - adapters
+      - ui
+  # desktop-web-remote-relay：由 architecture:adopt 登记
+  - id: desktop-web-remote-relay
+    roots:
+      - packages/desktop/src/main/web-remote-relay
+    managed: true
+    requires:
+      - client
+      - desktop
+      - shared
+      - web-remote-relay
+    publicEntrypoints:
+      - packages/desktop/src/main/web-remote-relay/index.ts
+      - packages/desktop/src/main/web-remote-relay/contract.ts
+    layers:
+      contract: contract.ts
+      adapters: .
+    owner: remote
+    layerOrder:
+      - contract
+      - domain
+      - app
+      - adapters
+      - ui
+  # mobile-ui：由 architecture:adopt 登记
+  - id: mobile-ui
+    roots:
+      - packages/ui/src/components/mobile-ui
+    managed: true
+    requires:
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/components/mobile-ui/index.ts
+      - packages/ui/src/components/mobile-ui/contract.ts
+      - packages/ui/src/components/mobile-ui/DevicePlatformIcon.tsx
+      - packages/ui/src/components/mobile-ui/CCbuddyAppLogo.tsx
+      - packages/ui/src/components/mobile-ui/bottom-sheet.tsx
+    layers:
+      contract: contract.ts
+      ui: .
+    owner: remote
+    layerOrder:
+      - contract
+      - domain
+      - app
+      - adapters
+      - ui
+  # web-remote-control-ui：由 architecture:adopt 登记
+  - id: web-remote-control-ui
+    roots:
+      - packages/ui/src/web-remote-control
+    managed: true
+    requires:
+      - mobile-ui
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/web-remote-control/index.ts
+      - packages/ui/src/web-remote-control/contract.ts
+      - packages/ui/src/web-remote-control/WebRemoteControlDeviceHeader.tsx
+      - packages/ui/src/web-remote-control/app/useWebRemoteControlAuthSync.ts
+    layers:
+      contract: contract.ts
+      domain: domain
+      app: app
+      ui: .
+    owner: remote
+    layerOrder:
+      - contract
+      - domain
+      - app
+      - adapters
+      - ui
+  # web-remote-control：由 architecture:adopt 登记
+  - id: web-remote-control
+    roots:
+      - packages/web/src/web-remote-control
+    managed: true
+    requires:
+      - client
+      - mobile-ui
+      - shared
+      - ui
+      - web
+      - web-auth
+      - web-remote-relay
+    publicEntrypoints:
+      - packages/web/src/web-remote-control/index.ts
+      - packages/web/src/web-remote-control/contract.ts
+      - packages/web/src/web-remote-control/views.ts
+      - packages/web/src/web-remote-control/adapters/webRemoteControlThemeSeed.ts
+    layers:
+      contract: contracts
+      domain: domain
+      app: app
+      adapters: adapters
+      ui: ui
+    owner: remote
+    layerOrder:
+      - contract
+      - domain
+      - app
+      - adapters
+      - ui
+
+  # 保留既有源码位置；精确登记源文件，不扩大到整个 CLI 或 handlers 目录。
+  - id: cli-arguments
+    roots:
+      - apps/ccbuddy-cli/packages/cli/src/argument-parsing
+      - apps/ccbuddy-cli/packages/cli/src/arguments.ts
+      - apps/ccbuddy-cli/packages/cli/tests/argument-parsing
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/cli/src/arguments.ts
+      - apps/ccbuddy-cli/packages/cli/src/argument-parsing/contract.ts
+    layers: { adapters: . }
+    owner: agent
+  - id: workflow-tool-entrypoints
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/tool/workflow-entrypoints
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/amend-workflow.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/list-models.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/fill-workflow-hole.ts
+      - apps/ccbuddy-cli/packages/core/tests/workflow-entrypoints
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/amend-workflow.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/list-models.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/fill-workflow-hole.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/workflow-entrypoints/contract.ts
+    layers: { app: . }
+    owner: agent
+  # bash-cmd-readonly-policy：shell 为 cmd / legacy-shell 时按 CMD 语法做保守只读判定（替代 Bash AST，见 tool/04-bash.md）。
+  - id: bash-cmd-readonly-policy
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/tool/cmd-readonly
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/bash-cmd-readonly-policy.ts
+      - apps/ccbuddy-cli/packages/core/tests/cmd-readonly
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/bash-cmd-readonly-policy.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/cmd-readonly/contract.ts
+    layers: { app: . }
+    owner: agent
+
+  # MCP 的连接基础设施、配置桥接与会话消费；工具实现归工具自身，不混入等待模块。
+  - id: mcp-runtime
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/mcp/runtime
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/resource-subscriptions.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/tool-catalog-cache.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/config-source.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/config-loader.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/transport-errors.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-mcp-config.ts
+      - apps/ccbuddy-cli/packages/core/tests/mcp
+      - apps/ccbuddy-cli/packages/core/tests/mcp-runtime-fixture.ts
+    managed: true
+    requires: [ccbuddy-cli, shared, plugin-discovery, live-config-watch, plugin-host-queries]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/mcp/runtime/session.ts
+      - apps/ccbuddy-cli/packages/core/src/mcp/runtime/contract.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/resource-subscriptions.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/config-source.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/tool-catalog-cache.ts
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/transport-errors.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-mcp-config.ts
+      - apps/ccbuddy-cli/packages/core/tests/mcp-runtime-fixture.ts
+    layers:
+      contract: contract.ts
+      app: ../../../../core/src/mcp/runtime
+      adapters: .
+    owner: agent
+
+  # 打开的会话重读配置与插件的共享原语：进程级条目、锚点监听、去抖与插件清单读取。
+  # MCP 配置源与 Skill 实时目录各自的加载器都建在它上面（docs/skills-live-catalog.md）。
+  - id: live-config-watch
+    roots:
+      - apps/ccbuddy-cli/packages/adapters/src/watch
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/live-inventory.ts
+      - apps/ccbuddy-cli/packages/adapters/tests/watched-source-directories.test.ts
+    managed: true
+    requires: [ccbuddy-cli, plugin-discovery, workspace-plugin-declaration]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/watch/watched-source.ts
+      - apps/ccbuddy-cli/packages/adapters/src/watch/contract.ts
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/live-inventory.ts
+    layers: { contract: contract.ts, adapters: . }
+    owner: agent
+
+  # Skill 实时目录：进程级目录快照、读快照的 SkillPort 与只追加增量的列表公告。
+  - id: skill-live-catalog
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/skills
+      - apps/ccbuddy-cli/packages/adapters/src/skills/catalog.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-skill-catalog.ts
+      - apps/ccbuddy-cli/packages/adapters/tests/skill-catalog.test.ts
+      - apps/ccbuddy-cli/packages/core/tests/skills-listing.test.ts
+    managed: true
+    requires: [ccbuddy-cli, shared, live-config-watch]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/skills/listing.ts
+      - apps/ccbuddy-cli/packages/core/src/skills/listing-metadata.ts
+      - apps/ccbuddy-cli/packages/core/src/skills/contract.ts
+      - apps/ccbuddy-cli/packages/adapters/src/skills/catalog.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-skill-catalog.ts
+    layers: { contract: contract.ts, app: . }
+    owner: agent
+
+  - id: plugin-discovery
+    roots:
+      [
+        apps/ccbuddy-cli/packages/adapters/src/plugins/discovery,
+        apps/ccbuddy-cli/packages/adapters/tests/plugin-discovery,
+      ]
+    managed: true
+    requires: [ccbuddy-cli, shared]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/discovery/index.ts
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/discovery/contract.ts
+    layers: { contract: contract.ts, adapters: . }
+    owner: plugin
+
+  - id: tool-result-settlement
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/runtime/tool-result-settlement
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/tool-result-settlement.ts
+      - apps/ccbuddy-cli/packages/core/tests/tool-result-settlement
+    managed: true
+    requires: [ccbuddy-cli, session-features]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/tool-result-settlement.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/tool-result-settlement/contract.ts
+    layers: { app: . }
+    owner: agent
+
+  # remote-input-prediction：手机远控输入预测（v4 线格式、Host 侧开关、CLI 只读查询）。
+  # 规格：docs/web-remote-control/mobile-input-prediction.md。
+  - id: remote-input-prediction
+    roots:
+      - packages/shared/src/ccbuddy-protocol-v4/input-prediction
+      - packages/services/src/ccbuddy-agent/inputPredictionSwitch.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/input-prediction-handler.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/input-prediction-sidecar.ts
+    managed: true
+    requires: [shared, ccbuddy-cli]
+    publicEntrypoints:
+      - packages/shared/src/ccbuddy-protocol-v4/input-prediction/contract.ts
+      - packages/services/src/ccbuddy-agent/inputPredictionSwitch.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/input-prediction-handler.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/input-prediction-sidecar.ts
+    layers: { app: . }
+    owner: remote
+  # context-composition：context 组成（扩展进程 P1）：v4 线格式、CLI 分类/预演/修订号/协议处理、App 侧查询与通知。
+  # 规格：apps/ccbuddy-cli/docs/design/v2/model/context-composition.md。
+  - id: context-composition
+    roots:
+      - packages/shared/src/ccbuddy-protocol-v4/context-composition
+      - apps/ccbuddy-cli/packages/core/src/runtime/context-composition
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/context-composition
+      - packages/services/src/ccbuddy-agent/contextCompositionClient.ts
+      - apps/ccbuddy-cli/packages/core/tests/context-composition
+      - apps/ccbuddy-cli/packages/bootstrap/tests/context-composition
+    managed: true
+    requires: [rpc, services, shared, tool-discovery, ccbuddy-cli]
+    publicEntrypoints:
+      - packages/shared/src/ccbuddy-protocol-v4/context-composition/contract.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/context-composition/index.ts
+      # runtime 内部的变更点直接引用 state.ts：经 index 会形成 context-refresh → query → preview → context-refresh 的环。
+      - apps/ccbuddy-cli/packages/core/src/runtime/context-composition/state.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/context-composition/query.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/context-composition/classifier.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/context-composition/items.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/context-composition/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/context-composition/tracker.ts
+      - packages/services/src/ccbuddy-agent/contextCompositionClient.ts
+    layers: { app: . }
+    owner: agent
+  # plugin-host-queries：扩展进程 P2 的插件宿主查询——敏感选项私有存储、plugins/readUserOptions、
+  # plugins/mentionItems 的线格式、CLI 实现与 App 侧客户端。规格：apps/ccbuddy-cli/docs/design/v2/plugin-compat.md
+  # 「Sensitive Option Storage」「Composer Mention Items」。
+  - id: plugin-host-queries
+    roots:
+      - packages/shared/src/ccbuddy-protocol/plugin-host-queries
+      - apps/ccbuddy-cli/packages/adapters/src/config/plugin-secrets.adapter.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-secrets.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-user-options.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-mention-items.ts
+      - packages/services/src/ccbuddy-agent/pluginHostQueriesClient.ts
+    managed: true
+    requires: [services, shared, ccbuddy-cli]
+    publicEntrypoints:
+      - packages/shared/src/ccbuddy-protocol/plugin-host-queries/contract.ts
+      - apps/ccbuddy-cli/packages/adapters/src/config/plugin-secrets.adapter.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-secrets.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-user-options.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-mention-items.ts
+      - packages/services/src/ccbuddy-agent/pluginHostQueriesClient.ts
+    layers: { app: . }
+    owner: plugin
+  # remote-resident-rows-range：rowsRange 只读热会话（residency="resident-only"）的 Host 侧执行端能力确认，
+  # 供手机任务列表预加载；旧 CLI 不认识该参数时 Host 直接拒绝，不触发冷恢复。
+  - id: remote-resident-rows-range
+    roots:
+      - packages/services/src/ccbuddy-agent/resident-rows-range
+    managed: true
+    requires: [shared, services]
+    publicEntrypoints:
+      - packages/services/src/ccbuddy-agent/resident-rows-range/contract.ts
+    layers: { app: . }
+    owner: remote
+  # 官方市场工具只在接到支持卡片的输入时开放，目录排序和安装由 CLI 所有。
+  - id: agent-plugin-discovery
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-discovery
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-discovery-port.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-install-interaction.ts
+      - apps/ccbuddy-cli/packages/contracts/src/interfaces/plugin-discovery.port.ts
+      - apps/ccbuddy-cli/packages/contracts/src/tools/plugin-discovery.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/plugin-discovery.ts
+    managed: true
+    requires: [shared, ccbuddy-cli, plugin-install-interaction]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-discovery/contract.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-discovery/subscription.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-discovery-port.ts
+      - apps/ccbuddy-cli/packages/contracts/src/interfaces/plugin-discovery.port.ts
+      - apps/ccbuddy-cli/packages/contracts/src/tools/plugin-discovery.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/plugin-discovery.ts
+    layers: { app: . }
+    owner: plugin
+  # 卡片只投影协议载荷并提交选择；不拥有安装或重载状态。
+  - id: plugin-install-interaction
+    roots:
+      - packages/shared/src/plugin-discovery
+      - packages/shared/src/plugin-store-visibility.ts
+      - packages/shared/src/ccbuddy-protocol-v4/pluginInstall.ts
+      - packages/ui/src/v4/PluginInstallCard.tsx
+      - packages/ui/src/settings/PluginAutoRecommendationSetting.tsx
+    managed: true
+    requires: [shared, ui]
+    publicEntrypoints:
+      - packages/shared/src/plugin-discovery/contract.ts
+      - packages/shared/src/plugin-store-visibility.ts
+      - packages/shared/src/ccbuddy-protocol-v4/pluginInstall.ts
+      - packages/ui/src/v4/PluginInstallCard.tsx
+      - packages/ui/src/settings/PluginAutoRecommendationSetting.tsx
+    layers: { app: . }
+    owner: plugin
+  - id: tool-discovery
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/tool/search
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/tool-search.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/deferred-tool-call.ts
+      - apps/ccbuddy-cli/packages/contracts/src/tools/tool-search.ts
+      # ToolSearch 关闭时说明连接中 MCP server 的工具。
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/wait-for-mcp-servers.ts
+      - apps/ccbuddy-cli/packages/contracts/src/tools/wait-for-mcp-servers.ts
+      - apps/ccbuddy-cli/packages/core/tests/tool-discovery
+      - apps/ccbuddy-cli/packages/core/tests/tool-search
+      - apps/ccbuddy-cli/packages/core/src/agent/tool-search-hydration.ts
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/tool/search/contract.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/search/exposure.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/search/history.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/search/search.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/search/description.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/search/local-projection.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/tool-search.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/deferred-tool-call.ts
+      - apps/ccbuddy-cli/packages/contracts/src/tools/tool-search.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/wait-for-mcp-servers.ts
+      - apps/ccbuddy-cli/packages/contracts/src/tools/wait-for-mcp-servers.ts
+      - apps/ccbuddy-cli/packages/core/src/agent/tool-search-hydration.ts
+    layers: { app: . }
+    owner: agent
+  # node-repl-call-ledger：node_repl 结果里可信事实的唯一来源（apps/ccbuddy-cli/docs/design/v2/tool/20-node-repl-call-ledger.md）
+  - id: node-repl-call-ledger
+    roots:
+      - apps/ccbuddy-cli/packages/node-repl-host/src/call-ledger
+      - apps/ccbuddy-cli/packages/node-repl-host/test/call-ledger
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/node-repl-host/src/call-ledger/contract.ts
+    layers: { adapters: . }
+    owner: agent
+  - id: session-features
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/runtime/session-features
+      - apps/ccbuddy-cli/packages/core/tests/session-features
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/runtime/session-features/contract.ts
+    layers: { app: . }
+    owner: agent
+  - id: provider-tool-rounds
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/runtime/provider-tool-rounds
+      - apps/ccbuddy-cli/packages/core/tests/provider-tool-rounds
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/runtime/provider-tool-rounds/contract.ts
+    layers: { app: . }
+    owner: agent
+  - id: provider-builtin-tool-compat
+    roots:
+      - apps/ccbuddy-cli/packages/adapters/src/model/provider-builtin-tool-compat
+      - apps/ccbuddy-cli/packages/adapters/tests/provider-builtin-tool-compat
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/model/provider-builtin-tool-compat/contract.ts
+    layers: { adapters: . }
+    owner: agent
+  - id: conversation-quote-context
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/runtime/conversation-quote-context
+      - apps/ccbuddy-cli/packages/core/src/runtime/helpers/conversation-quotes.ts
+      - apps/ccbuddy-cli/packages/core/tests/conversation-quote-context
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/runtime/conversation-quote-context/contract.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/helpers/conversation-quotes.ts
+    layers: { domain: . }
+    owner: agent
+  - id: tool-search-comparison
+    roots:
+      - apps/ccbuddy-cli/tools/prompt-trajectory/src/tool-search-comparison-contract
+      - apps/ccbuddy-cli/tools/prompt-trajectory/src/tool-search-comparison.ts
+      - apps/ccbuddy-cli/tools/prompt-trajectory/tests/tool-search-comparison
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/tools/prompt-trajectory/src/tool-search-comparison-contract/contract.ts
+      - apps/ccbuddy-cli/tools/prompt-trajectory/src/tool-search-comparison.ts
+    layers: { domain: . }
+    owner: agent
+  - id: window-topic-resource-relay
+    roots:
+      - packages/desktop/src/host/topic-resource-relay
+      - packages/desktop/src/host/windowTopicResourceRelay.ts
+      - packages/desktop/test/topic-resource-relay
+    managed: true
+    requires: [services, shared]
+    publicEntrypoints:
+      - packages/desktop/src/host/topic-resource-relay/contract.ts
+      - packages/desktop/src/host/windowTopicResourceRelay.ts
+    layers: { adapters: . }
+    owner: desktop
+  - id: channel-reply-tool
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/tool/channel-reply
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/reply-to-channel.ts
+      - apps/ccbuddy-cli/packages/core/tests/channel-reply
+    managed: true
+    requires: [shared, ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/reply-to-channel.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/channel-reply/contract.ts
+    layers: { app: . }
+    owner: agent
+  # topic-resource-tool：ReadSessionContext(topic, attachment) 拆出的话题资源工具（会话工具设计 0.8）。
+  - id: topic-resource-tool
+    roots:
+      - apps/ccbuddy-cli/packages/core/src/tool/topic-resource
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/read-topic-resource.ts
+    managed: true
+    requires: [shared, ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/read-topic-resource.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/topic-resource/contract.ts
+    layers: { app: . }
+    owner: agent
+  # bot-topic-history-attachment：登记既有话题历史附件构造，提示改指向 ReadTopicResource 时纳管。
+  - id: bot-topic-history-attachment
+    roots:
+      - packages/services/src/bots/topic-history-attachment
+      - packages/services/src/bots/topicHistoryAttachment.ts
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/services/src/bots/topicHistoryAttachment.ts
+      - packages/services/src/bots/topic-history-attachment/contract.ts
+    layers: { app: . }
+    owner: conversation
+
+  # composer-toolbar-layout：登记既有 DOM 布局入口，不改调用路径。
+  - id: composer-toolbar-layout
+    roots:
+      - packages/ui/src/composer-toolbar-layout
+      - packages/ui/src/prompt-editor/useComposerToolbarFit.ts
+      - packages/ui/test/composer-toolbar-layout
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/ui/src/prompt-editor/useComposerToolbarFit.ts
+      - packages/ui/src/composer-toolbar-layout/contract.ts
+    layers: { ui: . }
+    owner: conversation
+
+  # task-groups：由 architecture:adopt 登记
+  - id: task-groups
+    roots:
+      - packages/services/src/task-groups
+    managed: true
+    requires:
+      - services
+      - session
+      - shared
+    publicEntrypoints:
+      - packages/services/src/task-groups/index.ts
+      - packages/services/src/task-groups/contract.ts
+      - packages/services/src/task-groups/migration-v6.ts
+    layers:
+      adapters: .
+    owner: conversation
+
+  # window-project-directory：由 architecture:adopt 登记
+  - id: window-project-directory
+    roots:
+      - packages/services/src/window-project-directory
+    managed: true
+    requires:
+      - project
+      - remote-projects
+      - rpc
+      - services
+      - shared
+    publicEntrypoints:
+      - packages/services/src/window-project-directory/index.ts
+      - packages/services/src/window-project-directory/contract.ts
+    layers:
+      adapters: .
+    owner: conversation
+  # conversation-share-interaction：由 architecture:adopt 登记
+  - id: conversation-share-interaction
+    roots:
+      - packages/ui/src/conversation-share-interaction
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/conversation-share-interaction/index.ts
+      - packages/ui/src/conversation-share-interaction/contract.ts
+      - packages/ui/src/conversation-share-interaction/ConversationSharePopover.tsx
+      - packages/ui/src/conversation-share-interaction/ConversationShareExpiryPicker.tsx
+      - packages/ui/src/conversation-share-interaction/ConversationSharePreflightStatus.tsx
+      - packages/ui/src/conversation-share-interaction/conversationSharePopoverActions.ts
+      - packages/ui/src/conversation-share-interaction/conversationSharePreflightRequest.ts
+      - packages/ui/src/conversation-share-interaction/conversationSharePreflightResponse.ts
+      - packages/ui/src/conversation-share-interaction/conversationSharePreflightCache.ts
+      - packages/ui/src/conversation-share-interaction/SettingsShareManagement.tsx
+    layers:
+      contract: contract.ts
+      ui: .
+    owner: conversation
+
+  # workspace-plugin-preview：由 architecture:adopt 登记
+  - id: workspace-plugin-preview
+    roots:
+      - packages/ui/src/workspace-plugin-preview
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/workspace-plugin-preview/index.ts
+      - packages/ui/src/workspace-plugin-preview/contract.ts
+    layers:
+      ui: .
+    owner: plugin
+
+  # office-runtime：内置文档插件查看面板的共享运行时，由 architecture:adopt 登记
+  - id: office-runtime
+    roots:
+      - apps/ccbuddy-cli/packages/office-runtime
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/office-runtime/index.ts
+      - apps/ccbuddy-cli/packages/office-runtime/contract.ts
+    layers:
+      app: .
+    owner: plugin
+
+  # embedded-browser-permission：由 architecture:adopt 登记
+  - id: embedded-browser-permission
+    roots:
+      - packages/desktop/src/main/embedded-browser-permission-contract
+      - packages/desktop/src/main/embeddedBrowserPermissionPolicy.ts
+    managed: true
+    requires:
+      - desktop
+      - shared
+    publicEntrypoints:
+      - packages/desktop/src/main/embeddedBrowserPermissionPolicy.ts
+      - packages/desktop/src/main/embedded-browser-permission-contract/contract.ts
+    layers:
+      adapters: .
+    owner: desktop
+  # marketing-touch-controller：由 architecture:adopt 登记
+  - id: marketing-touch-controller
+    roots:
+      - packages/ui/src/marketing-touch-contract
+      - packages/ui/src/components/marketing-touch/marketingTouchController.ts
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/components/marketing-touch/marketingTouchController.ts
+      - packages/ui/src/marketing-touch-contract/contract.ts
+    layers:
+      app: .
+    owner: desktop
+  # data-sync-service：数据同步分类服务形状与本机设备同步状态（docs/remote/data-sync.md）
+  - id: data-sync-service
+    roots:
+      - packages/services/src/data-sync
+    managed: true
+    requires:
+      - services
+      - shared
+    publicEntrypoints:
+      - packages/services/src/data-sync/index.ts
+      - packages/services/src/data-sync/contract.ts
+      - packages/services/src/data-sync/node.ts
+    layers:
+      app: .
+    owner: remote
+  # voice-input-service：Composer 语音输入的本机 Host ASR 连接（docs/chat/composer-voice-input.md）
+  - id: voice-input-service
+    roots:
+      - packages/services/src/voice-input
+    managed: true
+    requires:
+      - services
+      - shared
+      - rpc
+    publicEntrypoints:
+      - packages/services/src/voice-input/index.ts
+      - packages/services/src/voice-input/contract.ts
+      - packages/services/src/voice-input/node.ts
+    layers:
+      adapters: .
+    owner: desktop
+  # provider-provisioning-status：数据同步页模型提供商读取 / 重试 Main 协调器的 Provisioning lane（R3 §8.3.6）
+  - id: provider-provisioning-status
+    roots:
+      - packages/services/src/provider-provisioning-status
+    managed: true
+    requires:
+      - services
+      - shared
+    publicEntrypoints:
+      - packages/services/src/provider-provisioning-status/index.ts
+      - packages/services/src/provider-provisioning-status/contract.ts
+      - packages/services/src/provider-provisioning-status/node.ts
+    layers:
+      app: .
+    owner: remote
+  # data-sync：设置页「数据同步」与同步弹窗（docs/remote/data-sync.md）
+  - id: data-sync
+    roots:
+      - packages/ui/src/data-sync
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+      - conversation-workspace-target
+    publicEntrypoints:
+      - packages/ui/src/data-sync/index.ts
+      - packages/ui/src/data-sync/contract.ts
+    layers:
+      contract: contract.ts
+      domain: domain
+      app: app
+      ui: .
+    layerOrder: [contract, domain, app, ui]
+    owner: remote
+  # voice-input：Composer 语音输入按钮、状态机与麦克风采集（docs/chat/composer-voice-input.md）
+  - id: voice-input
+    roots:
+      - packages/ui/src/voice-input
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+      - shortcuts
+    publicEntrypoints:
+      - packages/ui/src/voice-input/index.ts
+      - packages/ui/src/voice-input/contract.ts
+    layers:
+      contract: contract.ts
+      domain: domain
+      adapters: adapters
+      ui: .
+    layerOrder: [contract, domain, adapters, ui]
+    owner: desktop
+  # settings-scope：设置页 Scope 菜单按设备分组（docs/remote/data-sync.md「Scope 菜单按设备分组」）
+  - id: settings-scope
+    roots:
+      - packages/ui/src/settings-scope
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+      - conversation-workspace-target
+      - workspace-config-catalog
+    publicEntrypoints:
+      - packages/ui/src/settings-scope/index.ts
+      - packages/ui/src/settings-scope/contract.ts
+    layers:
+      contract: contract.ts
+      domain: domain
+      app: app
+      ui: .
+    layerOrder: [contract, domain, app, ui]
+    owner: remote
+  # side-pane-full-view：由 architecture:adopt 登记
+  - id: side-pane-full-view
+    roots:
+      - packages/ui/src/side-pane-full-view
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/side-pane-full-view/index.ts
+      - packages/ui/src/side-pane-full-view/contract.ts
+    layers:
+      ui: .
+    owner: conversation
+
+  # 发行策略使用独立目录；修改后的文件由本模块承担边界检查。
+  - id: request-security-edition
+    roots: [packages/shared/src/request-security-edition]
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/shared/src/request-security-edition/index.ts
+      - packages/shared/src/request-security-edition/policy.ts
+      - packages/shared/src/request-security-edition/verification-policy.ts
+      - packages/shared/src/request-security-edition/contract.ts
+    layers: { adapters: . }
+    owner: request-security
+
+  # local-ttft-contract：由 architecture:adopt 登记
+  - id: local-ttft-contract
+    roots:
+      - packages/shared/src/local-ttft
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/local-ttft/contract.ts
+    layers:
+      contract: .
+  # local-ttft-renderer：由 architecture:adopt 登记
+  - id: local-ttft-renderer
+    roots:
+      - packages/ui/src/v4/telemetry/local-ttft
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/v4/telemetry/local-ttft/contract.ts
+    layers:
+      ui: .
+  # local-ttft-desktop：由 architecture:adopt 登记
+  - id: local-ttft-desktop
+    roots:
+      - packages/desktop/src/renderer/src/local-ttft
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/desktop/src/renderer/src/local-ttft/contract.ts
+    layers:
+      ui: .
+  # local-ttft-cli：由 architecture:adopt 登记
+  - id: local-ttft-cli
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol-v4/local-ttft
+    managed: true
+    requires:
+      - shared
+      - ccbuddy-cli
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol-v4/local-ttft/contract.ts
+    layers:
+      adapters: .
+  # cli-official-command-endpoint：由 architecture:adopt 登记
+  - id: cli-official-command-endpoint
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/official-command-endpoint
+      - apps/ccbuddy-cli/packages/bootstrap/tests/official-command-endpoint
+    managed: true
+    requires:
+      - shared
+      - ccbuddy-cli
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/official-command-endpoint/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/official-command-endpoint/contract.ts
+    layers:
+      adapters: .
+    owner: identity
+
+  # file-open-apps：由 architecture:adopt 登记
+  - id: file-open-apps
+    roots:
+      - packages/desktop/src/main/file-open-apps
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/desktop/src/main/file-open-apps/index.ts
+      - packages/desktop/src/main/file-open-apps/contract.ts
+    layers:
+      adapters: .
+    owner: desktop
+  # ui-file-menu：由 architecture:adopt 登记
+  - id: ui-file-menu
+    roots:
+      - packages/ui/src/file-menu
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/file-menu/index.ts
+      - packages/ui/src/file-menu/contract.ts
+    layers:
+      ui: .
+    owner: file-preview
+
+  # web-platform：由 architecture:adopt 登记
+  - id: web-platform
+    roots:
+      - packages/web/src/platform
+    managed: true
+    requires:
+      - shared
+      - ui
+      - web
+    publicEntrypoints:
+      - packages/web/src/platform/index.ts
+      - packages/web/src/platform/contract.ts
+    layers:
+      adapters: .
+    owner: web
+
+  # image-preview-editor：由 architecture:adopt 登记
+  - id: image-preview-editor
+    roots:
+      - packages/ui/src/image-preview-editor
+      - packages/ui/src/hooks/useImageFilePreview.ts
+      - packages/ui/src/lib/copyPreviewImage.ts
+      - packages/ui/src/lib/imagePreviewDownload.ts
+      - packages/ui/src/v4/ConversationImageFileMention.tsx
+    managed: true
+    requires: [ui, shared, ui-file-menu]
+    publicEntrypoints:
+      - packages/ui/src/image-preview-editor/index.ts
+      - packages/ui/src/image-preview-editor/contract.ts
+      - packages/ui/src/hooks/useImageFilePreview.ts
+      - packages/ui/src/lib/copyPreviewImage.ts
+      - packages/ui/src/lib/imagePreviewDownload.ts
+      - packages/ui/src/v4/ConversationImageFileMention.tsx
+    layers:
+      ui: .
+    owner: conversation
+  # 用户消息正文组合；保留现有 v4 入口，以精确 root 登记展示层归属。
+  - id: conversation-user-input-presentation
+    roots:
+      - packages/ui/src/conversation-user-input-presentation
+      - packages/ui/src/v4/ConversationUserInputBubble.tsx
+    managed: true
+    requires: [ui, shared, image-preview-editor]
+    publicEntrypoints:
+      - packages/ui/src/conversation-user-input-presentation/contract.ts
+      - packages/ui/src/v4/ConversationUserInputBubble.tsx
+    layers:
+      ui: .
+    owner: conversation
+
+  # protocol-session-data：由 architecture:adopt 登记
+  - id: protocol-session-data
+    roots:
+      - packages/shared/src/ccbuddy-protocol-v4/session-data
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/ccbuddy-protocol-v4/session-data/index.ts
+      - packages/shared/src/ccbuddy-protocol-v4/session-data/contract.ts
+    layers:
+      domain: .
+  # cli-session-data-files：由 architecture:adopt 登记
+  - id: cli-session-data-files
+    roots:
+      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files/index.ts
+      - apps/ccbuddy-cli/packages/adapters/src/storage/session-data-files/contract.ts
+    layers:
+      adapters: .
+  # cli-session-data：由 architecture:adopt 登记
+  - id: cli-session-data
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data
+    managed: true
+    requires:
+      - shared
+      - ccbuddy-cli
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/session-data/contract.ts
+    layers:
+      app: .
+
+  - id: cli-plugin-startup-budget
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-startup-budget
+    managed: true
+    requires: [ccbuddy-cli]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-startup-budget/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/plugin-startup-budget/contract.ts
+    layers:
+      app: .
+    owner: plugin
+  - id: provider-regression
+    roots: [apps/ccbuddy-cli/tools/provider-regression]
+    managed: true
+    requires: [ccbuddy-cli, provider, provider-node, shared]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/tools/provider-regression/index.ts
+      - apps/ccbuddy-cli/tools/provider-regression/contract.ts
+    layers: { adapters: . }
+    owner: agent
+  # session-lifecycle：由 architecture:adopt 登记
+  - id: session-lifecycle
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle
+      - apps/ccbuddy-cli/packages/bootstrap/tests/session-lifecycle
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/session-lifecycle/contract.ts
+    layers:
+      app: .
+    owner: agent-runtime
+  # workspace-mcp-trust：由 architecture:adopt 登记
+  - id: workspace-mcp-trust
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/workspace-mcp-trust
+    managed: true
+    requires: [ccbuddy-cli, shared]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/workspace-mcp-trust/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/workspace-mcp-trust/contract.ts
+    layers:
+      adapters: .
+    owner: cli
+  # composer-edit-mode：由 architecture:adopt 登记
+  - id: composer-edit-mode
+    roots:
+      - packages/ui/src/composer-edit-mode
+    managed: true
+    requires: [shared, ui]
+    publicEntrypoints:
+      - packages/ui/src/composer-edit-mode/index.ts
+      - packages/ui/src/composer-edit-mode/contract.ts
+    layers:
+      contract: contract.ts
+      ui: .
+    owner: conversation
+  # desktop-microphone-access：由 architecture:adopt 登记
+  - id: desktop-microphone-access
+    roots:
+      - packages/desktop/src/main/microphone-access
+    managed: true
+    requires:
+      - shared
+    publicEntrypoints:
+      - packages/desktop/src/main/microphone-access/index.ts
+      - packages/desktop/src/main/microphone-access/contract.ts
+    layers:
+      adapters: .
+    owner: desktop
+  # web-share-manage：由 architecture:adopt 登记
+  - id: web-share-manage
+    roots:
+      - packages/web/src/share-manage
+    managed: true
+    requires:
+      - shared
+      - ui
+      - web
+      - web-auth
+    publicEntrypoints:
+      - packages/web/src/share-manage/index.ts
+      - packages/web/src/share-manage/contract.ts
+      - packages/web/src/share-manage/mockConversationShareManageClient.ts
+    layers:
+      ui: .
+    owner: conversation
+  # managed-worktree-shared：由 architecture:adopt 登记
+  - id: managed-worktree-shared
+    roots:
+      - packages/shared/src/managed-worktree
+    managed: true
+    # Trust identity 由远程 identity 的 host 部分与执行目录构造，复用 shared 的统一 identity 工具，不另写解析规则。
+    requires: [shared]
+    publicEntrypoints:
+      - packages/shared/src/managed-worktree/index.ts
+      - packages/shared/src/managed-worktree/contract.ts
+    layers:
+      app: .
+    owner: desktop
+  # managed-worktree-repo：由 architecture:adopt 登记
+  - id: managed-worktree-repo
+    roots:
+      - packages/services/src/git/managed-worktree
+    managed: true
+    requires:
+      - managed-worktree-shared
+      - services
+      - shared
+    publicEntrypoints:
+      - packages/services/src/git/managed-worktree/index.ts
+      - packages/services/src/git/managed-worktree/contract.ts
+    layers:
+      adapters: .
+    owner: desktop
+  # managed-worktree-tasks：由 architecture:adopt 登记
+  - id: managed-worktree-tasks
+    roots:
+      - packages/services/src/managed-worktree-tasks
+    managed: true
+    requires:
+      - managed-worktree-repo
+      - managed-worktree-shared
+      - project-storage
+      - rpc
+      - services
+      - shared
+    publicEntrypoints:
+      - packages/services/src/managed-worktree-tasks/index.ts
+      - packages/services/src/managed-worktree-tasks/contract.ts
+    layers:
+      app: .
+    owner: desktop
+  # managed-worktree-ui：由 architecture:adopt 登记
+  - id: managed-worktree-ui
+    roots:
+      - packages/ui/src/managed-worktrees
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+      - conversation-user-input-presentation
+    publicEntrypoints:
+      - packages/ui/src/managed-worktrees/index.ts
+      - packages/ui/src/managed-worktrees/contract.ts
+    layers:
+      contract: contract.ts
+      ui: .
+    owner: desktop
+
+  - id: session-tool-presentation
+    roots: [packages/ui/src/ToolCallBlocks/session]
+    managed: true
+    requires: [ui]
+    publicEntrypoints: [packages/ui/src/ToolCallBlocks/session/contract.ts]
+    layers: { ui: "." }
+    owner: conversation
+  # extension-host-protocol：扩展进程三方共用的纯 schema、类型与纯函数（docs/plugins/extension-host.md §4）。
+  - id: extension-host-protocol
+    roots:
+      - packages/shared/src/extension-host
+    managed: true
+    # 能力表引用 context 组成的线格式与模型选择 schema（docs/plugins/extension-host.md §7.2、§9）；
+    # composer.mention 的候选项与 CLI plugins/mentionItems 共用一份 schema（§16.6）；
+    # 会话能力的入参与返回直接用 session-control 的端口 schema（§17.3）。
+    requires: [context-composition, plugin-host-queries, session-control, shared]
+    publicEntrypoints:
+      - packages/shared/src/extension-host/index.ts
+      - packages/shared/src/extension-host/contract.ts
+    layers:
+      domain: .
+    owner: plugin
+  # extensions-service：Window Host 的扩展门面与能力网关（docs/plugins/extension-host.md §3.5）。
+  - id: extensions-service
+    roots:
+      - packages/services/src/extensions
+    managed: true
+    requires:
+      - extension-host-protocol
+      # 扩展视图复用 MCP App 的沙箱句柄与 HTML 挑选（§8）。
+      - mcp-apps-protocol
+      - plugin-ui-bridge
+      # settings 能力用 Window Host 进程内的 plugins/readUserOptions 读取器（§16.7）。
+      - plugin-host-queries
+      # 会话能力以客户端类调用方调 AppControlService.bindClient（§17.2），错误按 session-control 码映射。
+      - app-control
+      - session-control
+      # 插件项目（§17.4）：只经 IProjectService 的 readProjects / saveProject，不碰项目库。
+      - project
+      - rpc
+      - services
+      - shared
+    publicEntrypoints:
+      - packages/services/src/extensions/index.ts
+      - packages/services/src/extensions/contract.ts
+      - packages/services/src/extensions/node.ts
+    layers:
+      app: .
+    owner: plugin
+  # extension-host：全 App 唯一的扩展进程与 Main 侧监管器（docs/plugins/extension-host.md §12.1）。
+  - id: extension-host
+    roots:
+      - packages/desktop/src/extension-host
+      - packages/desktop/src/main/extensionHostSupervisor.ts
+    managed: true
+    requires:
+      - extension-host-protocol
+      # 扩展视图的进程内 MCP Client 宣告 MCP Apps 能力、页面资源 mimeType（§8）。
+      - mcp-apps-protocol
+      - rpc
+      - desktop
+    publicEntrypoints:
+      - packages/desktop/src/extension-host/index.ts
+      - packages/desktop/src/extension-host/contract.ts
+      - packages/desktop/src/main/extensionHostSupervisor.ts
+    layers:
+      adapters: .
+    owner: plugin
+  # extension-slots：Renderer 的贡献表快照、插槽组件（docs/plugins/extension-host.md §6）。
+  - id: extension-slots
+    roots:
+      - packages/ui/src/extension-slots
+    managed: true
+    requires:
+      - extension-host-protocol
+      # 扩展视图页面复用 MCP App 的沙箱句柄、握手常量与页面原语（docs/plugins/extension-host.md §8）。
+      - mcp-apps-protocol
+      - plugin-ui
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/extension-slots/index.ts
+      - packages/ui/src/extension-slots/contract.ts
+    layers:
+      domain: domain
+      app: app
+      adapters: adapters
+      ui: components
+    layerOrder: [domain, app, adapters, ui]
+    owner: plugin
+
+  # 内置浏览器本地 HTML 的受控文件读取边界。
+  - id: browser-local-preview
+    roots:
+      - packages/desktop/src/main/browser-local-preview
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/desktop/src/main/browser-local-preview/index.ts
+      - packages/desktop/src/main/browser-local-preview/contract.ts
+    layers:
+      adapters: .
+    owner: desktop
+  # plugin-api：插件作者用的类型包 @ccbuddy-dev/plugin-api（docs/plugins/extension-host.md §17.9）。
+  # 只转出 extension-host-protocol 与 v4 协议（shared）的类型；四个子入口都是公开入口。
+  # tsup.config.ts 与 scripts/ 产出仓库外用的 dist 声明。
+  - id: plugin-api
+    roots:
+      - packages/plugin-api/src
+      - packages/plugin-api/scripts
+      - packages/plugin-api/tsup.config.ts
+    managed: true
+    requires:
+      - extension-host-protocol
+      - shared
+    publicEntrypoints:
+      - packages/plugin-api/src/contract.ts
+      - packages/plugin-api/src/manifest.ts
+      - packages/plugin-api/src/sessions.ts
+      - packages/plugin-api/src/protocol-v4.ts
+    layers:
+      contract: .
+    owner: plugin
+  # 选区批注输入浮层；调用方是 v4 选区浮层，引用数据仍归 ui lib。
+  - id: selection-comment
+    roots:
+      - packages/ui/src/selection-comment
+    managed: true
+    requires:
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/selection-comment/index.ts
+      - packages/ui/src/selection-comment/contract.ts
+    layers:
+      ui: .
+    owner: conversation
+
+  - id: web-auth
+    roots:
+      - packages/web/src/auth
+    managed: true
+    requires:
+      - mobile-ui
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/web/src/auth/index.ts
+      - packages/web/src/auth/contract.ts
+    layers:
+      app: .
+    owner: identity
+
+  - id: credential-security
+    roots:
+      - packages/shared/src/credential-security
+    managed: true
+    requires: [shared]
+    publicEntrypoints:
+      - packages/shared/src/credential-security/module.ts
+      - packages/shared/src/credential-security/contract.ts
+    layers:
+      adapters: .
+    owner: authentication
+
+  # preinstalled-tools-contract：由 architecture:adopt 登记
+  - id: preinstalled-tools-contract
+    roots:
+      - packages/shared/src/preinstalled-tools
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/preinstalled-tools/contract.ts
+      - packages/shared/src/preinstalled-tools/node.ts
+    layers:
+      adapters: .
+    owner: desktop
+
+  # desktop-preinstalled-tools：由 architecture:adopt 登记
+  - id: desktop-preinstalled-tools
+    roots:
+      - packages/desktop/src/preinstalled-tools
+    managed: true
+    requires: [desktop, services, shared, preinstalled-tools-contract]
+    publicEntrypoints:
+      - packages/desktop/src/preinstalled-tools/index.ts
+      - packages/desktop/src/preinstalled-tools/contract.ts
+    layers:
+      adapters: .
+    owner: desktop
+
+  # ui-preinstalled-tools：由 architecture:adopt 登记
+  - id: ui-preinstalled-tools
+    roots:
+      - packages/ui/src/preinstalled-tools
+    managed: true
+    requires: [ui, shared, preinstalled-tools-contract]
+    publicEntrypoints:
+      - packages/ui/src/preinstalled-tools/index.ts
+      - packages/ui/src/preinstalled-tools/contract.ts
+    layers:
+      ui: .
+    owner: desktop
+
+  - id: resource-manager
+    roots:
+      - packages/ui/src/resource-manager
+      - packages/services/src/process/processResourceSampler.ts
+    managed: true
+    requires: [shared, ui]
+    publicEntrypoints:
+      - packages/ui/src/resource-manager/ResourceManagerApp.tsx
+      - packages/ui/src/resource-manager/contract.ts
+      - packages/ui/src/resource-manager/resourceUsageView.ts
+      - packages/services/src/process/processResourceSampler.ts
+    layers:
+      contract: contract.ts
+      adapters: ../../../services/src/process/processResourceSampler.ts
+      ui: .
+    layerOrder: [contract, adapters, ui]
+    owner: desktop
+  # settings-search：由 architecture:adopt 登记
+  - id: settings-search
+    roots:
+      - packages/ui/src/settings-search
+    managed: true
+    requires:
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/settings-search/index.ts
+      - packages/ui/src/settings-search/contract.ts
+    layers:
+      ui: .
+    owner: settings
+  # task-row-hover：会话行悬停卡片（docs/ui/task-row-hover-details.md）
+  - id: task-row-hover
+    roots:
+      - packages/ui/src/task-row-hover
+    managed: true
+    requires:
+      - managed-worktree-ui
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/task-row-hover/index.ts
+      - packages/ui/src/task-row-hover/contract.ts
+    layers:
+      ui: .
+    owner: conversation
+
+  # cli-memory-diagnostics：由 architecture:adopt 登记
+  - id: cli-memory-diagnostics
+    roots:
+      - apps/ccbuddy-cli/packages/adapters/src/memory-diagnostics
+      - apps/ccbuddy-cli/packages/adapters/tests/memory-diagnostics
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/resource-sampler.ts
+      - packages/services/src/feedback/feedbackLogArchive.ts
+      - packages/desktop/scripts/cli-diagnostic-evidence-smoke.mjs
+      - packages/services/src/ccbuddy-agent/agentStderrCollector.ts
+    managed: true
+    requires: [shared, ccbuddy-cli, agent-crash-diagnostic]
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/memory-diagnostics/index.ts
+      - apps/ccbuddy-cli/packages/adapters/src/memory-diagnostics/contract.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/resource-sampler.ts
+      - packages/services/src/feedback/feedbackLogArchive.ts
+      - packages/services/src/ccbuddy-agent/agentStderrCollector.ts
+    layers:
+      adapters: .
+    owner: agent
+  # shortcuts：快捷键内核（docs/desktop/shortcut-settings-spec.md）。公开入口沿用登记前各处直接引用的文件
+  - id: shortcuts
+    roots:
+      - packages/ui/src/shortcuts
+    managed: true
+    requires:
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/shortcuts/contract.ts
+      - packages/ui/src/shortcuts/bindings.ts
+      - packages/ui/src/shortcuts/conflicts.ts
+      - packages/ui/src/shortcuts/label.ts
+      - packages/ui/src/shortcuts/useShortcutBindings.ts
+      - packages/ui/src/shortcuts/composerShortcuts.ts
+    layers:
+      ui: .
+    owner: desktop
+  # workspace-plugin-trust：由 architecture:adopt 登记
+  - id: workspace-plugin-trust
+    roots:
+      - apps/ccbuddy-cli/packages/bootstrap/src/workspace-plugin-trust
+    managed: true
+    requires:
+      - shared
+      - ccbuddy-cli
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/bootstrap/src/workspace-plugin-trust/index.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/workspace-plugin-trust/contract.ts
+    layers:
+      adapters: .
+    owner: cli
+  # workspace-plugin-declaration：由 architecture:adopt 登记
+  - id: workspace-plugin-declaration
+    roots:
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/workspace-plugin-declaration
+    managed: true
+    requires:
+      - plugin-discovery
+      - ccbuddy-cli
+    publicEntrypoints:
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/workspace-plugin-declaration/index.ts
+      - apps/ccbuddy-cli/packages/adapters/src/plugins/workspace-plugin-declaration/contract.ts
+    layers:
+      adapters: .
+    owner: cli
+
+  # windows-git-bash-discovery：由 architecture:adopt 登记
+  - id: windows-git-bash-discovery
+    roots:
+      - packages/shared/src/node/windowsGitBashDiscovery
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/node/windowsGitBashDiscovery/index.ts
+      - packages/shared/src/node/windowsGitBashDiscovery/contract.ts
+    layers:
+      adapters: .
+    owner: runtime
 
 global:
-  maxFileLines: 400
+  # 临时时间戳（2026-09-10）：unmanaged-new-file 只约束此日期之后首次入库的文件。
+  # 基于领先 staging 很多的分支开工时，merge-base 之前的"新增"文件不应被追溯。
+  newFilesEnforcedSince: "2026-09-10"
+  acceptedUpstreamCommits: []
+  maxFileLines: 800
   maxContractLines: 300
   maxPublicMethods: 12
   forbidCycles: true
   forbidDeepImports: true
   managedOnly: true
+  acceptedUpstreamSnapshot: scripts/architecture/upstream-snapshot.json
 
 exceptions:
+  - id: region-copy-suggested-prompts-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/v4/featureSuggestedPrompts.ts]
+    reason: 上游 f3fcc23e04 已引入的模式推荐提示词仅替换「国内」为「中国」一处区域称谓；本次不接管整个 ui 未受管模块。
+  - id: workflow-fill-frames-scrollbar-loop-fix
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/app-shell/WorkflowRunFillFrames.tsx]
+    reason: 上游已有的侧板补全框只修一处崩溃——框的 svg 不再按量到的尺寸定盒子，消除它与滚动条互相触发的无限更新（Maximum update depth）；不新增导入、不改模块边界，本次不接管整个 ui 未受管模块。
+  - id: removed-tool-grouping-action-catalog
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/lib/userActionTraceCatalog.ts]
+    reason: 上游已有埋点目录仅删除已移除分组选项的三个事件声明；本次不接管整个 UI lib 目录。
+  - id: assistant-block-order-tool-part-order-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/agent/tool-part-order.ts]
+    reason: 已准入的工具 part 选择只增加 blockIndex 排序（apps/ccbuddy-cli/docs/design/v2/model/assistant-block-order.md），declarationIndex 与物理顺序兜底不变；接管整个 core 包不在本次范围内。
+  - id: assistant-block-order-prompt-trajectory-continuity-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/tools/prompt-trajectory/src/message-continuity.ts]
+    reason: 已准入的调试工具比较回复前折叠多个文字块，适配每个文字块单独回放（apps/ccbuddy-cli/docs/design/v2/model/assistant-block-order.md）；只读比较逻辑，不改变模块边界。
+  - id: session-features-attribution-header-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/adapters/src/model/runner-attribution.ts]
+    reason: 已准入的归因头构造器只追加 x-ccbuddy-session-features（docs/design/v2/model/session-features-header.md）；它仍是全部归因头的唯一写入点，签名与模块边界不变，接管整个 adapters 包不在本次范围内。
+  - id: session-features-workflow-command-pattern-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/methods/dynamic-workflow-activation.ts]
+    reason: 已准入的动态工作流激活只导出既有 `/workflow` 历史判据常量，供 session-features 的历史推导复用同一判据；激活行为、owner 与模块边界不变。
+  - id: node-repl-call-ledger-cua-bridge-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/node-repl-host/src/cua-bridge.ts]
+    reason: 已准入的 node_repl CUA bridge 只删去 Worker 侧的会话信息构造与目标应用身份记录，二者移到主线程 CUA broker（apps/ccbuddy-cli/docs/design/v2/tool/20-node-repl-call-ledger.md）；subagent 拒绝与对模型的行为不变，接管整个 node-repl-host 包不在本次范围内。
+  - id: node-repl-call-ledger-cua-broker-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/node-repl-host/src/cua-broker.ts]
+    reason: 已准入的 node_repl CUA broker 改为只认 node-repl-call-ledger 签发的本次调用 token，按账本条目构造会话信息并把目标应用身份记进账本（20-node-repl-call-ledger.md「CUA broker」）；MR !3207 再在 token 校验之后把会话能力标签用的 computerUse 记进账本（docs/design/v2/model/session-features-header.md）；runtime 调用与响应格式不变。
+  - id: node-repl-call-ledger-result-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/node-repl-host/src/result.ts]
+    reason: 已准入的 node_repl 结果组装改为只从账本 facts 取可信 key，忽略 Worker 结果消息里的同名字段（20-node-repl-call-ledger.md「结果组装」）；MR !3207 按同样处置追加 ccbuddy/nodeReplBrowserUse、ccbuddy/nodeReplComputerUse 两个 key（docs/design/v2/model/session-features-header.md）；结果内容与其他 meta 处置不变。
+  - id: offpeak-expiration-codes-existing-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/off-peak/model-binding.ts]
+    reason: 已准入的闲时请求包装器仅复用共享错误码判断，补齐 3106 运行超时的既有生命周期通知；不改变 owner、控制协议或模块边界，不扩展为整个 CLI runtime 目录接管。
+  - id: multi-cursor-badge-title-passthrough-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/node-repl-host/src/cua-broker.ts
+    reason: 已准入的 node_repl CUA broker 仅增透传可选 actionTitle 字段（node_repl cell title → badge 文字，docs/cua/producer/multi-session-cursor-overlay-spec.md §4.8）——cua-broker 按 ledger meta 构建的 requestContext 注入、parseContext 白名单补字段；签名、broker 形态与模块边界不变，不接管 ccbuddy-cli 目录。
+  - id: conversation-share-manage-scope-passthrough-edit
+    rule: unmanaged-new-file
+    paths: [packages/services/src/conversation-share/conversationShareConnectionScope.ts]
+    reason: 已准入的分享 attachment 作用域包装只追加设置页分享管理的四个方法（docs/conversation-share-v1.md「设置页分享管理」）：桌面分支原样透传，手机远控分支拒绝；不改变 R3 受信连接、发布/导入作用域与模块边界，接管整个 services/conversation-share 目录（含既有超长文件）不在本次范围内。
+  - id: conversation-selection-comment-quote-schema-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/conversationSelection.ts]
+    reason: 已准入的对话引用 schema 只追加可选 comment 与 agent 字段（选区批注，docs/ui/conversation-selection-side-chat.md「选区批注」）；仍是 conversationQuotes 的唯一 schema，长度上限与模块边界不变，接管整个 shared 包不在本次范围内。
+  - id: conversation-selection-comment-model-guidance-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/helpers/conversation-quotes.ts]
+    reason: 已准入的引用模型材料拼装只在引用带批注时追加一句说明（docs/ui/conversation-selection-side-chat.md「选区批注」）；仍是 withConversationQuotes 的唯一实现，canonical 正文与 Bot 投递边界不变，接管整个 core 包不在本次范围内。
+  - id: side-pane-full-view-shortcut-command-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/shortcutCommands.ts]
+    reason: 已准入的快捷键命令表只追加一条 toggleSidePaneFullView 命令（Side Pane 完整视图，docs/ui/side-pane-full-view.md）；命令表仍是唯一数据源，签名与模块边界不变，接管整个 shared 包不在本次范围内。
+  - id: browser-session-recent-visits-ui
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/store/browserRecentVisitsStore.ts
+    reason: Session 最近访问仅为 renderer 内存态展示数据，复用既有 UI store 与浏览器 owner，不改变 UI 模块边界或跨层契约。
+  - id: opensource-cua-broker-placeholder
+    rule: unmanaged-new-file
+    paths: [packages/ccbuddy-cua/broker-in-process.js]
+    reason: 导出时此路径由公开占位包提供，只报告 Computer Use 不可用。真实 broker 实现在 producer 的 src 目录，继续按其架构规则检查。
+  - id: opensource-cua-test-project-config
+    rule: unmanaged-new-file
+    paths: [packages/ccbuddy-cua/vitest.config.ts]
+    reason: 该文件只装配测试项目，开源占位版本用于保持根单测入口可运行；不包含 producer 运行逻辑，不为同目录实现文件开放例外。
+  - id: project-location-cache-recovery-existing-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/shared/src/project-access-token.ts
+      - packages/shared/src/project-access-token-client.ts
+      - packages/services/src/model-provider/accountProjectTokenClient.ts
+      - packages/services/src/credential/credentialService.ts
+    reason: 已有项目 Token 与凭据存储增加派生缓存的局部恢复端口，并把换证请求失败按固定类别分码（ZCT-2111046389485834240）；已确认的 PAT 签发临时故障仅在原 pending 内重试一次，不扩展到 Key 创建或 OAuth；保持原有 owner 和共享文件锁，不接管全目录。
+  - id: plugin-agent-permission-mode-restrict-only-existing-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/shared/src/subagent-profile.ts
+      - packages/shared/src/subagent-profile-parser.ts
+    reason: 已准入的存量文件为插件 agent 的 permissionMode 只能收紧（ZP-20261028-13）增加进程内 profile 标记字段并更新注释；跨进程 schema 与解析行为不变，接管 shared 目录不在本次范围内。
+  - id: test-ids-subpath-import-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/browser-use/EmbeddedBrowserPermissionPrompts.tsx
+      - packages/ui/src/hooks/useStartPlanRecommendation.ts
+      - packages/ui/src/settings/DynamicWorkflowModeSetting.tsx
+    reason: 已准入的存量文件只把 TID 导入从 @ccbuddy/shared 根入口改为 @ccbuddy/shared/test-ids 子路径（根入口不再导出 test-ids，以收窄受影响单测范围）；行为与模块边界不变，接管 ui 目录不在本次范围内。
+  - id: settings-personalization-section-new-file
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/settings/PersonalizationSection.tsx]
+    reason: 个性化设置分区组件只编排 ISettingService 的 getUserInstructions/saveUserInstructions 与既有设置页 UI 原语（spec：docs/ui/settings-personalization.md）；读写唯一事实源在服务层，不新增平行状态，接管整个 ui 目录不在本次范围内。
+  - id: settings-personalization-size-constant-new-file
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/userInstructions.ts]
+    reason: 用户自定义指令字节上限共享常量（与 CLI 读取截断对齐，spec：docs/ui/settings-personalization.md），服务层校验与 UI 计数共用同一数值；仅两个常量导出，接管整个 shared 目录不在本次范围内。
+  - id: remote-workspace-admission-deadline-existing-edit
+    rule: unmanaged-new-file
+    paths: [packages/desktop/src/host/remoteWorkspacePreparation.ts]
+    reason: 已准入的远程项目目录 admission 只增加 30 秒截止时间和可重试的无响应错误码（3.16.2 远端回归 R8，docs/remote/project-first-remote-navigation-spec.md §2.4）；owner、调用方与模块边界不变，接管 desktop host 目录不在本次修复范围内。
+  - id: gen-ui-existing-capability-check
+    rule: unmanaged-new-file
+    paths: [packages/services/src/ccbuddy-agent/independentPlanSupport.ts]
+    reason: 在已存在的 CLI 能力查询入口补充 GenUI 上下文能力检查，防止旧 CLI 静默丢弃状态；保持既有 services/agent 边界，不扩展本次修复为整个 ccbuddy-agent 模块接管。
+  - id: connection-log-secret-token-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/source-server/connectionLog.ts]
+    reason: 已存在的连接日志过滤函数只把已知秘密从子串替换改为完整 token 匹配，修复短密码反推泄露；签名与模块边界不变，接管整个 shared 包不在本次修复范围内。
+  - id: connection-errors-econnreset-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/source-server/connectionErrors.ts]
+    reason: 已存在的连接错误归一化码表补一项 ECONNRESET → remote-host-unreachable，修复在线断连恢复失败被误报为预检失败；签名与模块边界不变，接管整个 shared 包不在本次修复范围内。
+  - id: remote-authentication-unsupported-presentation-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/lib/remoteConnectionPresentationErrors.ts]
+    reason: 已存在的远程连接错误展示映射为新增公开码 remote-authentication-unsupported 补一项标题与“查看详情”操作，修复 SSH 二次验证失败被提示为检查密码；签名与模块边界不变，接管 ui 目录不在本次修复范围内。
+  - id: source-server-operation-log-level-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [packages/desktop/src/host/sourceServerOperationLogs.ts]
+    reason: 已有连接日志封装透传 TransportContext 已定义的 level，使低版本 glibc 提示保留 warn；Host 仍是唯一日志 owner，签名与模块边界不变，接管整个 desktop 包不在本次范围内。
+  - id: client-config-public-field-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/clientConfig.ts]
+    reason: Existing upstream public config parser gains one validated recommendation field; ownership and module boundaries remain unchanged, and adopting the shared package is outside this change.
+  - id: draft-model-migration-composer-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/v4/composer/draftModelMigration.ts
+      - packages/ui/src/v4/composer/newTaskDraft.ts
+    reason: 服务端规则驱动的草稿模型迁移（docs/chat/draft-model-migration.md）。新增文件只含纯判定与本设备 localStorage 标记；newTaskDraft 仅额外返回 Recent 来源。草稿 owner 仍是 useDraftConfigControl，不新增模块、IO 通道或状态 owner；接管整个 ui 目录不在本次紧急上线范围内。
+  - id: highspeed-transcript-owner-existing-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/highspeed/highspeedTurnHydration.ts]
+    reason: 该文件已存在于集成基线；本次仅在既有 transcript 水合映射中保留稳定匿名 ownerKey，不新增模块、IO 或状态 owner。账号归属校验仍由 Host 执行，UI store 继续拥有临时查询占位。接管整个 UI 目录不在此变更范围，行为和验收见 docs/highspeed/highspeed-card-spec.md。
+  - id: client-config-optional-authorization-existing-readers
+    rule: unmanaged-new-file
+    paths:
+      - packages/services/src/client-config/clientConfigService.ts
+      - packages/provider-node/src/ccbuddy-builtin-download.ts
+    reason: 现有配置读取器新增宿主注入的可选 JWT，并隔离身份缓存和 CDN 请求头；不新增源码文件或改变服务与下载器的 owner，整包架构接管不属于本次请求头修复。
+  - id: highspeed-fallback-snapshot-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/methods/turn-execution-fallback.ts]
+    reason: 合并已存在于 staging 的加速卡回退模块，仅将可变 Session 读取替换为本轮固定候选；保持现有 Core 模块边界，不在同步分支时机械拆分整个 runtime。
+  - id: session-owned-workflow-shutdown-existing-files
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-workflow-run-submit.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/workflow-driver-quiescence.ts
+    reason: 两个文件已存在于集成基线；本次在既有 bootstrap owner 内补启动关闭互斥和 actor 清理等待，不新增模块或跨层依赖。整个 bootstrap/app 的接管另行治理，生命周期公开模块边界保持不变。
+  - id: workflow-quota-auto-resume-unmanaged-file
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-workflow-quota-resume.ts]
+    reason: 额度停止的 run 到点自动续跑，是 run service 旁的一个宿主模块（只读 journal 行、订阅结算、经注入的 resume 续跑）；与同目录的 run service 文件同属未受管的 ccbuddy-cli bootstrap，接管该目录需要单独的模块边界整理。
+  - id: mcp-node-fallback-unmanaged-file
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/adapters/src/mcp/node-fallback.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/mcp-node-fallback.ts
+    reason: 桌面 Electron Node 下 stdio MCP 的 node/npm/npx 回退（apps/ccbuddy-cli/docs/design/v2/mcp-node-fallback.md）。adapters 文件只负责 shim 目录与子进程 env 合并，经 CreateMcpAdapterOptions.nodeFallback 注入；bootstrap 文件只判定 Electron 并给出随包 npm 候选目录。两者同属未受管的 ccbuddy-cli，接管 adapters/mcp 或 bootstrap/app 需要单独的模块边界整理。
+  - id: workflow-unrecognized-code-cap-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/adapters/src/model/workflow-model-failure-policy.ts]
+    reason: 已准入的 workflow 模型错误策略表只增加一行（分类器不认识的业务码在同一次请求里连续出现 10 次时停 run）、一个连续计数入参与两个计数纯函数；runner 与 driver 读同一函数的约束与模块边界不变，接管 adapters/model 目录不在本次范围内。
+  - id: plugin-async-discovery-existing-callers
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/plugin-ui-surfaces.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/ccbuddy-protocol/runtime-cleanup.ts
+      - apps/ccbuddy-cli/packages/cli/src/plugins-command-shared.ts
+      - apps/ccbuddy-cli/packages/cli/src/plugins-marketplace-command.ts
+      - apps/ccbuddy-cli/packages/cli/src/tui-prompt-handler-queries.ts
+    reason: 已有插件发现调用方迁移为 await；runtime-cleanup 在原进程关闭编排中释放注入的准备 owner，没有新增文件。对应契约见 docs/workspace-capability-discovery-cache.md，不为此次异步化与预热接管整个 CLI 或协议目录。
+  - id: automation-self-pause-turn-visibility-existing-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/methods/turn-tool-visibility.ts]
+    reason: 已有 turn 工具可见性 owner 仅增加当前 automation 自暂停的反向可见性规则；不新增跨模块依赖或 owner，接管整个 ccbuddy-cli runtime 超出本次缺陷修复范围。
+  - id: compact-bundle-reminder-builder-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/methods/runtime-reminder-persistence.ts]
+    reason: 已入库的隐藏提醒落盘函数拆出只构建记录的函数，供 compaction 把公告、summary 与附件交给同一个 store 事务；记录不再写 tools 字段，中断标记按普通 user 文本取正文；Core 模块边界不变，接管整个 runtime 目录不在本次范围内。
+  - id: tool-search-schema-key-order-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/contracts/src/tools/tool-search.ts]
+    reason: 已入库的 ToolSearch 输入 schema 改走统一的 toToolJsonSchema，使 key 顺序与其他工具一致，$schema 随之从 draft-07 改为 2020-12；contracts 模块边界不变，接管整个 tools 目录不在本次范围内。
+  - id: tool-search-removal-reason-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/adapters/src/model/tool-search.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/search/exposure.ts
+      - apps/ccbuddy-cli/tools/prompt-trajectory/src/tool-search-comparison.ts
+    reason: 已入库的 ToolSearch 能力解析、公告渲染与离线轨迹识别按删除原因分段，并由 adapter 声明 Anthropic 协议的提醒折叠能力；增量事实、持久化与模块边界不变，接管整个 ccbuddy-cli 目录不在本次范围内。
+  - id: interrupt-marker-unmanaged-new-file
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/methods/interrupt-marker.ts]
+    reason: 停止轮次后给模型的中断标记放在 runtime/methods 的独立小文件，避免继续增大已超行数的 turn.ts；复用隐藏提醒的落盘函数（persistRuntimeReminderMessage）与历史提交，Core 模块边界不变，接管整个 ccbuddy-cli 目录不在本次范围内。
+  - id: instruction-files-delta-unmanaged-new-file
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/context/sections/instruction-files.ts]
+    reason: 指令文件与 MEMORY.md 索引的按文件渲染、hash 与增量文案放在 context/sections 的独立小文件，完整公告与增量公告共用（apps/ccbuddy-cli/docs/design/v2/loop/meta-user-context.md）；只被同包的 request-user-context 与 context-refresh 引用，Core 模块边界不变，接管整个 ccbuddy-cli 目录不在本次范围内。
+  - id: prompt-snapshot-unmanaged-new-file
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/helpers/prompt-snapshot.ts]
+    reason: 主会话已发 system 的快照读写放在 runtime/helpers 的独立小文件（apps/ccbuddy-cli/docs/design/v2/loop/prompt-snapshot.md）；数据存在现有 session_entry（类型 runtime/prompt_snapshot），不改表，只被同包的 turn-loop、resume、compact-active、session-fork 与 rebuildContextPrefix 引用，Core 模块边界不变，接管整个 ccbuddy-cli 目录不在本次范围内。
+  - id: gen-ui-output-fork-session-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/helpers/gen-ui-output.ts]
+    reason: 已入库的 Gen UI 输出目录解析加一个可选 session id 参数，fork 时取子会话自己的目录写入环境更新（docs/specs/gen-ui-output-directory.md）；默认仍取当前会话，调用方与 Core 模块边界不变，接管整个 ccbuddy-cli 目录不在本次范围内。
+  - id: off-peak-takeover-context-prefix-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/off-peak/turn.ts]
+    reason: 已入库的闲时接管函数换成用户模型后，按新模型重建 Context Prefix，与 guide 换模型共用 rebuildContextPrefix；接管时机、归属与 Core 模块边界不变，接管整个 ccbuddy-cli 目录不在本次范围内。
+  - id: turn-work-segment-comment-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/v4/conversationTurnRenderUnitTypes.ts]
+    reason: 已入库的渲染单元类型只更新 workSegments 字段注释，使其与同一 drain 边界的 guide 共用一段的行为一致；类型与 ui 模块边界不变，接管整个 v4 目录不在本次范围内。
+  - id: shortcut-settings-existing-ui-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/components/ui/kbd.tsx
+      - packages/ui/src/settings/ShortcutSearchBar.tsx
+      - packages/ui/src/settings/ShortcutSettingsSection.tsx
+    reason: Existing upstream shortcut components and keycap primitive edited for shared controls, responsive layout and save admission; adopting the entire settings directory requires a separate boundary refactor.
+  - id: sidebar-workflow-tooltip-existing-ui-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/components/workflow-run-line/WorkflowRunRail.tsx]
+    reason: Existing upstream workflow rail edited only to adapt native titles within the sidebar tooltip scope; workflow ownership and imports remain unchanged except for the shared UI tooltip adapter.
+  - id: onboarding-existing-module-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/services/src/onboarding/
+      - packages/ui/src/onboarding/
+    reason: onboarding 目录（记录持久化服务与触发 hook）是已合入 staging 的存量功能模块，本轮修复在其既有边界内收紧老用户判定与兜底；模块 adopt 登记需单独的边界梳理，不在本缺陷修复内展开。
+  - id: settings-search-existing-row-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/settings/ProactiveSuggestionsSetting.tsx]
+    reason: 已有的主动任务推荐设置行只增加 SettingsRow 的稳定定位 id，不改变引导记录读写和模块依赖；搜索实现独立登记在 settings-search 模块，不把现有引导设置迁入搜索模块。
+  - id: remote-connection-flow-existing-size
+    rule: max-file-lines
+    paths: [packages/ui/src/remote-connection-flow/index.ts]
+    reason: Preserve the existing single hook owner and closure; module adoption must not mechanically split state to satisfy line counts.
   - id: gen-ui-tweak-runtime-size
     rule: max-file-lines
     paths: [packages/desktop/src/renderer/src/plugin-sandbox/genUiTweakRuntime.js]
@@ -263,3 +2342,312 @@ exceptions:
     rule: disable-count
     paths: [packages/desktop/src/renderer/src/plugin-sandbox/genUiTweakRuntime.js]
     reason: Allow the control-character validation regex and the single-file parameter-control runtime.
+  - id: workflow-amend-provider-boundary-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/contracts/src/tools/amend-workflow.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/amend-workflow-resolve.ts
+    reason: Admitted upstream files edited only to make an own-run AmendWorkflow that brings in a new provider ask the user; adopting the ccbuddy-cli contracts and core handlers needs a separate module boundary refactor.
+  - id: remote-device-list-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/settings/SourceServerDeviceRow.tsx
+      - packages/ui/src/settings/sourceServerDeviceList.ts
+      - packages/ui/src/lib/remoteConnectionPresentation.ts
+    reason: Settings remote device list (RDUX-13) splits the presentational row and pure ordering/search helpers out of the existing SourceServerManagementPanel, and removes the now-unused settings navigation status aggregate from the admitted presentation model; adopting packages/ui/src/settings or packages/ui/src/lib needs a separate module boundary refactor (same pattern as settings-machine-unmanaged-edit).
+  - id: workflow-share-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/services/src/conversation-share/conversationShareInlineImages.ts
+      - packages/services/src/conversation-share/conversationShareWorkflowSnapshot.ts
+      - packages/shared/src/conversation-share-content.ts
+      - packages/shared/src/conversation-share-tool-presentation.ts
+      - packages/ui/src/v4/ConversationShareContent.tsx
+      - packages/ui/src/v4/ConversationShareWorkflow.tsx
+      - packages/ui/src/v4/conversationShareItems.ts
+      - packages/ui/src/ToolCallBlocks/ToolPresentation.tsx
+      - packages/ui/src/ToolCallBlocks/presentationCapabilities.tsx
+      - packages/ui/src/ToolCallBlocks/renderers/list-models.tsx
+      - packages/ui/src/ToolCallBlocks/renderers/list-saved-workflows-presentation.tsx
+      - packages/ui/src/ToolCallBlocks/renderers/web-fetch.tsx
+      - packages/ui/src/hooks/useToolPresentationHostCapabilities.ts
+      - packages/ui/src/chat-input-toolbar/thoughtLevelLabels.ts
+      - packages/ui/src/components/workflow-timeline/subagent-model-label.ts
+      - packages/desktop/src/main/fileApplications.ts
+    reason: Feature-branch files admitted path-exact; adopting conversation-share, tool presentation or renderer directories needs a separate module boundary refactor (same pattern as settings-machine-unmanaged-edit).
+  # 既有 workflow 摘要 renderer 的展示调整；仅登记这两个文件，不放开整个 renderer 目录。
+  - id: workflow-summary-row-existing-ui-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/ToolCallBlocks/renderers/workflow-draft-row.tsx
+      - packages/ui/src/ToolCallBlocks/renderers/workflow-fill-row.tsx
+    reason: Existing workflow row renderers edited only to replace decorative summary dots with layout spacing; adopting the renderer directory requires a separate module boundary refactor. Other architecture rules remain enforced.
+  - id: workflow-notifications-unmanaged-files
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/core/src/runtime-task/workflow-blocked-reminder.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/dynamic-workflow-blocked-reminder.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime-task/workflow-notification-copy.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/dynamic-workflow-run-hole-notification.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/model-reference.ts
+      - packages/shared/src/test-ids-workflow.ts
+    reason: Workflow reminder, notification and model reference files reached staging without the MR architecture gate running; adopting the ccbuddy-cli core and shared test ids needs a separate module boundary refactor.
+  - id: composer-toolbar-unmanaged-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/ControlShortcutBadge.tsx
+      - packages/ui/src/chat-input-toolbar/ComposerEffortHeading.tsx
+      - packages/ui/src/chat-input-toolbar/ComposerModelMenu.tsx
+      - packages/ui/src/chat-input-toolbar/ComposerProviderMenu.tsx
+      - packages/ui/src/chat-input-toolbar/ComposerTriggerTransition.tsx
+      - packages/ui/src/hooks/useComposerConnectionSwitch.ts
+      - packages/ui/src/lib/composerPlanGroups.ts
+      - packages/ui/src/lib/providerFamilyConnectionTransition.ts
+      - packages/ui/src/prompt-editor/useComposerToolbarFit.ts
+    reason: Composer model, provider and toolbar files reached staging without the MR architecture gate running; adopting the packages/ui composer toolbar needs a separate module boundary refactor.
+  - id: provider-endpoint-routing-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/adapters/src/model/endpoint-routing-edition/index.ts
+      - apps/ccbuddy-cli/packages/adapters/src/model/provider-endpoint-routing-options.ts
+    reason: Existing upstream routing assembly files gain the endpoint origin and injected JWT reader; adopting the full CLI model adapter directory needs a separate module boundary refactor.
+  - id: workflow-mode-user-choice-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/shared/src/dynamic-workflow-feature.ts
+      - packages/ui/src/settings/DynamicWorkflowModeSetting.tsx
+      - packages/ui/src/store/dynamicWorkflowAvailabilityStore.ts
+      - packages/ui/src/hooks/useDynamicWorkflowAvailability.ts
+    reason: Admitted upstream files edited only to let the user's dynamic workflow mode choice always win, keep the settings row visible, and describe that the snapshot reload no longer waits for CLI answers; adopting packages/shared/src and packages/ui/src needs a separate module boundary refactor.
+  - id: workflow-source-error-hint-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/contracts/src/tools/fill-workflow-hole.ts
+    reason: Admitted upstream file edited only to rename the constant its comment refers to (CREATE_WORKFLOW_SOURCE_ERROR split into conflict and missing messages); adopting apps/ccbuddy-cli needs a separate module boundary refactor.
+  - id: workflow-analyzer-complexity-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-bindings.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-calls.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-functions.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-loops.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-settle.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-state.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-strands.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/causality-order-types.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/flow-strands.ts
+    reason: Admitted upstream analyzer files edited only to stop the workflow analysis from growing much faster than the script (callback bindings, loop regions, join control, flow strands); adopting apps/ccbuddy-cli/packages/dynamic-workflow needs a separate module boundary refactor that first breaks its 24 internal import cycles.
+  - id: off-peak-model-descriptor-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/off-peak/model-binding.ts]
+    reason: 已入库的闲时 Model 包装改用 contracts 的 modelDescriptorOf 复制全部数据字段，修复逐字段手抄漏掉 requestCapabilities；包装行为与 Core 模块边界不变，接管整个 runtime 目录不在本次范围内。
+  - id: workflow-draft-read-state-per-path-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/tool/handlers/workflow-draft-read-state.ts]
+    reason: 已入库的工作流草稿读状态登记改走 setReadFileStateEntry，跟随读状态改为每个路径一条；草稿流程与 Core 模块边界不变，接管整个 tool 目录不在本次范围内。
+  - id: workflow-skill-gate-compact-read-state-comment-unmanaged-edit
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/tool/handlers/workflow-skill-gate.ts]
+    reason: 已入库的工作流技能门只更新一句注释，跟随 compaction 后读取状态改为只留补回的文件；门的判据、代码与 Core 模块边界不变，接管整个 tool 目录不在本次范围内。
+  - id: conversation-telemetry-existing-state-machine-size
+    rule: max-file-lines
+    paths:
+      - packages/shared/src/conversation-telemetry/conversationTelemetryEngine.ts
+      - packages/shared/src/conversation-telemetry/messageTelemetry.ts
+    reason: Relocate the existing renderer state machine and builders unchanged so desktop and execution share token/step semantics; retain one lifecycle owner instead of splitting state to meet line counts.
+  - id: conversation-telemetry-existing-state-machine-lint
+    rule: disable-count
+    paths:
+      - packages/shared/src/conversation-telemetry/conversationTelemetryEngine.ts
+      - packages/shared/src/conversation-telemetry/messageTelemetry.ts
+    reason: Preserve the two original file-length annotations while relocating the existing implementation.
+  - id: host-service-telemetry-existing-file
+    rule: unmanaged-new-file
+    paths: [packages/desktop/src/host/hostServiceResourceTelemetry.ts]
+    reason: Existing main-branch registration point gains a Host-only event and capability gate; adopting the whole Host runtime is outside this telemetry change.
+  - id: browser-device-presets-export-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/browser-use/browserPageExport.ts
+      - packages/ui/src/browser-use/useBrowserPageExport.ts
+      - packages/desktop/src/main/desktopCaptureBrowserGuestPage.ts
+    reason: Browser pane export (docs/browser-use/2026-10-16-browser-device-presets-and-export-spec.md) colocates with the existing unmanaged browser-use view and toolbar it extends, and its main-side PNG capture sits next to the existing unmanaged desktopPrintToPdf handler it mirrors; adopting packages/ui/src/browser-use and packages/desktop/src/main as managed modules needs a separate boundary refactor of the embedded browser.
+  - id: browser-element-screenshot-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/browser-use/browserElementScreenshot.ts]
+    reason: Element picker screenshots (docs/browser-use/2026-11-03-browser-element-screenshot-and-live-reload-spec.md) reuse the unmanaged browser-use main-side capture; the helper sits next to the existing unmanaged browser view, and the composer side reuses plugin-ui's public useContextImageAttachments; adopting packages/ui/src/browser-use as a managed module needs a separate boundary refactor.
+  - id: browser-file-live-reload-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/browser-use/useBrowserFileLiveReload.ts]
+    reason: Browser file:// live reload (docs/browser-use/2026-11-03-browser-element-screenshot-and-live-reload-spec.md) mirrors the unmanaged usePptxFileWatch pattern and is wired only into the existing unmanaged UnifiedBrowserView; adopting packages/ui/src/browser-use as a managed module needs a separate boundary refactor of the embedded browser.
+  - id: browser-design-mode-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/browser-use/BrowserDesignInspector.tsx
+      - packages/ui/src/browser-use/BrowserDesignFields.tsx
+      - packages/ui/src/browser-use/browserDesignProperties.ts
+      - packages/ui/src/browser-use/BrowserDesignToolbar.tsx
+      - packages/ui/src/browser-use/useBrowserDesignMode.ts
+      - packages/ui/src/browser-use/useBrowserDesignRuntime.ts
+      - packages/ui/src/browser-use/useBrowserDesignSourceWriter.ts
+      - packages/ui/src/v4/composer/ElementMentionSyncPlugin.tsx
+    reason: Browser design mode (docs/browser-use/2026-11-03-browser-design-mode-spec.md) adds the thin host layer next to the existing unmanaged UnifiedBrowserView it extends; page logic lives in the managed design-runtime package. Adopting packages/ui/src/browser-use as a managed module needs a separate boundary refactor of the embedded browser.
+  - id: browser-design-preload-bridge-unmanaged-new-file
+    rule: unmanaged-new-file
+    paths: [packages/desktop/src/preload/embeddedBrowserDesignBridge.ts]
+    reason: The design runtime's page-to-host forwarder (docs/browser-use/2026-11-03-browser-design-mode-spec.md) is installed by the existing unmanaged embedded browser guest preload next to its embeddedBrowserWheel forwarder and reuses the same sendToHost channel registry; adopting packages/desktop/src/preload as a managed module needs a separate boundary refactor.
+  - id: file-tree-html-click-browser-unmanaged-new-file
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/settings/FileTreeHtmlOpenSetting.tsx]
+    reason: The opt-in "open HTML in the built-in browser on click" switch (docs/browser-use/2026-11-03-browser-element-screenshot-and-live-reload-spec.md) is a self-contained settings row rendered by the existing unmanaged BrowserSettingsSection, following the ProactiveSuggestionsSetting pattern; adopting packages/ui/src/settings needs a separate module boundary refactor.
+  - id: request-verification-config-recovery-presentation
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/request-security-edition/errors.ts
+    reason: 在现有官方版本安全校验展示入口补充配置读取失败的分类与本地化，不改变状态 owner 或模块边界；公共 errors.ts 入口及其开源占位实现承接同一契约，沿用本条精确路径准入；接管整个 UI 安全校验目录不属于本次网络恢复修复。
+  - id: node-repl-no-progress-hint-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/node-repl-host/src/tool-contract.ts
+    reason: Admitted upstream node_repl host keeps bumping its serverInfo version in tool-contract.ts (the no-progress hint file itself was removed in 0.7.1); adopting the whole node-repl-host package needs a separate module boundary refactor.
+  - id: ccbuddy-cua-unmanaged-new-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/ccbuddy-cua/src/**
+    reason: The whole ccbuddy-cua producer package (broker, native adapters, tools) entered the repo after the gate timestamp as pre-existing code moved from a separate repository; adopting its internal layers needs a dedicated CONTRACT pass (it has known internal cycles by design), not a mechanical split in this branch.
+  - id: ui-more-locales-new-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/shared/src/locale.ts
+      - packages/desktop/src/main/desktopApplicationLocaleBootstrap.ts
+      - packages/ui/src/i18n/localeMessages.ts
+      - packages/ui/src/i18n/locales/ja-JP.ts
+      - packages/ui/src/i18n/locales/ko-KR.ts
+      - packages/ui/src/i18n/locales/ru-RU.ts
+    reason: 新增日/俄/韩界面语言（docs/i18n/ui-locales.md）。locale.ts 是语言解析与回退的唯一事实源；Main 冷启动只读 setting.json 取界面语言；localeMessages 只装配各语言文案表；三份文案表与 en-US/zh-CN 同构，单文件远超 800 行上限，登记 managed 模块也须另加行数例外。接管整个 ui/shared/desktop 目录不在本次范围内。
+  - id: visualize-plugin-icon-existing-edit
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/lib/pluginIconSource.ts]
+    reason: 已准入的存量图标解析文件仅增加 Visualize 官方身份与本地 PNG 的映射（docs/builtin-plugin-icons.md）；不改变解析函数、受信任图片规则、状态归属或模块边界，不为其他 UI 文件开放例外。
+  - id: ui-loader-circle-existing-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/DeleteAllArchivedTasksButton.tsx
+      - packages/ui/src/components/workflow-timeline/WorkflowRoll.tsx
+      - packages/ui/src/components/workflow-timeline/WorkflowRosterParts.tsx
+      - packages/ui/src/v4/BotTopicPreparation.tsx
+    reason: 已准入的四个存量 UI 文件仅统一 Lucide 图标为 LoaderCircle（docs/design/loading-icons.md），不新增文件、不改变状态 owner、公共契约或模块依赖；本次不接管其所在业务模块。
+  - id: ui-more-locales-existing-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/desktop/src/host/hostSessionCreateTelemetry.ts
+      - packages/services/src/marketing-touch/marketingTouch.ts
+      - packages/services/src/marketing-touch/marketingTouchService.ts
+      - packages/shared/src/marketingTouch.ts
+      - packages/ui/src/app-shell/WorkflowRunHoleParts.tsx
+      - packages/ui/src/app-shell/WorkflowRunProvenance.tsx
+      - packages/ui/src/components/marketing-touch/MarketingDialogs.tsx
+      - packages/ui/src/components/marketing-touch/MarketingTouchProvider.tsx
+      - packages/ui/src/components/workflow-timeline/WorkflowSettingsChangeRow.tsx
+      - packages/ui/src/components/workflow-timeline/WorkflowTimelineFills.tsx
+    reason: 已准入的存量文件只把中英二选一的 locale 类型放宽为全部界面语言（X-Client-Language 带真实界面语言，投放内容仍按中英渲染），会话创建遥测接收 Host 界面语言，时间格式化传入界面语言；owner、签名形态与模块边界不变，接管 marketing-touch/workflow-timeline 目录不在本次范围内。
+  - id: dwf-held-elsewhere-and-leftovers-existing-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-workflow-run-fill.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-workflow-run-roster-phases.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/dynamic-workflow-run-roster.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/amend-workflow-source.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/fill-workflow-hole-resolve.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/get-workflow-run-format-roster.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/get-workflow-run-summary.ts
+    reason: Existing dynamic-workflow files only gain the refusal for a run held by another process and accurate wording for unfinished steps (docs/dynamic-workflow/launch.md); no new file, owner or module boundary changes.
+  - id: dwf-websearch-budget
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/workflow-driver-types.ts
+      - apps/ccbuddy-cli/packages/bootstrap/src/app/workflow-driver-web-search-budget.ts
+      - apps/ccbuddy-cli/packages/contracts/src/interfaces/workflow-web-search-budget.port.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/actor-budgets.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/analysis/actor-models.ts
+      - apps/ccbuddy-cli/packages/dynamic-workflow/src/engine/persona.ts
+    reason: The per-task WebSearch limit for workflow subagents (docs/dynamic-workflow/authoring.md, "A subagent's search budget") adds three small files beside the workflow driver, the contracts interfaces and the compiler's persona check, and edits three existing ones; it follows the existing escalation path and changes no owner or module boundary.
+  - id: tool-executor-live-entry-resolution-unmanaged-file
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/tool/executor/live-entry-resolution.ts]
+    reason: 执行前把缓存 advertisement entry 换成 live entry 的纯函数，从同目录的 call-runner 拆出，只收敛不可用与取消两种错误形态；与同目录文件同属未受管的 ccbuddy-cli core，接管整个 tool/executor 目录需要单独的模块边界整理。
+  - id: design-plugin-third-party-resources
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/design-plugin/skills/design/design-resources/**
+    reason: 内置 design 插件随包的第三方设计资源（骨架里的 deck-stage.js、schema.ts 等示例资产），按上游字节保留并登记在 third-party/copied-components.json；它们只作为技能读取或复制给用户的模板，不被任何产品代码 import，不构成产品模块。
+  - id: agent-runtime-exit-banner
+    rule: unmanaged-new-file
+    paths: [packages/ui/src/v4/AgentRuntimeExitBanner.tsx]
+    reason: 后台 runtime 意外退出时会话底部的说明横幅与订阅 hook（docs/ui/agent-runtime-exit-notice.md），与 PendingCommandRecoveryBanner 同级；只读 services 的 onAgentRuntimeExited，不持有会话状态，不接管整个 ui 未受管模块。
+  - id: background-subagent-stall-notice
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/core/src/subagent/background-stall.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/methods/subagent-stall-reminder.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/handlers/task-output-projection.ts
+    reason: 后台 Agent 无进展提醒（apps/ccbuddy-cli/docs/design/v2/tool/07-subagent.md「后台 Agent 无进展提醒」）新增纯逻辑停滞钟与 runtime 接线两个小文件，与既有 workflow 空闲提醒钟同构；task-output-projection 只为运行中的 local_agent 加 activity 投影。进展事实仍归 RuntimeTaskRegistry，投递复用后台通知队列，不改变模块边界。
+  - id: previous-runtime-subagent-leftovers-observation
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/bootstrap/src/app/subagent-observation.ts]
+    reason: TUI 的子代理观察与 V4 冷恢复共用 projectSessionSubagents；只多传本进程启动时间，使上一代 runtime 崩溃遗留的 child 不再显示为 running（apps/ccbuddy-cli/docs/design/v2/tool/07-subagent.md「上一代 runtime 遗留的 Agent」）。不改变模块边界。
+  - id: total-tokens-reminder
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/core/src/context/total-tokens.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/helpers/total-tokens-budget.ts
+      - apps/ccbuddy-cli/packages/core/src/runtime/helpers/provider-entry-origins.ts
+    reason: token 预算提醒（apps/ccbuddy-cli/docs/design/v2/loop/meta-user-context.md「Total-tokens reminder」）新增两个小文件：预算行文本与计数器纯函数；已准入的 provider-entry-origins 只追加真实用户 prompt 的判定，复用既有来源判据。提醒走现有 system-reminder 来源与投影，不新增 owner、协议或模块边界，接管整个 ccbuddy-cli 不在本次范围内。
+  - id: startup-failure-export-logs
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/root/GlobalDatabaseStartupLoading.tsx
+    reason: 启动失败页在现有复制诊断/重试/退出旁增加导出日志按钮（docs/desktop/database-migration-startup-gate-plan.md）。只扩展既有失败页交互，不新增文件、不改变启动状态 owner 或模块边界；接管 packages/ui/src/root 不在本次范围内。
+  - id: message-markdown-cjk-bare-url-unmanaged-new-file
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/lib/markdownCjkBareUrl.ts
+    reason: 消息 Markdown 解析前预处理新增「中文边界裸链接」改写（docs/ui/markdown-preview-renderers.md），由已有 unmanaged 的 message.tsx 预处理链调用。不改变状态 owner 或模块边界，接管整个 ui 目录不在本次修复范围内。
+  - id: workflow-draft-symlink-index-lines
+    rule: disable-count
+    paths: [apps/ccbuddy-cli/packages/adapters/src/fs/index.ts]
+    reason: 存量 1673 计数行，超过 max-lines 上限；本次只为 ZP-20261110-04 在草稿写入路径增加符号链接校验，校验已移到 fs/symlink-guard.ts 以限制增长。拆分 index.ts 另开工单，不在本次安全修复范围内。
+  - id: workflow-draft-symlink-guard-new-file
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/adapters/src/fs/symlink-guard.ts
+    reason: 从 fs/index.ts 拆出的符号链接写入校验（ZP-20261110-04），仅含 assertNoSymlinkBetween 与其错误类型，供草稿写入前核验父目录。拆分以限制 index.ts 增长，不新增模块边界；接管整个 ccbuddy-cli 不在本次范围内。
+  - id: compact-task-status-restore
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/helpers/compact-task-status.ts]
+    reason: compaction 后补回后台任务状态（apps/ccbuddy-cli/docs/design/v2/rewind-compact.md「后台任务状态」）新增一个纯函数小文件，只把 RuntimeTaskRegistry 快照转成 task_status 提醒文字；只被同包 compact-active 调用。任务事实仍归 RuntimeTaskRegistry，提醒走现有 system-reminder 来源与投影，不新增 owner、协议或模块边界，接管整个 ccbuddy-cli 不在本次范围内。
+  - id: output-token-continuation-persisted
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/core/src/runtime/helpers/compact-preservation.ts]
+    reason: 输出上限 Continue 改为持久化的隐藏行（docs/model-request-output-tokens.md「Output-limit Continue 恢复」）后，已准入的 compact-preservation 只删除 queryScope 排除条件，Continue 按普通历史计数。不新增文件、owner、协议或模块边界，接管整个 ccbuddy-cli 不在本次范围内。
+  - id: contracts-zod4-tool-json-schema
+    rule: unmanaged-new-file
+    paths: [apps/ccbuddy-cli/packages/contracts/src/tools/deferred-tool-call.ts]
+    reason: 工具契约迁到 zod 4 后（apps/ccbuddy-cli/docs/design/v2/tool/00-tool-change-chain.md「工具 JSON Schema 生成」），已准入的 deferred-tool-call 只把 zod-to-json-schema 换成统一的 toToolJsonSchema，record 写成双参数。不新增文件、owner、协议或模块边界，接管整个 ccbuddy-cli 不在本次范围内。
+  - id: tool-error-wrapping-texts
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/contracts/src/model/unparsed-tool-input.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/levenshtein.ts
+      - apps/ccbuddy-cli/packages/core/src/tool/deferred-call.ts
+    reason: 工具错误的包装与文字（apps/ccbuddy-cli/docs/design/v2/tool/00-tool-change-chain.md「工具错误的包装与文字」）新增两个纯函数小文件：入参 JSON 解析失败的 symbol 标记（adapter 写、executor 读），以及从 Read/Edit 各自副本合并出的编辑距离函数（Skill 的相近名称也用它）；已准入的 deferred-call 只把拒绝结果改成带错误码的工具失败。不新增 owner、协议或模块边界，接管整个 ccbuddy-cli 不在本次范围内。
+  - id: cli-browser-state-loader-new-file
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/adapters/src/browser/storage-state.ts
+    reason: CLI headless Browser Use 登录态注入（docs/browser-use/2026-11-17-cli-browser-state-spec.md）的文件读取与 schema 校验，只被同目录已有 unmanaged 的 managed CDP adapter（browser/index.ts）调用并经其公开入口导出。不新增模块边界或状态 owner；接管整个 ccbuddy-cli 不在本次范围内。
+  - id: cli-browser-state-option-new-file
+    rule: unmanaged-new-file
+    paths:
+      - apps/ccbuddy-cli/packages/cli/src/browser-state-option.ts
+    reason: --browser-state 与 --no-browser-state 的参数校验与来源解析（docs/browser-use/2026-11-17-cli-browser-state-spec.md §4），只被已有 unmanaged 的 CLI 入口 run.ts 调用。不新增模块边界或状态 owner；接管整个 ccbuddy-cli 不在本次范围内。

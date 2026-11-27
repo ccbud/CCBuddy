@@ -12,7 +12,7 @@ export interface WorkspaceFileTreeProps {
   temporaryExternalDirectory?: boolean;
   canOpenLocalFileManager?: boolean;
   activePreviewPath?: string | null;
-  onClose: () => void;
+  onClose?: () => void;
   onOpenBrowserUrl?: (url: string) => void;
   onOpenPreview?: (source: CodeViewerSource) => void;
 }
@@ -40,10 +40,13 @@ export interface WorkspaceFileTreeContextMenuLabels {
 }
 
 export interface WorkspaceFileTreeEditorState {
+  workspaceRemoteSessionId?: string;
   canOpenLocalFileManager: boolean;
   installedEditors: EditorInfo[];
   isRemoteWorkspaceFileTree: boolean;
   remoteTarget?: OpenInEditorRemoteTarget;
+  /** 用户偏好：单击本地 .html 文件时进内置浏览器，而不是源码预览 */
+  htmlClickOpensBrowser?: boolean;
 }
 
 export type WorkspaceFileGitStatusLabels = Record<WorkspaceFileGitStatus, string>;

@@ -25,6 +25,9 @@ export const GEN_UI_STATIC_DOMAINS = [
   "fonts.googleapis.com",
   "fonts.gstatic.com",
   "fonts.bunny.net",
+  // 自有 CDN：visualize/gen-ui 页面引用 ccbuddy.z.ai 上的图片等静态资源（与上面公共 CDN 同走 resourceDomains，
+  // 会同时进 img/script/style/media/font 五类 src，可控性高于公共 CDN）
+  "ccbuddy.z.ai",
 ] as const;
 
 /** This is a wire-format check. The executor owns normalization and filesystem authorization. */
@@ -227,6 +230,7 @@ export function selectGenUiModelContext(entries: readonly GenUiStateEntry[]): Ge
   }
   return genUiModelContextSchema.parse(selected);
 }
+
 export const genUiModelContextSchema = z
   .array(z.object({ path: genUiPathSchema, state: z.unknown() }).strict())
   .max(GEN_UI_STATE_MAX_ENTRIES)
@@ -240,8 +244,9 @@ export const genUiModelContextSchema = z
             new TextEncoder().encode(serializeJson(entry.state)).byteLength >
             GEN_UI_STATE_MAX_BYTES,
         )
-      )
+      ) {
         throw new Error("Gen UI model context exceeds its size limit");
+      }
       return JSON.parse(serialized) as Array<{ path: string; state: unknown }>;
     } catch (error) {
       context.addIssue({
@@ -252,21 +257,3 @@ export const genUiModelContextSchema = z
     }
   });
 export type GenUiModelContext = z.infer<typeof genUiModelContextSchema>;
-export function buildGenUiModelContext(entries: readonly GenUiStateEntry[]): string {
-  const selected = selectGenUiModelContext(entries);
-  return selected.length
-    ? `<untrusted_gen_ui_state>\n${JSON.stringify(selected).replaceAll("<", "\\u003c")}\n</untrusted_gen_ui_state>`
-    : "";
-}
-export function stripGenUiModelContext(content: string): string {
-  const match = /\n\n<untrusted_gen_ui_state>\n([^]*?)\n<\/untrusted_gen_ui_state>\s*$/u.exec(
-    content,
-  );
-  if (!match) return content;
-  try {
-    genUiModelContextSchema.parse(JSON.parse(match[1]!));
-    return content.slice(0, match.index);
-  } catch {
-    return content;
-  }
-}

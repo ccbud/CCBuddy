@@ -2,11 +2,23 @@ import type { RuntimeModelTextResult } from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { toTokenUsageInfo } from "../helpers/index.js";
 import {
+  OUTPUT_TOKEN_CONTINUATION_SOURCE,
+  buildAssistantEntries,
   countContextPrefixMessages,
   createRuntimeAssistantEntry,
-  createRuntimeUserEntry,
+  hasAssistantReasoningContent,
+  withSignedReasoningReset,
   type RuntimeMessageEntry,
 } from "../../agent/message-history.js";
+import {
+  createProviderToolRoundEntries,
+  hasProviderToolRoundContent,
+  orderedAssistantHistoryBlocks,
+  providerToolRoundsCompactGroupKey,
+  withCompactGroupKey,
+} from "../provider-tool-rounds/contract.js";
+import { buildProjectionAnchor } from "./projection-anchor.js";
+import { persistRuntimeReminderMessage } from "./runtime-reminder-persistence.js";
 import type { RegularTurnLoopState, TurnRequestState } from "./turn-loop-state.js";
 
 export const OUTPUT_TOKEN_CONTINUE_PROMPT =
@@ -58,21 +70,9 @@ export function isOutputTokenLimitFinishReason(
 
 function createOutputTokenContinuationEntry(): RuntimeMessageEntry {
   return {
-    ...createRuntimeUserEntry(OUTPUT_TOKEN_CONTINUE_PROMPT),
-    queryScope: "output_token_continuation",
+    message: { role: "user", content: OUTPUT_TOKEN_CONTINUE_PROMPT },
+    metadata: { source: OUTPUT_TOKEN_CONTINUATION_SOURCE },
   };
-}
-
-function isOutputTokenContinuationEntry(entry: RuntimeMessageEntry): boolean {
-  return entry.kind !== "attachment" && entry.queryScope === "output_token_continuation";
-}
-
-export function filterOutputTokenContinuationEntries(
-  entries: readonly RuntimeMessageEntry[],
-): readonly RuntimeMessageEntry[] {
-  const firstContinuation = entries.findIndex(isOutputTokenContinuationEntry);
-  if (firstContinuation < 0) return entries;
-  return entries.filter((entry) => !isOutputTokenContinuationEntry(entry));
 }
 
 export function preserveCanonicalContextPrefix(
@@ -101,8 +101,35 @@ export function commitTurnRequestEntries(
   entries: readonly RuntimeMessageEntry[],
 ): void {
   if (entries.length === 0) return;
-  runtime.messageHistory.addEntries(entries);
-  appendTurnRequestEntries(state, entries);
+  // 先记录时间再分别加入历史与本轮请求条目，两边是同一个时间（静默提醒按它计时）。
+  const time = runtime.now().getTime();
+  const timed = entries.map((entry) => (entry.time === undefined ? { ...entry, time } : entry));
+  // 候选定义不能在请求准备/估算时落入历史；正常、流式恢复与保留 partial 共用此提交点。
+  const delivery = state.toolSearchDelivery;
+  let recorded = committedToolSearchDelivery(state) !== undefined;
+  const committed = delivery
+    ? timed.map((entry) => {
+        if (recorded || entry.kind === "attachment" || entry.message.role !== "assistant")
+          return entry;
+        // 空响应可作为 usage 锚点保留，但不能据此固化已交付定义。
+        const message = entry.message;
+        if (!message.content.length && !message.toolCalls?.length) return entry;
+        recorded = true;
+        return { ...entry, toolSearchDelivery: delivery };
+      })
+    : timed;
+  runtime.messageHistory.addEntries(committed);
+  appendTurnRequestEntries(state, committed);
+}
+
+export function committedToolSearchDelivery(state: TurnRequestState) {
+  const delivery = state.toolSearchDelivery;
+  return delivery &&
+    state.entries.some(
+      (entry) => entry.kind !== "attachment" && entry.toolSearchDelivery === delivery,
+    )
+    ? delivery
+    : undefined;
 }
 
 export function commitAssistantToTurnRequest(
@@ -111,34 +138,87 @@ export function commitAssistantToTurnRequest(
   result: RuntimeModelTextResult,
   toolCalls: Parameters<typeof createRuntimeAssistantEntry>[1],
 ): boolean {
-  const reasoning = result.reasoning?.filter(hasAssistantReasoningContent);
-  const hasAssistantContent =
-    state.modelResponse.length > 0 || (reasoning?.length ?? 0) > 0 || (toolCalls?.length ?? 0) > 0;
-  if (!hasAssistantContent) return false;
   // provider result metadata 可能报告别的模型；assistant 归因必须使用
   // Turn 已绑定的 Model，避免恢复链重新引入旧的 provider-owned 模型身份。
   const modelRef = { providerId: state.model.providerId, modelId: state.model.modelId };
-  commitTurnRequestEntries(runtime, state.turnRequestState, [
-    createRuntimeAssistantEntry(
-      state.modelResponse,
-      toolCalls,
-      reasoning,
-      modelRef,
-      toTokenUsageInfo(result.usage),
-    ),
-  ]);
+  const orderedBlocks = orderedAssistantHistoryBlocks(result, toolCalls);
+  if (orderedBlocks) {
+    // 有序结果与冷恢复共用 buildAssistantEntries，live 与冷恢复的条目相同。
+    const entries = buildAssistantEntries({
+      blocks: orderedBlocks,
+      model: modelRef,
+      tokens: toTokenUsageInfo(result.usage),
+      groupKey: providerToolRoundsCompactGroupKey(result.providerToolRounds),
+    });
+    // 签名修复后成功的请求同样在第一条 assistant 上记标记；冷恢复的有序分支按消息 metadata
+    // 对 buildAssistantEntries 的结果做同样处理，两边条目一致。
+    commitTurnRequestEntries(runtime, state.turnRequestState, markRepairedStep(entries, result));
+    return entries.length > 0;
+  }
+  const reasoning = result.reasoning?.filter(hasAssistantReasoningContent);
+  const hasFinalRoundContent =
+    state.modelResponse.length > 0 || (reasoning?.length ?? 0) > 0 || (toolCalls?.length ?? 0) > 0;
+  const hasProviderRounds = hasProviderToolRoundContent(result.providerToolRounds);
+  if (!hasFinalRoundContent && !hasProviderRounds) return false;
+  // 服务端内置工具切出的前序轮次排在最后一轮之前，每轮自带调用与结果。
+  const providerRoundEntries = createProviderToolRoundEntries(
+    result.providerToolRounds,
+    modelRef,
+    hasAssistantReasoningContent,
+  );
+  // 前序轮次与最后一轮同属一条持久化 assistant，compact 必须把它们算作一组。
+  const compactGroupKey = providerToolRoundsCompactGroupKey(result.providerToolRounds);
+  // 有服务端内置工具轮次时，provider usage 是服务端内部多轮请求的合计（约为单次上下文的轮数倍），
+  // 不能当作上下文估算锚点；不挂 tokens，估算回落到上一个真实锚点加本地增量。冷恢复同样不挂。
+  const contextUsage = compactGroupKey ? undefined : toTokenUsageInfo(result.usage);
+  const stepEntries = hasFinalRoundContent
+    ? [
+        ...providerRoundEntries,
+        createRuntimeAssistantEntry(
+          state.modelResponse,
+          toolCalls,
+          reasoning,
+          modelRef,
+          contextUsage,
+        ),
+      ]
+    : providerRoundEntries;
+  commitTurnRequestEntries(
+    runtime,
+    state.turnRequestState,
+    withCompactGroupKey(markRepairedStep(stepEntries, result), compactGroupKey),
+  );
   return true;
 }
 
-export function hasAssistantReasoningContent(
-  reasoning: NonNullable<RuntimeModelTextResult["reasoning"]>[number],
-): boolean {
-  return reasoning.text.length > 0 || Object.keys(reasoning.providerOptions ?? {}).length > 0;
+/** 签名修复后成功的请求：在这一步产出的第一条 assistant 上记标记（见 withSignedReasoningReset）。 */
+export function markRepairedStep(
+  entries: readonly RuntimeMessageEntry[],
+  result: Pick<RuntimeModelTextResult, "signedReasoningReset">,
+): RuntimeMessageEntry[] {
+  return result.signedReasoningReset ? withSignedReasoningReset(entries) : [...entries];
 }
 
-export function appendOutputTokenContinuation(state: TurnRequestState): void {
-  appendTurnRequestEntries(state, [createOutputTokenContinuationEntry()]);
-  state.outputTokenContinuationCount += 1;
+export { hasAssistantReasoningContent };
+
+/**
+ * 被截断的 assistant 之后追加一条 Continue：先按隐藏提醒记录写库，再进入 canonical 历史和本轮请求。
+ * 修复原因：Continue 原来只存在本轮请求里；下一轮第一个请求没有它，被截断的几段 assistant 还会合成一条，
+ * 从截断处起前缀改变、缓存失效，冷恢复也一样。写库失败时向上抛错，不回退到只在内存里的 Continue。
+ */
+export async function appendOutputTokenContinuation(
+  runtime: AgentRuntimeInternal,
+  state: RegularTurnLoopState,
+): Promise<void> {
+  // 与其他隐藏提醒一样不移动对话指针。
+  const entry = await persistRuntimeReminderMessage.call(
+    runtime,
+    createOutputTokenContinuationEntry(),
+    state.turnTraceContext,
+    { anchor: buildProjectionAnchor(state.turnTraceContext, "synthetic") },
+  );
+  commitTurnRequestEntries(runtime, state.turnRequestState, [entry]);
+  state.turnRequestState.outputTokenContinuationCount += 1;
 }
 
 export function completeOutputTokenRecovery(state: TurnRequestState): void {

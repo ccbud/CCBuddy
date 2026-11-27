@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2Icon } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import type { CCbuddyTaskSnapshotToolFieldRef } from "@ccbuddy/shared";
 import { Button } from "@/components/ui/button.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
@@ -62,7 +62,7 @@ export function ToolSnapshotFieldNotice({
             });
         }}
       >
-        {loading ? <Loader2Icon className="mr-1 size-3 animate-spin" /> : null}
+        {loading ? <LoaderCircle className="mr-1 size-3 animate-spin" /> : null}
         {buttonLabel}
       </Button>
     </div>

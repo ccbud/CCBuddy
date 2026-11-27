@@ -24,6 +24,7 @@ export function readGenUiStyleContext() {
     "border",
     "border-hover",
   ];
+  // 标准 MCP primary 带品牌强调语义；Gen UI 控件独立投影，不能连带改变图表和链接。
   const controls = Object.fromEntries(
     tokens.flatMap((token) => {
       const value = root.getPropertyValue(`--color-${token}`).trim();
@@ -31,6 +32,7 @@ export function readGenUiStyleContext() {
     }),
   );
   return {
+    // SDK 严格校验标准 variables 的枚举键；专用颜色走既有扩展上下文，避免握手失败。
     [GEN_UI_STYLE_CONTEXT_KEY]: genUiStyleVariablesSchema.parse(controls),
     styles: {
       variables: McpUiHostStylesSchema.shape.variables.unwrap().parse({

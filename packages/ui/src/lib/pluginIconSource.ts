@@ -1,18 +1,22 @@
+import designIconUrl from "@/assets/plugin-icons/design.png";
 import documentsIconUrl from "@/assets/plugin-icons/documents.png";
 import imageSearchIconUrl from "@/assets/plugin-icons/image-search.png";
 import pdfIconUrl from "@/assets/plugin-icons/pdf.png";
 import pluginCreatorIconUrl from "@/assets/plugin-icons/plugin-creator.png";
 import presentationsIconUrl from "@/assets/plugin-icons/presentations.png";
 import spreadsheetsIconUrl from "@/assets/plugin-icons/spreadsheets.png";
+import visualizeIconUrl from "@/assets/plugin-icons/visualize.png";
 import { isTrustedImageUrl } from "@/lib/trustedImageUrl.js";
 
 const OFFICIAL_PLUGIN_ICON_BY_ID: Readonly<Record<string, string>> = {
+  "design@ccbuddy-plugins-official": designIconUrl,
   "documents@ccbuddy-plugins-official": documentsIconUrl,
   "image-search@ccbuddy-plugins-official": imageSearchIconUrl,
   "pdf@ccbuddy-plugins-official": pdfIconUrl,
   "plugin-creator@ccbuddy-plugins-official": pluginCreatorIconUrl,
   "presentations@ccbuddy-plugins-official": presentationsIconUrl,
   "spreadsheets@ccbuddy-plugins-official": spreadsheetsIconUrl,
+  "visualize@ccbuddy-plugins-official": visualizeIconUrl,
 };
 
 const TRUSTED_BUNDLED_PLUGIN_ICONS = new Set(Object.values(OFFICIAL_PLUGIN_ICON_BY_ID));

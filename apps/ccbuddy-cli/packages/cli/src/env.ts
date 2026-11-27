@@ -6,6 +6,7 @@ import { resolveCcBuddyDataRoot } from "@ccbuddy/contracts/workspace-state";
 import {
   CCBUDDY_RUNTIME_ENV_KEY,
   buildCCbuddyToolEnvPassthroughEnv,
+  mintStandaloneCCbuddyCuaBrokerCredentials,
   normalizeCCbuddyRuntimeEnv,
   sanitizeCCbuddyRuntimeEnv,
   sanitizeCCbuddyRuntimeEnvInPlace,
@@ -46,6 +47,19 @@ export function applyCliRuntimeEnvSanitization(
   sanitizeCCbuddyRuntimeEnvInPlace(env);
   Object.assign(env, toolEnvPassthrough);
   applyCliRuntimeEnvDefaults(env, argv);
+}
+
+const STANDALONE_CUA_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["darwin", "win32"]);
+
+/** 规则见 docs/design/v2/cua-standalone-in-process-broker.md「形态判定」。 */
+export function mintStandaloneCuaCredentialsIfEligible(input: {
+  isProtocol: boolean;
+  isPluginHost: boolean;
+  platform: NodeJS.Platform;
+}): boolean {
+  if (input.isProtocol || input.isPluginHost) return false;
+  if (!STANDALONE_CUA_PLATFORMS.has(input.platform)) return false;
+  return mintStandaloneCCbuddyCuaBrokerCredentials();
 }
 
 export const findDotenv = (startDir: string): string | undefined => {

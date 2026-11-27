@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { toZhOrEnLocale } from "@ccbuddy/shared";
 import { useCCbuddyIntl } from "../i18n/IntlProvider.js";
 import { usePlatform } from "../hooks/usePlatform.js";
 import { useServices } from "../hooks/useServices.js";
@@ -26,7 +27,8 @@ function timestampOf(value: string): number | undefined {
 }
 
 export function HistoryMainView({ view, onViewChange, onOpenTask }: HistoryMainViewProps) {
-  const { locale } = useCCbuddyIntl();
+  const { locale: uiLocale } = useCCbuddyIntl();
+  const locale = toZhOrEnLocale(uiLocale);
   const platform = usePlatform();
   const { ccbuddyTaskService } = useServices();
   const { settings, update } = useSettings();

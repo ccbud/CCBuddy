@@ -1,4 +1,9 @@
-import { replyToChannelToolEntry } from "./reply-to-channel.js";
+// import { replyToChannelToolEntry } from "./reply-to-channel.js";
+import {
+  SESSION_CONTROL_TOOL_NAMES,
+  sessionControlTools,
+  sessionControlToolsByKind,
+} from "../session-control/index.js";
 // ============================================================
 // Built-in Tool Handlers
 // ============================================================
@@ -16,6 +21,7 @@ import {
   RESUME_WORKFLOW_RUN_TOOL_NAME,
   SAVE_WORKFLOW_TOOL_NAME,
   SUBMIT_RESULT_TOOL_NAME,
+  WAIT_FOR_MCP_SERVERS_TOOL_NAME,
   type JsonSchema,
 } from "@ccbuddy/contracts";
 import type { ToolEntry } from "../types.js";
@@ -44,9 +50,11 @@ import {
   cronCreateToolEntry,
   cronDeleteToolEntry,
   cronListToolEntry,
+  cronPauseSelfToolEntry,
   cronUpdateToolEntry,
 } from "./cron.js";
 import { offPeakCreateToolEntry, offPeakListToolEntry } from "./off-peak.js";
+import { searchPluginsToolEntry, suggestPluginInstallToolEntry } from "./plugin-discovery.js";
 import {
   createEnterPlanModeToolEntry,
   enterPlanModeToolEntry,
@@ -61,12 +69,13 @@ import { resolveWorkflowQuestionToolEntry } from "./resolve-workflow-question.js
 import { fillWorkflowHoleToolEntry } from "./fill-workflow-hole.js";
 import { taskOutputToolEntry } from "./task-output.js";
 import { taskStopToolEntry } from "./task-stop.js";
-import { readSessionContextToolEntry } from "./read-session-context.js";
+import { readTopicResourceToolEntry } from "./read-topic-resource.js";
 import { amendWorkflowToolEntry } from "./amend-workflow.js";
 import { createWorkflowToolEntry } from "./create-workflow.js";
 import { saveWorkflowToolEntry } from "./save-workflow.js";
 import { listSavedWorkflowsToolEntry } from "./list-saved-workflows.js";
 import { listModelsToolEntry } from "./list-models.js";
+import { waitForMcpServersToolEntry } from "./wait-for-mcp-servers.js";
 import { evalWorkflowSnippetToolEntry } from "./eval-workflow-snippet.js";
 import { listWorkflowRunsToolEntry } from "./list-workflow-runs.js";
 import { getWorkflowRunToolEntry } from "./get-workflow-run.js";
@@ -78,6 +87,9 @@ import { createToolRuleNameSet } from "../tool-visibility.js";
 // 统一隐藏 Glob/Grep，并通过 Bash find/grep 接管搜索。
 
 export const builtInTools: ToolEntry[] = [
+  searchPluginsToolEntry,
+  suggestPluginInstallToolEntry,
+  ...sessionControlTools,
   toolSearchToolEntry,
   deferredToolCallEntry,
   readToolEntry,
@@ -95,6 +107,7 @@ export const builtInTools: ToolEntry[] = [
   cronListToolEntry,
   cronUpdateToolEntry,
   cronDeleteToolEntry,
+  cronPauseSelfToolEntry,
   offPeakCreateToolEntry,
   offPeakListToolEntry,
   enterPlanModeToolEntry,
@@ -110,8 +123,9 @@ export const builtInTools: ToolEntry[] = [
   escalateToolEntry,
   taskOutputToolEntry,
   taskStopToolEntry,
-  readSessionContextToolEntry,
-  replyToChannelToolEntry,
+  readTopicResourceToolEntry,
+  // 渠道回复等待插件入口接入；仅注释默认注册，保留完整实现。
+  // replyToChannelToolEntry,
   agentToolEntry,
   taskToolEntry,
   skillToolEntry,
@@ -122,8 +136,10 @@ export const builtInTools: ToolEntry[] = [
   saveWorkflowToolEntry,
   // workflow 创作的实验通道：同步、只读（v1）、完全瞬态。
   evalWorkflowSnippetToolEntry,
-  // run 内省的两个只读工具：always-on、无 gate。它们不进 WORKFLOW_CHILD_DISALLOWED_TOOLS——
-  // 那条禁令的理由是 CreateWorkflow 的 alwaysAsk 在子 runtime 里无窗可弹，只读查询不适用。
+  // run 内省的两个只读工具：主会话 always-on、无 gate。它们不进 WORKFLOW_CHILD_DISALLOWED_TOOLS——
+  // 那条禁令的理由是 CreateWorkflow 的 alwaysAsk 在子 runtime 里无窗可弹，只读查询不适用；但子
+  // runtime 不持有 run 端口，它们在那里必然失败，所以按另一条规则从子 runtime 移除
+  // （runtime/helpers/tool-allowlist.ts 的 RUN_INTROSPECTION_TOOLS）。
   listWorkflowRunsToolEntry,
   getWorkflowRunToolEntry,
   // run 的恢复入口：与上面两个只读内省工具同族（run_id 键、端口探测失败同款），但它是
@@ -144,15 +160,19 @@ export const builtInTools: ToolEntry[] = [
   // `subagent_model`。不进 WORKFLOW_CHILD_DISALLOWED_TOOLS
   // ——那条禁令的理由是 alwaysAsk 在 child 里无窗可弹，只读查询不适用。
   listModelsToolEntry,
+  // MCP 连接中的等待入口；只在 runtime 持有 MCP 会话时注册，本轮是否可见由 getTools(model) 决定。
+  waitForMcpServersToolEntry,
   // workflowToolEntry,
 ];
 
 /**
- * 动态工作流灰度门关闭时不注册的十一个工具
+ * 动态工作流灰度门关闭时不注册的十个工具
  * （2026-09-28 起含 FillWorkflowHole：关闭态下没有 run 会到达留白）。
  * 灰度关的语义是「没有任何办法开始一条工作流」，所以创建、修订、保存、快照实验与四个
  * run 面工具一起下架；只读的 run 内省工具也在列，因为关闭态下它们只会指向用户无法再操作的历史。
- * `ListModels` 也在列：它唯一的用途是给一次 run 挑 `subagent_model`，没有 CreateWorkflow 可填时留着它只会把模型引向不存在的工具。
+ * `ListModels` **不在**这份名单里：这份名单同时是冷恢复激活判据（isDynamicWorkflowToolName），而只为
+ * 给 `CreateSession.model` 挑模型调过一次 ListModels，不说明会话用过工作流。它的注册另有条件，见
+ * registerBuiltInTools 里「有消费者才注册」那一段（规格 0.15）。
  * 旧的 `Workflow` 工具（`/expert` 脚本通道）是另一个功能，**不在**这份名单里。
  */
 const DYNAMIC_WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -160,7 +180,6 @@ const DYNAMIC_WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
   AMEND_WORKFLOW_TOOL_NAME,
   SAVE_WORKFLOW_TOOL_NAME,
   LIST_SAVED_WORKFLOWS_TOOL_NAME,
-  LIST_MODELS_TOOL_NAME,
   EVAL_WORKFLOW_SNIPPET_TOOL_NAME,
   LIST_WORKFLOW_RUNS_TOOL_NAME,
   GET_WORKFLOW_RUN_TOOL_NAME,
@@ -175,6 +194,7 @@ export function isDynamicWorkflowToolName(toolName: string): boolean {
 }
 
 interface RegisterBuiltInToolsOptions {
+  includePluginDiscovery?: boolean;
   bashTimeoutPolicy?: BashTimeoutPolicy;
   includeSkill?: boolean;
   includeAgent?: boolean;
@@ -189,9 +209,13 @@ interface RegisterBuiltInToolsOptions {
   /** actor 的升级通道；门与 includeSubmitResult 同款（注入了 WorkflowEscalatePort 才注册）。 */
   includeEscalate?: boolean;
   includeWorkflow?: boolean;
+  /** 只由可信启动绑定指定：选择同名会话工具的变体；未指定时这些工具都不注册。 */
+  sessionControlKind?: "cli" | "app";
   includeAutomation?: boolean;
   /** Off-Peak 会话内创建工具面；由 host 的 offPeakToolEnabled flag（灰度/远程门）驱动。 */
   includeOffPeak?: boolean;
+  /** 注入了 topicResourcePort（App 托管会话）才注册 ReadTopicResource；机器人授权在调用时校验。 */
+  includeTopicResource?: boolean;
   /**
    * 动态工作流灰度门。**只有显式 false
    * 才下架** DYNAMIC_WORKFLOW_TOOL_NAMES：缺席代表调用方不参与灰度（TUI、headless、
@@ -199,6 +223,13 @@ interface RegisterBuiltInToolsOptions {
    * appRuntimePreferences，不在这一层。
    */
   includeDynamicWorkflow?: boolean;
+  /**
+   * Agent / Task 是否总在后台运行（见 createAgentToolEntry）。与动态工作流灰度门同极性：
+   * **缺席即开启**，只有显式 false 回到可选 run_in_background 的旧形态。
+   */
+  agentAlwaysBackground?: boolean;
+  /** WaitForMcpServers：runtime 持有可等待的 MCP 会话时才注册。 */
+  includeMcpServerWait?: boolean;
   /** node_repl（js）默认关闭，由官方 browser-use 插件启用。 */
   includeNodeRepl?: boolean;
   /** browser-use 说明和 agent.browsers 注入由官方 browser-use 插件 + 宿主 browser bridge 共同启用。 */
@@ -218,7 +249,22 @@ export function registerBuiltInTools(
   const allowedTools = options.allowedTools ? new Set(options.allowedTools) : undefined;
   const disallowedTools = createToolRuleNameSet(options.disallowedTools);
 
-  for (const entry of builtInTools) {
+  const sessionControlEntries = options.sessionControlKind
+    ? new Map(
+        sessionControlToolsByKind[options.sessionControlKind].map((entry) => [
+          entry.metadata.name,
+          entry,
+        ]),
+      )
+    : undefined;
+  for (const builtIn of builtInTools) {
+    // 会话工具同名两种实现：独立 CLI 只有共有 8 个，App 另有 4 个；缺席即不注册。
+    let entry = builtIn;
+    if (SESSION_CONTROL_TOOL_NAMES.has(builtIn.metadata.name)) {
+      const selected = sessionControlEntries?.get(builtIn.metadata.name);
+      if (!selected) continue;
+      entry = selected;
+    }
     if (
       options.embeddedSearchEnabled === true &&
       (entry.metadata.name === "Glob" || entry.metadata.name === "Grep")
@@ -252,6 +298,11 @@ export function registerBuiltInTools(
     if (entry.metadata.name === "escalate" && options.includeEscalate !== true) {
       continue;
     }
+    if (
+      (entry.metadata.name === "SearchPlugins" || entry.metadata.name === "SuggestPluginInstall") &&
+      options.includePluginDiscovery !== true
+    )
+      continue;
     if (entry.metadata.name === "Workflow" && options.includeWorkflow !== true) {
       continue;
     }
@@ -259,7 +310,8 @@ export function registerBuiltInTools(
       (entry.metadata.name === "CronCreate" ||
         entry.metadata.name === "CronList" ||
         entry.metadata.name === "CronUpdate" ||
-        entry.metadata.name === "CronDelete") &&
+        entry.metadata.name === "CronDelete" ||
+        entry.metadata.name === "CronPauseSelf") &&
       options.includeAutomation !== true
     ) {
       continue;
@@ -271,8 +323,31 @@ export function registerBuiltInTools(
       continue;
     }
     if (
+      entry.metadata.name === readTopicResourceToolEntry.metadata.name &&
+      options.includeTopicResource !== true
+    ) {
+      continue;
+    }
+    if (
       options.includeDynamicWorkflow === false &&
       DYNAMIC_WORKFLOW_TOOL_NAMES.has(entry.metadata.name)
+    ) {
+      continue;
+    }
+    // 规格 0.15：ListModels 有消费者才注册。它的两个消费者是 CreateWorkflow（灰度开启）与
+    // CreateSession（会话控制在场）；两者都不在时（例如灰度关闭的子代理）留着它，只会叫模型去填
+    // 不存在的工具。它不在 DYNAMIC_WORKFLOW_TOOL_NAMES 里，因为那份名单同时是冷恢复激活判据，
+    // 而只为挑模型调过一次 ListModels 不说明会话用过工作流——两个用途对它的答案不同，所以分开判。
+    if (
+      entry.metadata.name === LIST_MODELS_TOOL_NAME &&
+      options.includeDynamicWorkflow === false &&
+      options.sessionControlKind === undefined
+    ) {
+      continue;
+    }
+    if (
+      entry.metadata.name === WAIT_FOR_MCP_SERVERS_TOOL_NAME &&
+      options.includeMcpServerWait !== true
     ) {
       continue;
     }
@@ -303,11 +378,13 @@ function resolveBuiltInToolEntryForBranch(
   // options.includeDynamicWorkflow，所以首次装配与分支刷新产出的描述必然一致。
   if (entry.metadata.name === "Agent") {
     return createAgentToolEntry({
+      alwaysBackground: options.agentAlwaysBackground !== false,
       dynamicWorkflowEnabled: options.includeDynamicWorkflow !== false,
     });
   }
   if (entry.metadata.name === "Task") {
     return createTaskToolEntry({
+      alwaysBackground: options.agentAlwaysBackground !== false,
       dynamicWorkflowEnabled: options.includeDynamicWorkflow !== false,
     });
   }

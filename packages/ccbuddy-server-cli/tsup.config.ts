@@ -1,6 +1,13 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+
+const rootPackageJson = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, "../../package.json"), "utf8"),
+) as { version: string; ccbuddyCompatibility?: { minCompatibleVersion?: string } };
+const minCompatibleVersion =
+  rootPackageJson.ccbuddyCompatibility?.minCompatibleVersion ?? rootPackageJson.version;
 
 // tsup 配置自身会被打包，构建工具需保留原始文件位置，不能被内联后重定位。
 const { loadBuiltinProviderConfig } = await import(
@@ -10,6 +17,8 @@ const { loadBuiltinProviderConfig } = await import(
 const { content: ccbuddyBuiltinProviderConfigJson } = await loadBuiltinProviderConfig();
 
 export const SERVER_CLI_DEFINES = {
+  __CCBUDDY_VERSION__: JSON.stringify(rootPackageJson.version),
+  __CCBUDDY_MIN_COMPATIBLE_VERSION__: JSON.stringify(minCompatibleVersion),
   __CCBUDDY_BUILTIN_PROVIDER_CONFIG_JSON__: JSON.stringify(ccbuddyBuiltinProviderConfigJson),
 };
 
@@ -21,6 +30,8 @@ export default defineConfig({
   outDir: "dist",
   format: ["esm"],
   platform: "node",
+  // node:sqlite 只有带前缀的内置入口；tsup 去掉 node: 会错误加载第三方 sqlite 包。
+  removeNodeProtocol: false,
   target: "node22",
   sourcemap: true,
   splitting: false,
@@ -31,8 +42,17 @@ export default defineConfig({
   define: SERVER_CLI_DEFINES,
   external: [
     "node-pty",
+    "@napi-rs/keyring",
     "ssh2",
     "yaml",
+    // Bug 原因：services 的日志归档仍间接使用 yazl；内嵌到 ESM 后 require("fs") 会在启动时崩溃。
+    // 保留外置依赖，由 staging 收集生产依赖闭包，再交给 Node 按 CJS 加载。
+    "yazl",
+    // Bug 原因：飞书 SDK 内联进 ESM 后，其 CJS 依赖（qs → object-inspect 等）require Node 内置模块，
+    // 首次长连接即抛 Dynamic require；esbuild 懒初始化只执行一次，之后重试拿到半初始化模块，
+    // 远端机器人显示 "Lark.EventDispatcher is not a constructor"。与 Desktop Host 一样保持外置，
+    // 由 Node 加载 CJS 实现，staging 按产物裸导入从 workspace 收集同源 SDK。
+    "@larksuiteoapi/node-sdk",
     "node-forge",
     "undici",
     "axios",

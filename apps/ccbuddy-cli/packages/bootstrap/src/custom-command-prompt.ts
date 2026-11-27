@@ -1,8 +1,5 @@
 import { expandCustomCommandPrompt } from "@ccbuddy/contracts";
-import {
-  loadCCbuddyCustomCommand,
-  type ListCCbuddyCustomCommandsOptions,
-} from "./custom-commands.js";
+import { loadCCbuddyCustomCommand, type ListCCbuddyCustomCommandsOptions } from "./custom-commands.js";
 import { isReservedCCbuddySlashCommandName } from "./slash-command-surface.js";
 
 const CUSTOM_COMMAND_NOT_FOUND_PATTERN = /not found/i;

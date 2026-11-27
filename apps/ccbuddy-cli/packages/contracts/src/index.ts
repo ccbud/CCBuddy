@@ -23,12 +23,14 @@ export * from "./interfaces/coordinator-response.port.js";
 export * from "./interfaces/workflow.port.js";
 export * from "./interfaces/workflow-submit.port.js";
 export * from "./interfaces/workflow-escalate.port.js";
+export * from "./interfaces/workflow-web-search-budget.port.js";
 export * from "./interfaces/dynamic-workflow-run.port.js";
 export * from "./interfaces/dynamic-workflow-snippet.port.js";
 export * from "./interfaces/model-catalog.port.js";
 export * from "./interfaces/automation.port.js";
 export * from "./interfaces/off-peak.port.js";
 export * from "./interfaces/topic-resource.port.js";
+export * from "./interfaces/plugin-discovery.port.js";
 export * from "./interfaces/mcp.port.js";
 
 export * from "./interfaces/runtime-input-presentation.js";
@@ -50,6 +52,7 @@ export * from "./rewind/index.js";
 export * from "./model/index.js";
 export * from "./model/image-media.js";
 export * from "./model/media-policy.js";
+export * from "./model/unparsed-tool-input.js";
 
 // Telemetry
 export * from "./telemetry/index.js";

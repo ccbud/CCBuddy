@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-running-model-switch-usage",
+  "spec": "./test/e2e/conversation-session/models/conversation-session-running-model-switch-usage.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-running-model-switch-usage.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-running-model-switch-usage-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "running-model-switch-usage-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "真实 provider 响应速度不确定，无法稳定保证模型切换 ACK 早于最终 usage 到达。"
+    }
+  ]
+}

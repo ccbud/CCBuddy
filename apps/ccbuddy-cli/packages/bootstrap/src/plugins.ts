@@ -4,13 +4,14 @@ import { isDeepStrictEqual } from "node:util";
 import {
   addSuppressedBuiltinInFileConfig,
   createConfig,
+  createConfigWithPluginMigrations,
   resolvePath,
   enablePluginsByDefaultInFileConfig,
+  normalizePluginConfigPathForComparison,
   removePluginEnabledFromFileConfig,
   removePluginFromFileConfig,
   removeSuppressedBuiltinInFileConfig,
   updatePluginEnabledInFileConfig,
-  updatePluginOptionsInFileConfig,
   type ConfigResult,
 } from "@ccbuddy/adapters/config";
 import {
@@ -19,7 +20,7 @@ import {
   describeMarketplacePlugin,
   enrichCachedClaudeMarketplaceIcons,
   ensureDefaultPluginMarketplaces,
-  discoverNodePluginsSync,
+  discoverNodePlugins,
   ensureMarketplaceManifestAvailable,
   getPluginSourceDiagnosticCode,
   getPluginDataDir,
@@ -28,6 +29,7 @@ import {
   loadKnownMarketplacesSync,
   loadMarketplaceManifestSync,
   parseMarketplaceSourceInput,
+  parseEntryExtensionSummary,
   parseEntryStoreListing,
   readPluginSourceIdentityPin,
   removeMarketplace,
@@ -40,6 +42,7 @@ import {
   type InstalledPluginRecord,
   type KnownMarketplaceRecord,
   type MarketplaceSource,
+  type PluginExtensionSummary,
   type PluginMarketplaceEntry,
 } from "@ccbuddy/adapters/plugins";
 import type {
@@ -48,23 +51,40 @@ import type {
   PluginLoadOutcome,
   PluginMetadata,
   PluginStoreListing,
+  PluginPort,
 } from "@ccbuddy/contracts";
 import { CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE, isOfficialMarketplaceId } from "@ccbuddy/contracts";
-import { resolveWorkspaceStateRoot } from "@ccbuddy/contracts/workspace-state";
 import {
+  DEFAULT_PLUGIN_MARKETPLACES,
   CCBUDDY_CUA_OFFICIAL_PLUGIN_ID,
   isCCbuddyCuaInternalFeatureEnabled,
 } from "@ccbuddy/shared";
-import { resolveOfficialPluginRoots } from "./app/bundled-plugins.js";
+import {
+  resolveOfficialPluginRoots,
+  type OfficialPluginPreparation,
+} from "./app/bundled-plugins.js";
 import {
   DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
   OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME,
   OFFICIAL_PLUGIN_DEFINITIONS,
 } from "./app/official-plugin-definitions.js";
 import { getCliStorageRoot, getPluginStorageRoot } from "./app/paths.js";
-import { withPluginStorageLock } from "./lib/plugin-storage-lock.js";
+import { type PluginStorageLock, withPluginStorageLock } from "./lib/plugin-storage-lock.js";
+import { resolveWorkspacePluginDiscovery } from "./workspace-plugin-trust/index.js";
+import {
+  removeStoredPluginSecrets,
+  resolvePluginSecretsPath,
+  savePluginOptions,
+  withPluginSecrets,
+} from "./plugin-secrets.js";
 
 export interface ResolveCCbuddyPluginsOptions {
+  pluginStorageLock?: PluginStorageLock;
+  abortSignal?: AbortSignal;
+  workspaceIdentity?: string;
+  remoteSessionId?: string;
+  pluginPreparation?: OfficialPluginPreparation;
+  pluginDiscovery?: PluginPort;
   configResult?: ConfigResult;
   env?: NodeJS.ProcessEnv;
   logger?: Logger;
@@ -74,7 +94,27 @@ export interface ResolveCCbuddyPluginsOptions {
   skipUserConfig?: boolean;
   userConfigPath?: string;
   workingDirectory?: string;
-  workspaceIdentity?: string;
+}
+
+/** 所有写入入口（包括独立 CLI）共用此边界。组合操作显式传递当次锁，避免递归等待。 */
+function pluginMutation<O extends ResolveCCbuddyPluginsOptions, T>(
+  operation: (options: O) => Promise<T>,
+): (options: O) => Promise<T> {
+  return async (options) => {
+    const root =
+      options.pluginStorageRoot ?? (await resolvePluginContext(options)).pluginStorageRoot;
+    return withPluginStorageLock(
+      root,
+      (lock) =>
+        operation({
+          ...options,
+          pluginStorageRoot: lock.root,
+          pluginStorageLock: lock,
+        }),
+      options.pluginStorageLock,
+      options.abortSignal ?? options.pluginPreparation?.signal,
+    );
+  };
 }
 
 export interface ListCCbuddyPluginsOptions extends ResolveCCbuddyPluginsOptions {}
@@ -119,6 +159,8 @@ export interface CCbuddyAvailablePluginData {
   hookDetails?: PluginHookDetail[];
   // 商店信息（显示名/icon/分类/作者/链接/hero/示例提示词），来自目录条目。
   listing?: PluginStoreListing;
+  // 目录条目的扩展摘要（plugin-publishing.md §4.2）。协议层按请求参数决定是否放进 listing（§4.3）。
+  extensionSummary?: PluginExtensionSummary;
 }
 
 export interface CCbuddyInstalledPluginData {
@@ -137,6 +179,8 @@ export interface CCbuddyInstalledPluginData {
   latestVersion?: string;
   // 已安装插件的商店信息由目录条目按 id join 得到（市场被移除时缺失，UI 走降级）。
   listing?: PluginStoreListing;
+  // 目录里最新版条目的扩展摘要（不是已装版本的）；App 据此判断最新版能不能装。
+  extensionSummary?: PluginExtensionSummary;
 }
 
 export interface CCbuddyPluginsOverviewData {
@@ -153,7 +197,6 @@ export interface CCbuddyMarketplaceUpdateData {
 }
 
 export interface AddCCbuddyMarketplaceOptions extends ResolveCCbuddyPluginsOptions {
-  abortSignal?: AbortSignal;
   dryRun?: boolean;
   source: string;
   /** `marketplace add --sparse`：仅 git/github 源支持 sparse checkout 子目录。 */
@@ -165,12 +208,10 @@ export interface RemoveCCbuddyMarketplaceOptions extends ResolveCCbuddyPluginsOp
 }
 
 export interface UpdateCCbuddyMarketplaceOptions extends ResolveCCbuddyPluginsOptions {
-  abortSignal?: AbortSignal;
   marketplace?: string;
 }
 
 export interface InstallCCbuddyMarketplacePluginOptions extends ResolveCCbuddyPluginsOptions {
-  abortSignal?: AbortSignal;
   dryRun?: boolean;
   marketplace: string;
   pluginName: string;
@@ -187,12 +228,10 @@ export interface UninstallCCbuddyMarketplacePluginOptions extends ResolveCCbuddy
 }
 
 export interface UpdateCCbuddyMarketplacePluginOptions extends ResolveCCbuddyPluginsOptions {
-  abortSignal?: AbortSignal;
   pluginId: string;
 }
 
 export interface ValidateCCbuddyPluginPathOptions extends ResolveCCbuddyPluginsOptions {
-  abortSignal?: AbortSignal;
   path: string;
 }
 
@@ -226,7 +265,6 @@ export interface ValidateCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptio
 export interface DescribeCCbuddyPluginOptions extends ResolveCCbuddyPluginsOptions {
   marketplace: string;
   pluginName: string;
-  withWriteLock?: <T>(write: () => Promise<T>) => Promise<T>;
 }
 
 export interface CCbuddyPluginInstallData {
@@ -254,33 +292,87 @@ function countVisibleMarketplacePlugins(
   return plugins.filter((entry) => entry.name !== OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME).length;
 }
 
-export function resolveCCbuddyPlugins(
+export async function resolveCCbuddyPlugins(
   options: ResolveCCbuddyPluginsOptions = {},
-): PluginLoadOutcome {
-  const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
+): Promise<PluginLoadOutcome> {
+  const resolve = async (): Promise<PluginLoadOutcome> => {
+    options.pluginPreparation?.signal.throwIfAborted();
+    const context = await resolvePluginContext(options);
+    const { pluginStorageRoot, workingDirectory } = context;
+    // 敏感选项在私有文件里；按层叠加后再交给发现，运行时展开与投影读到的是同一份有效值。
+    const secrets = await withPluginSecrets(
+      context.configResult,
+      context.pluginSecretsPath,
+      options.logger,
+    );
+    const configResult = secrets.configResult;
 
-  return discoverNodePluginsSync({
-    config: configResult.config.plugins,
-    env: options.env ?? process.env,
-    officialPluginRoots: resolveOfficialPluginRoots({
-      extraRoots: options.officialPluginRoots,
-      // cache 锁冲突已从 fatal 改为 degraded，普通插件入口也必须保留诊断日志。
-      logger: options.logger,
-      storageRoot: pluginStorageRoot,
-      suppressedBuiltins: new Set(configResult.config.plugins.suppressedBuiltins),
-    }),
-    officialPluginsEnabledByDefault: DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
-    storageRoot: pluginStorageRoot,
-    workingDirectory,
-  });
+    const outcome = await (
+      options.pluginDiscovery
+        ? options.pluginDiscovery.discoverPlugins.bind(options.pluginDiscovery)
+        : discoverNodePlugins
+    )(
+      {
+        workspaceIdentity: options.workspaceIdentity,
+        remoteSessionId: options.remoteSessionId,
+        config: configResult.config.plugins,
+        env: options.env ?? process.env,
+        officialPluginRoots: await resolveOfficialPluginRoots({
+          preparation: options.pluginPreparation,
+          extraRoots: options.officialPluginRoots,
+          // cache 锁冲突已从 fatal 改为 degraded，普通插件入口也必须保留诊断日志。
+          logger: options.logger,
+          storageRoot: pluginStorageRoot,
+          suppressedBuiltins: new Set(configResult.config.plugins.suppressedBuiltins),
+        }),
+        officialPluginsEnabledByDefault: DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
+        storageRoot: pluginStorageRoot,
+        workingDirectory,
+        workspacePlugins: await resolveWorkspacePluginDiscovery({
+          configResult,
+          env: options.env,
+          logger: options.logger,
+          workingDirectory,
+          workspaceIdentity: options.workspaceIdentity,
+        }),
+      },
+      { signal: options.pluginPreparation?.signal },
+    );
+    return secrets.diagnostics.length > 0
+      ? { ...outcome, diagnostics: [...outcome.diagnostics, ...secrets.diagnostics] }
+      : outcome;
+  };
+  return options.pluginPreparation
+    ? await options.pluginPreparation.resolvePlugins(resolve)
+    : await resolve();
 }
 
-export function getCCbuddyPluginsOverview(
+/**
+ * 叠加敏感选项私有文件后的配置视图，给协议投影读 `optionSources` 用。
+ * resolveCCbuddyPlugins 内部会对同一视图再叠加一次；叠加只读原始配置层，结果不变。
+ */
+export async function resolveCCbuddyPluginConfigWithSecrets(
+  options: ResolveCCbuddyPluginsOptions,
+): Promise<ConfigResult> {
+  const { configResult, pluginSecretsPath } = await resolvePluginContext(options);
+  return (await withPluginSecrets(configResult, pluginSecretsPath)).configResult;
+}
+
+export async function getCCbuddyPluginsOverview(
   options: ResolveCCbuddyPluginsOptions = {},
-): CCbuddyPluginsOverviewData {
-  const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
-  ensureDefaultPluginMarketplaces(pluginStorageRoot);
-  const outcome = resolveCCbuddyPlugins({
+): Promise<CCbuddyPluginsOverviewData> {
+  const { configResult, pluginStorageRoot, workingDirectory } = await resolvePluginContext(options);
+  const knownIds = new Set(loadKnownMarketplacesSync(pluginStorageRoot).map(({ id }) => id));
+  if (DEFAULT_PLUGIN_MARKETPLACES.some(({ id }) => !knownIds.has(id))) {
+    // 只有首次登记缺失的默认市场才写入，锁内重读；已有目录的普通浏览无需等下载。
+    await withPluginStorageLock(
+      pluginStorageRoot,
+      async () => ensureDefaultPluginMarketplaces(pluginStorageRoot),
+      options.pluginStorageLock,
+      options.abortSignal ?? options.pluginPreparation?.signal,
+    );
+  }
+  const outcome = await resolveCCbuddyPlugins({
     ...options,
     configResult,
     pluginStorageRoot,
@@ -329,6 +421,7 @@ export function getCCbuddyPluginsOverview(
   const latestPinByPluginId = new Map<string, { version?: string; sha?: string }>();
   // 同时按 id 收集目录条目的商店信息，供已安装插件 join（详情/图标条/管理视图共用）。
   const listingByPluginId = new Map<string, PluginStoreListing>();
+  const extensionSummaryByPluginId = new Map<string, PluginExtensionSummary>();
   const availablePlugins = catalogs.flatMap((catalog) =>
     catalog.entries.map((entry) => {
       const data = toAvailablePluginData(entry, catalog.summary.id, installedIds);
@@ -339,6 +432,7 @@ export function getCCbuddyPluginsOverview(
           : {}),
       });
       if (entry.listing) listingByPluginId.set(data.id, entry.listing);
+      if (data.extensionSummary) extensionSummaryByPluginId.set(data.id, data.extensionSummary);
       return data;
     }),
   );
@@ -352,8 +446,7 @@ export function getCCbuddyPluginsOverview(
     (def) =>
       suppressed.has(`${def.name}@${CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE}`) &&
       // computer-use 的恢复入口需要 internal 特性开启（与 restoreBuiltinPluginCore 同口径）。
-      (def.name !== "computer-use" ||
-        isCCbuddyCuaInternalFeatureEnabled(options.env ?? process.env)),
+      (def.name !== "computer-use" || isCCbuddyCuaInternalFeatureEnabled(options.env ?? process.env)),
   ).map((def) => {
     const listing = def.listing
       ? parseEntryStoreListing({ name: def.name, ...def.listing })
@@ -387,11 +480,13 @@ export function getCCbuddyPluginsOverview(
       // latestVersion 展示：优先用 manifest 的 version；否则用最新 sha（短 7 位）让 UI 有可读提示。
       const latestLabel = pin?.version ?? (pin?.sha ? pin.sha.slice(0, 7) : undefined);
       const listing = listingByPluginId.get(record.id);
+      const extensionSummary = extensionSummaryByPluginId.get(record.id);
       return {
         ...data,
         updateStatus,
         ...(latestLabel ? { latestVersion: latestLabel } : {}),
         ...(listing ? { listing } : {}),
+        ...(extensionSummary ? { extensionSummary } : {}),
       };
     }),
     restorableBuiltins,
@@ -417,16 +512,21 @@ export function getCCbuddyPluginsOverview(
 export function enrichCachedClaudeMarketplaceIconsForOverview(
   options: ResolveCCbuddyPluginsOptions = {},
 ): void {
-  const { pluginStorageRoot } = resolvePluginContext(options);
+  const configResult = options.configResult ?? createConfig(options);
+  const pluginStorageRoot =
+    options.pluginStorageRoot ??
+    getPluginStorageRoot(getCliStorageRoot(resolvePath(configResult.config.storage.dir)));
   // 图标是可选展示增强：overview 不等待网络；仅写回阶段进入 storage lock。
   void enrichCachedClaudeMarketplaceIcons(pluginStorageRoot, (write) =>
     withPluginStorageLock(pluginStorageRoot, write),
   );
 }
 
-export function listCCbuddyPlugins(options: ListCCbuddyPluginsOptions = {}): PluginLoadOutcome {
-  const outcome = resolveCCbuddyPlugins(options);
-  const { pluginStorageRoot } = resolvePluginContext(options);
+export async function listCCbuddyPlugins(
+  options: ListCCbuddyPluginsOptions = {},
+): Promise<PluginLoadOutcome> {
+  const outcome = await resolveCCbuddyPlugins(options);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
   return {
     ...outcome,
     // 用户可见名称必须从 marketplace listing 解析；这里按完整 id 传递给 CLI，
@@ -458,21 +558,21 @@ function loadPluginListingsById(storageRoot: string): Record<string, PluginStore
   return Object.fromEntries(listings);
 }
 
-export async function setCCbuddyPluginEnabled(
+export const setCCbuddyPluginEnabled = pluginMutation(setCCbuddyPluginEnabledLocked);
+async function setCCbuddyPluginEnabledLocked(
   options: SetCCbuddyPluginEnabledOptions,
 ): Promise<SetCCbuddyPluginEnabledResult> {
   const workingDirectory = resolve(options.workingDirectory ?? process.cwd());
   const configResult =
     options.configResult ??
-    createConfig({
+    (await createConfigWithPluginMigrations({
       env: options.env,
       projectConfigPath: options.projectConfigPath,
       workingDirectory,
       skipUserConfig: options.skipUserConfig,
       userConfigPath: options.userConfigPath,
-      workspaceIdentity: options.workspaceIdentity,
-    });
-  const outcome = resolveCCbuddyPlugins({
+    }));
+  const outcome = await resolveCCbuddyPlugins({
     ...options,
     configResult,
     workingDirectory,
@@ -494,10 +594,11 @@ export async function setCCbuddyPluginEnabled(
   };
 }
 
-export async function addCCbuddyPluginMarketplace(
+export const addCCbuddyPluginMarketplace = pluginMutation(addCCbuddyPluginMarketplaceLocked);
+async function addCCbuddyPluginMarketplaceLocked(
   options: AddCCbuddyMarketplaceOptions,
 ): Promise<CCbuddyMarketplaceSummaryData> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
   const source = applySparsePaths(
     await parseMarketplaceSourceInput(options.source),
     options.sparsePaths,
@@ -519,21 +620,37 @@ export async function addCCbuddyPluginMarketplace(
   return toMarketplaceSummaryData(record);
 }
 
-export async function removeCCbuddyPluginMarketplace(
+export const removeCCbuddyPluginMarketplace = pluginMutation(removeCCbuddyPluginMarketplaceLocked);
+async function removeCCbuddyPluginMarketplaceLocked(
   options: RemoveCCbuddyMarketplaceOptions,
 ): Promise<void> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
   await removeMarketplace({
     marketplace: options.marketplace,
     storageRoot: pluginStorageRoot,
   });
 }
 
+const updateMarketplaceWithLock = pluginMutation(updateCCbuddyPluginMarketplaceLocked);
 export async function updateCCbuddyPluginMarketplace(
   options: UpdateCCbuddyMarketplaceOptions,
 ): Promise<CCbuddyMarketplaceUpdateData> {
-  const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
-  ensureDefaultPluginMarketplaces(pluginStorageRoot);
+  try {
+    return await updateMarketplaceWithLock(options);
+  } catch (error) {
+    // 刷新接口以 diagnostics 返回取消；锁的准入检查可能先于市场初始化，不能因此改成抛错或写入默认目录。
+    if (!options.abortSignal?.aborted || options.abortSignal.reason !== error) throw error;
+    return {
+      marketplaces: [],
+      diagnostics: [toMarketplaceRefreshDiagnostic(error, options.marketplace)],
+    };
+  }
+}
+async function updateCCbuddyPluginMarketplaceLocked(
+  options: UpdateCCbuddyMarketplaceOptions,
+): Promise<CCbuddyMarketplaceUpdateData> {
+  const { configResult, pluginStorageRoot, workingDirectory } = await resolvePluginContext(options);
+  await ensureDefaultPluginMarketplaces(pluginStorageRoot);
   const declared = resolveDeclaredMarketplaceSources({
     configResult,
   });
@@ -610,11 +727,12 @@ export async function updateCCbuddyPluginMarketplace(
   };
 }
 
-export async function installCCbuddyMarketplacePlugin(
+export const installCCbuddyMarketplacePlugin = pluginMutation(installCCbuddyMarketplacePluginLocked);
+async function installCCbuddyMarketplacePluginLocked(
   options: InstallCCbuddyMarketplacePluginOptions,
 ): Promise<CCbuddyPluginInstallData> {
-  const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
-  ensureDefaultPluginMarketplaces(pluginStorageRoot);
+  const { configResult, pluginStorageRoot, workingDirectory } = await resolvePluginContext(options);
+  await ensureDefaultPluginMarketplaces(pluginStorageRoot);
   if (options.dryRun === true) {
     const declarationSource = resolveDeclaredMarketplaceSources({
       configResult,
@@ -672,11 +790,10 @@ export async function installCCbuddyMarketplacePlugin(
     // 内置插件的 filesystem/SEA entry 只是 Catalog 指针，不是普通 Marketplace source。
     // 直接安装必须复用 restore，避免把同一份官方 cache 写进 installed_plugins.json，
     // 否则卸载/更新会把内置资产误判成用户安装并破坏恢复语义。
-    // 当前调用由协议层的 storage lock 保护；这里必须调用不再加锁的核心，
-    // 否则同一 storageRoot 的 promise-chain lock 会等待自身而永久阻塞。
+    // 安装与恢复属于同一次持锁操作；复用核心，不重复获取文件锁。
     await restoreBuiltinPluginCore({ ...options, configResult, pluginId });
-    const fresh = resolvePluginContext({ ...options, configResult: undefined });
-    const outcome = resolveCCbuddyPlugins({
+    const fresh = await resolvePluginContext({ ...options, configResult: undefined });
+    const outcome = await resolveCCbuddyPlugins({
       ...options,
       configResult: fresh.configResult,
       pluginStorageRoot: fresh.pluginStorageRoot,
@@ -773,11 +890,12 @@ export async function installCCbuddyMarketplacePlugin(
   };
 }
 
-export async function uninstallCCbuddyMarketplacePlugin(
-  options: UninstallCCbuddyMarketplacePluginOptions,
-): Promise<CCbuddyInstalledPluginData | null> {
-  const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
-  return withPluginStorageLock(pluginStorageRoot, async () => {
+export const uninstallCCbuddyMarketplacePlugin = pluginMutation(
+  async (
+    options: UninstallCCbuddyMarketplacePluginOptions,
+  ): Promise<CCbuddyInstalledPluginData | null> => {
+    const { configResult, pluginSecretsPath, pluginStorageRoot, workingDirectory } =
+      await resolvePluginContext(options);
     const pluginId = resolvePluginIdForMutation(options);
 
     // 官方 CDN marketplace 与内置插件共享 ccbuddy-plugins-official id 空间，且其缓存
@@ -799,13 +917,15 @@ export async function uninstallCCbuddyMarketplacePlugin(
       if (!removed) return null;
       await removePluginFromFileConfig(configResult.sources.user.path, removed.id);
       await removeSuppressedBuiltinInFileConfig(configResult.sources.user.path, removed.id);
+      // 卸载是彻底清理：私有文件里 user 与全部 workspaces 的条目一起删。
+      await removeStoredPluginSecrets(pluginSecretsPath, removed.id, "all");
       return toInstalledPluginData(removed, false);
     }
 
     // 内置（官方）插件不在 installed_plugins.json 里，无法走 marketplace 卸载路径。
     // 卸载只改变 Runtime 抑制态并清理用户数据/config；Catalog 与不可变 cache 必须保留，
     // 这样详情页仍能离线读取组件，且恢复动作不依赖重新下载或重新构造目录。
-    const outcome = resolveCCbuddyPlugins({
+    const outcome = await resolveCCbuddyPlugins({
       ...options,
       configResult,
       pluginStorageRoot,
@@ -820,6 +940,7 @@ export async function uninstallCCbuddyMarketplacePlugin(
       // 唯一真相源（写入用原子 temp+rename），即使后续删除抛错，下次 resolve 也会跳过并补删
       // 缓存；把 config 清理放在删除之前可保证「恢复时从干净状态开始」即便删除中途失败。
       await removePluginFromFileConfig(configResult.sources.user.path, pluginId);
+      await removeStoredPluginSecrets(pluginSecretsPath, pluginId, "all");
       // 不删除官方 cache：它与 Marketplace Catalog 同属详情/恢复所需的只读资产。
       if (options.keepData !== true) {
         await rm(getPluginDataDir(pluginStorageRoot, pluginId), { force: true, recursive: true });
@@ -841,18 +962,19 @@ export async function uninstallCCbuddyMarketplacePlugin(
     }
 
     return null;
-  });
-}
+  },
+);
 
 /**
  * `ccbuddy plugins update <plugin>`：先刷新所属 marketplace 目录，再按同一条目重装。
  * cacheMarketplacePlugin 对已存在的安装记录做原地覆盖并保留 installedAt；启用态只会给
  * 用户配置里尚未显式声明的 id 补默认值，因此更新不会改变用户已经做过的开关选择。
  */
-export async function updateCCbuddyMarketplacePlugin(
+export const updateCCbuddyMarketplacePlugin = pluginMutation(updateCCbuddyMarketplacePluginLocked);
+async function updateCCbuddyMarketplacePluginLocked(
   options: UpdateCCbuddyMarketplacePluginOptions,
 ): Promise<CCbuddyPluginUpdateData> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
   const record = listInstalledPluginRecords(pluginStorageRoot).find(
     (installed) => installed.id === options.pluginId,
   );
@@ -883,7 +1005,7 @@ export async function updateCCbuddyMarketplacePlugin(
 export async function validateCCbuddyPluginPath(
   options: ValidateCCbuddyPluginPathOptions,
 ): Promise<PluginLoadOutcome["diagnostics"]> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
   return (
     await validateLocalPluginPath({
       path: options.path,
@@ -919,34 +1041,29 @@ async function restoreBuiltinPluginCore(options: RestoreBuiltinPluginOptions): P
   ) {
     // overview 虽然隐藏了恢复入口，但协议调用仍可绕过 UI 写用户配置。
     // 功能开关关闭时在写盘前失败，确保用户配置与插件缓存都保持零痕迹。
-    throw new Error(
-      "computer-use built-in plugin requires CCBUDDY_CUA_PRODUCT_HELPER to be enabled",
-    );
+    throw new Error("computer-use built-in plugin requires CCBUDDY_CUA_PRODUCT_HELPER to be enabled");
   }
-  const { configResult } = resolvePluginContext(options);
-  await removeSuppressedBuiltinInFileConfig(configResult.sources.user.path, options.pluginId);
-  // 重读磁盘上的最新 config（patch 后），确保抑制集合不再包含刚恢复的 id；
-  // 不能复用 patch 前可能被传入的 configResult。
-  const fresh = resolvePluginContext({ ...options, configResult: undefined });
-  // 立即重新 seed，让插件即刻可用，无需等待下一次 resolve。
-  resolveOfficialPluginRoots({
-    storageRoot: fresh.pluginStorageRoot,
-    suppressedBuiltins: new Set(fresh.configResult.config.plugins.suppressedBuiltins),
+  const { configResult, pluginStorageRoot } = await resolvePluginContext(options);
+  // 准备取消或失败时不能先改变配置；seed 不按抑制态过滤，成功后再提交恢复。
+  options.pluginPreparation?.signal.throwIfAborted();
+  options.pluginPreparation?.invalidate();
+  await resolveOfficialPluginRoots({
+    preparation: options.pluginPreparation,
+    storageRoot: pluginStorageRoot,
   });
+  options.pluginPreparation?.signal.throwIfAborted();
+  await removeSuppressedBuiltinInFileConfig(configResult.sources.user.path, options.pluginId);
 }
 
-export async function restoreBuiltinPlugin(options: RestoreBuiltinPluginOptions): Promise<void> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
-  await withPluginStorageLock(pluginStorageRoot, () => restoreBuiltinPluginCore(options));
-}
+export const restoreBuiltinPlugin = pluginMutation(restoreBuiltinPluginCore);
 
-export async function configureCCbuddyPlugin(
-  options: ConfigureCCbuddyPluginOptions,
-): Promise<void> {
+export const configureCCbuddyPlugin = pluginMutation(configureCCbuddyPluginLocked);
+async function configureCCbuddyPluginLocked(options: ConfigureCCbuddyPluginOptions): Promise<void> {
   const normalizedOptions = normalizePluginOptions(options.options);
   const clearOptionKeys = normalizePluginOptionKeys(options.clearOptionKeys);
-  const { configResult, pluginStorageRoot, workingDirectory } = resolvePluginContext(options);
-  const outcome = resolveCCbuddyPlugins({
+  const { configResult, pluginSecretsPath, pluginStorageRoot, workingDirectory } =
+    await resolvePluginContext(options);
+  const outcome = await resolveCCbuddyPlugins({
     ...options,
     configResult,
     pluginStorageRoot,
@@ -954,35 +1071,44 @@ export async function configureCCbuddyPlugin(
   });
   const plugin = resolvePluginSelector(options.pluginId, outcome.plugins);
   if (options.dryRun === true) return;
-  await updatePluginOptionsInFileConfig(
-    resolvePluginConfigPath(options, configResult, workingDirectory),
-    plugin.id,
-    normalizedOptions,
+  await savePluginOptions({
     clearOptionKeys,
-  );
+    configPath: resolvePluginConfigPath(options, configResult, workingDirectory),
+    options: normalizedOptions,
+    plugin,
+    // workspace 配置固定写 <workingDirectory>/.ccbuddy/config.json，它的 baseDir 就是 workingDirectory。
+    scope:
+      options.scope === "workspace"
+        ? { kind: "workspace", root: workingDirectory }
+        : { kind: "user" },
+    secretsPath: pluginSecretsPath,
+  });
 }
 
 /** 删除指定 scope 的 Plugin 配置键，使 Workspace scope 回退到 User。 */
-export async function resetCCbuddyPluginConfig(
+export const resetCCbuddyPluginConfig = pluginMutation(resetCCbuddyPluginConfigLocked);
+async function resetCCbuddyPluginConfigLocked(
   options: ResetCCbuddyPluginConfigOptions,
 ): Promise<{ path: string; pluginId: string }> {
-  const { configResult, workingDirectory } = resolvePluginContext(options);
+  const { configResult, pluginSecretsPath, workingDirectory } = await resolvePluginContext(options);
   const path = resolvePluginConfigPath(options, configResult, workingDirectory);
   if (options.scope === "workspace") {
     // “恢复继承”只删除 Workspace 的 enable override。options 是独立配置维度，
-    // 不能因为用户恢复开关继承而把 Workspace options/secret 一并抹掉。
+    // 不能因为用户恢复开关继承而把 Workspace options/secret 一并抹掉（私有文件同语义，保留）。
     await removePluginEnabledFromFileConfig(path, options.pluginId);
   } else {
     await removePluginFromFileConfig(path, options.pluginId);
+    await removeStoredPluginSecrets(pluginSecretsPath, options.pluginId, { kind: "user" });
   }
   return { path, pluginId: options.pluginId };
 }
 
-export async function validateCCbuddyPlugin(
+export const validateCCbuddyPlugin = pluginMutation(validateCCbuddyPluginLocked);
+async function validateCCbuddyPluginLocked(
   options: ValidateCCbuddyPluginOptions,
 ): Promise<PluginLoadOutcome["diagnostics"]> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
-  ensureDefaultPluginMarketplaces(pluginStorageRoot);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
+  await ensureDefaultPluginMarketplaces(pluginStorageRoot);
   if (options.source) {
     try {
       const source = await parseMarketplaceSourceInput(options.source);
@@ -1032,37 +1158,45 @@ export async function validateCCbuddyPlugin(
 export async function describeCCbuddyPlugin(
   options: DescribeCCbuddyPluginOptions,
 ): Promise<DescribeMarketplacePluginResult> {
-  const { pluginStorageRoot } = resolvePluginContext(options);
+  const { pluginStorageRoot } = await resolvePluginContext(options);
   // 默认市场登记由 ensureMarketplaceManifestAvailable 在写锁内完成；这里不再无锁写 known 列表。
-  return describeMarketplacePlugin({
+  return await describeMarketplacePlugin({
     marketplace: options.marketplace,
     name: options.pluginName,
     storageRoot: pluginStorageRoot,
-    ...(options.withWriteLock ? { withWriteLock: options.withWriteLock } : {}),
+    withWriteLock: (write) =>
+      withPluginStorageLock(
+        pluginStorageRoot,
+        write,
+        options.pluginStorageLock,
+        options.abortSignal,
+      ),
   });
 }
 
-function resolvePluginContext(options: ResolveCCbuddyPluginsOptions): {
+async function resolvePluginContext(options: ResolveCCbuddyPluginsOptions): Promise<{
   configResult: ConfigResult;
+  pluginSecretsPath: string;
   pluginStorageRoot: string;
   workingDirectory: string;
-} {
+}> {
   const workingDirectory = resolve(options.workingDirectory ?? process.cwd());
   const configResult =
     options.configResult ??
-    createConfig({
+    (await createConfigWithPluginMigrations({
       env: options.env,
       projectConfigPath: options.projectConfigPath,
       workingDirectory,
       skipUserConfig: options.skipUserConfig,
       userConfigPath: options.userConfigPath,
-      workspaceIdentity: options.workspaceIdentity,
-    });
+    }));
   const storageRoot = resolvePath(configResult.config.storage.dir);
+  const pluginStorageRoot =
+    options.pluginStorageRoot ?? getPluginStorageRoot(getCliStorageRoot(storageRoot));
   return {
     configResult,
-    pluginStorageRoot:
-      options.pluginStorageRoot ?? getPluginStorageRoot(getCliStorageRoot(storageRoot)),
+    pluginSecretsPath: resolvePluginSecretsPath(pluginStorageRoot),
+    pluginStorageRoot,
     workingDirectory,
   };
 }
@@ -1230,6 +1364,8 @@ function toAvailablePluginData(
   installedIds: ReadonlySet<string>,
 ): CCbuddyAvailablePluginData {
   const id = `${entry.name}@${marketplace}`;
+  // 从原始条目读：旧版本缓存的目录不用迁移，下次 overview 就能读到。
+  const extensionSummary = parseEntryExtensionSummary(entry.raw);
   return {
     id,
     name: entry.name,
@@ -1239,6 +1375,7 @@ function toAvailablePluginData(
     installed: installedIds.has(id),
     componentTypes: inferComponentTypes(entry.raw),
     ...(entry.listing ? { listing: entry.listing } : {}),
+    ...(extensionSummary ? { extensionSummary } : {}),
   };
 }
 
@@ -1262,6 +1399,9 @@ function toInstalledPluginData(
   };
 }
 
+/** 只能由目录条目自报的组件类型（docs/plugins/plugin-publishing.md §4.2）。 */
+const CATALOG_CLAIMED_COMPONENT_TYPES = ["ui", "extension"] as const;
+
 function inferComponentTypes(raw: Record<string, unknown>): string[] {
   const types: string[] = [];
   if ("agents" in raw) types.push("agent");
@@ -1270,7 +1410,12 @@ function inferComponentTypes(raw: Record<string, unknown>): string[] {
   if ("hooks" in raw) types.push("hook");
   if ("mcpServers" in raw) types.push("mcp");
   if ("lspServers" in raw) types.push("lsp");
-  if (Array.isArray(raw.componentTypes) && raw.componentTypes.includes("ui")) types.push("ui");
+  // 目录自报的 ui / extension 只是安装前的宣传，装上后以实际清单为准；CLI 只透传、不判断兼容。
+  for (const claimed of CATALOG_CLAIMED_COMPONENT_TYPES) {
+    if (Array.isArray(raw.componentTypes) && raw.componentTypes.includes(claimed)) {
+      types.push(claimed);
+    }
+  }
   return types;
 }
 
@@ -1323,11 +1468,10 @@ function resolvePluginConfigPath(
     return configResult.sources.user.path;
   }
 
-  // 项目 .ccbuddy 是兼容读取源；CCbuddy 自己的插件开关只写用户数据根下的 workspace 配置。
-  const workspaceConfigPath = join(
-    resolveWorkspaceStateRoot(workingDirectory, { workspaceIdentity: options.workspaceIdentity }),
-    "config.json",
-  );
+  // Workspace Plugin 配置固定落在当前 `<workspace>/.ccbuddy/config.json`。嵌套 workspace
+  // 可能同时发现仓库根与自身的配置，读取端 innermost 优先；写入端也必须锁定当前
+  // workspace，不能用 project discovery 的第一个 outermost 文件。
+  const workspaceConfigPath = join(workingDirectory, ".ccbuddy", "config.json");
   const projectConfigPaths = [
     ...(options.projectConfigPath ? [options.projectConfigPath] : []),
     ...configResult.sources.project.paths,
@@ -1339,14 +1483,6 @@ function resolvePluginConfigPath(
   );
   if (existingWorkspaceConfig) return existingWorkspaceConfig;
   return workspaceConfigPath;
-}
-
-function normalizePluginConfigPathForComparison(
-  path: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const resolvedPath = platform === "win32" ? win32.resolve(path) : resolve(path);
-  return platform === "win32" ? resolvedPath.replaceAll("\\", "/").toLowerCase() : resolvedPath;
 }
 
 export function isWorkspacePluginConfigPath(
@@ -1490,7 +1626,7 @@ function toMarketplaceInstallDiagnostic(
 
 function toMarketplaceRefreshDiagnostic(
   error: unknown,
-  marketplaceId: string,
+  marketplaceId?: string,
 ): PluginLoadOutcome["diagnostics"][number] {
   const message = error instanceof Error ? error.message : String(error);
   return toPluginDiagnostic({

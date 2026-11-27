@@ -32,12 +32,7 @@ export const TaskOutputInputSchema = z
 
 export type TaskOutputInput = z.infer<typeof TaskOutputInputSchema>;
 
-export const TaskOutputInputJsonSchema = {
-  ...toToolJsonSchema(TaskOutputInputSchema),
-
-  // 的 provider schema 仍要求模型显式传入 task_id、block 和 timeout。
-  required: ["task_id", "block", "timeout"],
-};
+export const TaskOutputInputJsonSchema = toToolJsonSchema(TaskOutputInputSchema);
 
 export const TaskOutputTaskSchema = z
   .object({
@@ -51,6 +46,24 @@ export const TaskOutputTaskSchema = z
     prompt: z.string().optional(),
     result: z.string().optional(),
     outputFile: z.string().optional(),
+    /** 运行中的后台 Agent 的当前进展（与无进展提醒同一份事实）。 */
+    activity: z
+      .object({
+        last_progress_at: z.string(),
+        no_progress_for_ms: z.number(),
+        running_tools: z.array(
+          z
+            .object({
+              tool_name: z.string(),
+              running_for_ms: z.number(),
+              summary: z.string().optional(),
+            })
+            .strict(),
+        ),
+        waiting_for_permission: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -69,7 +82,7 @@ export const TaskOutputResultJsonSchema = toToolJsonSchema(TaskOutputResultSchem
 
 function semanticBoolean(
   schema: z.ZodDefault<z.ZodBoolean>,
-): z.ZodEffects<z.ZodDefault<z.ZodBoolean>, boolean, unknown> {
+): z.ZodPreprocess<z.ZodDefault<z.ZodBoolean>> {
   return z.preprocess((value) => {
     if (value === "true") return true;
     if (value === "false") return false;

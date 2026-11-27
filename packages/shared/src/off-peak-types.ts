@@ -28,14 +28,13 @@ export function isOffPeakTerminalStatus(
   return (OFF_PEAK_TERMINAL_STATUSES as readonly string[]).includes(status);
 }
 
-/**
- * 票据不可用（服务端 400/3102：active 3h 到期 / ready 5min 废票 / settled / 非本人）的
- * 稳定错误标记。ccbuddy-cli 适配层把该业务码分类为不可重试失败并在错误消息里嵌入本标记；
- * host 终态回写据此改走"同 task_id 重新取号 → resume 续跑"而非落 failed。
- * 跨进程只能靠错误文本传递，标记必须全链路唯一且稳定，勿改；与
- * apps/ccbuddy-cli/packages/adapters/src/model/offpeak-retry.ts 的同名常量跨包同值。
- */
+/** 过期标记跨 App/CLI 保持一致；具体 ready/active 原因保留在原始业务错误码中。 */
 export const OFF_PEAK_TICKET_EXPIRED_MARKER = "off-peak-ticket-expired";
+
+/** 服务端将未激活过号和运行超时分码；两者都需要由 Host 收口，不能遗漏 active 超时。 */
+export function isOffPeakTicketExpiredCode(code: string | number | undefined): boolean {
+  return code === "3102" || code === 3102 || code === "3106" || code === 3106;
+}
 
 /** Off-Peak Provider 与当前账号 Family 同身份；任务保存精确选择，不跨 Family 静默迁移。 */
 export const OFF_PEAK_PROVIDER_IDS = {
@@ -100,7 +99,11 @@ export function isOffPeakTicketExpiredError(message: string | undefined): boolea
 
 /** 一条闲时任务：表单创建即取号排队，派发时 createTask 新建 session。 */
 export interface CCbuddyOffPeakTask {
-  /** 本地主键，同时用作服务端 task_id（稳定，跨多个 ticket）。 */
+  projectId?: string | null;
+  hostId?: string;
+  /** 创建定义时固化，之后不跟随虚拟项目 roots 编辑。 */
+  additionalDirectories?: string[];
+  /** 本地主键，同时用作服务端 task_id（稳定，跨多个 ticket，D26）。 */
   offPeakTaskId: string;
   /** 服务端取号返回的 Snowflake ticket_id；每次重新取号（3h 到期续跑/Continue 重取）更新。 */
   serverTicketId?: string;
@@ -166,6 +169,10 @@ export interface CCbuddyOffPeakTask {
 
 /** 创建闲时任务的入参（workspace 由调用方从上下文注入；取号在 service 层先行，成功才落库）。 */
 export interface CCbuddyOffPeakTaskCreateParams {
+  projectId?: string | null;
+  hostId?: string;
+  /** 创建定义时固化，之后不跟随虚拟项目 roots 编辑。 */
+  additionalDirectories?: string[];
   title: string;
   prompt: string;
   permissionMode: CCbuddyTaskMode;

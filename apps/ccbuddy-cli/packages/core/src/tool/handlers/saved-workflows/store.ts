@@ -30,7 +30,10 @@ import {
   type SavedWorkflowScope,
   type SavedWorkflowShadowing,
 } from "@ccbuddy/contracts";
-import { resolveCcBuddyDataRoot, resolveWorkspaceStateRoot } from "@ccbuddy/contracts/workspace-state";
+import {
+  resolveCcBuddyDataRoot,
+  resolveWorkspaceStateRoot,
+} from "@ccbuddy/contracts/workspace-state";
 import { parseSavedWorkflow, serializeSavedWorkflow } from "./frontmatter.js";
 
 /** 一个查找根：作用域标签 + 绝对目录。 */

@@ -1,3 +1,4 @@
+import type { SessionLifecycleSnapshot } from "@ccbuddy/shared";
 import { logger } from "@/logger.js";
 import type { ConversationTransport } from "@/v4/transport.js";
 
@@ -30,16 +31,48 @@ async function unsubscribeIgnoringFailure(
  * 最新 proxy，旧 proxy 的监听先同步解除，避免新旧 Store 竞争同一 topic ownership。
  */
 export class ReplaceableConversationTransport implements ConversationTransport {
-  private readonly sessionLifecycleListeners = new Set<
-    (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void
-  >();
-  private offSessionLifecycle: (() => void) | null = null;
-  private readonly topicBySubscriptionId = new Map<string, string>();
   private readonly frameListeners = new Set<FrameListener>();
   private readonly assemblyFaultListeners = new Set<AssemblyFaultListener>();
   private readonly runtimeRestartListeners = new Set<RuntimeRestartListener>();
   private readonly runtimeLifecycleListeners = new Set<RuntimeLifecycleListener>();
-  private readonly transportBySubscriptionId = new Map<string, ConversationTransport>();
+  private readonly transportBySubscriptionId = new Map<
+    string,
+    { owner: ConversationTransport; topic: string }
+  >();
+  private readonly sessionLifecycleListeners = new Set<
+    (snapshot: SessionLifecycleSnapshot) => void
+  >();
+  private offSessionLifecycle: (() => void) | null = null;
+  getSessionLifecycle(sessionId: string): Promise<SessionLifecycleSnapshot | null> {
+    if (!this.current.getSessionLifecycle) return Promise.resolve(null);
+    return this.current.getSessionLifecycle(sessionId);
+  }
+  onSessionLifecycle(listener: (snapshot: SessionLifecycleSnapshot) => void): () => void {
+    this.sessionLifecycleListeners.add(listener);
+    this.bindSessionLifecycleListener();
+    return () => {
+      this.sessionLifecycleListeners.delete(listener);
+      if (this.sessionLifecycleListeners.size === 0) {
+        this.offSessionLifecycle?.();
+        this.offSessionLifecycle = null;
+      }
+    };
+  }
+  private bindSessionLifecycleListener(): void {
+    if (this.offSessionLifecycle || this.sessionLifecycleListeners.size === 0) return;
+    this.offSessionLifecycle =
+      this.current.onSessionLifecycle?.((snapshot) => {
+        if (snapshot.state === "stopping") {
+          // 单任务重启已经废弃旧 publisher；Store 会丢弃旧订阅，代理也必须释放对应引用。
+          for (const [subscriptionId, subscription] of this.transportBySubscriptionId) {
+            if (subscription.topic === `conversation/${snapshot.sessionId}`) {
+              this.transportBySubscriptionId.delete(subscriptionId);
+            }
+          }
+        }
+        for (const listener of this.sessionLifecycleListeners) listener(snapshot);
+      }) ?? null;
+  }
   private offFrame: (() => void) | null = null;
   private offAssemblyFault: (() => void) | null = null;
   private offRuntimeRestart: (() => void) | null = null;
@@ -62,35 +95,6 @@ export class ReplaceableConversationTransport implements ConversationTransport {
     };
   };
 
-  onSessionLifecycle(
-    listener: (snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot) => void,
-  ): () => void {
-    this.sessionLifecycleListeners.add(listener);
-    this.bindSessionLifecycleListener();
-    return () => {
-      this.sessionLifecycleListeners.delete(listener);
-      if (!this.sessionLifecycleListeners.size) {
-        this.offSessionLifecycle?.();
-        this.offSessionLifecycle = null;
-      }
-    };
-  }
-
-  private bindSessionLifecycleListener(): void {
-    if (this.offSessionLifecycle || !this.sessionLifecycleListeners.size) return;
-    this.offSessionLifecycle =
-      this.current.onSessionLifecycle?.((snapshot) => {
-        if (snapshot.state === "stopping") {
-          for (const [subscriptionId, topic] of this.topicBySubscriptionId) {
-            if (topic !== "conversation/" + snapshot.sessionId) continue;
-            this.transportBySubscriptionId.delete(subscriptionId);
-            this.topicBySubscriptionId.delete(subscriptionId);
-          }
-        }
-        for (const listener of this.sessionLifecycleListeners) listener(snapshot);
-      }) ?? null;
-  }
-
   constructor(private current: ConversationTransport) {
     if (!current.onRuntimeLifecycle) {
       this.onRuntimeLifecycle = undefined;
@@ -104,10 +108,9 @@ export class ReplaceableConversationTransport implements ConversationTransport {
     this.detachCurrentListeners();
     // 旧 proxy 上的 active subscription 必须先释放，但断线 RPC 可能永久
     // pending；cleanup 只做 best-effort，不能阻塞新 proxy 的重订阅接管。
-    for (const [subscriptionId, owner] of this.transportBySubscriptionId) {
+    for (const [subscriptionId, { owner }] of this.transportBySubscriptionId) {
       if (owner !== previous) continue;
       this.transportBySubscriptionId.delete(subscriptionId);
-      this.topicBySubscriptionId.delete(subscriptionId);
       void unsubscribeIgnoringFailure(previous, subscriptionId);
     }
 
@@ -128,34 +131,35 @@ export class ReplaceableConversationTransport implements ConversationTransport {
       void unsubscribeIgnoringFailure(owner, result.ack.subscriptionId);
       throw new Error("fault.subscription.transportReplaced");
     }
-    this.transportBySubscriptionId.set(result.ack.subscriptionId, owner);
-    this.topicBySubscriptionId.set(result.ack.subscriptionId, params.topic);
+    this.transportBySubscriptionId.set(result.ack.subscriptionId, { owner, topic: params.topic });
     return result;
   }
 
   activate(subscriptionId: string): void {
-    (this.transportBySubscriptionId.get(subscriptionId) ?? this.current).activate(subscriptionId);
+    (this.transportBySubscriptionId.get(subscriptionId)?.owner ?? this.current).activate(
+      subscriptionId,
+    );
   }
 
   resync(
     params: Parameters<ConversationTransport["resync"]>[0],
   ): ReturnType<ConversationTransport["resync"]> {
-    return (this.transportBySubscriptionId.get(params.subscriptionId) ?? this.current).resync(
-      params,
-    );
+    return (
+      this.transportBySubscriptionId.get(params.subscriptionId)?.owner ?? this.current
+    ).resync(params);
   }
 
   unsubscribe(subscriptionId: string): ReturnType<ConversationTransport["unsubscribe"]> {
-    const owner = this.transportBySubscriptionId.get(subscriptionId) ?? this.current;
+    const owner = this.transportBySubscriptionId.get(subscriptionId)?.owner ?? this.current;
     this.transportBySubscriptionId.delete(subscriptionId);
-    this.topicBySubscriptionId.delete(subscriptionId);
     return owner.unsubscribe(subscriptionId);
   }
 
   sendCommand(
-    envelope: Parameters<ConversationTransport["sendCommand"]>[0],
+    ...params: Parameters<ConversationTransport["sendCommand"]>
   ): ReturnType<ConversationTransport["sendCommand"]> {
-    return this.current.sendCommand(envelope);
+    // Bug 原因：旧代理只转发 envelope，丢失 projectId，远端任务因而被预留成空归属。
+    return this.current.sendCommand(...params);
   }
 
   queryCommands(
@@ -320,9 +324,8 @@ export class ReplaceableConversationTransport implements ConversationTransport {
     const owner = this.current;
     this.offRuntimeRestart = owner.onRuntimeRestart(() => {
       for (const [subscriptionId, subscriptionOwner] of this.transportBySubscriptionId) {
-        if (subscriptionOwner === owner) {
+        if (subscriptionOwner.owner === owner) {
           this.transportBySubscriptionId.delete(subscriptionId);
-          this.topicBySubscriptionId.delete(subscriptionId);
         }
       }
       for (const listener of this.runtimeRestartListeners) listener();

@@ -1,12 +1,16 @@
 import type {
   OAuthCachedSessionRestoreResult,
+  OAuthAccountAvailability,
+  OAuthWebsiteSession,
   OAuthCallbackResult,
   OAuthProviderId,
   OAuthProviderMeta,
+  OAuthSessionState,
   OAuthStartResponse,
   UserInfo,
 } from "@ccbuddy/shared";
 import { ServiceChannels } from "@ccbuddy/shared";
+import type { Event } from "@ccbuddy/rpc";
 import { createServiceDescriptor } from "../descriptors.js";
 
 /**
@@ -16,11 +20,25 @@ import { createServiceDescriptor } from "../descriptors.js";
  * provider 管理、state 生命周期、token 交换、凭据存储。
  */
 export interface IOAuthService {
+  /** 凭据变更完成后发布，早于 provider 清理及调用方的 UI/设置后处理。 */
+  readonly onDidChangeSession: Event<OAuthSessionState>;
+
   /** 获取可用 provider 列表（仅返回 enabled=true） */
   getProviders(): Promise<OAuthProviderMeta[]>;
 
   /** 获取当前 active provider */
   getActiveProvider(): Promise<OAuthProviderId | null>;
+
+  /** 只返回当前主体的套餐能力，不透出凭据。 */
+  getAccountAvailability(): Promise<OAuthAccountAvailability>;
+
+  /** 原子读取受信嵌入网页的交接材料；不返回关联业务凭据。 */
+  getWebsiteSession(): Promise<OAuthWebsiteSession | null>;
+
+  /** 安全补充当前主体的关联；失败不清除已有登录。 */
+  refreshAccountProfile(
+    expected?: Pick<OAuthAccountAvailability, "loginProvider" | "userId" | "sessionRevision">,
+  ): Promise<OAuthAccountAvailability>;
 
   /** 启动时从本地缓存恢复会话展示态：成功返回用户信息，不做远端 token 校验 */
   restoreCachedSession(): Promise<UserInfo | null>;

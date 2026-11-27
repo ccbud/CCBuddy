@@ -1,3 +1,6 @@
+import { getRemoteConnectionFailureCode } from "@/lib/remoteWorkspaceServiceError.js";
+import { formatRemoteConnectionError } from "@/lib/remoteConnectionPresentation.js";
+import { isRemoteConversationWorkspace } from "@/conversation-workspace-target/purpose.js";
 /* eslint-disable max-lines -- 聚合命令、任务、文件三类搜索结果，后续可按 result section 拆分。 */
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { unpackWorkspaceFileEntries } from "@ccbuddy/shared/workspaceFileEntriesCodec";
@@ -448,7 +451,13 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
   // 性能修复：Command Center 关闭时不需要跟随 chat streaming 重算命令、任务和 recent changes。
   // 保留 hooks 顺序，但把关闭态输入降为空，避免隐藏弹窗在每个 token 批次重建结果区。
   const effectiveCommands = open ? commands : EMPTY_QUICK_PICK_COMMANDS;
-  const effectiveWorkspaceTabs = open ? workspaceTabs : EMPTY_COMMAND_CENTER_WORKSPACE_TABS;
+  const effectiveWorkspaceTabs = useMemo(
+    () =>
+      open
+        ? workspaceTabs.filter((tab) => !isRemoteConversationWorkspace(tab))
+        : EMPTY_COMMAND_CENTER_WORKSPACE_TABS,
+    [open, workspaceTabs],
+  );
   const effectiveActiveTaskChangeSummary = open ? activeTaskChangeSummary : null;
   const resolvedQuery = useMemo(() => resolveQueryScope(rawQuery), [rawQuery]);
   const activeScope = resolvedQuery.explicitScope ? resolvedQuery.scope : manualScope;
@@ -457,10 +466,6 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
   const searchConversations =
     open && hasSearchQuery && (activeScope === "all" || activeScope === "conversations");
   const searchFiles = open && hasSearchQuery && (activeScope === "all" || activeScope === "files");
-  const searchWorkspaceTabs = useMemo(
-    () => (searchConversations ? effectiveWorkspaceTabs : []),
-    [effectiveWorkspaceTabs, searchConversations],
-  );
   const currentWorkspaceTabs = useMemo(
     () =>
       effectiveWorkspaceTabs.filter(
@@ -473,8 +478,10 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
     [currentWorkspaceTabs, hasSearchQuery, open],
   );
   const taskList = useGlobalTaskList({
-    kind: "active",
-    workspaceTabs: searchWorkspaceTabs,
+    kind: "all",
+    scope: "host",
+    enabled: searchConversations,
+    workspaceTabs: EMPTY_COMMAND_CENTER_WORKSPACE_TABS,
     sortBy: "updated",
     searchQuery,
     expanded: false,
@@ -587,7 +594,16 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
       })
       .catch((error) => {
         if (!cancelled) {
-          setWorkspaceFilesError(String(error));
+          const remoteCode = getRemoteConnectionFailureCode(error);
+          setWorkspaceFilesError(
+            remoteCode
+              ? formatRemoteConnectionError({
+                  fallback: String(error),
+                  reasonCode: remoteCode,
+                  formatMessage: intl.formatMessage,
+                })
+              : String(error),
+          );
         }
       })
       .finally(() => {
@@ -599,7 +615,7 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
     return () => {
       cancelled = true;
     };
-  }, [fileService, loadedWorkspaceKey, searchFiles, workspaceAbsPath, workspaceKey]);
+  }, [fileService, loadedWorkspaceKey, searchFiles, workspaceAbsPath, workspaceKey, intl]);
 
   const rememberSearch = useCallback(
     (scope: CommandCenterSearchScope = activeScope) => {
@@ -788,10 +804,11 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
         ) : null}
         {rows.map((task) => {
           const title = getTaskTitle(task, intl.formatMessage({ id: "taskList.untitled" }));
+          // Bugfix：cmdk 按 value 判断选中；标题可重复，必须用工作区身份和任务 ID 隔离重名行。
           return (
             <CommandItem
               key={`${task.workspaceIdentity?.trim() || task.workspacePath}:${task.taskId}`}
-              value={`${title} ${task.workspacePath}`}
+              value={`recent-task:${task.workspaceIdentity?.trim() || task.workspacePath}:${task.taskId}`}
               className={quickPickItemClassName}
               onSelect={() => selectRecentTask(task)}
             >
@@ -875,7 +892,8 @@ export const CommandCenterDialog = memo(function CommandCenterDialogComponent({
           return (
             <CommandItem
               key={row.key}
-              value={`${title} ${workspaceLabel} ${searchSnippet ?? ""}`}
+              // 搜索结果沿用含工作区身份、任务 ID 和片段序号的行 key，避免同文案一起选中。
+              value={`task-result:${row.key}`}
               className={quickPickItemClassName}
               onSelect={() => selectTask(row)}
             >

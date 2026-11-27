@@ -1,22 +1,31 @@
 /* eslint-disable max-lines -- Controller source 聚合、路由、订阅与生命周期属于同一个 Host 边界。 */
-import { Emitter } from "@ccbuddy/rpc";
+import { Emitter, Event } from "@ccbuddy/rpc";
 import type { CCbuddyTaskMeta } from "@ccbuddy/shared";
 import type {
   ControllerSubscribeParams,
+  V4SessionDeletionPreviewBatchItem,
   WindowHostControllerTaskRow,
   WindowHostTaskAddress,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
-import { matchesTaskListMembershipKind } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import {
+  CONTROLLER_TASKS_INDEX_TOPIC,
+  matchesTaskListMembershipKind,
+  windowHostTaskAddressSchema,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import type {
   IWindowControllerService,
+  ProjectDisplayOrderKey,
   ICCbuddyAgentService,
   ICCbuddyTaskService,
   WindowHostControllerFrame,
   WindowHostControllerTaskListItem,
   WindowHostControllerTaskListResult,
+  WindowHostTaskUnreadSignal,
+  WindowHostTasksRemovedSignal,
   CCbuddyTaskListQuery,
   CCbuddyTaskListWorkspaceScope,
 } from "@ccbuddy/services";
+import { isArchivedTaskDeletionBatchUnsupported } from "@ccbuddy/services";
 import {
   createWindowHostControllerProjection,
   type WindowHostControllerMutation,
@@ -37,7 +46,7 @@ export interface ResolvedWindowHostControllerSource {
 }
 
 function sourceKey(scope: WindowHostControllerSourceScope): string {
-  return `${scope.kind}\0${scope.kind === "remote" ? scope.remoteSessionId : "local"}\0${scope.workspaceIdentity?.trim() || scope.workspacePath}`;
+  return `${scope.kind}\0${scope.kind === "remote" ? (scope.sourceServerId ?? scope.remoteSessionId) : "local"}\0${scope.workspaceIdentity?.trim() || scope.workspacePath}`;
 }
 
 function taskKey(task: Pick<CCbuddyTaskMeta, "taskId" | "workspacePath" | "workspaceIdentity">) {
@@ -135,7 +144,14 @@ function liveStatusFromMeta(meta: CCbuddyTaskMeta): WindowHostControllerTaskRow[
  * 对应 source 的 tasks-index 重建投影，断连时只冻结最后一次成功的内存快照。
  */
 export function createWindowHostControllerRuntime(options: {
+  onRunStarted?: (
+    run: import("./sessionActivityNotifications.js").DesktopActivityRunStarted,
+  ) => void;
+  onNotification?: (
+    event: import("./sessionActivityNotifications.js").DesktopActivityNotification,
+  ) => void;
   createId: () => string;
+  readHostTaskList: ICCbuddyTaskService["listTaskList"];
   resolveSource: (
     scope: CCbuddyTaskListWorkspaceScope,
   ) => ResolvedWindowHostControllerSource | null;
@@ -144,8 +160,11 @@ export function createWindowHostControllerRuntime(options: {
     operation: "refresh" | "search",
     error: unknown,
   ) => void;
+  onTasksArchivedOrDeleted?: (scope: WindowHostControllerSourceScope, taskIds: string[]) => void;
 }) {
   const projection = createWindowHostControllerProjection({ createId: options.createId });
+  const unreadSignals = new Emitter<WindowHostTaskUnreadSignal>();
+  const tasksRemovedSignals = new Emitter<WindowHostTasksRemovedSignal>();
   const registeredScopes = new Map<string, WindowHostControllerSourceScope>();
   const sourceAvailability = new Map<string, "online" | "offline">();
   const sourceTaskServices = new Map<string, ICCbuddyTaskService>();
@@ -208,6 +227,20 @@ export function createWindowHostControllerRuntime(options: {
           ? { workspaceIdentity: resolved.scope.workspaceIdentity }
           : {}),
       },
+      onRunStarted: (run) => {
+        if (
+          sourceSessionObservers.get(key)?.observer === observer &&
+          sourceAvailability.get(key) === "online"
+        )
+          options.onRunStarted?.(run);
+      },
+      onNotification: (event) => {
+        if (
+          sourceSessionObservers.get(key)?.observer === observer &&
+          sourceAvailability.get(key) === "online"
+        )
+          options.onNotification?.(event);
+      },
       onSessionsChange: (sessions) => {
         if (sourceSessionObservers.get(key)?.observer !== observer) return;
         const overlays = sessions.map(sessionOverlay);
@@ -229,6 +262,23 @@ export function createWindowHostControllerRuntime(options: {
     });
   }
 
+  function notifyTasksRemoved(
+    scope: WindowHostControllerSourceScope,
+    taskIds: string[],
+    permanentlyDeleted = false,
+  ): void {
+    options.onTasksArchivedOrDeleted?.(scope, taskIds);
+    tasksRemovedSignals.fire({
+      permanentlyDeleted,
+      workspacePath: scope.workspacePath,
+      ...(scope.workspaceIdentity ? { workspaceIdentity: scope.workspaceIdentity } : {}),
+      ...(scope.kind === "remote" && scope.remoteSessionId
+        ? { remoteSessionId: scope.remoteSessionId }
+        : {}),
+      taskIds,
+    });
+  }
+
   async function executeMutation(
     scope: WindowHostControllerSourceScope,
     address: WindowHostTaskAddress,
@@ -243,43 +293,48 @@ export function createWindowHostControllerRuntime(options: {
     const service = current.taskService;
     const base = mutationParams(address);
     switch (mutation.kind) {
+      case "rename":
+        await service.renameTask({ ...base, title: mutation.title });
+        break;
       case "pin":
         await service.setTaskPinned({ ...base, pinned: mutation.pinned });
         break;
       case "archive":
-        if (mutation.archived) {
-          await service.archiveTask(base);
-        } else {
-          await service.unarchiveTask(base);
-        }
+        if (mutation.archived) await service.archiveTask(base);
+        else await service.unarchiveTask(base);
         break;
       case "delete":
         await service.deleteTask(base);
         break;
       case "delete-archived":
-        return service.deleteArchivedTask(base);
-      case "delete-archived-batch":
+        return await service.deleteArchivedTask(base);
+      case "delete-archived-batch": {
         // 确认期间远端 session 可能已替换；不能将旧地址的批次写入同 identity 的新 source。
         if (sourceKey(current.scope) !== sourceKey(scope)) {
           throw new Error("归档删除批次的 source 已替换");
         }
-        return service.deleteArchivedTasks({
+        return await service.deleteArchivedTasks({
           workspacePath: base.workspacePath,
           workspaceIdentity: base.workspaceIdentity,
           taskIds: mutation.taskIds,
         });
+      }
       case "mark-read":
-        await service.setTaskUnread({
-          ...base,
-          unread: false,
-          ...(mutation.expectedUnreadAt != null
-            ? { expectedUnreadAt: mutation.expectedUnreadAt }
-            : {}),
-        });
-        break;
+        return normalizeTaskMeta(
+          await service.setTaskUnread({
+            ...base,
+            unread: false,
+            ...(mutation.expectedUnreadAt != null
+              ? { expectedUnreadAt: mutation.expectedUnreadAt }
+              : {}),
+          }),
+          current.scope,
+        );
       case "mark-unread":
-        await service.setTaskUnread({ ...base, unread: true });
-        break;
+        return normalizeTaskMeta(
+          await service.setTaskUnread({ ...base, unread: true }),
+          current.scope,
+        );
       case "open":
       case "resume":
         // open/resume 的 Controller 职责是验证唯一 source；conversation 随后仍走 scoped facade。
@@ -316,23 +371,81 @@ export function createWindowHostControllerRuntime(options: {
       sourceTaskServices.get(key) !== resolved.taskService
     ) {
       sourceEventSubscriptions.get(key)?.dispose();
-      sourceTaskServices.set(key, resolved.taskService);
+      const taskService = resolved.taskService;
+      const isCurrentSource = () => {
+        const current = resolveCurrentSource(resolved.scope);
+        return (
+          sourceTaskServices.get(key) === taskService &&
+          sourceAvailability.get(key) === "online" &&
+          current?.taskService === taskService &&
+          current?.sourceAvailability === "online"
+        );
+      };
+      sourceTaskServices.set(key, taskService);
       sourceEventSubscriptions.set(
         key,
-        resolved.taskService.onDynamicWorkspaceEvent({
+        taskService.onDynamicWorkspaceEvent({
           workspacePath: resolved.scope.workspacePath,
           ...(resolved.scope.workspaceIdentity
             ? { workspaceIdentity: resolved.scope.workspaceIdentity }
             : {}),
-        })(() => {
+        })((event) => {
+          // Bug 根因：Controller 接管观察后只刷新列表，丢掉了 Host 的明确完成信号。
+          // 沿现有 source 监听转发实时事实；旧连接、离线 source 和普通快照都不能制造未读。
+          if (!isCurrentSource()) return;
+          const signal: WindowHostTaskUnreadSignal | undefined =
+            event.type === "workspace_task_list_changed" &&
+            event.reason === "task_status_changed" &&
+            event.unreadSignal === "background_terminal" &&
+            event.taskMeta &&
+            (event.taskMeta.status === "completed" || event.taskMeta.status === "error")
+              ? {
+                  address: {
+                    taskId: event.taskId ?? event.taskMeta.taskId,
+                    workspacePath: resolved.scope.workspacePath,
+                    ...(resolved.scope.workspaceIdentity
+                      ? { workspaceIdentity: resolved.scope.workspaceIdentity }
+                      : {}),
+                    ...(resolved.scope.kind === "remote"
+                      ? {
+                          ...(resolved.scope.sourceServerId
+                            ? { sourceServerId: resolved.scope.sourceServerId }
+                            : {}),
+                          ...(resolved.scope.remoteSessionId
+                            ? { remoteSessionId: resolved.scope.remoteSessionId }
+                            : {}),
+                        }
+                      : {}),
+                  },
+                  updatedAt: event.taskMeta.updatedAt,
+                  status: event.taskMeta.status,
+                }
+              : undefined;
+          // Bug 根因：等列表 IO 后才通知会漏记期间的查看；立即交给窗口记录，行就绪由 mutation 验证。
+          if (signal) unreadSignals.fire(signal);
+          // Bug 根因：tab 清理曾挂在 executeMutation 上，自动归档、CLI 删除等不经命令入口的移除会漏掉，
+          // 出声的 Browser guest 留在后台。改为跟随 source 的任务事实流；批量永久删除只针对已归档任务，事件不带 taskId。
+          if (
+            event.type === "workspace_task_list_changed" &&
+            (event.reason === "task_archived" || event.reason === "task_deleted") &&
+            event.taskId
+          ) {
+            notifyTasksRemoved(resolved.scope, [event.taskId]);
+          }
           // workspace event 可能在列表首轮 refresh 读取途中到达；直接复用
           // single-flight 会把事件吞掉。先等在途读取结束，再把多个事件合并成下一轮 refresh。
           const inFlight = sourceRefreshFlights.get(key)?.promise;
           void (async () => {
             await inFlight?.catch(() => {});
+            if (!isCurrentSource()) return;
             const current = resolveCurrentSource(resolved.scope);
-            if (current) await refreshSource(current, true);
-          })().catch(() => {});
+            if (current) {
+              // 完成信号是已收到的事实，读取投影失败不能把它吞掉；写入仍由原 mutation 验证真实行。
+              await refreshSource(current, true).catch((error) =>
+                options.onSourceError?.(current.scope, "refresh", error),
+              );
+            }
+          })().catch((error) => options.onSourceError?.(resolved.scope, "refresh", error));
         }),
       );
     }
@@ -390,9 +503,43 @@ export function createWindowHostControllerRuntime(options: {
     return Array.from(membershipByTaskKey.values());
   }
 
+  async function replayPermanentRemovals(
+    resolved: ResolvedWindowHostControllerSource,
+    emit: (signal: WindowHostTasksRemovedSignal) => void,
+  ): Promise<void> {
+    const list = resolved.taskService?.listPermanentlyDeletedTaskIds;
+    if (!list || resolved.sourceAvailability !== "online") return;
+    try {
+      const taskIds = await list({
+        workspacePath: resolved.scope.workspacePath,
+        workspaceIdentity: resolved.scope.workspaceIdentity,
+      });
+      const current = resolveCurrentSource(resolved.scope);
+      if (
+        !current ||
+        current.taskService !== resolved.taskService ||
+        current.sourceAvailability !== "online"
+      )
+        return;
+      if (taskIds.length)
+        emit({
+          workspacePath: resolved.scope.workspacePath,
+          workspaceIdentity: resolved.scope.workspaceIdentity,
+          ...(resolved.scope.kind === "remote"
+            ? { remoteSessionId: resolved.scope.remoteSessionId }
+            : {}),
+          taskIds,
+          permanentlyDeleted: true,
+        });
+    } catch (error) {
+      options.onSourceError?.(resolved.scope, "refresh", error);
+    }
+  }
+
   async function refreshSource(
     resolved: ResolvedWindowHostControllerSource,
     force = false,
+    beforeCommit?: () => void,
   ): Promise<void> {
     registerResolvedSource(resolved);
     if (!resolved.taskService || resolved.sourceAvailability !== "online") {
@@ -407,9 +554,12 @@ export function createWindowHostControllerRuntime(options: {
     sourceRefreshGenerations.set(key, generation);
     const promise = (async () => {
       const taskIndex = await readSourceTaskIndex(resolved);
+      // 手机/其他窗口可能错过实时删除事件；快照恢复前按原 source 补清最小删除凭据。
+      await replayPermanentRemovals(resolved, (signal) => tasksRemovedSignals.fire(signal));
       if (sourceRefreshGenerations.get(key) !== generation) {
         throw new Error("Controller source refresh generation 已失效");
       }
+      beforeCommit?.();
       const previousScope = pendingReplacementByNextSourceKey.get(key);
       projection.replaceSourceSnapshot({
         scope: resolved.scope,
@@ -438,6 +588,10 @@ export function createWindowHostControllerRuntime(options: {
   async function replaceDisconnectedSource(
     previousScope: WindowHostControllerSourceScope,
     resolved: ResolvedWindowHostControllerSource,
+    transaction?: {
+      canCommit?: () => boolean;
+      rollbackOnFailure?: boolean;
+    },
   ): Promise<void> {
     if (!resolved.taskService || resolved.sourceAvailability !== "online") {
       throw new Error("重连 source 尚未 online，不能替换离线投影");
@@ -454,7 +608,25 @@ export function createWindowHostControllerRuntime(options: {
       projection.removeSource(previousScope);
     }
     pendingReplacementByNextSourceKey.set(sourceKey(resolved.scope), retainedPreviousScope);
-    await refreshSource(resolved, true);
+    try {
+      await refreshSource(resolved, true, () => {
+        if (transaction?.canCommit?.() === false) {
+          throw new Error("Controller source replacement generation 已失效");
+        }
+      });
+    } catch (error) {
+      if (transaction?.rollbackOnFailure) {
+        const key = sourceKey(resolved.scope);
+        if (pendingReplacementByNextSourceKey.has(key)) {
+          // Bug 原因：Registry 已回滚 provisional logical session 时，Controller 曾继续保留
+          // 新 generation 的 pending source/订阅，下一轮又从旧 session 重试，最终泄漏孤儿 owner。
+          pendingReplacementByNextSourceKey.delete(key);
+          forgetRegisteredSource(resolved.scope);
+          projection.discardSource(resolved.scope);
+        }
+      }
+      throw error;
+    }
   }
 
   function resolveQuerySources(
@@ -474,6 +646,29 @@ export function createWindowHostControllerRuntime(options: {
   async function listTaskList(
     query: CCbuddyTaskListQuery,
   ): Promise<WindowHostControllerTaskListResult> {
+    if (query.workspaceScopes === "host") {
+      // 已注册 source 也只覆盖打开过的工作区；全局历史必须直接交给持久化 owner。
+      // 不 refreshSource，因此搜索不会为未打开目录创建 CLI/runtime 或远程连接。
+      const result = await options.readHostTaskList(query);
+      const localRows = new Map(
+        projection
+          .getTasks()
+          .filter((row) => !row.address.sourceServerId && !row.address.remoteSessionId)
+          .map((row) => [taskKey(row.meta), row]),
+      );
+      return {
+        ...result,
+        items: result.items.map((item) => {
+          const projected = localRows.get(taskKey(item));
+          return {
+            ...item,
+            sourceAvailability: "online" as const,
+            liveStatus: projected?.liveStatus ?? liveStatusFromMeta(item),
+            ...(projected?.activity ? { activity: projected.activity } : {}),
+          };
+        }),
+      };
+    }
     const resolvedSources = resolveQuerySources(query.workspaceScopes);
     await Promise.all(
       resolvedSources.map(async (source) => {
@@ -521,7 +716,15 @@ export function createWindowHostControllerRuntime(options: {
                 return {
                   ...(projected?.meta ?? normalized),
                   ...(source.scope.kind === "remote"
-                    ? { remoteSessionId: source.scope.remoteSessionId }
+                    ? {
+                        ...(source.scope.sourceServerId
+                          ? { sourceServerId: source.scope.sourceServerId }
+                          : {}),
+                        ...(source.scope.serverDisplayName
+                          ? { serverDisplayName: source.scope.serverDisplayName }
+                          : {}),
+                        remoteSessionId: source.scope.remoteSessionId,
+                      }
                     : {}),
                   sourceAvailability: "online" as const,
                   liveStatus: projected?.liveStatus ?? liveStatusFromMeta(normalized),
@@ -551,33 +754,57 @@ export function createWindowHostControllerRuntime(options: {
       items = projection
         .getTasks()
         .filter((row) => {
-          const scope: WindowHostControllerSourceScope = row.address.remoteSessionId
-            ? {
-                kind: "remote",
-                remoteSessionId: row.address.remoteSessionId,
-                workspacePath: row.address.workspacePath,
-                workspaceIdentity: row.address.workspaceIdentity!,
-              }
-            : {
-                kind: "local",
-                workspacePath: row.address.workspacePath,
-                ...(row.address.workspaceIdentity
-                  ? { workspaceIdentity: row.address.workspaceIdentity }
-                  : {}),
-              };
+          const scope: WindowHostControllerSourceScope =
+            row.address.sourceServerId || row.address.remoteSessionId
+              ? {
+                  kind: "remote",
+                  ...(row.address.sourceServerId
+                    ? { sourceServerId: row.address.sourceServerId }
+                    : {}),
+                  remoteSessionId: row.address.remoteSessionId,
+                  workspacePath: row.address.workspacePath,
+                  workspaceIdentity: row.address.workspaceIdentity!,
+                }
+              : {
+                  kind: "local",
+                  workspacePath: row.address.workspacePath,
+                  ...(row.address.workspaceIdentity
+                    ? { workspaceIdentity: row.address.workspaceIdentity }
+                    : {}),
+                };
           return (
             selectedSources.has(sourceKey(scope)) &&
-            matchesTaskListMembershipKind(row.membership, query.kind)
+            (query.kind === "all" || matchesTaskListMembershipKind(row.membership, query.kind))
           );
         })
-        .map((row) => ({
-          ...row.meta,
-          ...(row.address.remoteSessionId ? { remoteSessionId: row.address.remoteSessionId } : {}),
-          sourceAvailability: row.sourceAvailability,
-          liveStatus: row.liveStatus,
-          ...(row.activity ? { activity: row.activity } : {}),
-          ...(row.searchSnippets ? { searchSnippets: row.searchSnippets } : {}),
-        }));
+        .map((row) => {
+          const resolvedSource = resolvedSources.find((source) => {
+            const addressKey = row.address.workspaceIdentity?.trim() || row.address.workspacePath;
+            const scopeKeyValue =
+              source.scope.workspaceIdentity?.trim() || source.scope.workspacePath;
+            return (
+              addressKey === scopeKeyValue &&
+              (source.scope.kind !== "remote" ||
+                (row.address.sourceServerId
+                  ? source.scope.sourceServerId === row.address.sourceServerId
+                  : source.scope.remoteSessionId === row.address.remoteSessionId))
+            );
+          });
+          return {
+            ...row.meta,
+            ...(row.address.sourceServerId ? { sourceServerId: row.address.sourceServerId } : {}),
+            ...(resolvedSource?.scope.kind === "remote" && resolvedSource.scope.serverDisplayName
+              ? { serverDisplayName: resolvedSource.scope.serverDisplayName }
+              : {}),
+            ...(row.address.remoteSessionId
+              ? { remoteSessionId: row.address.remoteSessionId }
+              : {}),
+            sourceAvailability: row.sourceAvailability,
+            liveStatus: row.liveStatus,
+            ...(row.activity ? { activity: row.activity } : {}),
+            ...(row.searchSnippets ? { searchSnippets: row.searchSnippets } : {}),
+          };
+        });
     }
     items.sort((left, right) => compareItems(left, right, query.sortBy));
     const total = items.length;
@@ -585,17 +812,179 @@ export function createWindowHostControllerRuntime(options: {
     return { items: visible, total, hasMore: total > visible.length };
   }
 
-  function createAttachmentService(): IWindowControllerService & { dispose(): void } {
+  function createAttachmentService(
+    ownsUnreadSignals = true,
+    attachmentOptions: {
+      /** 只给桌面 attachment 传入；手机 attachment 不能改写桌面侧栏顺序。 */
+      onProjectDisplayOrder?: (order: ProjectDisplayOrderKey[]) => void;
+    } = {},
+  ): IWindowControllerService & { dispose(): void } {
     const frameEmitter = new Emitter<WindowHostControllerFrame>();
+    const unreadEmitter = new Emitter<WindowHostTaskUnreadSignal>();
+    const unreadSubscription = ownsUnreadSignals
+      ? unreadSignals.event((signal) => unreadEmitter.fire(signal))
+      : undefined;
+    const tasksRemovedEmitter = new Emitter<WindowHostTasksRemovedSignal>();
+    // Bug 根因：曾与未读信号共用 ownsUnreadSignals，手机 attachment 拿到 Event.None，
+    // 归档后手机端终端等任务 tab 留在其 registry。移除信号只驱动各端清理自己的 registry，幂等，每个 attachment 都要收到。
+    const tasksRemovedSubscription = tasksRemovedSignals.event((signal) =>
+      tasksRemovedEmitter.fire(signal),
+    );
     const subscriptions = new Map<string, { dispose(): void }>();
+    let attachmentDisposed = false;
+    function deletionSource(input: WindowHostTaskAddress) {
+      const address = windowHostTaskAddressSchema.parse(input);
+      const resolved = options.resolveSource({
+        workspacePath: address.workspacePath,
+        workspaceIdentity: address.workspaceIdentity,
+      });
+      if (
+        attachmentDisposed ||
+        !resolved ||
+        resolved.sourceAvailability !== "online" ||
+        !resolved.taskService
+      )
+        throw new Error("session-data.unavailable");
+      const scope = resolved.scope;
+      if (
+        scope.workspacePath !== address.workspacePath ||
+        scope.workspaceIdentity !== address.workspaceIdentity ||
+        (scope.kind === "remote"
+          ? (address.sourceServerId
+              ? address.sourceServerId !== scope.sourceServerId
+              : address.remoteSessionId !== scope.remoteSessionId) ||
+            (address.remoteSessionId != null && address.remoteSessionId !== scope.remoteSessionId)
+          : address.remoteSessionId != null || address.sourceServerId != null)
+      )
+        throw new Error("session-data.identity-mismatch");
+      return resolved;
+    }
     return {
       listTaskList,
+      async previewArchivedTaskDeletion({ address }) {
+        const source = deletionSource(address);
+        const result = await source.taskService!.previewArchivedTaskDeletion(
+          mutationParams(address),
+        );
+        if (deletionSource(address).taskService !== source.taskService)
+          throw new Error("session-data.changed");
+        return result;
+      },
+      async previewArchivedTaskDeletions({ addresses }) {
+        // 按原 source 分组，每组一次批量预检；身份校验与 source 变化判定逐项沿用单项规则。
+        const errorOf = (error: unknown) => ({
+          error: { code: (error instanceof Error && error.message) || "session-data.unavailable" },
+        });
+        const results: V4SessionDeletionPreviewBatchItem[] = [];
+        const groups = new Map<ICCbuddyTaskService, number[]>();
+        for (const [index, address] of addresses.entries()) {
+          try {
+            const taskService = deletionSource(address).taskService!;
+            groups.set(taskService, [...(groups.get(taskService) ?? []), index]);
+          } catch (error) {
+            results[index] = errorOf(error);
+          }
+        }
+        for (const [taskService, indexes] of groups) {
+          try {
+            const batch = await taskService.previewArchivedTaskDeletions({
+              tasks: indexes.map((index) => mutationParams(addresses[index]!)),
+            });
+            if (batch.results.length !== indexes.length)
+              throw new Error("session-data.unavailable");
+            indexes.forEach((index, position) => {
+              try {
+                if (deletionSource(addresses[index]!).taskService !== taskService)
+                  throw new Error("session-data.changed");
+                results[index] = batch.results[position]!;
+              } catch (error) {
+                results[index] = errorOf(error);
+              }
+            });
+          } catch (error) {
+            if (!isArchivedTaskDeletionBatchUnsupported(error)) {
+              for (const index of indexes) results[index] = errorOf(error);
+              continue;
+            }
+            // 兼容旧 Source：它不认识批量方法，该组逐项调用单项预检；身份与 source 变化判定照旧。
+            for (const index of indexes) {
+              try {
+                const preview = await taskService.previewArchivedTaskDeletion(
+                  mutationParams(addresses[index]!),
+                );
+                if (deletionSource(addresses[index]!).taskService !== taskService)
+                  throw new Error("session-data.changed");
+                results[index] = { preview };
+              } catch (itemError) {
+                results[index] = errorOf(itemError);
+              }
+            }
+          }
+        }
+        return { results };
+      },
+      async permanentlyDeleteArchivedTask({ address, revision, operationId }) {
+        const source = deletionSource(address);
+        const result = await source.taskService!.permanentlyDeleteArchivedTask({
+          ...mutationParams(address),
+          revision,
+          operationId,
+        });
+        if (result.status === "deleted") {
+          notifyTasksRemoved(source.scope, result.sessionIds, true);
+          await refreshSource(source, true).catch((error) =>
+            options.onSourceError?.(source.scope, "refresh", error),
+          );
+        }
+        return result;
+      },
+      async getTaskMeta(params) {
+        const address = windowHostTaskAddressSchema.parse(params.address);
+        const resolved = options.resolveSource({
+          workspacePath: address.workspacePath,
+          ...(address.workspaceIdentity ? { workspaceIdentity: address.workspaceIdentity } : {}),
+        });
+        const taskService = resolved?.taskService;
+        const assertCurrentSource = (current: ResolvedWindowHostControllerSource | null) => {
+          if (
+            attachmentDisposed ||
+            !resolved ||
+            !taskService ||
+            !current ||
+            current.sourceAvailability !== "online" ||
+            current.taskService !== taskService ||
+            current.scope.workspacePath !== address.workspacePath ||
+            current.scope.workspaceIdentity !== address.workspaceIdentity ||
+            sourceKey(current.scope) !== sourceKey(resolved.scope) ||
+            (current.scope.kind === "remote" &&
+              resolved.scope.kind === "remote" &&
+              current.scope.remoteSessionId !== resolved.scope.remoteSessionId)
+          )
+            throw new Error("任务读取期间 source 已失效");
+          const mismatched =
+            current.scope.kind === "remote"
+              ? (address.sourceServerId
+                  ? address.sourceServerId !== current.scope.sourceServerId
+                  : address.remoteSessionId !== current.scope.remoteSessionId) ||
+                (address.remoteSessionId != null &&
+                  address.remoteSessionId !== current.scope.remoteSessionId)
+              : address.remoteSessionId != null || address.sourceServerId != null;
+          if (mismatched) throw new Error("任务地址与 source 不匹配");
+        };
+        assertCurrentSource(resolved);
+        // Bug 根因：列表读取失败可保留旧投影；把它当已读 marker 会漏清或误清。
+        // 直接读唯一持久 owner，IO 前后复查同一服务与 attachment，不吞错、不物化整表。
+        const result = await taskService!.getTaskMeta(mutationParams(address));
+        assertCurrentSource(resolveCurrentSource(resolved!.scope));
+        if (result && result.taskId !== address.taskId) throw new Error("任务读取返回地址不匹配");
+        return result ? normalizeTaskMeta(result, resolved!.scope) : null;
+      },
       async deleteArchivedTasks({ address, taskIds }) {
         if (taskIds.length === 0) {
           return { deletedTaskIds: [], skippedTaskIds: [], failedTaskIds: [] };
         }
         const result = await projection.mutate(address, { kind: "delete-archived-batch", taskIds });
-        if (!result || typeof result === "boolean") {
+        if (!result || typeof result === "boolean" || !("deletedTaskIds" in result)) {
           throw new Error("归档删除批次未返回逐项目标结果");
         }
         const resolved = options.resolveSource({
@@ -625,14 +1014,66 @@ export function createWindowHostControllerRuntime(options: {
         return deleted === true;
       },
       async mutateTask({ address, mutation }) {
-        await projection.mutate(address, mutation as WindowHostControllerMutation);
         const resolved = options.resolveSource({
           workspacePath: address.workspacePath,
           ...(address.workspaceIdentity ? { workspaceIdentity: address.workspaceIdentity } : {}),
         });
-        if (resolved) {
-          await refreshSource(resolved, true);
+        // 项目树也包含未打开 tab 的任务；先从唯一 owner 读取行验证，不能依赖 UI 先查另一份列表。
+        if (!resolved || resolved.sourceAvailability !== "online")
+          throw new Error(
+            resolved?.scope.kind === "remote"
+              ? "远程 source 当前离线，禁止列表写操作"
+              : "任务 source 当前不可用",
+          );
+        const taskService = resolved.taskService;
+        const assertCurrentUnreadSource = () => {
+          const current = resolveCurrentSource(resolved.scope);
+          if (
+            current?.taskService !== taskService ||
+            current?.sourceAvailability !== "online" ||
+            sourceAvailability.get(sourceKey(resolved.scope)) !== "online"
+          ) {
+            throw new Error("未读写入期间 source 已失效");
+          }
+        };
+        await refreshSource(resolved);
+        // 首次读取也会等待 IO；后置检查只能拒绝回包，挡不住 mutation 重解析后误写新 source。
+        if (mutation.kind === "mark-read" || mutation.kind === "mark-unread") {
+          // 缓存命中不代表在途读取已结束；先等旧快照收口，缺行时再读，避免新任务被旧快照拒绝。
+          // 旧读取失败不否定已知任务的完成事实，真正缺行的刷新仍须成功后才能写入。
+          await sourceRefreshFlights.get(sourceKey(resolved.scope))?.promise.catch(() => {});
+          assertCurrentUnreadSource();
+          const known = projection
+            .getTasks()
+            .some(
+              (row) =>
+                row.address.taskId === address.taskId &&
+                row.address.workspacePath === address.workspacePath &&
+                row.address.workspaceIdentity === address.workspaceIdentity &&
+                (address.sourceServerId
+                  ? row.address.sourceServerId === address.sourceServerId
+                  : row.address.remoteSessionId === address.remoteSessionId),
+            );
+          if (!known) {
+            await refreshSource(resolved, true);
+            assertCurrentUnreadSource();
+          }
         }
+        const mutationResult = await projection.mutate(
+          address,
+          mutation as WindowHostControllerMutation,
+        );
+        // 未读 CAS 必须使用本次写入分配的 marker；重查投影可能已包含后一次完成，不能替换回包。
+        if (mutationResult && typeof mutationResult !== "boolean" && "taskId" in mutationResult) {
+          assertCurrentUnreadSource();
+          // 写入已提交；读取失败只影响投影刷新，不把成功的写操作伪装成可重试失败。
+          await refreshSource(resolved, true).catch((error) =>
+            options.onSourceError?.(resolved.scope, "refresh", error),
+          );
+          assertCurrentUnreadSource();
+          return mutationResult;
+        }
+        await refreshSource(resolved, true);
         return (
           projection
             .getTasks()
@@ -641,7 +1082,9 @@ export function createWindowHostControllerRuntime(options: {
                 row.address.taskId === address.taskId &&
                 row.address.workspacePath === address.workspacePath &&
                 row.address.workspaceIdentity === address.workspaceIdentity &&
-                row.address.remoteSessionId === address.remoteSessionId,
+                (address.sourceServerId
+                  ? row.address.sourceServerId === address.sourceServerId
+                  : row.address.remoteSessionId === address.remoteSessionId),
             )?.meta ?? null
         );
       },
@@ -654,6 +1097,12 @@ export function createWindowHostControllerRuntime(options: {
         return { ack: subscription.ack };
       },
       async resyncControllerV4(params) {
+        for (const scope of registeredScopes.values()) {
+          const source = resolveCurrentSource(scope);
+          if (source)
+            await replayPermanentRemovals(source, (signal) => tasksRemovedEmitter.fire(signal));
+        }
+        if (attachmentDisposed) throw new Error("Controller attachment 已释放");
         return { ack: projection.resync(params.subscriptionId) };
       },
       async unsubscribeControllerV4(params) {
@@ -663,7 +1112,39 @@ export function createWindowHostControllerRuntime(options: {
       onDynamicControllerFrame() {
         return frameEmitter.event;
       },
+      onDynamicTaskUnreadSignal() {
+        return ownsUnreadSignals ? unreadEmitter.event : Event.None;
+      },
+      onDynamicTasksRemovedSignal() {
+        return (listener) => {
+          const subscription = tasksRemovedEmitter.event(listener);
+          let disposed = false;
+          // 手机的清理监听晚于列表订阅。只在列表快照前发凭据会丢事件，必须在本监听接好后补发。
+          for (const scope of registeredScopes.values()) {
+            const source = resolveCurrentSource(scope);
+            if (source)
+              void replayPermanentRemovals(source, (signal) => {
+                if (!disposed && !attachmentDisposed) listener(signal);
+              });
+          }
+          return {
+            dispose() {
+              disposed = true;
+              subscription.dispose();
+            },
+          };
+        };
+      },
+      async setProjectDisplayOrder({ order }) {
+        if (attachmentDisposed) return;
+        attachmentOptions.onProjectDisplayOrder?.(order);
+      },
       dispose() {
+        attachmentDisposed = true;
+        unreadSubscription?.dispose();
+        unreadEmitter.dispose();
+        tasksRemovedSubscription.dispose();
+        tasksRemovedEmitter.dispose();
         for (const subscription of subscriptions.values()) {
           subscription.dispose();
         }
@@ -677,6 +1158,11 @@ export function createWindowHostControllerRuntime(options: {
   return {
     service,
     createAttachmentService,
+    /** 手机项目树叠加实时交互：只读当前投影行，不触发 source 刷新。 */
+    readTaskRows: (): WindowHostControllerTaskRow[] => projection.getTasks(),
+    /** 投影行任一变化即回调；订阅时会立即收到一次快照回调。 */
+    subscribeTaskRows: (onChange: () => void): { dispose(): void } =>
+      projection.subscribe({ topic: CONTROLLER_TASKS_INDEX_TOPIC, onFrame: () => onChange() }),
     replaceDisconnectedSource,
     async resolveTaskAddress(params: {
       taskId: string;
@@ -699,22 +1185,30 @@ export function createWindowHostControllerRuntime(options: {
         workspacePath: params.workspacePath,
         ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
       });
-      if (
-        remoteAttachmentScope &&
-        (!resolved ||
-          resolved.scope.kind !== "remote" ||
-          resolved.scope.remoteSessionId !== remoteAttachmentScope.remoteSessionId ||
-          resolved.scope.workspacePath !== remoteAttachmentScope.workspacePath ||
-          resolved.scope.workspaceIdentity !== remoteAttachmentScope.workspaceIdentity)
-      ) {
-        throw new Error("列表 mutation 与 remote attachment source 不匹配");
-      }
+      const assertAttachmentSource = (source: ResolvedWindowHostControllerSource | null) => {
+        if (
+          remoteAttachmentScope &&
+          (!source ||
+            source.scope.kind !== "remote" ||
+            source.scope.remoteSessionId !== remoteAttachmentScope.remoteSessionId ||
+            source.scope.workspacePath !== remoteAttachmentScope.workspacePath ||
+            source.scope.workspaceIdentity !== remoteAttachmentScope.workspaceIdentity)
+        ) {
+          throw new Error("列表 mutation 与 remote attachment source 不匹配");
+        }
+      };
+      assertAttachmentSource(resolved);
       if (resolved) {
         // remote attachment 曾直接返回 address，跳过 source refresh；新绑定的
         // workspace 尚未读取 Controller 列表时没有投影行，导致 unread/archive 等首次写入失败。
         // 这里只物化已按完整 remoteSessionId + identity 验证的 source，继续保持 fail-closed。
         await refreshSource(resolved);
+        assertAttachmentSource(resolveCurrentSource(resolved.scope));
       }
+      // 侧栏可先按稳定 Source 查询，之后才创建 attachment；投影行没有新 sessionId
+      // 不代表任务缺失。先验证当前 attachment，再按同一 Source 匹配，旧地址路径仍精确匹配。
+      const sourceServerId =
+        resolved?.scope.kind === "remote" ? resolved.scope.sourceServerId : undefined;
       const matches = projection
         .getTasks()
         .filter(
@@ -723,7 +1217,9 @@ export function createWindowHostControllerRuntime(options: {
             row.address.workspacePath === params.workspacePath &&
             row.address.workspaceIdentity === params.workspaceIdentity &&
             (!remoteAttachmentScope ||
-              row.address.remoteSessionId === remoteAttachmentScope.remoteSessionId),
+              (sourceServerId
+                ? row.address.sourceServerId === sourceServerId
+                : row.address.remoteSessionId === remoteAttachmentScope.remoteSessionId)),
         );
       if (matches.length !== 1) {
         if (matches.length === 0 && params.allowMissingTask && resolved) {
@@ -781,6 +1277,8 @@ export function createWindowHostControllerRuntime(options: {
     },
     dispose(): void {
       service.dispose();
+      unreadSignals.dispose();
+      tasksRemovedSignals.dispose();
       for (const scope of registeredScopes.values()) {
         projection.removeSource(scope);
       }

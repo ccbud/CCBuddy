@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "caseName": "jwt-401-auto-logout",
+  "spec": "./test/e2e/auth-config/session/jwt-401-auto-logout.test.ts",
+  "providerRequestPolicy": "none",
+  "noProviderRequests": true,
+  "providerFixtures": [],
+  "fileFixtures": [
+    {
+      "kind": "app-config-seed",
+      "path": "~/.ccbuddy/v2/credentials.json",
+      "purpose": "隔离的 OAuth/共享 JWT 和独立 Bot 凭据；本地 HTTP fixture 控制真实 Host 余额请求401，验证清理后直接重新登录。"
+    }
+  ],
+  "requests": []
+}

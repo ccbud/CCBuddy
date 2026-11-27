@@ -98,6 +98,17 @@ export const ccbuddySessionKindSchema = z.enum([
   "subagent_child",
   "nested_workflow_child",
 ]);
+// 修复原因：只识别 subagent_child 会漏掉工作流与辅助对话的父归属、隐藏索引规则。
+// fork 和 workflow_parent 是独立任务，即使有 parentSessionId 也不能沿父链改写项目。
+export function isAuxiliarySessionKind(kind: string | undefined): boolean {
+  return isReadonlyAgentSessionKind(kind) || kind === "selection_side_chat";
+}
+
+// 辅助对话可继续输入；只有由 Agent / 工作流驱动的子会话对用户只读。
+export function isReadonlyAgentSessionKind(kind: string | undefined): boolean {
+  return kind === "subagent_child" || kind === "workflow_child" || kind === "nested_workflow_child";
+}
+
 export const ccbuddySessionGoalSchema = z
   .object({
     sessionId: nonEmptyString,
@@ -157,7 +168,6 @@ export const ccbuddySessionInfoSchema = z
     target: ccbuddySessionGoalSchema.nullable().optional(),
     createdAt: timestampMsSchema,
     updatedAt: timestampMsSchema,
-    archivedAt: timestampMsSchema.optional(),
   })
   .strict();
 export type CCbuddySessionInfo = z.infer<typeof ccbuddySessionInfoSchema>;
@@ -326,6 +336,7 @@ export const ccbuddyTimelinePartSchema = partBaseSchema
       "goal_verification",
       "session_fork",
       "model_change",
+      "worktree_creation",
     ]),
     display: z.enum(["separator", "worklog"]),
     status: z.string().optional(),
@@ -364,6 +375,16 @@ export const ccbuddyTimelinePartSchema = partBaseSchema
       .extend({
         label: nonEmptyString,
       })
+      .optional(),
+    // timelineType = worktree_creation：受管 worktree 的创建结果（docs/git/worktree.md §6.6.4）。
+    worktreeCreation: z
+      .object({
+        path: nonEmptyString,
+        sha: nonEmptyString,
+        ref: z.string().nullable(),
+        output: z.string(),
+      })
+      .strict()
       .optional(),
   })
   .strict();

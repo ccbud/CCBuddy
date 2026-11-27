@@ -6,8 +6,10 @@ import {
 import { TaskActionMenuContent } from "@/TaskActionMenuContent.js";
 
 export function TaskListItemContextMenu({
+  organizationActions,
   intl,
   isPinned,
+  isArchived = false,
   fileManagerLabel,
   taskSessionFile,
   activeSessionId,
@@ -17,8 +19,6 @@ export function TaskListItemContextMenu({
   onStartRenameTask,
   onArchiveTask,
   onMarkTaskAsUnread,
-  onOpenInSplitPane,
-  openInSplitPaneDisabled,
   onOpenTaskFeedback,
   onOpenTaskPathInFileManager,
   onCopyWorkspacePath,
@@ -29,11 +29,14 @@ export function TaskListItemContextMenu({
   onOpenProviderConfig,
   disableTaskActions = false,
   disabledReason,
+  archiveDisabledReason,
 }: {
+  organizationActions?: React.ReactNode;
   intl: {
     formatMessage: (desc: { id: string }, values?: Record<string, string>) => string;
   };
   isPinned: boolean;
+  isArchived?: boolean;
   fileManagerLabel: string;
   taskSessionFile: { loading: boolean; path: string | null; exists: boolean };
   activeSessionId?: string | null;
@@ -47,10 +50,6 @@ export function TaskListItemContextMenu({
   onStartRenameTask: () => void;
   onArchiveTask: () => void;
   onMarkTaskAsUnread: () => void;
-  /** 「在分屏打开」（仅桌面 shell 传入）。 */
-  onOpenInSplitPane?: () => void;
-  /** 叶子数达上限且该 session 未在任何 pane 时禁用。 */
-  openInSplitPaneDisabled?: boolean;
   onOpenTaskFeedback: () => void;
   onOpenTaskPathInFileManager: () => void;
   onCopyWorkspacePath: () => void;
@@ -61,12 +60,15 @@ export function TaskListItemContextMenu({
   onOpenProviderConfig: () => void;
   disableTaskActions?: boolean;
   disabledReason?: string;
+  archiveDisabledReason?: string;
 }) {
   return (
     <ContextMenuContent className="w-52">
+      {organizationActions}
       <TaskActionMenuContent
         intl={intl}
         isPinned={isPinned}
+        isArchived={isArchived}
         fileManagerLabel={fileManagerLabel}
         taskSessionFile={taskSessionFile}
         activeSessionId={activeSessionId}
@@ -78,8 +80,6 @@ export function TaskListItemContextMenu({
         onStartRenameTask={onStartRenameTask}
         onArchiveTask={onArchiveTask}
         onMarkTaskAsUnread={onMarkTaskAsUnread}
-        onOpenInSplitPane={onOpenInSplitPane}
-        openInSplitPaneDisabled={openInSplitPaneDisabled}
         onOpenTaskFeedback={onOpenTaskFeedback}
         onOpenTaskPathInFileManager={onOpenTaskPathInFileManager}
         onCopyWorkspacePath={onCopyWorkspacePath}
@@ -90,6 +90,7 @@ export function TaskListItemContextMenu({
         onOpenProviderConfig={onOpenProviderConfig}
         disableTaskActions={disableTaskActions}
         disabledReason={disabledReason}
+        archiveDisabledReason={archiveDisabledReason}
       />
     </ContextMenuContent>
   );

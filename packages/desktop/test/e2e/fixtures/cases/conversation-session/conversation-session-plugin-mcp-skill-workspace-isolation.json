@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-plugin-mcp-skill-workspace-isolation",
+  "spec": "./test/e2e/conversation-session/plugins/conversation-session-plugin-mcp-skill-workspace-isolation.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-plugin-mcp-skill-workspace-isolation.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "workspace-isolation-no-provider",
+      "kind": "common",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "该 case 不发送 provider 请求；保留 case-local fixture 以满足 pending fixture contract。"
+    }
+  ]
+}

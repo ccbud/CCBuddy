@@ -1,6 +1,7 @@
 export * from "./appTools.js";
 export * from "./content.js";
 export * from "./contract.js";
+export * from "./pluginSandboxRegister.js";
 export * from "./hostContract.js";
 export * from "./instance.js";
 export * from "./schemas.js";

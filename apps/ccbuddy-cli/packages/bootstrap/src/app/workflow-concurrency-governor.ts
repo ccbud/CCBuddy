@@ -14,11 +14,14 @@
 // 这里是治理器里**唯一**会碰时钟与定时器的地方：控制器只收 `now`；冷却到期要唤醒等待者，
 // 所以需要一个 setTimeout（可注入，unref）。
 
-import type {
-  ModelNetworkStatusEvent,
-  ModelRequestAdmission,
-  ModelRequestAdmissionTicket,
-  ModelRequestTarget,
+import { resolveWorkflowModelFailurePolicy, retryWaitJitterSpreadMs } from "@ccbuddy/adapters/model";
+import {
+  ModelErrorCode,
+  type ModelNetworkStatusEvent,
+  type ModelRequestAdmission,
+  type ModelRequestAdmissionTicket,
+  type ModelRequestFailedStatusEvent,
+  type ModelRequestTarget,
 } from "@ccbuddy/contracts";
 import {
   ConcurrencyController,
@@ -63,8 +66,16 @@ interface WorkflowConcurrencyGovernor extends WorkflowConcurrencyPort {
   /**
    * 主代理用的 admission：acquire 立即放行——不排队、不看冷却——但**计入 inFlight**
    * 且喂信号（它的请求 provider 同样看得见）。主代理的 turn 永不被 workflow 流量阻塞。
+   * 只有它实现 `retryCooldownMs`：首次请求照常立刻发，重试时 runner 等到 max(本地退避, 剩余冷却)。
    */
   observer(): ModelRequestAdmission;
+  /**
+   * 主代理 subagent（`Agent` 工具，taskType `subagent_child`）用的 admission：和 workflow run 一样
+   * 排队、看冷却、喂信号。一个父会话的全部 subagent 共用**一条**队列（run 身份
+   * `\0subagents:<parentSessionId>`），在轮转里只占一份；不登记上界、不订阅、不进桶的 `runs`，
+   * 会话结束后不留状态（docs/dynamic-workflow/concurrency.md「Where the port is bound」）。
+   */
+  sessionSubagents(parentSessionId: string): ModelRequestAdmission;
   /** 控制器只读快照；没有这个 key 的桶时为 undefined。 */
   snapshot(key: string): ConcurrencyControllerSnapshot | undefined;
 }
@@ -108,15 +119,38 @@ interface Bucket {
   /** 轮转游标：上一次放行的 run，下一次从它之后开始找。 */
   lastGrantedRun?: string;
   /**
-   * 在这个 key 上请求过准入的 run（observer 除外）。增长上限只看它们登记的上界：一个跑在别的
+   * 在这个 key 上请求过准入的 run（observer 与 subagent 池除外）。增长上限只看它们登记的上界：一个跑在别的
    * 模型上的大 run 不该抬这个 key。run 清掉上界时一并移出。
    */
   readonly runs: Set<string>;
   cancelCooldownWake?: () => void;
+  /**
+   * 估计冷却：`rate_limited` 重试**没带** Retry-After 时，按那个请求自己算出的退避（`delayMs`）估计 provider
+   * 还要拒多久，取更晚者。**只给主代理（observer）的重试等待参考**（`retryCooldownMs`），不进控制器：
+   * 闸门、排队者的冷却唤醒、cap 的增减都不读它，subagent 与 workflow 的准入行为不变。
+   *
+   * 为什么要它：线上 1302 的 Retry-After 时有时无（2026-11 按服务端看到的重试间隔推断：glm-5.3 的大多带、
+   * glm-5.3-flash 的大多不带），不带时控制器的 `cooldownUntil` 永远不被设置，主代理的重试只能看见自己的本地退避。
+   */
+  estimatedCooldownUntil?: number;
 }
 
 /** observer（主代理）的 run 身份：不排队、不订阅，只在扇出过滤里作为「不是任何 run」出现。 */
 const OBSERVER_RUN_ID = "\0observer";
+/** 主代理 subagent 池的 run 身份前缀；`\0` 起头，和任何 workflow run id 都不会撞。 */
+const SESSION_SUBAGENTS_RUN_PREFIX = "\0subagents:";
+/**
+ * 估计冷却的上限：与 runner 采信 Retry-After 的上限（`MAX_REASONABLE_RETRY_AFTER_MS`）同值，runner 叠加冷却时
+ * 也再封顶一次。
+ */
+const MAX_ESTIMATED_COOLDOWN_MS = 5 * 60_000;
+/**
+ * 认「跟随者」时给的时间余量：runner 读冷却到 retry_scheduled 投递到 ticket 之间隔着日志与状态汇，
+ * 实际只有几毫秒；留 1 秒足够，又远小于任何一次真实退避的增量。
+ */
+const ESTIMATE_FOLLOWER_SLACK_MS = 1_000;
+/** runner 没给 signal 时的占位：永不 abort（用户取消走请求自己的 signal）。 */
+const NEVER_ABORTED: AbortSignal = new AbortController().signal;
 
 const defaultSchedule = (callback: () => void, delayMs: number): (() => void) => {
   const timer = setTimeout(callback, delayMs);
@@ -221,6 +255,45 @@ export function createWorkflowConcurrencyGovernor(
   };
 
   /**
+   * 记一次缺 Retry-After 的限流的估计冷却（见 `Bucket.estimatedCooldownUntil`）；封顶 5 分钟。
+   *
+   * 不记「跟随者」：桶上已有冷却，而这次的等待落在「已有冷却 + 抖动档」之内。那是主代理按冷却等、再往后加了
+   * 抖动的重试（runner-retry.ts `retryDelayWithAdmissionCooldown`），它的 `delayMs` 不是新的限流证据。
+   * 记下来会让冷却每被跟随一次就往后推一段抖动，几个主会话互相跟随就能把冷却越推越远。代价是：一次真实退避
+   * 恰好只比已有冷却晚不到「抖动档 + 1 秒」时不被记下，最多少等这么一点。
+   */
+  const noteEstimatedCooldown = (bucket: Bucket, delayMs: number): void => {
+    if (!Number.isFinite(delayMs) || delayMs <= 0) return;
+    const at = now();
+    const until = at + Math.min(delayMs, MAX_ESTIMATED_COOLDOWN_MS);
+    const existing = Math.max(
+      bucket.controller.snapshot().cooldownUntil ?? 0,
+      bucket.estimatedCooldownUntil ?? 0,
+    );
+    if (
+      existing > at &&
+      until <= existing + retryWaitJitterSpreadMs(delayMs) + ESTIMATE_FOLLOWER_SLACK_MS
+    ) {
+      return;
+    }
+    bucket.estimatedCooldownUntil = Math.max(bucket.estimatedCooldownUntil ?? 0, until);
+  };
+
+  /**
+   * 主代理重试前还要等多久：控制器的 Retry-After 冷却与估计冷却取更晚者，减去 now，≤0 即 0。只读：不建桶、
+   * 不做空闲重置、不扇出。
+   */
+  const retryCooldownMs = (key: string): number => {
+    const bucket = buckets.get(key);
+    if (bucket === undefined) return 0;
+    const until = Math.max(
+      bucket.controller.snapshot().cooldownUntil ?? 0,
+      bucket.estimatedCooldownUntil ?? 0,
+    );
+    return Math.max(0, until - now());
+  };
+
+  /**
    * 一次已准入尝试的 ticket：事件映射保持一致。任一终结映射后结算（幂等）；`release()`
    * 未见终结事件即按 `ended` 处理。结算后的 publish / release 一律惰性——runner 在极少数路径上
    * （尝试已结束后的兜底事件）可能仍会投递。
@@ -255,6 +328,9 @@ export function createWorkflowConcurrencyGovernor(
               return;
             }
             if (THROTTLE_REASONS.has(reason)) {
+              if (reason === "rate_limited" && event.retryAfterMs === undefined) {
+                noteEstimatedCooldown(bucket, event.delayMs);
+              }
               settle((at) =>
                 bucket.controller.throttled(
                   at,
@@ -271,9 +347,17 @@ export function createWorkflowConcurrencyGovernor(
           case "model_request_failed":
             // retryable:true 的 failed 紧随一条 retry_scheduled——那条才是信号。
             if (event.retryable) return;
+            // Stop 集（配额、认证…）不是并发信号，只终结尝试。曾经配额 429 走下面的限流分支：
+            // 1308 带的 Retry-After 指到额度窗口结束（可达数小时），冷却冻住整个桶、活得比停下的 run
+            // 还久；用户用重置卡恢复额度后 resume，子代理全卡在闸门上一个请求不发，主代理（observer
+            // 不看冷却）却照常工作，换模型（换桶）才继续。何时再试由用户决定，与 driver 读同一张策略表。
+            if (isWorkflowStopFailure(event)) {
+              settle((at) => bucket.controller.ended(at));
+              return;
+            }
             // 不可重试的限流：
             // 主对话 / 工具侧撞上 3008 这类被分类器判终止的 429，仍是一次字面意义上的并发信号——
-            // 只当「链结束」会让 cap 从未因它降过。配额码也走这一支：多减一次半，run 随即停下，无害。
+            // 只当「链结束」会让 cap 从未因它降过。
             if (event.reason === "rate_limited") {
               settle((at) =>
                 bucket.controller.throttled(at, epoch, "rate_limited", event.retryAfterMs),
@@ -341,18 +425,27 @@ export function createWorkflowConcurrencyGovernor(
     armCooldownWake(bucket);
   };
 
-  const tryAdmit: WorkflowConcurrencyPort["tryAdmit"] = (runId, key) => {
-    const bucket = bucketFor(key);
-    noteRunUsed(bucket, runId);
+  /** 快路径的本体；`trackRun` 为 false 时（subagent 池）不把 run 记进桶的 `runs`。 */
+  const tryAdmitIn = (
+    bucket: Bucket,
+    runId: string,
+    trackRun: boolean,
+  ): ModelRequestAdmissionTicket | undefined => {
+    if (trackRun) noteRunUsed(bucket, runId);
     fanOut(bucket, bucket.controller.observe(now()));
     if (waiterCount(bucket) > 0 || !bucket.controller.canAdmit(now())) return undefined;
     return grant(bucket, runId);
   };
 
-  const admit: WorkflowConcurrencyPort["admit"] = (runId, key, signal) => {
-    const bucket = bucketFor(key);
+  /** 排队的本体；`trackRun` 同上。 */
+  const admitIn = (
+    bucket: Bucket,
+    runId: string,
+    signal: AbortSignal,
+    trackRun: boolean,
+  ): Promise<ModelRequestAdmissionTicket> => {
     if (signal.aborted) return Promise.reject(abortedError(signal));
-    noteRunUsed(bucket, runId);
+    if (trackRun) noteRunUsed(bucket, runId);
     return new Promise<ModelRequestAdmissionTicket>((resolve, reject) => {
       const waiter: Waiter = { runId, resolve, reject, signal, onAbort: () => {} };
       waiter.onAbort = () => {
@@ -373,6 +466,12 @@ export function createWorkflowConcurrencyGovernor(
       drain(bucket);
     });
   };
+
+  const tryAdmit: WorkflowConcurrencyPort["tryAdmit"] = (runId, key) =>
+    tryAdmitIn(bucketFor(key), runId, true);
+
+  const admit: WorkflowConcurrencyPort["admit"] = (runId, key, signal) =>
+    admitIn(bucketFor(key), runId, signal, true);
 
   const subscribe: WorkflowConcurrencyPort["subscribe"] = (runId, listener) => {
     const set = listeners.get(runId) ?? new Set();
@@ -398,12 +497,28 @@ export function createWorkflowConcurrencyGovernor(
     }
   };
 
-  // 不排队、不看冷却（决策 37/47）；observe 在 grant 里。快路径总命中，所以 runner 永远不会为主代理
-  // 的请求发 queued / admitted（决策 44）。
+  // 首次请求不排队、不看冷却（决策 37/47）：用户自己的对话永不排在 workflow 后面；observe 在 grant 里。
+  // 快路径总命中，所以 runner 永远不会为主代理的请求发 queued / admitted（决策 44）。
+  // 重试时参考冷却：runner 在退避里读 `retryCooldownMs`，等待取 max(本地退避, 剩余冷却)——冷却期里的重试
+  // 几乎一定还是 1302，只会白白耗掉重试次数（docs/dynamic-workflow/concurrency.md「Where the port is bound」）。
   const observerAdmission: ModelRequestAdmission = {
     tryAcquire: ({ model }) => grant(bucketFor(workflowConcurrencyKey(model)), OBSERVER_RUN_ID),
     acquire: ({ model }) =>
       Promise.resolve(grant(bucketFor(workflowConcurrencyKey(model)), OBSERVER_RUN_ID)),
+    retryCooldownMs: ({ model }) => retryCooldownMs(workflowConcurrencyKey(model)),
+  };
+
+  // 修复原因：subagent 曾继承父的 observer，一轮并行十个 Agent 调用就是十路既不排队也不看
+  // Retry-After 的请求，各自退避重试——线上 1302 的最大来源（2026-10-20 抽样占 46%），还连带把
+  // workflow 和用户自己的 turn 一起拒掉。subagent 是委派出去的工作，和 workflow subagent 同类，
+  // 所以过同一道闸门；用户自己的 turn 仍是 observer。
+  const sessionSubagents = (parentSessionId: string): ModelRequestAdmission => {
+    const runId = `${SESSION_SUBAGENTS_RUN_PREFIX}${parentSessionId}`;
+    return {
+      tryAcquire: ({ model }) => tryAdmitIn(bucketFor(workflowConcurrencyKey(model)), runId, false),
+      acquire: ({ model, signal }) =>
+        admitIn(bucketFor(workflowConcurrencyKey(model)), runId, signal ?? NEVER_ABORTED, false),
+    };
   };
 
   return {
@@ -413,10 +528,29 @@ export function createWorkflowConcurrencyGovernor(
     setRunBound,
     clearRunBound,
     observer: () => observerAdmission,
+    sessionSubagents,
     snapshot(key) {
       return buckets.get(key)?.controller.snapshot();
     },
   };
+}
+
+/**
+ * 不可重试的失败是否落在 workflow 策略表的 Stop 集里（docs/dynamic-workflow/concurrency.md
+ * 「Retry budget and the model-error policy」）。runner 与 driver 读的是同一个函数，三层对 Stop 集的
+ * 判断不会分叉；缺 `errorCode` 时按通用请求失败读，配额判定只看业务码。
+ */
+function isWorkflowStopFailure(event: ModelRequestFailedStatusEvent): boolean {
+  return (
+    resolveWorkflowModelFailurePolicy(
+      {
+        code: event.errorCode ?? ModelErrorCode.ModelRequestFailed,
+        reason: event.reason,
+        retryable: event.retryable,
+      },
+      event.providerErrorCode,
+    ).decision === "stop"
+  );
 }
 
 function abortedError(signal: AbortSignal): Error {

@@ -1,5 +1,4 @@
 import { IGenUiService } from "@ccbuddy/services";
-import { IProjectService } from "@ccbuddy/services";
 import { ProxyChannel, type IChannelClient } from "@ccbuddy/rpc";
 import {
   IFileService,
@@ -15,6 +14,10 @@ import {
   ICCbuddyTaskService,
   ICCbuddyAgentService,
   ICCbuddySessionService,
+  IProjectService,
+  IManagedWorktreeService,
+  ITaskGroupService,
+  IRemoteProjectService,
   ICuaPermissionService,
   IConversationShareService,
   IBotsService,
@@ -23,6 +26,14 @@ import {
   IModelSelectionService,
   IProviderSettingsService,
   IProviderProvisioningTargetService,
+  ISourceServerWorkspaceService,
+  ISourceServerManagementService,
+  IDeviceSyncStateService,
+  IProviderProvisioningStatusService,
+  IExtensionsService,
+  IExtensionViewsService,
+  IExtensionGrantsService,
+  IVoiceInputService,
   IUsageStatsService,
   ICodingPlanSubscriptionService,
   IClientConfigService,
@@ -33,6 +44,7 @@ import {
   IHighspeedCardService,
   ISkillsService,
   ISkillSyncService,
+  IUserConfigSyncService,
   IMcpSyncService,
   IPluginUiAppToolsService,
   IPluginUiSamplingService,
@@ -49,6 +61,10 @@ import {
   IFeedbackService,
   IPromptAttachmentTransferService,
   IWindowControllerService,
+  IWindowProjectService,
+  IWindowRemoteProjectService,
+  IWindowProjectChangesService,
+  type WindowProjectDirectoryServices,
   type IServiceAccessor,
 } from "@ccbuddy/services";
 
@@ -58,6 +74,7 @@ import {
  * 新增服务只需在此添加一个 getter。
  */
 export class RemoteServiceAccess implements IServiceAccessor {
+  readonly windowProjectDirectory?: WindowProjectDirectoryServices;
   readonly fileService: IFileService;
   readonly mediaPreviewService: IMediaPreviewService;
   readonly gitService: IGitService;
@@ -72,6 +89,9 @@ export class RemoteServiceAccess implements IServiceAccessor {
   readonly windowControllerService: IWindowControllerService;
   readonly ccbuddyAgentService: ICCbuddyAgentService;
   readonly ccbuddySessionService: ICCbuddySessionService;
+  readonly taskGroupService: ITaskGroupService;
+  readonly managedWorktreeService?: IManagedWorktreeService;
+  readonly remoteProjectService: IRemoteProjectService;
   // cuaPermissionService 在 IServiceAccessor 上是可选（远端/bots host 不提供），但桌面 renderer
   // 经 RPC 一定能拿到（main host 始终注册此 descriptor；非 macOS / 未启用时方法返回 available:false）。
   readonly cuaPermissionService: ICuaPermissionService;
@@ -83,6 +103,17 @@ export class RemoteServiceAccess implements IServiceAccessor {
   readonly modelSelectionService: IModelSelectionService;
   /** Host-only target proxy；不属于 IServiceAccessor，避免向 Renderer 暴露 Secret 写入接口。 */
   readonly providerProvisioningTargetService!: IProviderProvisioningTargetService;
+  readonly sourceServerWorkspaceService: ISourceServerWorkspaceService;
+  /** 仅 desktop base attachment 注册；其他 scope 必须按可选能力消费。 */
+  readonly sourceServerManagementService?: ISourceServerManagementService;
+  /** 仅 desktop base attachment 注册：数据同步页的设备同步状态。 */
+  readonly deviceSyncStateService?: IDeviceSyncStateService;
+  readonly providerProvisioningStatusService?: IProviderProvisioningStatusService;
+  /** 仅 desktop base attachment 注册：扩展（docs/plugins/extension-host.md）。 */
+  readonly extensionsService?: IExtensionsService;
+  readonly extensionViewsService?: IExtensionViewsService;
+  readonly extensionGrantsService?: IExtensionGrantsService;
+  readonly voiceInputService?: IVoiceInputService;
   readonly usageStatsService: IUsageStatsService;
   readonly codingPlanSubscriptionService: ICodingPlanSubscriptionService;
   readonly clientConfigService: IClientConfigService;
@@ -95,11 +126,11 @@ export class RemoteServiceAccess implements IServiceAccessor {
   readonly skillSyncService: ISkillSyncService;
   readonly mcpSyncService: IMcpSyncService;
   readonly genUiService: IGenUiService;
-  readonly projectService: IProjectService;
   readonly pluginUiBridgeService: IPluginUiBridgeService;
   readonly pluginUiSamplingService: IPluginUiSamplingService;
   readonly pluginUiAppToolsService: IPluginUiAppToolsService;
   readonly pluginSyncService: IPluginSyncService;
+  readonly userConfigSyncService: IUserConfigSyncService;
   readonly pluginsService: IPluginsService;
   readonly pluginManagementService: IPluginManagementService;
   readonly subagentsService: ISubagentsService;
@@ -111,7 +142,30 @@ export class RemoteServiceAccess implements IServiceAccessor {
   readonly feedbackService: IFeedbackService;
   readonly promptAttachmentTransferService: IPromptAttachmentTransferService;
 
-  constructor(channelClient: IChannelClient) {
+  constructor(
+    channelClient: IChannelClient,
+    options: {
+      sourceServerManagementService?: boolean;
+      deviceSyncStateService?: boolean;
+      extensionsService?: boolean;
+      managedWorktreeService?: boolean;
+      windowProjectDirectory?: boolean;
+    } = {},
+  ) {
+    // 远端工作区的 project 必须保留 Source 语义；只有显式能力才创建完整窗口目录组。
+    if (options.windowProjectDirectory) {
+      this.windowProjectDirectory = {
+        projectService: ProxyChannel.toService(
+          channelClient.getChannel(IWindowProjectService.channelName),
+        ),
+        remoteProjectService: ProxyChannel.toService(
+          channelClient.getChannel(IWindowRemoteProjectService.channelName),
+        ),
+        changesService: ProxyChannel.toService(
+          channelClient.getChannel(IWindowProjectChangesService.channelName),
+        ),
+      };
+    }
     this.fileService = ProxyChannel.toService<IFileService>(
       channelClient.getChannel(IFileService.channelName),
     );
@@ -153,6 +207,18 @@ export class RemoteServiceAccess implements IServiceAccessor {
     this.ccbuddyAgentService = ProxyChannel.toService<ICCbuddyAgentService>(
       channelClient.getChannel(ICCbuddyAgentService.channelName),
     );
+    this.remoteProjectService = ProxyChannel.toService<IRemoteProjectService>(
+      channelClient.getChannel(IRemoteProjectService.channelName),
+    );
+    this.taskGroupService = ProxyChannel.toService<ITaskGroupService>(
+      channelClient.getChannel(ITaskGroupService.channelName),
+    );
+    // 代理对象不能证明远端注册了频道；只在桌面 base 明确提供能力时创建，避免远程/手机误订阅。
+    this.managedWorktreeService = options.managedWorktreeService
+      ? ProxyChannel.toService<IManagedWorktreeService>(
+          channelClient.getChannel(IManagedWorktreeService.channelName),
+        )
+      : undefined;
     this.ccbuddySessionService = ProxyChannel.toService<ICCbuddySessionService>(
       channelClient.getChannel(ICCbuddySessionService.channelName),
     );
@@ -183,6 +249,51 @@ export class RemoteServiceAccess implements IServiceAccessor {
       ),
       enumerable: false,
     });
+    this.sourceServerWorkspaceService = ProxyChannel.toService<ISourceServerWorkspaceService>(
+      channelClient.getChannel(ISourceServerWorkspaceService.channelName),
+    );
+    // Bug 原因：ProxyChannel 是惰性的，无论服务端是否注册 channel 都能构造出“看似存在”
+    // 的对象，optional 合同因此在首次调用时才失败。scope 创建时必须显式声明能力。
+    this.sourceServerManagementService = options.sourceServerManagementService
+      ? ProxyChannel.toService<ISourceServerManagementService>(
+          channelClient.getChannel(ISourceServerManagementService.channelName),
+        )
+      : undefined;
+    this.deviceSyncStateService = options.deviceSyncStateService
+      ? ProxyChannel.toService<IDeviceSyncStateService>(
+          channelClient.getChannel(IDeviceSyncStateService.channelName),
+        )
+      : undefined;
+    // 与设备同步状态同属数据同步页的本机 Host 服务：同一开关（只在桌面 base 连接打开）。
+    this.extensionsService = options.extensionsService
+      ? ProxyChannel.toService<IExtensionsService>(
+          channelClient.getChannel(IExtensionsService.channelName),
+        )
+      : undefined;
+    // 扩展视图门面与扩展门面同一开关：同一个 Window Host 服务，只是另一个频道（§8）。
+    this.extensionViewsService = options.extensionsService
+      ? ProxyChannel.toService<IExtensionViewsService>(
+          channelClient.getChannel(IExtensionViewsService.channelName),
+        )
+      : undefined;
+    // 扩展授权门面与扩展门面同一开关（§17.7）：只在桌面 base 连接打开，不进手机白名单。
+    this.extensionGrantsService = options.extensionsService
+      ? ProxyChannel.toService<IExtensionGrantsService>(
+          channelClient.getChannel(IExtensionGrantsService.channelName),
+        )
+      : undefined;
+    this.providerProvisioningStatusService = options.deviceSyncStateService
+      ? ProxyChannel.toService<IProviderProvisioningStatusService>(
+          channelClient.getChannel(IProviderProvisioningStatusService.channelName),
+        )
+      : undefined;
+    // 语音输入只连接本机 Host（docs/chat/composer-voice-input.md）：与数据同步同一开关，
+    // 只在桌面 base 连接打开，Web / 手机远控 / 远程 workspace 连接不创建代理。
+    this.voiceInputService = options.deviceSyncStateService
+      ? ProxyChannel.toService<IVoiceInputService>(
+          channelClient.getChannel(IVoiceInputService.channelName),
+        )
+      : undefined;
     this.usageStatsService = ProxyChannel.toService<IUsageStatsService>(
       channelClient.getChannel(IUsageStatsService.channelName),
     );
@@ -219,9 +330,6 @@ export class RemoteServiceAccess implements IServiceAccessor {
     this.genUiService = ProxyChannel.toService<IGenUiService>(
       channelClient.getChannel(IGenUiService.channelName),
     );
-    this.projectService = ProxyChannel.toService<IProjectService>(
-      channelClient.getChannel(IProjectService.channelName),
-    );
     this.pluginUiBridgeService = ProxyChannel.toService<IPluginUiBridgeService>(
       channelClient.getChannel(IPluginUiBridgeService.channelName),
     );
@@ -233,6 +341,9 @@ export class RemoteServiceAccess implements IServiceAccessor {
     );
     this.pluginSyncService = ProxyChannel.toService<IPluginSyncService>(
       channelClient.getChannel(IPluginSyncService.channelName),
+    );
+    this.userConfigSyncService = ProxyChannel.toService<IUserConfigSyncService>(
+      channelClient.getChannel(IUserConfigSyncService.channelName),
     );
     this.pluginsService = ProxyChannel.toService<IPluginsService>(
       channelClient.getChannel(IPluginsService.channelName),

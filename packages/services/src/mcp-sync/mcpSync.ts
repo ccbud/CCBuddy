@@ -1,21 +1,22 @@
 import type {
   LoadCliMcpFromUserDirectoryRequest,
   LoadCliMcpFromUserDirectoryResult,
-  McpSyncCandidateListResult,
-  McpSyncExportResult,
-  McpSyncExportedServer,
-  McpSyncImportResult,
-  McpSyncRemoteStatusResult,
-  RemoteSyncWriteAccessResult,
+  McpDataSyncPayload,
   SaveCliMcpToUserDirectoryRequest,
   CCbuddyAgentMcpServer,
   CCbuddyMcpListMode,
   CCbuddyMcpListResult,
+  WorkspaceMcpTrustDecision,
+  CCbuddyWorkspaceMcpTrustResult,
 } from "@ccbuddy/shared";
 import { ServiceChannels } from "@ccbuddy/shared";
+import type { IDataSyncCategoryService } from "../data-sync/contract.js";
 import { createServiceDescriptor } from "../descriptors.js";
 
-export interface IMcpSyncService {
+/**
+ * MCP 通道：设置页配置读写 + 数据同步（IDataSyncCategoryService，docs/remote/data-sync.md「MCP 服务器」）。
+ */
+export interface IMcpSyncService extends IDataSyncCategoryService<McpDataSyncPayload> {
   loadMcpFromUserDirectory(
     request?: LoadCliMcpFromUserDirectoryRequest,
   ): Promise<LoadCliMcpFromUserDirectoryResult>;
@@ -30,18 +31,8 @@ export interface IMcpSyncService {
     mcpServers?: CCbuddyAgentMcpServer[];
     mode?: CCbuddyMcpListMode;
   }): Promise<CCbuddyMcpListResult>;
+  setWorkspaceMcpTrust?(params: WorkspaceMcpTrustDecision): Promise<CCbuddyWorkspaceMcpTrustResult>;
   saveMcpToUserDirectory(payload: SaveCliMcpToUserDirectoryRequest): Promise<void>;
-  listLocalUserMcpCandidates(): Promise<McpSyncCandidateListResult>;
-  listRemoteUserMcpStatuses(params: { names: string[] }): Promise<McpSyncRemoteStatusResult>;
-  exportMcpServers(params: { serverIds: string[] }): Promise<McpSyncExportResult>;
-  checkRemoteUserMcpWriteAccess(): Promise<RemoteSyncWriteAccessResult>;
-  importMcpServers(params: {
-    servers: McpSyncExportedServer[];
-    localHomeDir: string;
-    localWorkspacePath?: string;
-    remoteWorkspacePath?: string;
-    overwrite?: false;
-  }): Promise<McpSyncImportResult>;
 }
 
 export const IMcpSyncService = createServiceDescriptor<IMcpSyncService>(ServiceChannels.McpSync);

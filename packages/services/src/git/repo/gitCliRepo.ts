@@ -1249,6 +1249,7 @@ export function createGitCliRepo(options?: { commandProvider?: GitCommandProvide
       });
     },
 
+    // getDiff 的 diff 参数（external diff 与 textconv 禁用）由 GitCommandProvider 统一追加。
     async getDiff(params: GitDiffQuery): Promise<GitDiffResult> {
       const resolution = await this.resolveRepository(params.workspacePath);
       const absolutePath = isAbsolute(params.path)
@@ -1280,7 +1281,6 @@ export function createGitCliRepo(options?: { commandProvider?: GitCommandProvide
           cwd: resolution.repoRoot,
           args: [
             "diff",
-            "--no-ext-diff",
             "--no-color",
             "--binary",
             "--find-renames",
@@ -1309,8 +1309,8 @@ export function createGitCliRepo(options?: { commandProvider?: GitCommandProvide
       const diffResult = await commandProvider.run({
         cwd: resolution.repoRoot,
         args: staged
-          ? ["diff", "--cached", "--no-ext-diff", "--no-color", "--binary", "--", repoRelativePath]
-          : ["diff", "--no-ext-diff", "--no-color", "--binary", "--", repoRelativePath],
+          ? ["diff", "--cached", "--no-color", "--binary", "--", repoRelativePath]
+          : ["diff", "--no-color", "--binary", "--", repoRelativePath],
         timeoutMs: DEFAULT_GIT_DIFF_TIMEOUT_MS,
         maxOutputBytes: DEFAULT_GIT_DIFF_BYTES,
       });
@@ -1353,7 +1353,6 @@ export function createGitCliRepo(options?: { commandProvider?: GitCommandProvide
         args: [
           "diff",
           "--no-index",
-          "--no-ext-diff",
           "--no-color",
           "--binary",
           getGitNullDevicePath(),

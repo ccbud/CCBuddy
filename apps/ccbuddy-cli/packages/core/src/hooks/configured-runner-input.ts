@@ -29,7 +29,6 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
   compatible.transcriptPath = transcriptPath;
 
   if ("toolName" in input) {
-
     // 这里只补无损 alias，继续保留 CCbuddy camelCase 字段作为内部主契约。
     compatible.tool_name = input.toolName;
     compatible.tool_input = input.toolInput;
@@ -44,7 +43,6 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
       compatible.tool_response = input.toolResponse;
       break;
     case HookEventName.PostToolUseFailure:
-
       compatible.error_details = input.error;
       compatible.error = input.error.message;
       compatible.is_interrupt = input.isInterrupt;

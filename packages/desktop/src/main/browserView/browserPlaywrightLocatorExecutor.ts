@@ -318,8 +318,9 @@ class IabPlaywrightLocatorSession {
             needsStable: needsPointer,
             scrollAlignment:
               action.force === true
-                ? POINTER_SCROLL_ALIGNMENTS[0]
-                : POINTER_SCROLL_ALIGNMENTS[pointerAttempt % POINTER_SCROLL_ALIGNMENTS.length],
+                ? POINTER_SCROLL_ALIGNMENTS[0]!
+                : (POINTER_SCROLL_ALIGNMENTS[pointerAttempt % POINTER_SCROLL_ALIGNMENTS.length] ??
+                  POINTER_SCROLL_ALIGNMENTS[0]!),
           },
           remaining,
         );

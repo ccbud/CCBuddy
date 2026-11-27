@@ -1,10 +1,11 @@
+import { PLUGIN_DISCOVERY_INPUT } from "@ccbuddy/contracts";
 import { parseRuntimeInputPresentation } from "@ccbuddy/contracts";
-import { attachGenUiContext } from "../../agent/gen-ui-context.js";
 import {
   unpublishedPermissionGrants,
   recoverPendingPermissionGrant,
 } from "../permission-grant-recovery.js";
 import { runtimeInputMetadata } from "../../agent/runtime-input-presentation.js";
+import { refreshWorkspaceTrustAdmission } from "./mcp.js";
 import { withConversationQuotes } from "../helpers/conversation-quotes.js";
 import {
   CoreErrorType,
@@ -20,6 +21,7 @@ import type {
   MessageId,
   ModelSelection,
   ModelSelectionOrigin,
+  PendingInputEditLock,
   PendingSteerInputInfo,
   PendingTurnInput,
   QueryId,
@@ -30,8 +32,10 @@ import type {
   TurnSteerResult,
   TurnSteerSource,
   TurnId,
+  TurnInputIntentMetadata,
 } from "../deps.js";
 import { cloneModelSelection } from "../model-selection.js";
+import { acceptSubmissionModelSelection, recordPublishedModelSelection } from "./turn-model.js";
 import { createRuntimeModel } from "./runtime-model.js";
 import {
   buildUserContentFromTurn,
@@ -44,8 +48,12 @@ import type {
   ActiveTurnKind,
   ActiveTurnSteeringState,
   DrainedPendingInputDiagnostics,
+  EditPendingInputOptions,
+  EditPendingInputResult,
+  LockPendingInputEditResult,
 } from "../types.js";
 import {
+  attachGenUiContext,
   createRuntimeUserEntry,
   realUserRuntimeMetadata,
   type RuntimeMessageEntry,
@@ -123,6 +131,7 @@ export async function steerTurn(
   const commandKind = request.commandKind;
   const source: TurnSteerSource | undefined = request.source;
   const delivery = request.delivery;
+  const automationId = request.automationId;
   const toolDisallowlist = request.toolDisallowlist;
   const queuePosition = activeTurn.pendingInputs.length;
   const intent = request.intent
@@ -147,10 +156,24 @@ export async function steerTurn(
     ...(delivery ? { delivery } : {}),
     ...(intent ? { intent } : {}),
     ...(request.attachments ? { attachments: request.attachments } : {}),
+    ...(automationId ? { automationId } : {}),
     ...(toolDisallowlist ? { toolDisallowlist } : {}),
     turnId: activeTurn.turnId,
   };
+  const selectionAccepted = acceptSubmissionModelSelection(
+    this,
+    intent,
+    activeTurn.traceContext,
+    request.modelSelectionScope
+      ? {
+          selectionScope: request.modelSelectionScope,
+          highspeedFallbackSelection: request.highspeedFallbackSelection,
+        }
+      : undefined,
+  );
   activeTurn.pendingInputs.push(pendingInput);
+  // 与 prompt 一样，用户亲手 steer 进来的话给每个欠着决定的 run 一对新的提醒。
+  if (isUserSteer(request)) this.workflowBlockedReminder?.userSpoke();
   const queueLength = activeTurn.pendingInputs.length;
   const event = createSessionEvent(
     SessionEventType.TurnSteerQueued,
@@ -167,6 +190,7 @@ export async function steerTurn(
       ...(request.inputPresentation ? { inputPresentation: request.inputPresentation } : {}),
       ...(delivery ? { delivery } : {}),
       ...(intent ? { intent } : {}),
+      ...(automationId ? { automationId } : {}),
       ...(toolDisallowlist ? { toolDisallowlist } : {}),
       targetTurnId: activeTurn.turnId,
       queueLength,
@@ -177,6 +201,7 @@ export async function steerTurn(
     },
   );
   await this.appendEvent(event, activeTurn.traceContext);
+  await selectionAccepted;
   this.logger?.debug("Turn steer queued", {
     ...traceContextToLogContext(activeTurn.traceContext),
     activeTurnKind: activeTurn.kind,
@@ -238,6 +263,7 @@ export async function enqueueDeferredInput(
   const commandKind = request.commandKind;
   const source: TurnSteerSource | undefined = request.source;
   const delivery = request.delivery ?? "queue";
+  const automationId = request.automationId;
   const toolDisallowlist = request.toolDisallowlist;
   const pendingInputId =
     request.pendingInputId ??
@@ -267,6 +293,7 @@ export async function enqueueDeferredInput(
       ...(request.inputPresentation ? { inputPresentation: request.inputPresentation } : {}),
       delivery,
       ...(intent ? { intent } : {}),
+      ...(automationId ? { automationId } : {}),
       ...(toolDisallowlist ? { toolDisallowlist } : {}),
       targetTurnId,
       queueLength,
@@ -277,6 +304,17 @@ export async function enqueueDeferredInput(
     },
   );
   await this.appendEvent(event, traceContext);
+  await acceptSubmissionModelSelection(
+    this,
+    intent,
+    traceContext,
+    request.modelSelectionScope
+      ? {
+          selectionScope: request.modelSelectionScope,
+          highspeedFallbackSelection: request.highspeedFallbackSelection,
+        }
+      : undefined,
+  );
   this.logger?.debug("Deferred input queued", {
     ...traceContextToLogContext(traceContext),
     delivery,
@@ -448,16 +486,32 @@ function pendingInputDelivery(pendingInput: PendingTurnInput | undefined): "guid
   return delivery === "guide" ? "guide" : "queue";
 }
 
+function isInlineGuide(pendingInput: PendingTurnInput): boolean {
+  return (
+    pendingInput.commandKind !== "sendGoalCommand" &&
+    pendingInput.commandKind !== "compact" &&
+    pendingInputDelivery(pendingInput) === "guide"
+  );
+}
+
+/**
+ * 用户亲手 steer 进来的输入（App、远控、bot 都标 `user_steer`）。协调者、信箱、工具跟进也走 steer，
+ * 它们不算。入队时和取出时共用这一个判据；取出后写进历史的 metadata 在带附件或 source 时不留标记，
+ * 所以不能从历史反推。
+ */
+function isUserSteer(input: Pick<PendingTurnInput, "inputPresentation">): boolean {
+  return input.inputPresentation === "user_steer";
+}
+
 function firstInlineGuideIndex(activeTurn: ActiveTurnSteeringState): number {
   // pendingInputs 同时承载 future queue 与 current-turn guide，只检查
   // 数组队首，导致先入队的普通消息把后续显式 guide 永久挡住。delivery 才是消费车道；
   // 这里只在 guide 子序列内保持 admission FIFO，普通 queue 留在原位等待外层提升。
-  return activeTurn.pendingInputs.findIndex(
-    (pendingInput) =>
-      pendingInput.commandKind !== "sendGoalCommand" &&
-      pendingInput.commandKind !== "compact" &&
-      pendingInputDelivery(pendingInput) === "guide",
-  );
+  return activeTurn.pendingInputs.findIndex(isInlineGuide);
+}
+
+function withQueryId(traceContext: TraceContext, queryId: QueryId | undefined): TraceContext {
+  return queryId ? { ...traceContext, queryId } : traceContext;
 }
 
 export function hasInlineGuidePendingInput(
@@ -601,7 +655,12 @@ export async function reservePendingInputById(
     traceContext: TraceContext;
   },
 ): Promise<boolean> {
-  if (this.permissionFullAccessPending || this.pendingInputReservations.has(options.pendingInputId))
+  // 编辑锁与 reservation 互斥：冻结项不能被立即发送或自动续跑提升。
+  if (
+    this.permissionFullAccessPending ||
+    this.pendingInputReservations.has(options.pendingInputId) ||
+    this.pendingInputEditLocks.has(options.pendingInputId)
+  )
     return false;
   if (unpublishedPermissionGrants.has(this)) await recoverPendingPermissionGrant(this);
   const targetTurnId = await pendingInputTargetTurnId(this, options.pendingInputId);
@@ -609,7 +668,8 @@ export async function reservePendingInputById(
   if (
     !targetTurnId ||
     this.permissionFullAccessPending ||
-    this.pendingInputReservations.has(options.pendingInputId)
+    this.pendingInputReservations.has(options.pendingInputId) ||
+    this.pendingInputEditLocks.has(options.pendingInputId)
   )
     return false;
   this.pendingInputReservations.set(options.pendingInputId, options.reservationId);
@@ -693,6 +753,8 @@ export async function removePendingInputById(
 ): Promise<boolean> {
   const reservationId = this.pendingInputReservations.get(options.pendingInputId);
   if (reservationId && reservationId !== options.reservationId) return false;
+  // 冻结项只能由编辑提交或解锁改变；单项删除不得越过编辑锁。
+  if (this.pendingInputEditLocks.has(options.pendingInputId)) return false;
   const activeTurn = this.activeTurn;
   const index =
     activeTurn?.pendingInputs.findIndex(
@@ -790,6 +852,13 @@ export async function clearAllPendingInputs(
   traceContext: TraceContext,
 ): Promise<number> {
   let cleared = 0;
+  // 「清空队列并发送」是用户对全部已确认项的显式处置，冻结项一并删除；发起编辑端从投影
+  // 看到项不存在后进入失效态。
+  // Bug 根因：曾在开头一次性清空锁表，丢弃事件写入失败时项仍留在投影（仍显示锁），
+  // runtime 却已无锁：解除返回 false、删除守卫失效。锁与项同生同灭：只在丢弃事件写入后删除。
+  const releaseLocks = (pendingInputIds: readonly string[]) => {
+    for (const pendingInputId of pendingInputIds) this.pendingInputEditLocks.delete(pendingInputId);
+  };
   const activeTurn = this.activeTurn;
   if (activeTurn && activeTurn.pendingInputs.length > 0) {
     for (const item of activeTurn.pendingInputs) {
@@ -811,6 +880,7 @@ export async function clearAllPendingInputs(
       },
     );
     await this.appendEvent(event, traceContext);
+    releaseLocks(removed.map((item) => item.id));
   }
   const projection = await this.rebuildProjection();
   const heldByTurn = new Map<TurnId, PendingSteerInputInfo[]>();
@@ -838,22 +908,55 @@ export async function clearAllPendingInputs(
       },
     );
     await this.appendEvent(event, traceContext);
+    releaseLocks(group.map((item) => item.pendingInputId));
   }
   return cleared;
 }
 
+/** 按编辑写回合成新 intent；缺省字段保留原值。 */
+function editedIntent(
+  intent: TurnInputIntentMetadata | undefined,
+  options: EditPendingInputOptions,
+): TurnInputIntentMetadata | undefined {
+  if (!intent) return undefined;
+  const next: TurnInputIntentMetadata = {
+    ...intent,
+    ...(options.newText !== undefined ? { text: options.newText } : {}),
+    ...(options.attachmentRefs ? { attachmentRefs: options.attachmentRefs } : {}),
+    ...(options.conversationQuotes ? { conversationQuotes: options.conversationQuotes } : {}),
+    ...(options.modelSelection
+      ? { modelSelection: cloneModelSelection(options.modelSelection) }
+      : {}),
+    ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.planEnabled !== undefined ? { planEnabled: options.planEnabled } : {}),
+  };
+  if (options.dropHighspeed) delete next.highspeed;
+  return next;
+}
+
+/** 编辑锁裁决：携带 editorId 必须仍持锁；未携带时不得改写他人冻结项。 */
+function editLockVerdict(
+  runtime: AgentRuntimeInternal,
+  options: EditPendingInputOptions,
+): "ok" | "editLocked" | "lockLost" {
+  const lock = runtime.pendingInputEditLocks.get(options.pendingInputId);
+  if (options.editorId !== undefined) {
+    return lock?.editorId === options.editorId ? "ok" : "lockLost";
+  }
+  return lock ? "editLocked" : "ok";
+}
+
 /**
- * （v4 queue 单项编辑）：按 id 替换某排队输入的文本，重发 TurnSteerQueued（同 id）。
- * v4 reducer 的 onTurnSteerQueued 对同 id 原地更新（保位）。未命中 / 无 active turn → false。
+ * （v4 queue 单项编辑）：按 id 原地替换排队输入，重发 TurnSteerQueued（同 id）。
+ * v4 reducer 的 onTurnSteerQueued 对同 id 原地更新（保位）。composer 编辑态的写回同时
+ * 改附件与提交配置，并在同一调用释放编辑锁，不存在「已解锁但内容仍旧」的中间态。
  */
 export async function editPendingInputById(
   this: AgentRuntimeInternal,
-  options: {
-    pendingInputId: string;
-    newText: string;
-    traceContext: TraceContext;
-  },
-): Promise<boolean> {
+  options: EditPendingInputOptions & { traceContext: TraceContext },
+): Promise<EditPendingInputResult> {
+  const verdict = editLockVerdict(this, options);
+  if (verdict !== "ok") return verdict;
   const activeTurn = this.activeTurn;
   const pendingInput = activeTurn?.pendingInputs.find((item) => item.id === options.pendingInputId);
   if (!activeTurn || !pendingInput) {
@@ -863,18 +966,22 @@ export async function editPendingInputById(
     const held = projection.pendingSteerInputs.find(
       (item) => item.pendingInputId === options.pendingInputId,
     );
-    if (!held) return false;
-    await persistSessionInputUpdates(this, [{ id: held.pendingInputId, text: options.newText }]);
+    if (!held) return "missing";
+    const input = options.newText ?? held.input;
+    if (options.newText !== undefined)
+      await persistSessionInputUpdates(this, [{ id: held.pendingInputId, text: input }]);
+    const intent = editedIntent(held.intent, options);
     const event = createSessionEvent(
       SessionEventType.TurnSteerQueued,
       this.sessionId,
       {
         pendingInputId: held.pendingInputId,
-        input: options.newText,
-        inputPreview: previewInput(options.newText),
-        inputSize: measureUtf8Bytes(options.newText),
+        input,
+        inputPreview: previewInput(input),
+        inputSize: measureUtf8Bytes(input),
         ...(held.commandKind ? { commandKind: held.commandKind } : {}),
-        ...(held.intent ? { intent: { ...held.intent, text: options.newText } } : {}),
+        ...(intent ? { intent } : {}),
+        ...(held.automationId ? { automationId: held.automationId } : {}),
         ...(held.toolDisallowlist ? { toolDisallowlist: held.toolDisallowlist } : {}),
         queueLength: projection.pendingSteerInputs.length,
         targetTurnId: held.targetTurnId,
@@ -885,27 +992,32 @@ export async function editPendingInputById(
       },
     );
     await this.appendEvent(event, options.traceContext);
-    return true;
+    await releaseEditLockAfterEdit(this, held.pendingInputId, held.targetTurnId, options);
+    return "edited";
   }
-  await persistSessionInputUpdates(this, [{ id: pendingInput.id, text: options.newText }]);
-  pendingInput.input = options.newText;
+  if (options.newText !== undefined) {
+    await persistSessionInputUpdates(this, [{ id: pendingInput.id, text: options.newText }]);
+    pendingInput.input = options.newText;
+  }
   // 编辑正文后必须同步 canonical text，否则结构化引用恢复时会显示旧正文。
-  if (pendingInput.intent) pendingInput.intent = { ...pendingInput.intent, text: options.newText };
+  pendingInput.intent = editedIntent(pendingInput.intent, options);
+  if (options.attachments) pendingInput.attachments = options.attachments;
   const event = createSessionEvent(
     SessionEventType.TurnSteerQueued,
     this.sessionId,
     {
       pendingInputId: pendingInput.id,
       queryId: pendingInput.queryId,
-      input: options.newText,
-      inputPreview: previewInput(options.newText),
-      inputSize: measureUtf8Bytes(options.newText),
+      input: pendingInput.input,
+      inputPreview: previewInput(pendingInput.input),
+      inputSize: measureUtf8Bytes(pendingInput.input),
       ...(pendingInput.commandKind ? { commandKind: pendingInput.commandKind } : {}),
       ...(pendingInput.delivery ? { delivery: pendingInput.delivery } : {}),
       ...(pendingInput.inputPresentation
         ? { inputPresentation: pendingInput.inputPresentation }
         : {}),
       ...(pendingInput.intent ? { intent: pendingInput.intent } : {}),
+      ...(pendingInput.automationId ? { automationId: pendingInput.automationId } : {}),
       ...(pendingInput.toolDisallowlist ? { toolDisallowlist: pendingInput.toolDisallowlist } : {}),
       queueLength: activeTurn.pendingInputs.length,
       targetTurnId: activeTurn.turnId,
@@ -916,7 +1028,121 @@ export async function editPendingInputById(
     },
   );
   await this.appendEvent(event, options.traceContext);
+  await releaseEditLockAfterEdit(this, pendingInput.id, activeTurn.turnId, options);
+  return "edited";
+}
+
+async function releaseEditLockAfterEdit(
+  runtime: AgentRuntimeInternal,
+  pendingInputId: string,
+  targetTurnId: TurnId,
+  options: EditPendingInputOptions & { traceContext: TraceContext },
+): Promise<void> {
+  const lock = runtime.pendingInputEditLocks.get(pendingInputId);
+  // 编辑期间锁可能已被其他端解除；只释放本次调用持有的锁。
+  if (!lock || options.editorId === undefined || lock.editorId !== options.editorId) return;
+  await commitEditLockRelease(runtime, pendingInputId, targetTurnId, options.traceContext);
+}
+
+/**
+ * 解锁的唯一写入点（编辑提交与取消/解除共用）：先写解锁事件，成功后才删内存锁。
+ * Bug 根因：曾先删内存锁再写事件，写入失败时投影仍显示锁、runtime 却已无锁，
+ * 解除返回 false、删除/重排/立即发送的守卫失效。锁与事件同生同灭，失败无需回滚。
+ */
+async function commitEditLockRelease(
+  runtime: AgentRuntimeInternal,
+  pendingInputId: string,
+  targetTurnId: TurnId,
+  traceContext: TraceContext,
+): Promise<void> {
+  await appendPendingInputEditLock(runtime, { pendingInputId, targetTurnId, traceContext });
+  runtime.pendingInputEditLocks.delete(pendingInputId);
+}
+
+async function appendPendingInputEditLock(
+  runtime: AgentRuntimeInternal,
+  options: {
+    pendingInputId: string;
+    editLock?: PendingInputEditLock;
+    targetTurnId: TurnId;
+    traceContext: TraceContext;
+  },
+): Promise<void> {
+  const event = createSessionEvent(
+    SessionEventType.TurnSteerEditLockChanged,
+    runtime.sessionId,
+    {
+      pendingInputId: options.pendingInputId,
+      targetTurnId: options.targetTurnId,
+      ...(options.editLock ? { editLock: { ...options.editLock } } : {}),
+    },
+    { traceId: options.traceContext.traceId, turnId: options.targetTurnId },
+  );
+  await runtime.appendEvent(event, options.traceContext);
+}
+
+/**
+ * composer 编辑态冻结（docs/ui/composer-edit-mode.md）：锁与 reservation 互斥，只对仍在队列中的
+ * 项生效；同一编辑器重复加锁幂等。锁只活在当前 CLI 进程，不使用超时释放。
+ */
+export async function lockPendingInputEdit(
+  this: AgentRuntimeInternal,
+  options: {
+    pendingInputId: string;
+    editLock: PendingInputEditLock;
+    traceContext: TraceContext;
+  },
+): Promise<LockPendingInputEditResult> {
+  const decide = (): LockPendingInputEditResult | undefined => {
+    if (this.pendingInputReservations.has(options.pendingInputId)) return "reserved";
+    const current = this.pendingInputEditLocks.get(options.pendingInputId);
+    if (current) return current.editorId === options.editLock.editorId ? "locked" : "lockedByOther";
+    return undefined;
+  };
+  const early = decide();
+  if (early) return early;
+  const targetTurnId = await pendingInputTargetTurnId(this, options.pendingInputId);
+  if (!targetTurnId) return "missing";
+  // 上方 await 期间可能已被 reserve 或被其他编辑器抢先加锁，落锁前复查。
+  const late = decide();
+  if (late) return late;
+  this.pendingInputEditLocks.set(options.pendingInputId, { ...options.editLock });
+  try {
+    await appendPendingInputEditLock(this, {
+      pendingInputId: options.pendingInputId,
+      editLock: options.editLock,
+      targetTurnId,
+      traceContext: options.traceContext,
+    });
+  } catch (error) {
+    this.pendingInputEditLocks.delete(options.pendingInputId);
+    throw error;
+  }
+  return "locked";
+}
+
+/** 解除编辑锁：发起端取消、刷新后自愈，或其他端在发起端离线时手动解除。无锁返回 false。 */
+export async function releasePendingInputEdit(
+  this: AgentRuntimeInternal,
+  options: { pendingInputId: string; traceContext: TraceContext },
+): Promise<boolean> {
+  if (!this.pendingInputEditLocks.has(options.pendingInputId)) return false;
+  const targetTurnId = await pendingInputTargetTurnId(this, options.pendingInputId);
+  if (!targetTurnId) {
+    // 项已被消费或删除时锁随项消失，无需再投影。
+    this.pendingInputEditLocks.delete(options.pendingInputId);
+    return true;
+  }
+  await commitEditLockRelease(this, options.pendingInputId, targetTurnId, options.traceContext);
   return true;
+}
+
+export function getPendingInputEditLock(
+  this: AgentRuntimeInternal,
+  pendingInputId: string,
+): PendingInputEditLock | undefined {
+  const lock = this.pendingInputEditLocks.get(pendingInputId);
+  return lock ? { ...lock } : undefined;
 }
 
 /**
@@ -931,6 +1157,7 @@ export async function reorderPendingInput(
     traceContext: TraceContext;
   },
 ): Promise<boolean> {
+  if (this.pendingInputEditLocks.has(options.pendingInputId)) return false;
   const activeTurn = this.activeTurn;
   const fromIndexActive =
     activeTurn?.pendingInputs.findIndex((item) => item.id === options.pendingInputId) ?? -1;
@@ -1116,6 +1343,7 @@ export async function emitModelSelected(
     { traceId: options.traceContext.traceId },
   );
   await this.appendEvent(event, options.traceContext);
+  recordPublishedModelSelection(this, options.modelSelection);
 }
 
 /**
@@ -1169,50 +1397,47 @@ async function drainPendingInputUnlocked(
   this: AgentRuntimeInternal,
   options: Parameters<typeof drainPendingInput>[0],
 ): Promise<DrainedPendingInputDiagnostics | undefined> {
-  const guideIndex = firstInlineGuideIndex(options.activeTurn);
-  const pendingInput = guideIndex >= 0 ? options.activeTurn.pendingInputs[guideIndex] : undefined;
-  if (!pendingInput) return undefined;
-  // sendQueuedNow 已 reserve 的队首只能由 reservation owner 提升；普通 roundtrip drain
-  // 必须暂停，避免 stop barrier 期间同一输入又被当前 turn 消费一次。
-  if (this.pendingInputReservations.has(pendingInput.id)) return undefined;
-  // 普通 queue 只能由 bootstrap 在 session-ready + goal gate 后提升；runtime 行内 drain
-  // 从 guide 子序列取最早一项，不能让 future queue 偷跑，也不能让它阻塞当前轮引导。
-  options.activeTurn.pendingInputs.splice(guideIndex, 1);
-  const pendingInputs = [pendingInput];
-  const queryIds = pendingInput.queryId ? [pendingInput.queryId] : undefined;
-  // steer 是新的真实用户 query。drain 后的下一次模型请求必须切到该 queryId，
-  // 不能继续沿用原始 turn query，否则 tool 后续请求会被归因到上一条用户消息。
-  const drainTraceContext = pendingInput.queryId
-    ? { ...options.traceContext, queryId: pendingInput.queryId }
-    : options.traceContext;
+  // 同一边界按 admission FIFO 取出全部已等待的 guide。普通 queue 只能由 bootstrap 在
+  // session-ready + goal gate 后提升，留在原位，不能偷跑，也不能阻塞当前轮引导。
+  // sendQueuedNow 已 reserve 的 guide 只能由 reservation owner 提升；取到它为止，避免
+  // stop barrier 期间同一输入又被当前 turn 消费一次，后面的 guide 也不越过它。
+  const pendingInputs: PendingTurnInput[] = [];
+  for (const pendingInput of options.activeTurn.pendingInputs) {
+    if (!isInlineGuide(pendingInput)) continue;
+    if (this.pendingInputReservations.has(pendingInput.id)) break;
+    pendingInputs.push(pendingInput);
+  }
+  if (pendingInputs.length === 0) return undefined;
+  for (const pendingInput of pendingInputs) {
+    options.activeTurn.pendingInputs.splice(
+      options.activeTurn.pendingInputs.indexOf(pendingInput),
+      1,
+    );
+  }
+  const drainedQueryIds = pendingInputs.flatMap((pendingInput) =>
+    pendingInput.queryId ? [pendingInput.queryId] : [],
+  );
+  const queryIds = drainedQueryIds.length > 0 ? drainedQueryIds : undefined;
 
   const drainedAt = Date.now();
-  const inputPreviews = pendingInputs.map((pendingInput) => previewInput(pendingInput.input));
-  const inputSizes = pendingInputs.map((pendingInput) => measureUtf8Bytes(pendingInput.input));
-  const queuedDurationsMs = pendingInputs.map(
-    (pendingInput) => drainedAt - pendingInput.queuedAt.getTime(),
-  );
   const messageIds: MessageId[] = [];
   const runtimeEntries: RuntimeMessageEntry[] = [];
-  const drainedInputs: Array<{
-    pendingInputId: string;
-    messageId: MessageId;
-    text: string;
-    delivery?: "guide" | "queue";
-    intent?: NonNullable<PendingTurnInput["intent"]>;
-    toolDisallowlist?: readonly string[];
-  }> = [];
+  // 每条 guide 的记录、移出队列（promote）与显示（drained 事件）按条完成，组装请求时才合并。
+  // 修复原因：整批提交后才发 drained 事件时，后一条写库失败会让前一条已保存、已移出队列，
+  // 却没有生成正式的 user 行，实时界面上看不到它。
   for (const pendingInput of pendingInputs) {
     const messageId = createMessageId();
     // 投递语义缺省按 queue（排队消费=独立轮）；guide 由 v4 命令面
     // 按 inputRouting 显式标注。落到持久 metadata 供冷恢复还原同一切分。
     const delivery = pendingInput.delivery ?? "queue";
+    // 每条输入记自己的 query；一起取出时不能都归到最后一条。
+    const inputTraceContext = withQueryId(options.traceContext, pendingInput.queryId);
     const resolvedAttachments = await resolveTurnAttachments(pendingInput.attachments, {
       artifactStore: this.artifactStore,
       fileSystemPort: this.fileSystemPort,
       imageProcessorPort: this.imageProcessorPort,
       sessionId: this.sessionId,
-      traceContext: drainTraceContext,
+      traceContext: inputTraceContext,
       turnId: options.activeTurn.turnId,
       workingDirectory: this.workingDirectory,
     });
@@ -1221,27 +1446,22 @@ async function drainPendingInputUnlocked(
       delivery === "guide" && !pendingInput.source && !pendingInput.attachments?.length
         ? parseRuntimeInputPresentation(pendingInput.inputPresentation)
         : undefined;
-    const runtimeEntry = attachGenUiContext(
-      createRuntimeUserEntry(
-        buildUserContentFromTurn(
-          withConversationQuotes(
-            pendingInput.input,
-            pendingInput.intent?.conversationQuotes,
-            pendingInput.intent?.botGroupSource,
-          ),
-          resolvedAttachments,
+    const runtimeEntry = createRuntimeUserEntry(
+      buildUserContentFromTurn(
+        withConversationQuotes(
+          pendingInput.input,
+          pendingInput.intent?.conversationQuotes,
+          pendingInput.intent?.botGroupSource,
         ),
-        runtimeInputMetadata(inputPresentation) ?? realUserRuntimeMetadata(),
+        resolvedAttachments,
       ),
-      pendingInput.intent?.genUiContext,
+      runtimeInputMetadata(inputPresentation) ?? realUserRuntimeMetadata(),
     );
-    this.messageHistory.addEntries([runtimeEntry]);
-    runtimeEntries.push(runtimeEntry);
     await this.persistUserPrompt(
       messageId,
       pendingInput.input,
       resolvedAttachments,
-      drainTraceContext,
+      inputTraceContext,
       {
         steerDelivery: delivery,
         inputPresentation,
@@ -1252,14 +1472,62 @@ async function drainPendingInputUnlocked(
         intent: pendingInput.intent,
       },
     );
+    // 写库成功后才进入内存历史。
+    // 修复原因：先进内存历史时，写库失败的 guide 仍在队列里，下一轮请求却已经带着它；
+    // 用户继续队列后，模型会看到它两次，冷恢复后又只剩一次。
+    // 修复原因：历史只给自己的副本记时间，交给本轮请求的这一份没有时间；不带展示标记的 Guide
+    // 是静默段的锚点，没有时间时本轮再也不发静默提醒，冷恢复后却会发。先记时间，两边同一份。
+    const entry = {
+      ...attachGenUiContext(runtimeEntry, pendingInput.intent?.genUiContext),
+      time: this.now().getTime(),
+    };
+    this.messageHistory.addEntries([entry]);
+    runtimeEntries.push(entry);
+    // 按原始来源判断；附件会省略展示标记，不能把合成消息误当成用户输入。
+    if (
+      this.mcpTrustAdmissionRead &&
+      runtimeInputMetadata(pendingInput.inputPresentation)?.source !== "legacy_synthetic"
+    ) {
+      await refreshWorkspaceTrustAdmission(this, inputTraceContext);
+    }
     messageIds.push(messageId);
-    drainedInputs.push({
-      pendingInputId: pendingInput.id,
-      messageId,
-      text: pendingInput.input,
-      delivery,
-      ...(pendingInput.intent ? { intent: pendingInput.intent } : {}),
-      ...(pendingInput.toolDisallowlist ? { toolDisallowlist: pendingInput.toolDisallowlist } : {}),
+    const event = this.createEvent(
+      SessionEventType.TurnSteerDrained,
+      {
+        injectedMessageIds: [messageId],
+        pendingInputIds: [pendingInput.id],
+        drainedInputs: [
+          {
+            pendingInputId: pendingInput.id,
+            messageId,
+            text: pendingInput.input,
+            delivery,
+            ...(pendingInput.intent ? { intent: pendingInput.intent } : {}),
+            ...(pendingInput.toolDisallowlist
+              ? { toolDisallowlist: pendingInput.toolDisallowlist }
+              : {}),
+          },
+        ],
+        ...(pendingInput.queryId ? { queryIds: [pendingInput.queryId] } : {}),
+        targetTurnId: options.activeTurn.turnId,
+      },
+      inputTraceContext,
+    );
+    await this.appendEvent(event, inputTraceContext);
+    options.events.push(event);
+    this.logger?.debug("Turn steer drained", {
+      ...traceContextToLogContext(inputTraceContext),
+      drainedCount: 1,
+      event: "turn.steer.drained",
+      injectedMessageIds: [messageId],
+      inputPreviews: [previewInput(pendingInput.input)],
+      inputSizes: [measureUtf8Bytes(pendingInput.input)],
+      module: "core.runtime",
+      pendingInputIds: [pendingInput.id],
+      queryIds: pendingInput.queryId ? [pendingInput.queryId] : undefined,
+      queuedDurationsMs: [drainedAt - pendingInput.queuedAt.getTime()],
+      status: "completed",
+      targetTurnId: options.activeTurn.turnId,
     });
   }
 
@@ -1267,41 +1535,20 @@ async function drainPendingInputUnlocked(
   const toolDisallowlist = [
     ...new Set(pendingInputs.flatMap((pendingInput) => pendingInput.toolDisallowlist ?? [])),
   ];
-  const event = this.createEvent(
-    SessionEventType.TurnSteerDrained,
-    {
-      injectedMessageIds: messageIds,
-      pendingInputIds,
-      drainedInputs,
-      ...(queryIds ? { queryIds } : {}),
-      targetTurnId: options.activeTurn.turnId,
-    },
-    drainTraceContext,
-  );
-  await this.appendEvent(event, drainTraceContext);
-  options.events.push(event);
-  this.logger?.debug("Turn steer drained", {
-    ...traceContextToLogContext(drainTraceContext),
-    drainedCount: pendingInputs.length,
-    event: "turn.steer.drained",
-    injectedMessageIds: messageIds,
-    inputPreviews,
-    inputSizes,
-    module: "core.runtime",
-    pendingInputIds,
-    queryIds,
-    queuedDurationsMs,
-    status: "completed",
-    targetTurnId: options.activeTurn.turnId,
-  });
+  // 同一边界取出多条时，最后一条带意图的输入决定下一 step 的模型、权限与 Plan。
+  const intent = pendingInputs.findLast((pendingInput) => pendingInput.intent)?.intent;
   return {
     injectedMessageIds: messageIds,
-    ...(pendingInput.intent ? { intent: pendingInput.intent } : {}),
+    ...(intent ? { intent } : {}),
+    pluginDiscoveryUi: pendingInputs.every(
+      (item) => item.intent?.[PLUGIN_DISCOVERY_INPUT] === true,
+    ),
     latestMessageId: messageIds.at(-1),
     pendingInputIds,
     queryIds,
     runtimeEntries,
     ...(toolDisallowlist.length > 0 ? { toolDisallowlist } : {}),
+    userSteered: pendingInputs.some(isUserSteer),
   };
 }
 

@@ -1,5 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { scopeConversationShareServiceForAttachment } from "@ccbuddy/services/node";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { hostname } from "node:os";
+import { resolveServerOsUser } from "@ccbuddy/shared/node";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
@@ -7,22 +9,34 @@ import type { WebSocket } from "ws";
 import type { WebSocketServer } from "ws";
 import {
   Emitter,
+  Event,
   VSBuffer,
   SocketProtocol,
   ChannelServer,
   ChannelClient,
   LoggingChannelServer,
   type ISocket,
+  type IChannel,
+  type CancellationToken,
 } from "@ccbuddy/rpc";
 import {
   createCCbuddyAgentConnectionScope,
+  IProviderProvisioningTargetService,
   ICCbuddyAgentService,
+  IConversationShareService,
   ServiceCollection,
 } from "@ccbuddy/services";
-import { createServiceLogger, type TopicResourcePeers } from "@ccbuddy/services/node";
+import {
+  createServiceLogger,
+  type TopicResourcePeers,
+  SourceServerWorkspaceIdentityChannelServer,
+  type SourceServerWorkspaceIdentityMapper,
+} from "@ccbuddy/services/node";
 import {
   SERVER_REMOTE_PROTOCOL_VERSION,
   TOPIC_RESOURCE_RELAY_CHANNEL,
+  serverRemoteInfoOutputSchema,
+  CCBUDDY_COMPATIBILITY_MANIFEST,
   CCBUDDY_RPC_HOST_CAPABILITY_HEADER,
   CCBUDDY_VERSION,
   type ServerRemoteInfo,
@@ -91,29 +105,88 @@ function exposeWebSocket(
   ws: WebSocket,
   services: ServiceCollection,
   clientMode: "desktop-continuous" | "web-remote-replayable",
+  workspaceIdentityMapper?: SourceServerWorkspaceIdentityMapper,
   resourcePeers?: TopicResourcePeers,
 ): void {
   const socket = wrapWebSocket(ws);
   const protocol = new SocketProtocol(socket);
   const rawServer = new ChannelServer(protocol, "server");
-  const server = new LoggingChannelServer(rawServer, (...args) => log.debug(undefined, ...args));
+  const loggedServer = new LoggingChannelServer(rawServer, (...args) =>
+    log.debug(undefined, ...args),
+  );
+  const server = workspaceIdentityMapper
+    ? new SourceServerWorkspaceIdentityChannelServer(loggedServer, workspaceIdentityMapper)
+    : loggedServer;
   const agentService = services.getOptional(ICCbuddyAgentService);
   const reverseClient =
     clientMode === "desktop-continuous" && resourcePeers ? new ChannelClient(protocol) : undefined;
-  const peer = reverseClient
-    ? resourcePeers?.attach(reverseClient.getChannel(TOPIC_RESOURCE_RELAY_CHANNEL))
-    : undefined;
+  const rawResourceChannel = reverseClient?.getChannel(TOPIC_RESOURCE_RELAY_CHANNEL);
+  // Source 内部 route 已 canonicalize；反向请求必须还原 Desktop 的 stable identity，
+  // 否则同一 attachment 会被 registry 判成跨工作区请求。
+  const resourceChannel: IChannel | undefined =
+    rawResourceChannel && workspaceIdentityMapper
+      ? {
+          async call<T>(command: string, args?: unknown, token?: CancellationToken) {
+            const result = await rawResourceChannel.call<T>(
+              command,
+              workspaceIdentityMapper.mapOutgoing(args),
+              token,
+            );
+            return workspaceIdentityMapper.mapIncoming(result);
+          },
+          listen<T>(event: string, args?: unknown) {
+            return Event.map(
+              rawResourceChannel.listen<T>(event, workspaceIdentityMapper.mapOutgoing(args)),
+              (value) => workspaceIdentityMapper.mapIncoming(value),
+            );
+          },
+        }
+      : rawResourceChannel;
+  const peer = resourceChannel ? resourcePeers?.attach(resourceChannel) : undefined;
+  const connectionContext = {
+    connectionId: `server-core-ws-${randomUUID()}`,
+    clientMode,
+    role:
+      clientMode === "desktop-continuous"
+        ? ("trusted-host-relay" as const)
+        : ("terminal-client" as const),
+  };
   const scope = agentService
-    ? createCCbuddyAgentConnectionScope(peer ? peer.wrapAgent(agentService) : agentService, {
-        connectionId: `server-core-ws-${randomUUID()}`,
-        clientMode,
-        role: clientMode === "desktop-continuous" ? "trusted-host-relay" : "terminal-client",
-      })
+    ? createCCbuddyAgentConnectionScope(
+        peer ? peer.wrapAgent(agentService) : agentService,
+        connectionContext,
+      )
     : undefined;
-  services.exposeOnChannelServer(
-    server,
-    scope ? new Map([[ICCbuddyAgentService.channelName, scope.service]]) : new Map(),
-  );
+  const overrides = new Map<string, unknown>();
+  if (scope) {
+    overrides.set(ICCbuddyAgentService.channelName, scope.service);
+  }
+  const shareService = services.getOptional(IConversationShareService);
+  if (shareService) {
+    overrides.set(
+      IConversationShareService.channelName,
+      scopeConversationShareServiceForAttachment(
+        shareService,
+        clientMode,
+        scope?.service,
+        connectionContext,
+      ),
+    );
+  }
+  // Provisioning envelope 携带跨 Environment 的 Personal 配置与凭据，只允许受信 Desktop Host
+  // 通过 /ws/host 下发；/ws 上的 Web / 手机 replayable 客户端即使知道频道名，也只能拿到抛错 stub，
+  // 不能把凭据写进本 Source Server。
+  if (
+    clientMode !== "desktop-continuous" &&
+    services.getOptional(IProviderProvisioningTargetService)
+  ) {
+    overrides.set(IProviderProvisioningTargetService.channelName, {
+      apply: async () => {
+        throw new Error("Provider Provisioning 仅支持受信 Desktop Host");
+      },
+    });
+  }
+  services.exposeOnChannelServer(server, overrides);
   socket.onClose(() => {
     peer?.dispose();
     reverseClient?.dispose();
@@ -128,7 +201,10 @@ export async function createCoreHttpServer(
     host?: string;
     port?: number;
     serverId?: string;
+    ingressToken?: string;
+    migrationFailedPathCount?: number;
     hostCapabilityStore?: HostCapabilityStore;
+    workspaceIdentityMapper?: SourceServerWorkspaceIdentityMapper;
     topicResourcePeers?: TopicResourcePeers;
   } = {},
 ): Promise<CoreHttpServer> {
@@ -141,27 +217,70 @@ export async function createCoreHttpServer(
       `Non-loopback host ${host} requires authentication before the server can listen`,
     );
   }
-  const info: ServerRemoteInfo = {
+  const ingressToken = options.ingressToken?.trim();
+  const info: ServerRemoteInfo = serverRemoteInfoOutputSchema.parse({
     serverId: options.serverId ?? hostname() ?? "ccbuddy-server",
     version: CCBUDDY_VERSION,
     protocolVersion: SERVER_REMOTE_PROTOCOL_VERSION,
-    authRequired: false,
+    authRequired: Boolean(ingressToken),
     workspaces: [],
+    compatibility: CCBUDDY_COMPATIBILITY_MANIFEST,
+    migration: { failedPathCount: options.migrationFailedPathCount ?? 0 },
+    identity: { osUser: resolveServerOsUser(), hostname: hostname() },
     capabilities: {
       desktopContinuous: true,
       websocketRpc: true,
+      virtualProjects: true,
       processResourceTelemetry: true,
+      remoteConversationTelemetry: true,
     },
-  };
+  });
   // 裸 Set 无法落实 expiresAt，未消费的 capability 会一直有效并持续累积。
   // 使用与 packages/server 兼容的 TTL 一次性 store，使有效期和消费语义与返回信息一致。
   const capabilities = options.hostCapabilityStore ?? createHostCapabilityStore();
+  app.use("*", async (context, next) => {
+    if (!ingressToken) {
+      await next();
+      return;
+    }
+    const authorization = context.req.header("authorization");
+    const bearerToken = authorization?.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : undefined;
+    const queryToken = new URL(context.req.url).searchParams.get("token")?.trim();
+    const candidate = bearerToken || queryToken;
+    const authenticated = candidate
+      ? (() => {
+          const expected = Buffer.from(ingressToken);
+          const received = Buffer.from(candidate);
+          return expected.length === received.length && timingSafeEqual(expected, received);
+        })()
+      : false;
+    if (authenticated) {
+      await next();
+      return;
+    }
+    if (context.req.path === "/api/server-info") {
+      return context.json({
+        version: info.version,
+        protocolVersion: info.protocolVersion,
+        authRequired: true,
+        compatibility: info.compatibility,
+      });
+    }
+    return context.json({ error: "Ingress authentication required" }, 401);
+  });
   app.get("/api/server-info", (context) => context.json(info));
   app.get(
     "/ws",
     upgradeWebSocket(() => ({
       onOpen(_event, socket) {
-        exposeWebSocket(socket.raw as WebSocket, services, "web-remote-replayable");
+        exposeWebSocket(
+          socket.raw as WebSocket,
+          services,
+          "web-remote-replayable",
+          options.workspaceIdentityMapper,
+        );
       },
     })),
   );
@@ -180,6 +299,7 @@ export async function createCoreHttpServer(
           socket.raw as WebSocket,
           services,
           "desktop-continuous",
+          options.workspaceIdentityMapper,
           options.topicResourcePeers,
         );
       },

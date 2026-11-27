@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-git-review-entry",
+  "spec": "./test/e2e/conversation-session/projects/conversation-session-git-review-entry.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-git-review-entry.json"
+  ],
+  "fileFixtures": [
+    {
+      "path": ".ccbuddy-e2e/conversation-session-git-review-entry/status-panel-review.txt",
+      "source": "created-by-spec",
+      "description": "beforeSession case setup 创建未跟踪文件，驱动 status panel Git Changes 入口和 unstaged review 数据。"
+    }
+  ],
+  "requests": [
+    {
+      "id": "git-turn-refresh",
+      "description": "整轮完成触发 Git 刷新",
+      "kind": "main",
+      "timingPolicy": "controlled-stream",
+      "source": "synthetic",
+      "syntheticReason": "在整轮完成前写入文件，验证完成事件立即刷新 Git，不依赖 watcher 60 秒防抖。"
+    }
+  ]
+}

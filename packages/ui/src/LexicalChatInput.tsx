@@ -29,11 +29,13 @@ import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import {
   $createParagraphNode,
+  $createRangeSelection,
   $createTextNode,
   $getSelection,
   $getNodeByKey,
   $setSelection,
   $getRoot,
+  $isElementNode,
   $isParagraphNode,
   $isRangeSelection,
   $isTextNode,
@@ -41,9 +43,17 @@ import {
   KEY_ARROW_UP_COMMAND,
   KEY_BACKSPACE_COMMAND,
   COMMAND_PRIORITY_HIGH,
+  COMMAND_PRIORITY_LOW,
+  CLEAR_HISTORY_COMMAND,
+  COMPOSITION_END_COMMAND,
+  COMPOSITION_START_COMMAND,
+  HISTORY_MERGE_TAG,
   KEY_ENTER_COMMAND,
   type EditorState,
   type LexicalEditor,
+  type NodeKey,
+  type PointType,
+  type TextNode,
 } from "lexical";
 import { SlashCommandPlugin } from "./SlashCommandPlugin.js";
 import type { AppSlashCommand } from "./slashCommandHelpers.js";
@@ -68,13 +78,29 @@ export interface ChatComposerPasteEvent {
   stopPropagation?: () => void;
 }
 
+export interface UserInputPresence {
+  raw: boolean;
+  trimmed: boolean;
+}
+
 export interface LexicalChatInputHandle {
   clear: () => void;
+  clearHistory: () => void;
   focus: () => void;
   getEditorState: () => EditorState;
   getMarkdown: () => string;
   getText: () => string;
   appendText: (text: string) => void;
+  /**
+   * 语音输入：用识别快照替换「语音文字」，首次在光标处插入（docs/chat/composer-voice-input.md）。
+   * 用户在语音文字末尾追加的文字保留在其后。preserveSelection 时不移动用户光标。
+   * 返回 false 表示语音文字本身已被用户改过，本次不写入。
+   */
+  setVoiceText: (text: string, options?: { preserveSelection?: boolean }) => boolean;
+  /** 语音输入开始：记录此刻的光标，用户在首个识别结果前接管时，最终文本插到这里 */
+  beginVoiceText: () => void;
+  /** 语音输入结束：remove 时删除语音文字（Escape），否则保留为普通文本 */
+  endVoiceText: (options: { remove: boolean }) => void;
   appendFileMention: (
     label: string,
     value: string,
@@ -444,6 +470,205 @@ function appendEditorPlainText(editor: LexicalEditor, text: string) {
   );
 }
 
+type VoicePoint = { key: NodeKey; offset: number; type: "text" | "element" };
+
+/** 录音开始点：坐标加上记录时开始点之前的内容，用来判断开始点是否仍然指向同一处 */
+type VoiceStartPoint = VoicePoint & { before: string };
+
+function $readVoicePoint(point: PointType): VoicePoint {
+  return { key: point.key, offset: point.offset, type: point.type };
+}
+
+/** 开始点之前的内容：文本节点取 offset 前的文字；元素节点取 offset 前子节点的 key 序列 */
+function $readContentBefore(point: VoicePoint): string | null {
+  const node = $getNodeByKey(point.key);
+  if (point.type === "text") {
+    return $isTextNode(node) ? node.getTextContent().slice(0, point.offset) : null;
+  }
+  return $isElementNode(node)
+    ? node
+        .getChildren()
+        .slice(0, point.offset)
+        .map((child) => child.getKey())
+        .join(",")
+    : null;
+}
+
+function $readVoiceStartPoint(point: PointType): VoiceStartPoint | null {
+  const value = $readVoicePoint(point);
+  const before = $readContentBefore(value);
+  return before === null ? null : { ...value, before };
+}
+
+/**
+ * 修复原因：只检查 offset 是否越界时，用户在开始点之前插入或删除文字后旧 offset 仍被当作有效，
+ * 语音文字会插进原有文字中间（E2E：「ab前缀」变成「ab你好世界前缀」）。
+ * 现在要求开始点之前的内容与记录时一致，开始点之后的改动（例如用户紧接着打字）不影响。
+ */
+function $isVoiceStartPointValid(point: VoiceStartPoint): boolean {
+  return $isVoicePointValid(point) && $readContentBefore(point) === point.before;
+}
+
+function $isVoicePointValid(point: VoicePoint): boolean {
+  const node = $getNodeByKey(point.key);
+  if (point.type === "text") return $isTextNode(node) && point.offset <= node.getTextContentSize();
+  return $isElementNode(node) && point.offset <= node.getChildrenSize();
+}
+
+/**
+ * 修复原因：用户在首个识别结果前就开始打字时，最终文本曾插在当前光标处并把光标移到其后，
+ * 打断用户正在输入的位置。这里插到录音开始时的位置（说话早于打字，顺序也正确），不移动光标。
+ * 录音开始点已失效（之前的内容被改过或节点已不存在）时追加到末尾。
+ */
+function $insertVoiceTextKeepingCaret(node: TextNode, startPoint: VoiceStartPoint | null) {
+  const selection = $getSelection();
+  const caret = $isRangeSelection(selection)
+    ? { anchor: $readVoicePoint(selection.anchor), focus: $readVoicePoint(selection.focus) }
+    : null;
+  const point = startPoint && $isVoiceStartPointValid(startPoint) ? startPoint : null;
+  if (point) {
+    const target = $createRangeSelection();
+    target.anchor.set(point.key, point.offset, point.type);
+    target.focus.set(point.key, point.offset, point.type);
+    // insertNodes 内部优先使用当前选区，必须先设为当前选区，否则会插到用户光标处。
+    $setSelection(target);
+    target.insertNodes([node]);
+  } else {
+    $getRoot().selectEnd().insertNodes([node]);
+  }
+  if (!caret) {
+    $setSelection(null);
+    return;
+  }
+  // 插入会在开始点拆开文本节点：落在拆分点之后的光标要移到拆出的后半节点。
+  const after = node.getNextSibling();
+  const remap = (value: VoicePoint): VoicePoint =>
+    point &&
+    point.type === "text" &&
+    value.type === "text" &&
+    value.key === point.key &&
+    value.offset > point.offset &&
+    $isTextNode(after)
+      ? { key: after.getKey(), offset: value.offset - point.offset, type: "text" }
+      : value;
+  const anchor = remap(caret.anchor);
+  const focus = remap(caret.focus);
+  const restored = $createRangeSelection();
+  restored.anchor.set(anchor.key, anchor.offset, anchor.type);
+  restored.focus.set(focus.key, focus.offset, focus.type);
+  $setSelection(restored);
+}
+
+/**
+ * 语音文字写入器。唯一数据源是这里记录的节点 key 和上次写入的文本。
+ *
+ * - 语音文字是不可合并的独立 TextNode：用户在它前面或别处输入的文字不会被并进来。
+ * - 光标在语音文字末尾时继续打字，Lexical 会把字符追加进同一个节点。所以写入时只认
+ *   「节点内容以上次写入的文本开头」：开头部分替换为新识别结果，用户追加的后缀原样保留。
+ *   开头部分被用户改过（例如在语音文字中间编辑）就拒绝写入，保留用户版本。
+ * - 普通写入把光标放到节点末尾；用户已接管输入（preserveSelection）时不移动光标，
+ *   只把落在节点内的光标按新旧长度差平移，避免最终结果写入时打断用户正在输入的位置。
+ * - 第一次写入单独成为一条撤销记录，之后的临时结果用 HISTORY_MERGE_TAG 并入这条记录；
+ *   用户接管后的最终结果单独成为一条记录，不与用户的输入合并。
+ */
+function createVoiceTextWriter(editor: LexicalEditor) {
+  let voice: { key: NodeKey; text: string } | null = null;
+  let startPoint: VoiceStartPoint | null = null;
+  /**
+   * 把语音文字（节点开头的 voice.text）替换为 text，用户追加在其后的后缀原样保留。
+   * 节点不存在或开头已被用户改过时返回 false，不改动编辑器。
+   * preserveSelection 时把落在节点内的光标按长度差平移；否则光标放到节点末尾。
+   */
+  const $replaceVoicePrefix = (text: string, preserveSelection: boolean): boolean => {
+    if (!voice) return false;
+    const node = $getNodeByKey(voice.key);
+    const current = $isTextNode(node) ? node.getTextContent() : null;
+    if (!$isTextNode(node) || current === null || !current.startsWith(voice.text)) return false;
+    const previousLength = voice.text.length;
+    const next = text + current.slice(previousLength);
+    if (!next) {
+      node.remove();
+      voice = null;
+      return true;
+    }
+    const selection = $getSelection();
+    const mapOffset = (offset: number) =>
+      offset >= previousLength
+        ? offset - previousLength + text.length
+        : Math.min(offset, text.length);
+    const anchor =
+      $isRangeSelection(selection) && selection.anchor.key === node.getKey()
+        ? mapOffset(selection.anchor.offset)
+        : null;
+    const focus =
+      $isRangeSelection(selection) && selection.focus.key === node.getKey()
+        ? mapOffset(selection.focus.offset)
+        : null;
+    node.setTextContent(next);
+    if (!preserveSelection) node.select();
+    else if ($isRangeSelection(selection)) {
+      if (anchor !== null) selection.anchor.set(node.getKey(), anchor, "text");
+      if (focus !== null) selection.focus.set(node.getKey(), focus, "text");
+    }
+    voice = { key: node.getKey(), text };
+    return true;
+  };
+  return {
+    beginVoiceText() {
+      startPoint = editor.getEditorState().read(() => {
+        const selection = $getSelection();
+        return $isRangeSelection(selection) ? $readVoiceStartPoint(selection.anchor) : null;
+      });
+    },
+    setVoiceText(text: string, options?: { preserveSelection?: boolean }): boolean {
+      const preserveSelection = options?.preserveSelection === true;
+      const tag =
+        voice && !preserveSelection
+          ? [PROGRAMMATIC_UPDATE_TAG, HISTORY_MERGE_TAG]
+          : [PROGRAMMATIC_UPDATE_TAG];
+      let accepted = true;
+      editor.update(
+        () => {
+          if (!voice) {
+            if (!text) return;
+            const created = $createTextNode(text).toggleUnmergeable();
+            if (preserveSelection) {
+              $insertVoiceTextKeepingCaret(created, startPoint);
+            } else {
+              let selection = $getSelection();
+              if (!$isRangeSelection(selection)) selection = $getRoot().selectEnd();
+              selection.insertNodes([created]);
+              created.select();
+            }
+            voice = { key: created.getKey(), text };
+            return;
+          }
+          accepted = $replaceVoicePrefix(text, preserveSelection);
+        },
+        { tag, discrete: true },
+      );
+      return accepted;
+    },
+    endVoiceText({ remove }: { remove: boolean }) {
+      if (!voice) return;
+      const key = voice.key;
+      editor.update(
+        () => {
+          // 修复原因：删除曾要求节点全文等于语音文字，用户在语音文字后追加输入（同一节点）再按
+          // Escape 时整段都没删（E2E：「前缀模拟临时abc」原样保留）。现在与写入一样按前缀判断：
+          // 只删语音文字、保留用户后缀和光标；前缀被用户改写时保留用户版本。
+          if (remove) $replaceVoicePrefix("", true);
+          // 无论是否删除，留下的节点都恢复为可合并的普通文本节点。
+          const node = $getNodeByKey(key);
+          if ($isTextNode(node) && node.isUnmergeable()) node.toggleUnmergeable();
+          voice = null;
+        },
+        { tag: [PROGRAMMATIC_UPDATE_TAG, HISTORY_MERGE_TAG], discrete: true },
+      );
+    },
+  };
+}
+
 function getPromptMentionIdAfterDomSelection(rootElement: HTMLElement): string | null {
   const selection = window.getSelection();
   if (!selection?.isCollapsed || !selection.anchorNode) {
@@ -803,6 +1028,40 @@ function KeyboardPlugin({
   return null;
 }
 
+export function shouldRecordUserInputStart(tags: ReadonlySet<string>): boolean {
+  return !tags.has(PROGRAMMATIC_UPDATE_TAG) && !tags.has(HISTORY_NAVIGATION_UPDATE_TAG);
+}
+
+interface TextContentPublicationState {
+  lastPublishedText: string;
+  pendingComposition: boolean;
+}
+
+export function resolveTextContentPublication(params: {
+  composing: boolean;
+  nextText: string;
+  state: TextContentPublicationState;
+}): { publish: string | null; state: TextContentPublicationState } {
+  if (params.composing) {
+    return {
+      publish: null,
+      state: { ...params.state, pendingComposition: true },
+    };
+  }
+  if (params.nextText === params.state.lastPublishedText) {
+    return {
+      publish: null,
+      state: params.state.pendingComposition
+        ? { ...params.state, pendingComposition: false }
+        : params.state,
+    };
+  }
+  return {
+    publish: params.nextText,
+    state: { lastPublishedText: params.nextText, pendingComposition: false },
+  };
+}
+
 /**
  * 文本变化插件
  *
@@ -812,9 +1071,15 @@ function KeyboardPlugin({
  */
 function TextContentPlugin({
   onChange,
+  onUserInputClear,
+  onUserInputPresenceChange,
+  onUserInputStart,
   taskId,
 }: {
   onChange?: (text: string) => void;
+  onUserInputClear?: () => void;
+  onUserInputPresenceChange?: (presence: UserInputPresence) => void;
+  onUserInputStart?: () => void;
   taskId?: string | null;
 }) {
   const [editor] = useLexicalComposerContext();
@@ -822,63 +1087,145 @@ function TextContentPlugin({
   // 是否已反映组合态存在时序不确定性,读不到 true 会把中文/日文长文本组合的高耗时误报成打字卡顿。
   // 改由 compositionstart/compositionend 事件自行维护,稳健可控。
   const composingRef = useRef(false);
+  const compositionEndFrameRef = useRef<number | null>(null);
+  const publicationRef = useRef<TextContentPublicationState | null>(null);
+  if (!publicationRef.current) {
+    publicationRef.current = {
+      lastPublishedText: getEditorMarkdown(editor.getEditorState()),
+      pendingComposition: false,
+    };
+  }
+
+  const publishEditorState = useCallback(() => {
+    if (!onChange || composingRef.current) return false;
+    const nextText = getEditorMarkdown(editor.getEditorState());
+    onUserInputPresenceChange?.({
+      raw: nextText.length > 0,
+      trimmed: nextText.trim().length > 0,
+    });
+    const publication = resolveTextContentPublication({
+      composing: false,
+      nextText,
+      state: publicationRef.current!,
+    });
+    publicationRef.current = publication.state;
+    if (publication.publish === null) return false;
+    onChange(publication.publish);
+    return true;
+  }, [editor, onChange, onUserInputPresenceChange]);
 
   useEffect(() => {
-    const handleCompositionStart = () => {
+    const startComposition = () => {
       composingRef.current = true;
+      publicationRef.current = {
+        ...publicationRef.current!,
+        pendingComposition: true,
+      };
+      if (compositionEndFrameRef.current !== null) {
+        cancelAnimationFrame(compositionEndFrameRef.current);
+        compositionEndFrameRef.current = null;
+      }
     };
-    const handleCompositionEnd = () => {
-      // compositionend 触发时组合刚结束,但「组合提交」这一拍的 update listener 通常在同一轮
-      // 任务里同步执行,若立即置 false,这次高耗时会被误判为打字卡顿。用 queueMicrotask 把置 false
-      // 延后到当前同步任务之后,确保组合提交那一拍仍按组合态短路,再恢复正常计入。
-      queueMicrotask(() => {
-        composingRef.current = false;
+    const finishComposition = () => {
+      composingRef.current = false;
+      if (compositionEndFrameRef.current !== null) {
+        cancelAnimationFrame(compositionEndFrameRef.current);
+      }
+      // Chrome 在 compositionend 前已处理 input；Firefox/Safari 可能在随后处理。
+      // 下一帧只作跨浏览器兜底；真实 update listener 先发布时这里会因正文相同 no-op。
+      compositionEndFrameRef.current = requestAnimationFrame(() => {
+        compositionEndFrameRef.current = null;
+        publishEditorState();
       });
     };
-
-    // root 会重挂,用 registerRootListener 在新旧 root 上正确解绑/绑定。
-    return editor.registerRootListener((rootElement, previousRootElement) => {
-      previousRootElement?.removeEventListener("compositionstart", handleCompositionStart);
-      previousRootElement?.removeEventListener("compositionend", handleCompositionEnd);
-      rootElement?.addEventListener("compositionstart", handleCompositionStart);
-      rootElement?.addEventListener("compositionend", handleCompositionEnd);
+    const unregisterStart = editor.registerCommand(
+      COMPOSITION_START_COMMAND,
+      () => {
+        startComposition();
+        return false;
+      },
+      COMMAND_PRIORITY_LOW,
+    );
+    const unregisterEnd = editor.registerCommand(
+      COMPOSITION_END_COMMAND,
+      () => {
+        finishComposition();
+        return false;
+      },
+      COMMAND_PRIORITY_LOW,
+    );
+    const unregisterRoot = editor.registerRootListener((rootElement, previousRootElement) => {
+      previousRootElement?.removeEventListener("compositionstart", startComposition);
+      previousRootElement?.removeEventListener("compositionend", finishComposition);
+      rootElement?.addEventListener("compositionstart", startComposition);
+      rootElement?.addEventListener("compositionend", finishComposition);
     });
-  }, [editor]);
+    return () => {
+      unregisterStart();
+      unregisterEnd();
+      unregisterRoot();
+      if (compositionEndFrameRef.current !== null) {
+        cancelAnimationFrame(compositionEndFrameRef.current);
+        compositionEndFrameRef.current = null;
+      }
+    };
+  }, [editor, publishEditorState]);
 
   useEffect(() => {
     if (!onChange) {
       return;
     }
 
-    return editor.registerUpdateListener(
-      ({ dirtyElements, dirtyLeaves, editorState, prevEditorState, tags }) => {
-        if (dirtyElements.size === 0 && dirtyLeaves.size === 0) {
-          return;
-        }
+    return editor.registerUpdateListener(({ dirtyElements, dirtyLeaves, editorState, tags }) => {
+      if (dirtyElements.size === 0 && dirtyLeaves.size === 0) {
+        return;
+      }
 
-        // 输入卡顿计时:包住「全量序列化 + onChange 同步重渲染」这段处理热点。
-        const startedAt = performance.now();
-
-        const nextText = getEditorMarkdown(editorState);
-        const previousText = getEditorMarkdown(prevEditorState);
-        if (nextText === previousText) {
-          return;
-        }
-
-        onChange(nextText);
-
-        const lagMs = performance.now() - startedAt;
-        // 程序化改写与 IME 组合态不算打字卡顿(判定在 recordInputLag 内统一短路)。
-        recordInputLag({
-          lagMs,
-          textLength: nextText.length,
-          isProgrammatic: tags.has(PROGRAMMATIC_UPDATE_TAG),
-          isComposing: composingRef.current,
-          taskId: taskId ?? undefined,
+      const userInputUpdate = shouldRecordUserInputStart(tags);
+      if (userInputUpdate) onUserInputStart?.();
+      // 候选正文仍留在 Lexical，但发送按钮沿用旧交互，只订阅有无正文的布尔量。
+      if (composingRef.current) {
+        editorState.read(() => {
+          const nextText = $getRoot().getTextContent();
+          onUserInputPresenceChange?.({
+            raw: nextText.length > 0,
+            trimmed: nextText.trim().length > 0,
+          });
         });
-      },
-    );
-  }, [editor, onChange, taskId]);
+        return;
+      }
+      // 输入卡顿计时：普通输入只序列化当前状态一次；IME 候选阶段完全留在 Lexical，
+      // compositionend 后的最终 update 才序列化并发布给 React 草稿 owner。
+      const startedAt = performance.now();
+      const nextText = getEditorMarkdown(editorState);
+      onUserInputPresenceChange?.({
+        raw: nextText.length > 0,
+        trimmed: nextText.trim().length > 0,
+      });
+      if (nextText.length === 0 && userInputUpdate) onUserInputClear?.();
+      const publicationState = publicationRef.current!;
+      const compositionCommit = publicationState.pendingComposition;
+      const publication = resolveTextContentPublication({
+        composing: composingRef.current,
+        nextText,
+        state: publicationState,
+      });
+      publicationRef.current = publication.state;
+      if (publication.publish === null) return;
+
+      onChange(publication.publish);
+
+      const lagMs = performance.now() - startedAt;
+      // 程序化改写与 IME 组合态不算打字卡顿(判定在 recordInputLag 内统一短路)。
+      recordInputLag({
+        lagMs,
+        textLength: nextText.length,
+        isProgrammatic: tags.has(PROGRAMMATIC_UPDATE_TAG),
+        isComposing: composingRef.current || compositionCommit,
+        taskId: taskId ?? undefined,
+      });
+    });
+  }, [editor, onChange, onUserInputClear, onUserInputPresenceChange, onUserInputStart, taskId]);
 
   return null;
 }
@@ -1268,8 +1615,12 @@ function EditorApiPlugin({
       return;
     }
 
+    const voiceText = createVoiceTextWriter(editor);
     editorApiRef.current = {
       clear: () => resetEditor(editor),
+      clearHistory: () => {
+        editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+      },
       focus: () => editor.focus(),
       getEditorState: () => editor.getEditorState(),
       getMarkdown: () => getEditorMarkdown(editor.getEditorState()),
@@ -1282,6 +1633,9 @@ function EditorApiPlugin({
         data?: MentionItemData,
         trailingText = " ",
       ) => appendEditorFileMention(editor, label, value, markdown, data, trailingText),
+      beginVoiceText: voiceText.beginVoiceText,
+      setVoiceText: voiceText.setVoiceText,
+      endVoiceText: voiceText.endVoiceText,
       insertMention: (mention, selectionState) =>
         insertEditorMention(editor, mention, selectionState),
       prependMentionIfMissing: (mention) => prependEditorMentionIfMissing(editor, mention),
@@ -1318,6 +1672,9 @@ interface LexicalChatInputProps {
   onSubmit: (text: string) => LexicalSubmitResult;
   onModifiedSubmit?: (text: string) => LexicalSubmitResult;
   onChange?: (text: string) => void;
+  onUserInputClear?: () => void;
+  onUserInputPresenceChange?: (presence: UserInputPresence) => void;
+  onUserInputStart?: () => void;
   onFocus?: () => void;
   triggerPanelContainer?: HTMLElement | null;
   workspacePath: string;
@@ -1337,6 +1694,8 @@ interface LexicalChatInputProps {
   appSlashCommands?: readonly AppSlashCommand[];
   /** mention（@/#）面板开关。v4 数据面未就绪时显式关闭，入口保留。 */
   enableMentionPanel?: boolean;
+  /** 调用方额外挂在同一个 LexicalComposer 里的插件（如设计模式元素 token 同步） */
+  extraPlugins?: React.ReactNode;
 }
 
 const EDITOR_THEME = {
@@ -1352,6 +1711,9 @@ export function LexicalChatInput({
   onSubmit,
   onModifiedSubmit,
   onChange,
+  onUserInputClear,
+  onUserInputPresenceChange,
+  onUserInputStart,
   onFocus,
   triggerPanelContainer,
   workspacePath,
@@ -1367,6 +1729,7 @@ export function LexicalChatInput({
   onPaste,
   excludedSlashCommandNames,
   appSlashCommands,
+  extraPlugins,
   enableMentionPanel = true,
 }: LexicalChatInputProps) {
   const inputMountedAtRef = useRef(Date.now());
@@ -1491,7 +1854,13 @@ export function LexicalChatInput({
           <PlainTextPlugin contentEditable={contentEditable} ErrorBoundary={LexicalErrorBoundary} />
           <HistoryPlugin />
           <PromptClipboardPlugin />
-          <TextContentPlugin onChange={onChange} taskId={taskId} />
+          <TextContentPlugin
+            onChange={onChange}
+            onUserInputClear={onUserInputClear}
+            onUserInputPresenceChange={onUserInputPresenceChange}
+            onUserInputStart={onUserInputStart}
+            taskId={taskId}
+          />
           <KeyboardPlugin
             onSubmit={handleSubmit}
             onModifiedSubmit={onModifiedSubmit}
@@ -1528,6 +1897,7 @@ export function LexicalChatInput({
             onWhiteboardMentionSelected={onWhiteboardMentionSelected}
           />
         ) : null}
+        {extraPlugins}
       </LexicalComposer>
     </div>
   );

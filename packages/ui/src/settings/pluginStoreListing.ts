@@ -1,12 +1,17 @@
 import type {
+  OAuthProviderId,
   PluginStoreModeOrder,
   CCbuddyAvailablePluginSummary,
   CCbuddyInstalledPluginSummary,
   CCbuddyPluginInfo,
   CCbuddyPluginMarketplaceSummary,
   CCbuddyPluginStoreListing,
+  CCbuddyPluginStoreRegion,
 } from "@ccbuddy/shared";
 import {
+  BIGMODEL_PROVIDER_ID,
+  ZAI_CN_PROVIDER_ID,
+  ZAI_PROVIDER_ID,
   sortPluginStoreEntries,
   compareDocumentPluginPriority,
   resolvePluginStoreCategory as resolveStoreCategory,
@@ -17,6 +22,7 @@ import {
   resolvePluginDisplayName,
   CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE_ID,
 } from "@ccbuddy/shared";
+import { isExtensionEngineCompatible } from "@ccbuddy/shared/extension-host";
 import { DEFAULT_MARKETPLACE_ID } from "@/settings/recommendedPlugins.js";
 import { pluginSearchMatches } from "@/settings/pluginSearch.js";
 
@@ -69,6 +75,27 @@ export interface StorePluginItem {
   installedMeta?: CCbuddyInstalledPluginSummary;
 }
 
+// 市场和右侧推荐共用按插件的忙碌判定，避免安装一个插件时禁用整个推荐列表。
+export function isItemBusy(
+  item: StorePluginItem,
+  actions: { activeOperations: ReadonlyArray<{ id: string }>; togglingPluginId: string | null },
+): boolean {
+  return (
+    actions.activeOperations.some(
+      (operation) => operation.id === `plugin:install:${item.name}@${item.marketplace}`,
+    ) ||
+    actions.activeOperations.some((operation) => operation.id === `plugin:restore:${item.id}`) ||
+    actions.activeOperations.some((operation) => operation.id === `plugin:uninstall:${item.id}`) ||
+    actions.activeOperations.some((operation) => operation.id === `plugin:update:${item.id}`) ||
+    actions.activeOperations.some(
+      (operation) => operation.id === `plugin:reset-config:${item.id}`,
+    ) ||
+    // 保存配置也是同插件写操作；漏掉它时恢复默认、更新可在保存期间被点击。
+    actions.activeOperations.some((operation) => operation.id === `plugin:configure:${item.id}`) ||
+    actions.togglingPluginId === item.id
+  );
+}
+
 export type PluginUpdateStatus = NonNullable<CCbuddyInstalledPluginSummary["updateStatus"]>;
 
 export function isPluginUpdatePending(
@@ -78,13 +105,84 @@ export function isPluginUpdatePending(
 }
 
 /**
+ * 目录里的这一版带扩展，且本 App 的插件 API 版本跑不了它（docs/plugins/plugin-publishing.md §3.2、§4.3）。
+ * 用扩展进程加载清单时的同一个判断；范围写法不认识时也算不兼容（新版 App 可能认识）。
+ * 没有扩展摘要（不带扩展，或旧 CLI 没给）时不挡，装上后由扩展进程判「版本不兼容」。
+ */
+export function isExtensionIncompatible(
+  listing: Pick<CCbuddyPluginStoreListing, "extensionSummary"> | undefined,
+): boolean {
+  const range = listing?.extensionSummary?.engines.ccbuddy;
+  return range !== undefined && !isExtensionEngineCompatible(range);
+}
+
+/** 未安装条目要先更新 CCbuddy 才能装。卡片、详情页按钮与 handleInstall 共用这一个判断。 */
+export function isStoreItemInstallBlocked(
+  item: Pick<StorePluginItem, "installed" | "restorable" | "listing">,
+): boolean {
+  return !item.installed && !item.restorable && isExtensionIncompatible(item.listing);
+}
+
+/**
+ * CLI 只按版本号报更新；目录最新版不兼容时 App 不提示更新（§4.3）。
+ * 已装插件的 listing 来自目录最新版条目，所以这里看的是最新版的扩展摘要。
+ */
+export function hasInstallableUpdate(
+  summary: Pick<CCbuddyInstalledPluginSummary, "updateStatus" | "listing"> | undefined,
+): boolean {
+  return isPluginUpdatePending(summary?.updateStatus) && !isExtensionIncompatible(summary?.listing);
+}
+
+/**
  * 孤立插件可能保留删除来源前的 updateStatus；若各入口只判断该缓存状态，
- * 详情页会在菜单已禁用更新时仍显示更新按钮。更新能力必须同时满足“来源存在”和“有更新”。
+ * 详情页会在菜单已禁用更新时仍显示更新按钮。更新能力必须同时满足“来源存在”和“有可装的更新”。
  */
 export function canUpdatePluginItem(
   item: Pick<StorePluginItem, "installedMeta" | "orphaned"> | null | undefined,
 ): boolean {
-  return Boolean(item && !item.orphaned && isPluginUpdatePending(item.installedMeta?.updateStatus));
+  return Boolean(item && !item.orphaned && hasInstallableUpdate(item.installedMeta));
+}
+
+/**
+ * 「全部更新」每轮读 store 判断是否仍需更新：updateStatus 要等 loadInto 结束才变 none，
+ * 行内更新已发出但未结束时只能靠 activeOperations 识别，否则同一插件会并发两次 plugins/update。
+ */
+export function needsPluginUpdate(
+  state: {
+    installedPlugins: readonly Pick<
+      CCbuddyInstalledPluginSummary,
+      "id" | "updateStatus" | "listing"
+    >[];
+    activeOperations: readonly { id: string }[];
+  },
+  pluginId: string,
+): boolean {
+  if (state.activeOperations.some((operation) => operation.id === `plugin:update:${pluginId}`)) {
+    return false;
+  }
+  return hasInstallableUpdate(state.installedPlugins.find((plugin) => plugin.id === pluginId));
+}
+
+/**
+ * 「全部更新」：逐个等待单插件更新，单个失败（含抛错）不中断后续插件。
+ * guard 读 store 当前状态：批量耗时较长，期间用户可能切换 Scope 或在行内先更新了某个插件。
+ * 上下文变化即中止，且不计入切换期间完成的那一个（runWorkspaceOperation 此时返回 false，但可能已落盘）。
+ */
+export async function updatePluginsSerially(
+  pluginIds: readonly string[],
+  update: (pluginId: string) => Promise<boolean>,
+  guard: { isCurrent: () => boolean; needsUpdate: (pluginId: string) => boolean },
+): Promise<{ succeeded: string[]; failed: string[]; aborted: boolean }> {
+  const succeeded: string[] = [];
+  const failed: string[] = [];
+  for (const pluginId of pluginIds) {
+    if (!guard.isCurrent()) return { succeeded, failed, aborted: true };
+    if (!guard.needsUpdate(pluginId)) continue;
+    const ok = await update(pluginId).catch(() => false);
+    if (!guard.isCurrent()) return { succeeded, failed, aborted: true };
+    (ok ? succeeded : failed).push(pluginId);
+  }
+  return { succeeded, failed, aborted: false };
 }
 
 export function resolveLocalizedList(
@@ -151,6 +249,21 @@ export {
 export interface StoreCategoryGroup {
   category: string;
   items: StorePluginItem[];
+}
+
+export type PluginStoreSegment = "public" | "community" | "personal";
+
+export function resolvePluginStoreSegment(item: StorePluginItem): PluginStoreSegment {
+  if (!isPublicStoreMarketplaceId(item.marketplace)) return "personal";
+  return item.listing?.publisherType === "community" ? "community" : "public";
+}
+
+export function isUiPluginItem(item: StorePluginItem): boolean {
+  // 已安装清单优先于目录宣传；禁用仍保留经过校验的 surface 元数据。
+  if (item.info) return Boolean(item.info.uiSurfaces?.length);
+  return Boolean(
+    (item.installedMeta?.componentTypes ?? item.summary?.componentTypes)?.includes("ui"),
+  );
 }
 
 /** 个人分段的市场分组：marketplace 是排序键，title 是展示名。 */
@@ -302,6 +415,47 @@ export function buildStoreItems(input: {
     });
   }
   return [...items.values()];
+}
+
+/**
+ * 插件商店的登录区域（docs/plugin-marketplace-ui-ux.md「按登录区域定向展示」）。
+ * - `cn` / `global`：已知区域，按条目 regions 过滤。
+ * - `none`：确认未登录或其他渠道，不过滤。
+ * - `unknown`：登录信息读取中或读取失败，隐藏带 regions 的条目。
+ */
+export type PluginLoginRegion = CCbuddyPluginStoreRegion | "none" | "unknown";
+
+/**
+ * 从 useOAuth 的读取状态派生商店区域。`zai` 是海外入口；`zai_cn` 是国内入口，旧渠道 `bigmodel` 也算国内。
+ *
+ * Bug 根因：activeProvider 初值是 null，读回前和读取失败时也是 null；早期实现把这些 null 都当成
+ * 未登录不过滤，首屏和读取失败时定向插件会闪出，营销跳转也可能打开被隐藏插件的详情。
+ * 修法：读取中或读取失败返回 unknown，只有读取成功且为 null 才算确认未登录（none）。
+ */
+export function resolvePluginLoginRegion(input: {
+  activeProvider: OAuthProviderId | null;
+  loading: boolean;
+  readFailed: boolean;
+}): PluginLoginRegion {
+  if (input.loading || input.readFailed) return "unknown";
+  if (input.activeProvider === ZAI_PROVIDER_ID) return "global";
+  if (input.activeProvider === ZAI_CN_PROVIDER_ID || input.activeProvider === BIGMODEL_PROVIDER_ID)
+    return "cn";
+  return "none";
+}
+
+/**
+ * 商店浏览列表是否显示该条目。已安装的插件（installed 或有运行时 info）始终显示，避免已装插件从商店里消失；
+ * 条目没声明 regions 时都显示；区域为 none 时不过滤；区域未知时不能断定条目属于本区域，隐藏带 regions 的条目。
+ */
+export function isPluginVisibleForLoginRegion(
+  item: Pick<StorePluginItem, "installed" | "info" | "listing">,
+  region: PluginLoginRegion,
+): boolean {
+  if (item.installed || item.info) return true;
+  const regions = item.listing?.regions;
+  if (!regions || region === "none") return true;
+  return region !== "unknown" && regions.includes(region);
 }
 
 /** 公开分段：Featured（CDN featured 名单按序）+ 分类聚合（无分类归 other，排最后）。 */

@@ -2,6 +2,7 @@ import type { IPlatformService } from "@ccbuddy/shared";
 
 type DesktopBrowserPlatformBridge = Pick<
   IPlatformService,
+  | "onBrowserViewDownloadStarted"
   | "onBrowserViewReady"
   | "onBrowserViewOperation"
   | "onBrowserViewViewportChanged"
@@ -9,10 +10,12 @@ type DesktopBrowserPlatformBridge = Pick<
   | "onBrowserViewCloseTab"
   | "onBrowserViewSuspend"
   | "onBrowserViewRestore"
+  | "browserViewLoadUrl"
   | "browserViewAttachGuest"
   | "browserViewDetachGuest"
   | "browserViewCloseTab"
   | "browserViewReportResidency"
+  | "browserViewPromoteDraftTabs"
   | "browserViewSuspendReady"
   | "browserViewEnsureResident"
   | "browserViewRestoreTabs"
@@ -22,6 +25,8 @@ type DesktopBrowserPlatformBridge = Pick<
   | "getPathForFile"
   | "saveFile"
   | "printPageToPdf"
+  | "microphone"
+  | "captureBrowserGuestPage"
 >;
 
 // Rebase 集成：browser bridge 若继续内联在 renderer 入口，会让入口越过 max-lines 门禁。
@@ -35,6 +40,22 @@ export const desktopBrowserPlatformBridge = {
   printPageToPdf: window.ccbuddy.printPageToPdf
     ? () => window.ccbuddy.printPageToPdf!()
     : undefined,
+  // 与 printPageToPdf 一样按 preload 是否提供决定能力是否存在，UI 据此决定是否显示语音输入。
+  microphone:
+    window.ccbuddy.ensureMicrophoneAccess &&
+    window.ccbuddy.resetMicrophoneAccess &&
+    window.ccbuddy.openMicrophoneSettings
+      ? {
+          ensureAccess: () => window.ccbuddy.ensureMicrophoneAccess!(),
+          resetAccess: () => window.ccbuddy.resetMicrophoneAccess!(),
+          openSettings: (target) => window.ccbuddy.openMicrophoneSettings!(target),
+        }
+      : undefined,
+  onBrowserViewDownloadStarted: (handler) =>
+    window.ccbuddy.onBrowserViewDownloadStarted?.(handler) ?? (() => {}),
+  captureBrowserGuestPage: window.ccbuddy.captureBrowserGuestPage
+    ? (payload) => window.ccbuddy.captureBrowserGuestPage!(payload)
+    : undefined,
   onBrowserViewReady: (handler) => window.ccbuddy.onBrowserViewReady?.(handler) ?? (() => {}),
   onBrowserViewOperation: (handler) =>
     window.ccbuddy.onBrowserViewOperation?.(handler) ?? (() => {}),
@@ -45,6 +66,7 @@ export const desktopBrowserPlatformBridge = {
   onBrowserViewCloseTab: (handler) => window.ccbuddy.onBrowserViewCloseTab?.(handler) ?? (() => {}),
   onBrowserViewSuspend: (handler) => window.ccbuddy.onBrowserViewSuspend?.(handler) ?? (() => {}),
   onBrowserViewRestore: (handler) => window.ccbuddy.onBrowserViewRestore?.(handler) ?? (() => {}),
+  browserViewLoadUrl: (payload) => window.ccbuddy.browserViewLoadUrl!(payload),
   browserViewAttachGuest: (payload) =>
     window.ccbuddy.browserViewAttachGuest?.(payload) ??
     Promise.resolve({ ok: false, reason: "not-found", recoveryRequested: false }),
@@ -54,6 +76,8 @@ export const desktopBrowserPlatformBridge = {
     window.ccbuddy.browserViewCloseTab?.(payload) ?? Promise.resolve(),
   browserViewReportResidency: (payload) =>
     window.ccbuddy.browserViewReportResidency?.(payload) ?? Promise.resolve(),
+  browserViewPromoteDraftTabs: (payload) =>
+    window.ccbuddy.browserViewPromoteDraftTabs?.(payload) ?? Promise.resolve([]),
   browserViewSuspendReady: (payload) =>
     window.ccbuddy.browserViewSuspendReady?.(payload) ?? Promise.resolve(),
   browserViewEnsureResident: (payload) =>

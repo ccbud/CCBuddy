@@ -7,6 +7,7 @@ import {
   installPluginSandboxProtocol,
   parsePluginSandboxUrl,
   type PluginSandboxAssetSource,
+  type PluginSandboxInitialTheme,
 } from "./protocol.js";
 
 const preparedSessions = new WeakSet<Session>();
@@ -14,7 +15,7 @@ const preparedSessions = new WeakSet<Session>();
 /**
  * 每个可信 App 身份一个持久 partition（多个沙箱共享）。首次使用时把 partition session 锁死：
  * 装 protocol handler、权限交给闸门（未声明一律拒绝）、阻止下载、代理 direct。
- * desktopNetworkPolicy 只覆盖 defaultSession 与 embedded-browser partition，沙箱 session 必须自己设。
+ * desktopNetworkPolicy 覆盖 defaultSession、auto-updater 与 embedded-browser partition，沙箱 session 必须自己设。
  */
 export function preparePluginSandboxSession(input: {
   session: Session;
@@ -22,6 +23,8 @@ export function preparePluginSandboxSession(input: {
   assets: PluginSandboxAssetSource;
   /** 缺省（单测 / 未装闸门）时拒绝全部权限。 */
   permissions?: PluginSandboxPermissionGate;
+  /** 透传给 protocol handler：下发插件文档时预置的应用主题。 */
+  resolveInitialTheme?: () => PluginSandboxInitialTheme;
   logger?: { warn: (...args: unknown[]) => void; info?: (...args: unknown[]) => void };
 }): void {
   const { session } = input;
@@ -34,6 +37,7 @@ export function preparePluginSandboxSession(input: {
       registry: input.registry,
       assets: input.assets,
       vendorResources,
+      ...(input.resolveInitialTheme ? { resolveInitialTheme: input.resolveInitialTheme } : {}),
       ...(input.logger ? { logger: input.logger } : {}),
     }),
   );

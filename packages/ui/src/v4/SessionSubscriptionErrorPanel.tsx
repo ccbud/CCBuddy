@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { TID_V4_RETRY_SUBSCRIBE } from "@ccbuddy/shared";
+import { TID_V4_RETRY_SUBSCRIBE } from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import { toast } from "@/components/ui/toast.js";
 import { useFeedbackStore } from "@/feedback/feedbackStore.js";
@@ -11,6 +11,7 @@ export interface SessionSubscriptionErrorPanelProps {
   sessionId: string;
   workspacePath: string;
   onReconnect: () => void;
+  reconnectLabel?: string;
 }
 
 export function SessionSubscriptionErrorPanel({
@@ -18,6 +19,7 @@ export function SessionSubscriptionErrorPanel({
   sessionId,
   workspacePath,
   onReconnect,
+  reconnectLabel,
 }: SessionSubscriptionErrorPanelProps) {
   const { intl } = useCCbuddyIntl();
   const openFeedbackSubmit = useFeedbackStore((state) => state.openSubmit);
@@ -54,7 +56,7 @@ export function SessionSubscriptionErrorPanel({
           {intl.formatMessage({ id: "chat.error.feedback" })}
         </Button>
         <Button type="button" data-testid={TID_V4_RETRY_SUBSCRIBE} onClick={onReconnect}>
-          {intl.formatMessage({ id: "workspaceSidebar.reconnect" })}
+          {reconnectLabel ?? intl.formatMessage({ id: "workspaceSidebar.reconnect" })}
         </Button>
       </div>
     </div>

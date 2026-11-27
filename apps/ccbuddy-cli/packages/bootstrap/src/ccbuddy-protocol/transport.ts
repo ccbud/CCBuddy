@@ -12,6 +12,7 @@ import {
   ccbuddyProtocolMethods,
   ccbuddyProtocolNotifications,
 } from "@ccbuddy/shared";
+import { V4_METHODS } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import type { Logger } from "@ccbuddy/contracts";
 
 type CCbuddyProtocolOutgoingMessage =
@@ -25,6 +26,30 @@ type CCbuddyProtocolMessageHandler = (
 ) => Promise<CCbuddyProtocolOutgoingMessage | undefined>;
 
 const PROTOCOL_EOF_DRAIN_MS = 100;
+// 生命周期由 session owner 自己串行化。若排在长请求后，查询看不到 starting/stopping，
+// 不同 session 的启动也会被整个 workspace 的队列锁住。
+const SESSION_LIFECYCLE_CONCURRENT_METHODS = new Set<string>([
+  // V4 的 admission/恢复已有 session owner；全连接串行会让 A 的初始化堵住 B 的停止与订阅。
+  V4_METHODS.command,
+  V4_METHODS.conversationSubscribe,
+  V4_METHODS.commandsQuery,
+  ccbuddyProtocolMethods.sessionLifecycleGetState,
+  ccbuddyProtocolMethods.sessionLifecycleEnsureReady,
+  ccbuddyProtocolMethods.sessionLifecycleStop,
+  ccbuddyProtocolMethods.sessionLifecycleRestart,
+]);
+// 插件读请求收到即处理，不排在安装/更新之后。describe 写 manifest 的分支自带 storage lock；
+// list/overview 是同步 handler，执行中不让出事件循环，seed 只在内容变化时写盘，
+// 不会与安装跨 await 的读改写交错。
+const PLUGIN_READ_IMMEDIATE_METHODS = new Set<string>([
+  ccbuddyProtocolMethods.pluginsDescribe,
+  ccbuddyProtocolMethods.pluginsList,
+  ccbuddyProtocolMethods.pluginsOverview,
+  // 扩展 settings.get 的只读查询；排在安装之后会让扩展激活等待整个安装。
+  ccbuddyProtocolMethods.pluginsReadUserOptions,
+  // `@` 面板候选项按键触发、只读；排队会让候选项落后于输入。
+  ccbuddyProtocolMethods.pluginsMentionItems,
+]);
 // MCP App 的请求由实例凭证和 callId 隔离；若与普通命令一起等待完成，
 // uiCallTool 会挡住自己的 cancel/close，真实 stdio 链路将死锁。
 const MCP_APP_CONCURRENT_METHODS = new Set<string>([
@@ -67,6 +92,7 @@ interface CCbuddyProtocolNdjsonConnectionOptions {
 export class CCbuddyProtocolNdjsonConnection {
   private buffer = "";
   private processing: Promise<void> = Promise.resolve();
+  private readonly presentationReads = new Set<Promise<void>>();
   private lastQueuedMessageStarted: Promise<void> = Promise.resolve();
   private readonly closedPromise: Promise<void>;
   private resolveClosed!: () => void;
@@ -140,7 +166,7 @@ export class CCbuddyProtocolNdjsonConnection {
     this.notifyTransportClosed(new Error("CCbuddy Protocol client connection closed"));
     // EOF 保留短请求半关闭响应，但挂起 handler 不能让进程永久保活。
     this.drainTimer = setTimeout(() => this.finish(), PROTOCOL_EOF_DRAIN_MS);
-    void this.processing.then(
+    void Promise.all([this.processing, ...this.presentationReads]).then(
       () => this.finish(),
       (error: Error) => this.fail(error),
     );
@@ -216,6 +242,20 @@ export class CCbuddyProtocolNdjsonConnection {
       });
       return;
     }
+    if (
+      "id" in message &&
+      "method" in message &&
+      (PLUGIN_READ_IMMEDIATE_METHODS.has(message.method) ||
+        SESSION_LIFECYCLE_CONCURRENT_METHODS.has(message.method))
+    ) {
+      // Bugfix：插件详情与列表曾排在串行队列里，安装 A 下载期间打开详情卡在组件 loading，
+      // 新建右侧标签页（新 store 首次加载 list/overview）卡在骨架屏。读请求不依赖前序请求的
+      // 执行结果，因此也不等 lastQueuedMessageStarted：否则 B 排在 A 后面时仍要等到 A 完成。
+      void this.handleMessage(message).catch((error: unknown) => {
+        this.fail(error instanceof Error ? error : new Error(String(error)));
+      });
+      return;
+    }
     if (this.shouldBypassProcessingQueue(message)) {
       // 停止/取消控制必须等它前面的普通请求真正进入 handler、建立 abort
       // controller，再越过该请求的异步执行；只延后一轮微任务会让控制请求提前成为空操作。
@@ -224,6 +264,25 @@ export class CCbuddyProtocolNdjsonConnection {
         .catch((error: unknown) => {
           this.fail(error instanceof Error ? error : new Error(String(error)));
         });
+      return;
+    }
+    if (
+      "id" in message &&
+      "method" in message &&
+      message.method === ccbuddyProtocolMethods.workspaceReadPresentation
+    ) {
+      // 根因：命令目录的插件发现占住普通队列，后续 Provider 刷新及依赖它的历史订阅一起等待。
+      // 读取仍等待已接收的前序配置更新完成，但其完成不再阻塞后续请求；Provider FIFO 不变。
+      // 在途集合只用于 EOF 排空，终止后的待执行/迟到读取由 handleMessage 的 terminal 检查拦截。
+      const reading = this.processing.then(() => this.handleMessage(message));
+      this.presentationReads.add(reading);
+      void reading.then(
+        () => this.presentationReads.delete(reading),
+        (error: unknown) => {
+          this.presentationReads.delete(reading);
+          this.fail(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
       return;
     }
     let markStarted!: () => void;

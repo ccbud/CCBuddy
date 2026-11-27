@@ -10,6 +10,7 @@ import {
 import type { TraceContext } from "../deps.js";
 import {
   cloneRuntimeMessageEntry,
+  isContextPrefixEntry,
   isRuntimeAttachmentEntry,
   type RuntimeMessageEntry,
 } from "../../agent/message-history.js";
@@ -141,11 +142,12 @@ export function selectCompactEntriesForInitialPromptTooLong(input: {
 export function getRuntimeEntriesToSummarize(
   entries: readonly RuntimeMessageEntry[],
 ): RuntimeMessageEntry[] {
-  return entries.filter((entry) => !isRuntimeContextPrefixEntry(entry)).map(cloneRuntimeEntry);
+  return entries.filter((entry) => !isContextPrefixEntry(entry)).map(cloneRuntimeEntry);
 }
 
 export function hasEnoughRuntimeEntriesToCompact(entries: readonly RuntimeMessageEntry[]): boolean {
-  const entriesToSummarize = getRuntimeEntriesToSummarize(entries);
+  // 只读判断，不拷贝条目：auto compact 每个模型步都会调用；分组和角色判断都不改条目，结果只有布尔值。
+  const entriesToSummarize = entries.filter((entry) => !isContextPrefixEntry(entry));
   return (
     groupRuntimeEntriesByCompactRound(entriesToSummarize).length >= 2 &&
     entriesToSummarize.some((entry) => runtimeEntryRole(entry) === "assistant")
@@ -283,7 +285,7 @@ function truncateRuntimeEntriesForCompactRetry(
 ): RuntimeMessageEntry[] | null {
   const prefix: RuntimeMessageEntry[] = [];
   let index = 0;
-  while (index < entries.length && isRuntimeContextPrefixEntry(entries[index]!)) {
+  while (index < entries.length && isContextPrefixEntry(entries[index]!)) {
     prefix.push(cloneRuntimeEntry(entries[index]!));
     index += 1;
   }
@@ -334,20 +336,6 @@ function truncateRuntimeEntriesForCompactRetry(
   ];
 }
 
-function isRuntimeContextPrefixEntry(entry: RuntimeMessageEntry): boolean {
-  if (isRuntimeAttachmentEntry(entry)) {
-    return entry.metadata.source === "context_prefix" || entry.metadata.source === "skills_listing";
-  }
-  if (entry.message.role === "system") return true;
-  if (entry.message.role !== "user") return false;
-  if (entry.metadata) {
-    return entry.metadata.source === "context_prefix" || entry.metadata.source === "skills_listing";
-  }
-  return modelMessageContentToText(entry.message.content)
-    .trimStart()
-    .startsWith("<system-reminder>");
-}
-
 function isCompactPromptTooLongRetryMarker(entry: RuntimeMessageEntry): boolean {
   if (isRuntimeAttachmentEntry(entry)) return false;
   return (
@@ -359,7 +347,13 @@ function isCompactPromptTooLongRetryMarker(entry: RuntimeMessageEntry): boolean 
 function groupRuntimeEntriesByCompactRound(
   entries: readonly RuntimeMessageEntry[],
 ): RuntimeMessageEntry[][] {
-  return groupByAssistantStartedRounds(entries, runtimeEntryRole);
+  // 服务端内置工具把一条持久化 assistant 拆成多条 runtime assistant；共用 compactGroupKey 的
+  // 必须算作一组，否则保留组数与 selectPersistedCompactTail 按数据库消息算出的边界不一致。
+  return groupByAssistantStartedRounds(entries, runtimeEntryRole, runtimeEntryCompactGroupKey);
+}
+
+function runtimeEntryCompactGroupKey(entry: RuntimeMessageEntry): string | undefined {
+  return isRuntimeAttachmentEntry(entry) ? undefined : entry.compactGroupKey;
 }
 
 function positiveInt(value: number | undefined): number | undefined {

@@ -71,13 +71,15 @@ export async function startProcessProviderRegistryRuntime(
               "ccbuddy-builtin-refresh.json",
             ),
             resolveEndpointKey: () => resolveRuntimeCCbuddyEndpointOrigin(env),
-            fetchRelease: (endpointOrigin, signal) =>
+            fetchRelease: (endpointOrigin, signal, { reuseUrl }) =>
               downloadCCbuddyBuiltinRelease({
                 endpointOrigin,
                 signal,
                 appVersion: CCBUDDY_VERSION,
                 platform: resolveCCbuddyBuiltinClientPlatform(),
                 request: options.standalone?.request ?? globalThis.fetch,
+                resolveCCbuddyJwtToken: () => credentialStore?.load("ccbuddyjwttoken"),
+                ...(reuseUrl ? { reuseUrl } : {}),
               }),
             onRefreshResult: options.standalone?.onBuiltinRefreshResult,
           },

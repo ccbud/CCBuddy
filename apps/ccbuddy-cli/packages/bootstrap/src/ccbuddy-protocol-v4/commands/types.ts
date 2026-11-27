@@ -12,7 +12,11 @@ import type {
   StableForkGoalBoundaryMetadata,
   TraceContext,
 } from "@ccbuddy/contracts";
-import type { DynamicWorkflowMode, CCbuddyAutomationBotDeliveryTarget } from "@ccbuddy/shared";
+import type {
+  DynamicWorkflowMode,
+  ModelSelection,
+  CCbuddyAutomationBotDeliveryTarget,
+} from "@ccbuddy/shared";
 import type {
   CommandAck,
   CommandEnvelope,
@@ -39,11 +43,17 @@ export interface V4CommandLogger {
 
 export type V4QueueItemCommand = QueueItem;
 
+/** 单轮执行材料的协议原形。 */
+export type V4TurnExecution = NonNullable<CommandPayloadMap["sendText"]["modelExecution"]>;
+
 /**
- * 队列项的单轮执行材料（协议原形）。加速卡的 Selection 已随 QueueItem.modelSelection
- * 进入投影，这里只暂存不可投影的动态凭据，提升时再冻结成 ModelExecutionContext。
+ * Highspeed 队列项的临时执行包。QueueItem.modelSelection 只保存普通提交模型；
+ * 加速 Selection 必须与动态凭据一起驻留内存，提升时再冻结进本轮。
  */
-export type V4QueuedTurnExecution = NonNullable<CommandPayloadMap["sendText"]["modelExecution"]>;
+export interface V4QueuedTurnExecution {
+  modelSelection: NonNullable<CommandPayloadMap["sendText"]["modelSelection"]>;
+  modelExecution: V4TurnExecution;
+}
 
 export type V4StableForkTargetResolution =
   | {
@@ -59,6 +69,8 @@ export type V4StableForkTargetResolution =
  */
 export interface V4SessionRecordView {
   app: CCbuddyApp;
+  /** 冷恢复保留的 Session 原选择；运行绑定暂不可用时仍保留，显式选模后由 owner 清除。 */
+  restoredModelSelection?: ModelSelection;
   /**
    * 会话根 traceContext（traceId 位于 sessionId 之上，对应整条任务链）。
    * 命令层调 runtime 方法/补发 core 事件时透传沿用，不得中途另起 trace。
@@ -96,6 +108,8 @@ export interface V4CommandCoreHost {
   /** guide eligibility：只阻止已有 ordinary queue；已有 guide 仍允许继续按 FIFO admission。 */
   hasQueuedDelivery?(sessionId: string, delivery: "guide" | "queue"): boolean;
   getQueueLength?(sessionId: string): number;
+  /** 队首正被 composer 编辑态冻结（投影 queue.items[0].editLock）。 */
+  isQueueHeadEditLocked?(sessionId: string): boolean;
   /** Highspeed queue 的执行材料含凭据，只允许驻留内存，禁止进入 queue event/snapshot。 */
   retainQueuedTurnExecution?(
     sessionId: string,
@@ -234,12 +248,6 @@ export interface V4CommandCoreHost {
 
   // ── 过渡期钩子（legacy 兼容窗口）─────────────────────────
   /**
-   * turn 开跑前的模型就绪检查（凭据/catalog 解析）。
-   * 现由旧协议 binder 实现（ensureSessionModelAvailableForNextTurn）；
-   * 归宿：core app 层自持模型解析后，由其取代本钩子。
-   */
-  ensureModelReady?(record: V4SessionRecordView): Promise<void>;
-  /**
    * 切模型前由 Agent 进程 Registry 校验目标 Provider。普通模型命令只携带 Selection，
    * 因此这里不能接收或安装 Host 运行快照。
    */
@@ -254,11 +262,11 @@ export interface V4CommandCoreHost {
    */
   afterLegacyStateMutation?(record: V4SessionRecordView, reason: string): Promise<void>;
   /**
-   * 会话关闭（deleteSession 的执行面：退订事件 → app.close → 注册表摘除 → gateway 清通道）。
+   * 会话删除（deleteSession 的执行面：软删除持久化 → 退订事件 → app.close → 注册表摘除 →
+   * gateway 清通道）。
    * 过渡形态：会话注册表现归旧协议宿主，binder 内联实现（顺序对齐旧 closeSession op，
    * 见 ccbuddy-protocol/server-operations.ts）；v4 自持会话注册表后收编为原生实现。
    */
-  closeSession?(sessionId: string): Promise<void>;
   deleteSession?(sessionId: string): Promise<void>;
   /**
    * 会话记录创建（createSession 的执行面：record 建立/事件接线/模型 catalog 同步/
@@ -270,6 +278,8 @@ export interface V4CommandCoreHost {
     sessionId?: string;
     additionalDirectories?: string[];
     workspaceId: string;
+    /** 会话 cwd 与 workspace 不同（受管 worktree）；只允许本地 workspace。 */
+    cwd?: string;
     permissionScope?: "session";
     mcpServers?: CommandPayloadMap["createSession"]["mcpServers"];
     /** host 判定的 Off-Peak 工具面门禁；缺省不注册工具。 */
@@ -301,6 +311,8 @@ export interface V4CommandCoreHost {
       goalBoundary: StableForkGoalBoundaryMetadata;
       sourceCommandId: string;
       revisionAtDecision: number;
+      /** 协议原样透传；校验（仅本地）与项目身份派生由宿主负责。 */
+      targetCwd?: CommandPayloadMap["forkAssistant"]["targetCwd"];
     },
   ): Promise<{ forkedSessionId: string }>;
   /** @deprecated 仅旧宿主结构兼容；新 editUserQuery 永不调用，显式 forkAssistant 不受影响。 */

@@ -13,6 +13,21 @@ export interface CCbuddyAgentWorkspaceTarget {
   remoteSessionId?: string;
 }
 
+export interface CCbuddyAgentPluginMutationTarget extends CCbuddyAgentWorkspaceTarget {
+  /** 仅 Host 观测使用；不会传给 CLI。 */
+  telemetry?: {
+    entry?:
+      | "store_list"
+      | "store_detail"
+      | "side_pane_market"
+      | "recommended_prompt"
+      | "recommended_ui"
+      | "component_settings";
+    client_kind?: "desktop" | "mobile";
+    trigger?: "user" | "automatic" | "dependency" | "restore" | "sync";
+  };
+}
+
 export interface CCbuddyAgentPluginViewParams extends CCbuddyAgentWorkspaceTarget {
   configScope?: "user" | "workspace";
 }
@@ -22,22 +37,22 @@ export interface CCbuddyAgentListMcpServerStatusesParams extends CCbuddyAgentWor
   mode?: CCbuddyMcpListMode;
 }
 
-export interface CCbuddyAgentAddPluginMarketplaceParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentAddPluginMarketplaceParams extends CCbuddyAgentPluginMutationTarget {
   dryRun?: boolean;
   operationId?: string;
   source: string;
 }
 
-export interface CCbuddyAgentRemovePluginMarketplaceParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentRemovePluginMarketplaceParams extends CCbuddyAgentPluginMutationTarget {
   marketplace: string;
 }
 
-export interface CCbuddyAgentUpdatePluginMarketplaceParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentUpdatePluginMarketplaceParams extends CCbuddyAgentPluginMutationTarget {
   marketplace?: string;
   operationId?: string;
 }
 
-export interface CCbuddyAgentInstallPluginParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentInstallPluginParams extends CCbuddyAgentPluginMutationTarget {
   dryRun?: boolean;
   marketplace: string;
   operationId?: string;
@@ -49,23 +64,23 @@ export interface CCbuddyAgentCancelPluginOperationParams {
   operationId: string;
 }
 
-export interface CCbuddyAgentUninstallPluginParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentUninstallPluginParams extends CCbuddyAgentPluginMutationTarget {
   marketplace?: string;
   pluginId?: string;
   pluginName?: string;
   removeCache?: boolean;
 }
 
-export interface CCbuddyAgentUpdatePluginParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentUpdatePluginParams extends CCbuddyAgentPluginMutationTarget {
   pluginId?: string;
   marketplace?: string;
 }
 
-export interface CCbuddyAgentRestoreBuiltinPluginParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentRestoreBuiltinPluginParams extends CCbuddyAgentPluginMutationTarget {
   pluginId: string;
 }
 
-export interface CCbuddyAgentConfigurePluginParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentConfigurePluginParams extends CCbuddyAgentPluginMutationTarget {
   clearOptionKeys?: string[];
   dryRun?: boolean;
   options: Record<string, unknown>;
@@ -73,7 +88,7 @@ export interface CCbuddyAgentConfigurePluginParams extends CCbuddyAgentWorkspace
   scope?: "user" | "workspace";
 }
 
-export interface CCbuddyAgentResetPluginConfigParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentResetPluginConfigParams extends CCbuddyAgentPluginMutationTarget {
   pluginId: string;
   scope?: "user" | "workspace";
 }
@@ -89,11 +104,18 @@ export interface CCbuddyAgentDescribePluginParams extends CCbuddyAgentWorkspaceT
   pluginName: string;
 }
 
-export interface CCbuddyAgentSetPluginEnabledParams extends CCbuddyAgentWorkspaceTarget {
+export interface CCbuddyAgentSetPluginEnabledParams extends CCbuddyAgentPluginMutationTarget {
   enabled: boolean;
   operationId?: string;
   pluginId: string;
   scope?: "user" | "workspace";
+}
+
+/** 信任或撤销项目 `plugins.dirs` 声明的目录插件（docs/plugins/workspace-plugin-dir-trust.md）。 */
+export interface CCbuddyAgentSetWorkspacePluginTrustParams extends CCbuddyAgentWorkspaceTarget {
+  pluginRoot: string;
+  declarationDigest: string;
+  trusted: boolean;
 }
 
 // Plugin 对话引用 catalog：
@@ -185,6 +207,7 @@ export interface CCbuddyAgentResolveSuggestedPluginReferenceParams extends CCbud
 // ---- 定时任务(automation)管理参数 ----
 
 export interface CCbuddyAgentCreateAutomationParams extends CCbuddyAgentWorkspaceTarget {
+  projectId?: string | null;
   title: string;
   cronExpr: string;
   relativeDelayMinutes?: number;

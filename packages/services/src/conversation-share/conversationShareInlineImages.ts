@@ -1,30 +1,53 @@
 import { createHash } from "node:crypto";
 import type { ConversationShareCapabilities } from "@ccbuddy/shared";
-import type { ConversationRow } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type { WireConversationRow } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import type { ConversationShareFailureIssue } from "./conversationShare.js";
 
 /** 内嵌图片转为既有 artifact；预检和发布使用同一份确定性转换，不新增文件读取通道。 */
 export function materializeConversationShareInlineImages(
-  sourceRows: readonly ConversationRow[],
+  sourceRows: readonly WireConversationRow[],
   capabilities: ConversationShareCapabilities,
   turnOrdinals: ReadonlyMap<string, number>,
 ): {
-  rows: ConversationRow[];
+  rows: WireConversationRow[];
   bytesBySourceRef: Map<string, Uint8Array>;
   warnings: ConversationShareFailureIssue[];
+  toolImages: Map<number, Array<{ resourceId: string; mimeType: string }>>;
 } {
-  const rows: ConversationRow[] = [];
+  const rows: WireConversationRow[] = [];
+  const toolImages = new Map<number, Array<{ resourceId: string; mimeType: string }>>();
   const bytesBySourceRef = new Map<string, Uint8Array>();
   const warnings: ConversationShareFailureIssue[] = [];
   let nextRowId = sourceRows.reduce((max, row) => Math.max(max, row.rowId), 0);
   for (const row of sourceRows) {
-    if (row.kind !== "toolCall" || row.display?.kind !== "node_repl_images") {
+    if (row.kind !== "toolCall") {
       rows.push(row);
       continue;
     }
-    const { display, ...toolRow } = row;
-    rows.push(toolRow);
-    for (const [index, image] of display.images?.entries() ?? []) {
+    const display = row.display?.kind === "node_repl_images" ? row.display : undefined;
+    const media = row.output?.display?.kind === "cua" ? row.output.display.media : undefined;
+    if (media?.some((item) => item.artifactUri && !item.data)) {
+      // 只有资源引用、没有公开可读取字节时保持文本回退，不把本地读取权限带入分享。
+      warnings.push({
+        code: "content_unavailable",
+        scope: "turn",
+        rowId: row.rowId,
+        productTurnId: row.productTurnId,
+      });
+    }
+    const images = [
+      ...(display?.images ?? []),
+      ...(media ?? []).flatMap((item) =>
+        item.data && item.mimeType.startsWith("image/")
+          ? [{ base64: item.data.replace(/^data:[^;]+;base64,/u, ""), mimeType: item.mimeType }]
+          : [],
+      ),
+    ];
+    if (display) {
+      const { display: _display, ...toolRow } = row;
+      rows.push(toolRow);
+    } else rows.push(row);
+    for (const [index, image] of images.entries()) {
       const mimeType = image.mimeType.toLowerCase();
       const allowed = capabilities.allowed_artifacts.find(
         (candidate) =>
@@ -78,6 +101,9 @@ export function materializeConversationShareInlineImages(
       }
       const ref = `inline-tool-image:${row.rowId}:${index}`;
       bytesBySourceRef.set(ref, bytes);
+      const references = toolImages.get(row.rowId) ?? [];
+      references.push({ resourceId: ref, mimeType });
+      toolImages.set(row.rowId, references);
       rows.push({
         kind: "artifact",
         rowId: ++nextRowId,
@@ -97,5 +123,5 @@ export function materializeConversationShareInlineImages(
       });
     }
   }
-  return { rows, bytesBySourceRef, warnings };
+  return { rows, bytesBySourceRef, warnings, toolImages };
 }

@@ -68,8 +68,7 @@ export function CodingPlanUpgradeDialog({
   onClose,
   onOpenResult,
 }: CodingPlanUpgradeDialogProps) {
-  const { providerSettingsService, credentialService, codingPlanSubscriptionService } =
-    useServices();
+  const { providerSettingsService, codingPlanSubscriptionService } = useServices();
   const providerSettingsRead = useProviderSettingsView();
   const providerSettingsView =
     providerSettingsRead.state.status === "ready" ? providerSettingsRead.state.view : null;
@@ -136,7 +135,6 @@ export function CodingPlanUpgradeDialog({
     <CodingPlanEmbeddedWebviewDialog
       open
       onOpenResult={onOpenResult}
-      credentialService={credentialService}
       providerId={providerId}
       funnelContext={target.funnelContext}
       audience={target.initialAudience}

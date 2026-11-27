@@ -3,15 +3,21 @@ import { logger } from "@/logger.js";
 
 export type SettingsSectionId =
   | "general"
+  | "agentBehavior"
   | "appearance"
   | "migration"
   | "browser"
   | "modelProvider"
+  | "remoteDevices"
+  | "dataSync"
+  | "personalization"
   | "memory"
   | "plugin"
   | "mcp"
   | "skill"
   | "plugins"
+  | "projects"
+  | "archives"
   | "usage"
   | "subagents"
   | "commands"
@@ -30,7 +36,10 @@ const SETTINGS_SECTION_INTENT_KEY = "ccbuddy-settings-section-intent",
   SETTINGS_PLUGIN_TAB_INTENT_KEY = "ccbuddy-settings-plugin-tab-intent",
   SETTINGS_PLUGIN_ORIGIN_INTENT_KEY = "ccbuddy-settings-plugin-origin-intent",
   SETTINGS_PLUGIN_SCOPE_KEY_INTENT_KEY = "ccbuddy-settings-plugin-scope-key-intent";
+const SETTINGS_SOURCE_SERVER_ID_INTENT_KEY = "ccbuddy-settings-source-server-id-intent";
+const SETTINGS_SOURCE_SERVER_DETAILS_INTENT_KEY = "ccbuddy-settings-source-server-details-intent";
 const SETTINGS_MODEL_PROVIDER_ID_INTENT_KEY = "ccbuddy-settings-model-provider-id-intent";
+const SETTINGS_HOOK_WORKSPACE_PATH_INTENT_KEY = "ccbuddy-settings-hook-workspace-path-intent";
 const SETTINGS_SECTION_INTENT_EVENT = "ccbuddy:settings-section-intent",
   SETTINGS_LAST_SECTION_STORAGE_KEY = "ccbuddy-settings-last-section";
 const HIDDEN_SETTINGS_SECTIONS = new Set<SettingsSectionId>([
@@ -51,6 +60,10 @@ export interface SettingsSectionIntentEventDetail {
   pluginScopeKey?: string;
   usageTab?: SettingsUsageTabTarget;
   modelProviderId?: string;
+  sourceServerId?: string;
+  sourceServerDetails?: boolean;
+  /** 受管 worktree 任务「去审核」时的会话 cwd，钩子设置页按它发现声明（D23）。 */
+  hookWorkspacePath?: string;
 }
 
 export interface SettingsModelProviderTarget {
@@ -60,15 +73,21 @@ export interface SettingsModelProviderTarget {
 function isSettingsSectionId(value: string): value is SettingsSectionId {
   return (
     value === "general" ||
+    value === "agentBehavior" ||
     value === "appearance" ||
     value === "migration" ||
     value === "browser" ||
     value === "modelProvider" ||
+    value === "remoteDevices" ||
+    value === "dataSync" ||
+    value === "personalization" ||
     value === "memory" ||
     value === "plugin" ||
     value === "mcp" ||
     value === "skill" ||
     value === "plugins" ||
+    value === "projects" ||
+    value === "archives" ||
     value === "usage" ||
     value === "subagents" ||
     value === "commands" ||
@@ -217,12 +236,17 @@ export function setPendingSettingsSectionIntent(
     pluginOrigin?: SettingsPluginNavigationOrigin;
     pluginScopeKey?: string;
     modelProviderId?: string;
+    sourceServerId?: string;
+    sourceServerDetails?: boolean;
     usageTab?: SettingsUsageTabTarget;
+    hookWorkspacePath?: string;
   } = {},
 ): void {
   if (typeof window === "undefined") {
     return;
   }
+  const hookWorkspacePath =
+    section === "hooks" ? options.hookWorkspacePath?.trim() || undefined : undefined;
 
   try {
     window.sessionStorage.setItem(SETTINGS_SECTION_INTENT_KEY, section);
@@ -245,10 +269,32 @@ export function setPendingSettingsSectionIntent(
     if (options.usageTab) {
       window.sessionStorage.setItem(SETTINGS_USAGE_TAB_INTENT_KEY, options.usageTab);
     }
+    if (section === "remoteDevices" && options.sourceServerId?.trim()) {
+      window.sessionStorage.setItem(
+        SETTINGS_SOURCE_SERVER_ID_INTENT_KEY,
+        options.sourceServerId.trim(),
+      );
+    } else {
+      window.sessionStorage.removeItem(SETTINGS_SOURCE_SERVER_ID_INTENT_KEY);
+    }
+    if (
+      section === "remoteDevices" &&
+      options.sourceServerId?.trim() &&
+      options.sourceServerDetails
+    ) {
+      window.sessionStorage.setItem(SETTINGS_SOURCE_SERVER_DETAILS_INTENT_KEY, "true");
+    } else {
+      window.sessionStorage.removeItem(SETTINGS_SOURCE_SERVER_DETAILS_INTENT_KEY);
+    }
     if (options.modelProviderId) {
       window.sessionStorage.setItem(SETTINGS_MODEL_PROVIDER_ID_INTENT_KEY, options.modelProviderId);
     } else {
       window.sessionStorage.removeItem(SETTINGS_MODEL_PROVIDER_ID_INTENT_KEY);
+    }
+    if (hookWorkspacePath) {
+      window.sessionStorage.setItem(SETTINGS_HOOK_WORKSPACE_PATH_INTENT_KEY, hookWorkspacePath);
+    } else {
+      window.sessionStorage.removeItem(SETTINGS_HOOK_WORKSPACE_PATH_INTENT_KEY);
     }
   } catch {
     // 忽略浏览器存储异常，不影响主流程。
@@ -265,6 +311,13 @@ export function setPendingSettingsSectionIntent(
         pluginScopeKey: options.pluginScopeKey?.trim() || undefined,
         usageTab: options.usageTab,
         modelProviderId: options.modelProviderId,
+        hookWorkspacePath,
+        ...(section === "remoteDevices" && options.sourceServerId?.trim()
+          ? {
+              sourceServerId: options.sourceServerId.trim(),
+              ...(options.sourceServerDetails ? { sourceServerDetails: true } : {}),
+            }
+          : {}),
       },
     }),
   );
@@ -277,11 +330,14 @@ function clearPendingSettingsSectionIntent(): void {
 
   try {
     window.sessionStorage.removeItem(SETTINGS_SECTION_INTENT_KEY);
+    window.sessionStorage.removeItem(SETTINGS_SOURCE_SERVER_ID_INTENT_KEY);
+    window.sessionStorage.removeItem(SETTINGS_SOURCE_SERVER_DETAILS_INTENT_KEY);
     window.sessionStorage.removeItem(SETTINGS_USAGE_TAB_INTENT_KEY);
     window.sessionStorage.removeItem(SETTINGS_MODEL_PROVIDER_ID_INTENT_KEY);
     window.sessionStorage.removeItem(SETTINGS_PLUGIN_TAB_INTENT_KEY);
     window.sessionStorage.removeItem(SETTINGS_PLUGIN_ORIGIN_INTENT_KEY);
     window.sessionStorage.removeItem(SETTINGS_PLUGIN_SCOPE_KEY_INTENT_KEY);
+    window.sessionStorage.removeItem(SETTINGS_HOOK_WORKSPACE_PATH_INTENT_KEY);
   } catch {
     // 忽略浏览器存储异常，不影响主流程。
   }
@@ -351,6 +407,27 @@ export function consumePendingSettingsPluginScopeKey(): string | undefined {
     return raw?.trim() || undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** 与 scopeKey 相同：挂载时读取，挂载完成后再清理，兼容 Strict Mode 双执行 initializer。 */
+export function consumePendingSettingsHookWorkspacePath(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return (
+      window.sessionStorage.getItem(SETTINGS_HOOK_WORKSPACE_PATH_INTENT_KEY)?.trim() || undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export function clearPendingSettingsHookWorkspacePath(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(SETTINGS_HOOK_WORKSPACE_PATH_INTENT_KEY);
+  } catch {
+    // 忽略浏览器存储异常，不影响主流程。
   }
 }
 
@@ -454,4 +531,27 @@ export function addPendingSettingsSectionListener(
   return () => {
     window.removeEventListener(SETTINGS_SECTION_INTENT_EVENT, handleIntent);
   };
+}
+
+/** 设置页先消费分区，再消费卡片目标；已挂载页面由同一导航事件直接接收。 */
+export function consumePendingSettingsSourceServerId(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const id = window.sessionStorage.getItem(SETTINGS_SOURCE_SERVER_ID_INTENT_KEY);
+    window.sessionStorage.removeItem(SETTINGS_SOURCE_SERVER_ID_INTENT_KEY);
+    return id?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function consumePendingSettingsSourceServerDetails(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const details = window.sessionStorage.getItem(SETTINGS_SOURCE_SERVER_DETAILS_INTENT_KEY);
+    window.sessionStorage.removeItem(SETTINGS_SOURCE_SERVER_DETAILS_INTENT_KEY);
+    return details === "true";
+  } catch {
+    return false;
+  }
 }

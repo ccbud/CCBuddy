@@ -6,6 +6,7 @@ import type { CCbuddyProvider } from "./ccbuddy-task-types-core.js";
 import type { WorkspacePurpose } from "./workspacePurpose.js";
 import type { DynamicWorkflowMode } from "./dynamic-workflow-feature.js";
 import type { EmbeddedBrowserViewportPreference } from "./browser-use/command-metadata.js";
+import type { AppToolSearchMode } from "./app-runtime-preferences.js";
 
 // ── Domain types ──
 
@@ -73,8 +74,14 @@ export interface SystemInfo {
   platform: string;
 }
 
+/**
+ * 支持的界面语言（BCP-47）。顺序即设置页下拉的展示顺序。
+ * 新增语言的步骤见 docs/i18n/ui-locales.md。
+ */
+export const SUPPORTED_LOCALES = ["zh-CN", "en-US", "ja-JP", "ru-RU", "ko-KR"] as const;
+
 /** 支持的语言 */
-export type Locale = "zh-CN" | "en-US";
+export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
 /** 界面语言偏好；system 表示跟随当前运行端系统语言。 */
 export type LocalePreference = "system" | Locale;
@@ -180,6 +187,8 @@ export type RemoteTargetSnapshot =
 export interface RemoteWorkspaceSessionSnapshot {
   /** 远程 workspace 的真实绝对路径 */
   workspacePath: string;
+  /** 用户可见的 workspace 分类；旧远端快照缺失时按 project 兼容读取。 */
+  workspacePurpose?: WorkspacePurpose;
   /** 发起远程连接时的本机 workspace 路径，仅用于 MCP filesystem 路径改写。 */
   localWorkspacePath?: string;
   /** 远程 workspace 的稳定身份键（authority + canonicalPath）。 */
@@ -192,6 +201,8 @@ export interface RemoteWorkspaceSessionSnapshot {
   lastConnectionStatus: "connected" | "failed";
   /** 最近一次失败原因；成功后清空 */
   lastConnectionError?: string;
+  /** 最近一次失败的错误码，与 lastConnectionError 同写同清；等待点也写成失败，只看文案分不清两类 */
+  lastConnectionErrorCode?: string;
 }
 
 export interface LocalWorkspaceSessionEntry {
@@ -211,8 +222,8 @@ export type PersistedWorkspaceSessionEntry =
 
 // ── Process Monitor ──
 
-/** 资源管理器分类：基础服务 / 内置插件 / 社区插件 */
-export type ResourceUsageCategory = "base" | "builtin-plugin" | "community-plugin";
+/** 资源管理器分类：基础服务 / 任务进程 / 内置插件 / 社区插件 */
+export type ResourceUsageCategory = "base" | "task" | "builtin-plugin" | "community-plugin";
 
 /** 基础服务分组键；插件分组键为插件名或 MCP server name */
 export type ResourceUsageBaseGroupKey = "main" | "gpu" | "renderer" | "host" | "cli" | "utility";
@@ -293,11 +304,17 @@ export interface AppSettings {
   httpProxyNoProxy?: string;
   /** 自定义 PEM 根证书路径；下次启动 app/agent 时用于 renderer 校验与 agent NODE_EXTRA_CA_CERTS。 */
   httpProxyCaCertPath?: string;
+  /** 本机预装工具的自动准备偏好；由预装工具进程写入。 */
+  preinstalledToolsAutoInstall?: boolean;
+  /** Agent 禁用预装版本的工具；缺省全部开启，仅由本机预装进程写入。 */
+  preinstalledToolsAgentDisabled?: string[];
   /**
    * 内置浏览器忽略 HTTPS 证书校验错误（自签名、过期、域名不匹配等），用于访问内网测试站点。
    * 只影响内置浏览器出口，不影响 CCbuddy 自身对后端与模型 API 的请求。默认关闭，重启后生效。
    */
   embeddedBrowserAllowInsecureCertificates?: boolean;
+  /** 文件树单击本地 .html 文件时在内置浏览器打开（默认 false：沿用源码预览）。右键「打开」始终是源码预览。 */
+  fileTreeHtmlClickOpensBrowser?: boolean;
   /** 人类用户主动打开 Browser tab 时的一次性显示偏好；Agent Browser Use 不读写。 */
   embeddedBrowserViewportPreference?: EmbeddedBrowserViewportPreference;
   /**
@@ -306,14 +323,18 @@ export interface AppSettings {
    * 关闭后按钮不再渲染，且不因重启或版本更新自愈，仅能在设置页重新开启。
    */
   computerUseComposerEntryHidden?: boolean;
-  /** 自动归档已完成旧任务的总开关 */
+  /** 自动归档旧会话的总开关 */
   taskAutoArchiveEnabled?: boolean;
+  /** 自动归档修复后的一次性关闭标记；只用于设置迁移，不参与归档判断。 */
+  taskAutoArchiveResetVersion?: 1;
   /** 自动归档阈值；当任务最后更新时间早于该天数时允许被归档 */
   taskAutoArchiveOlderThanDays?: number;
   /** 桌面端关闭窗口时隐藏到托盘驻留（Windows/Linux；spec：docs/desktop/linux-close-to-tray.md） */
   closeToTrayOnWindows?: boolean;
   /** 存在执行中的闲时任务时阻止系统闲置休眠（手动开关，防不了合盖）。 */
   keepAwakeWhileRunning?: boolean;
+  /** 本机 offline push 上报开关，缺省视为开启（spec：docs/web-remote-control/mobile-event-push.md 6.4）。 */
+  mobilePushEnabled?: boolean;
   /** Windows 关闭到托盘默认值是否已执行过一次性迁移；只用于设置迁移，不参与业务判断。 */
   closeToTrayOnWindowsMigrationInitialized?: boolean;
   /**
@@ -339,16 +360,12 @@ export interface AppSettings {
   messageStreamShowReasoningMigrationInitialized?: boolean;
   /** 是否在消息流中展示 todo 工具渲染；不影响摘要面板的 todo */
   messageStreamShowTodos?: boolean;
-  /** 是否把连续的只读工具调用聚合成 Explore。 */
-  toolGroupingExploreEnabled?: boolean;
-  /** 是否把连续的非只读 Shell 工具调用聚合成 Terminal。 */
-  toolGroupingTerminalEnabled?: boolean;
-  /** 是否把连续的 Write/Edit/ApplyPatch 工具调用聚合成 Changes。 */
-  toolGroupingChangesEnabled?: boolean;
   /** CCbuddy 运行中继续输入时，是排队到下一轮，还是引导到下一次工具调用后运行 */
   ccbuddyInteractionBehavior?: CCbuddyInteractionBehavior;
   /** Agent 提问五分钟无人回答时是否允许自动继续；缺失按开启兼容旧配置。 */
   askUserQuestionAutoResolutionEnabled?: boolean;
+  /** 默认关闭，控制对话中的插件发现和推荐；设置页手动安装保持可用。 */
+  pluginAutoRecommendationEnabled?: boolean;
   /** 是否完整保留 Model I/O；开启后不轮转、不限额重置、不压缩或裁剪，鉴权信息仍会脱敏。 */
   modelIoFullRetentionEnabled?: boolean;
   /**
@@ -368,9 +385,16 @@ export interface AppSettings {
   providerFamilyDomainMigrated?: boolean;
   /** 新建或冷恢复 Session 是否为 Bash 注入 bfs/ugrep 增强；默认启用。 */
   nativeSearchEnhancementsEnabled?: boolean;
-  toolSearchMode?: import("./app-runtime-preferences.js").AppToolSearchMode;
+  /** 新建或冷恢复时读取；已有 Runtime 保持原策略。 */
+  toolSearchMode?: AppToolSearchMode;
+  /** token 预算提醒；新建或冷恢复时读取，已有 Runtime 保持原值。默认关闭。 */
+  totalTokensReminderEnabled?: boolean;
+  /** Agent 是否总在后台运行；新建或冷恢复时读取，已有 Runtime 保持原值。默认开启。 */
+  agentAlwaysBackgroundEnabled?: boolean;
   /** 新建或冷恢复 Session 是否启用 Memory；默认关闭。 */
   memoryEnabled?: boolean;
+  /** Agent 回复语言（自由文本，未设置时跟随对话语言）；只由 Main 写入，见 docs/i18n/agent-reply-language.md。 */
+  replyLanguage?: string;
   onboardingOccupation?:
     | "office"
     | "developer"
@@ -388,8 +412,31 @@ export interface AppSettings {
     | "other"
     | null;
   proactiveSuggestionsEnabled?: boolean;
-  /** 上次关闭时的完整 workspace 会话（含本地与远端 workspace） */
+  /** 新版只保存活动执行目录；不表达项目/连接成员，null 表示明确清空。 */
+  lastActiveWorkspace?: PersistedWorkspaceSessionEntry | null;
+  /** Host 从项目/本机入口派生，供旧版降级读取；新版不作为入口真相。 */
   lastWorkspaceSession?: PersistedWorkspaceSessionEntry[];
+  /** 每个 Source Server 已解析的 canonical conversation backing workspace。 */
+  remoteConversationWorkspaceBySourceServerId?: Record<
+    string,
+    {
+      workspacePath: string;
+      lastResolvedAt: number;
+    }
+  >;
+  /** R3 控制端已识别的 Source Server；运行态仍由远端 Server 权威提供。 */
+  sourceServers?: import("./source-server/contracts.js").SourceServerRecord[];
+  /** R3 到达 Source Server 的线路；只保存 credential key，不保存 secret。 */
+  connectionProfiles?: import("./source-server/contracts.js").ConnectionProfile[];
+  /** R3 workspace 打开历史；连接线路与 workspace 实体分离。 */
+  sourceServerWorkspaceHistory?: import("./source-server/contracts.js").SourceServerWorkspaceHistoryEntry[];
+  /** 桌面端启动时是否执行 Source Server 静默重连；缺失按 true 兼容旧设置。 */
+  remoteStartupAutoReconnectEnabled?: boolean;
+  sourceServerDirectoryMigrationVersion?: 1;
+  /** 旧客户端只接受 2；保留回滚兼容，新介绍不使用该字段判断已读。 */
+  remoteBoundaryOnboardingVersion?: 2;
+  /** 仅表示用户明确确认持续运行介绍。 */
+  remoteBoundaryIntroAcknowledgedVersion?: 1;
   /** 上次关闭时激活的 tab 索引 */
   lastActiveTabIndex?: number;
   /** 每个 workspace 的最后活跃 taskId，下次打开自动恢复 */
@@ -420,6 +467,22 @@ export interface AppSettings {
   skippedElectronUpdateVersions?: Partial<Record<ElectronReleaseChannel, string>>;
   /** 首次启动设置同步提示是否已消费；只表示弹窗不再出现，不代表导入成功。 */
   settingsSyncFirstRunPromptHandled?: boolean;
+  /** 外部 Web 远控 relay 的非敏感设备身份；passHash 必须存 credentialService。 */
+  /** V2 非敏感注册身份；JWT 和一次性 token 不持久化于 AppSettings。 */
+  webRemoteControlRelayV2Device?: {
+    deviceSid: string;
+    userId: string;
+    endpointOrigin: string;
+  };
+  webRemoteControlExternalRelayDevice?: {
+    deviceSid: string;
+  };
+  /** 上次成功开启 Web 远控时的目标；缺失表示用户已明确关闭，不自动恢复。 */
+  webRemoteControlLastEnabledContext?: {
+    workspacePath: string;
+    workspaceIdentity?: string;
+    initialTaskId?: string;
+  };
   /** 设置页里的临时 endpoint override；正式/测试默认 base url 由 CCBUDDY_BASE_URL env 管理。 */
   ccbuddyEndpointOrigin?: string;
 }

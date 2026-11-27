@@ -1,5 +1,15 @@
+import {
+  ccbuddyProtocolMethods,
+  sessionLifecycleParamsSchema,
+  sessionLifecycleActivationParamsSchema,
+  ccbuddyRuntimeCapabilitiesSchema,
+  type CCbuddyWorkspaceRef,
+  sessionLifecycleSnapshotSchema,
+  sessionLifecycleResultSchema,
+} from "@ccbuddy/shared";
 import { CCbuddyStorageStartupGate } from "#src/ccbuddy-agent/ccbuddyStorageStartupGate.js";
 import { Emitter } from "@ccbuddy/rpc";
+import { ccbuddyPluginStartupDegradedSchema, ccbuddyProtocolNotifications } from "@ccbuddy/shared";
 import type { IDisposable } from "@ccbuddy/rpc";
 import type {
   CCbuddyProtocolMethod,
@@ -40,6 +50,8 @@ interface PendingRequest<T> {
 }
 
 interface CCbuddyProtocolClientRequestOptions {
+  /** 单 session 操作超时不能擅自回收整个 workspace；后端仍持有操作，可另行查询。 */
+  invalidateConnectionOnTimeout?: boolean;
   /** 观测不得参与 runtime 健康判定或业务空闲续期；默认保持业务请求语义。 */
   lifecycle?: "operation" | "observation";
   signal?: AbortSignal;
@@ -72,6 +84,64 @@ export class CCbuddyProtocolRequestTimeoutError extends Error {
 }
 
 export class CCbuddyProtocolClient implements IDisposable {
+  /** 与已连接 workspace 的 CLI 生命周期 owner 通信；此入口不拉起或重启整个进程。 */
+  readonly sessionLifecycle = {
+    getState: (sessionId: string) =>
+      this.request(
+        ccbuddyProtocolMethods.sessionLifecycleGetState,
+        sessionLifecycleParamsSchema.parse({ sessionId }),
+        sessionLifecycleSnapshotSchema,
+        { lifecycle: "observation" },
+      ),
+    ensureReady: (sessionId: string, workspace?: CCbuddyWorkspaceRef) =>
+      this.requestSessionActivation(
+        ccbuddyProtocolMethods.sessionLifecycleEnsureReady,
+        sessionId,
+        workspace,
+      ),
+    stop: async (sessionId: string): Promise<void> => {
+      await this.request(
+        ccbuddyProtocolMethods.sessionLifecycleStop,
+        sessionLifecycleParamsSchema.parse({ sessionId }),
+        sessionLifecycleResultSchema,
+        { invalidateConnectionOnTimeout: false },
+      );
+    },
+    restart: (sessionId: string, workspace?: CCbuddyWorkspaceRef) =>
+      this.requestSessionActivation(
+        ccbuddyProtocolMethods.sessionLifecycleRestart,
+        sessionId,
+        workspace,
+      ),
+  };
+
+  private async requestSessionActivation(
+    method:
+      | typeof ccbuddyProtocolMethods.sessionLifecycleEnsureReady
+      | typeof ccbuddyProtocolMethods.sessionLifecycleRestart,
+    sessionId: string,
+    workspace?: CCbuddyWorkspaceRef,
+  ) {
+    if (workspace) {
+      // 旧 CLI 的严格参数不接受 workspace；不能退回会丢失归属的重启，也不能重启整个进程。
+      const capabilities = await this.request(
+        ccbuddyProtocolMethods.runtimeCapabilities,
+        {},
+        ccbuddyRuntimeCapabilitiesSchema,
+        // 能力查询是观察请求，等待超时不能淘汰共享 CLI 连接。
+        { lifecycle: "observation" },
+      );
+      if (!capabilities.sessionLifecycleWorkspace)
+        throw new Error("fault.sessionLifecycle.unsupported");
+    }
+    return this.request(
+      method,
+      sessionLifecycleActivationParamsSchema.parse({ sessionId, workspace }),
+      sessionLifecycleResultSchema,
+      { invalidateConnectionOnTimeout: false },
+    );
+  }
+
   readonly storageStartup: CCbuddyStorageStartupGate;
   private readonly pending = new Map<string, PendingRequest<unknown>>();
   private readonly notificationEmitter = new Emitter<CCbuddyProtocolNotification>();
@@ -96,6 +166,8 @@ export class CCbuddyProtocolClient implements IDisposable {
   }
 
   readonly onNotification = this.notificationEmitter.event;
+  /** 当前连接的降级投影；新进程的新连接自然重置，不跨进程保存。 */
+  pluginStartupDegraded = false;
   readonly onRequest = this.requestEmitter.event;
   readonly onRequestTimeout = this.requestTimeoutEmitter.event;
   readonly onPendingRequestsDrained = this.pendingDrainedEmitter.event;
@@ -179,7 +251,7 @@ export class CCbuddyProtocolClient implements IDisposable {
         // process manager 仍复用这个 stale client，导致后续 plugins/list 等请求连续卡在超时窗口。
         // 超时事件把“连接已不可信”的事实上抛给 owner，由 owner 负责淘汰进程。
         // 资源查询的短超时只表示本轮无数据，不能被升级成整个 Agent 的故障回收。
-        if (!observation) {
+        if (!observation && options?.invalidateConnectionOnTimeout !== false) {
           this.requestTimeoutEmitter.fire({ method, requestId: id, timeoutMs: requestTimeoutMs });
         }
         reject(error);
@@ -281,14 +353,14 @@ export class CCbuddyProtocolClient implements IDisposable {
     this.transport.dispose();
   }
 
-  async disposeAndWait(): Promise<void> {
+  async disposeAndWait(options?: { deadlineAtMs?: number }): Promise<void> {
     const wasDisposed = this.disposed;
     if (!wasDisposed) {
       this.disposed = true;
       this.disposeLocalResources();
     }
     if (this.transport.disposeAndWait) {
-      await this.transport.disposeAndWait();
+      await this.transport.disposeAndWait(options);
       return;
     }
     if (!wasDisposed) {
@@ -331,6 +403,14 @@ export class CCbuddyProtocolClient implements IDisposable {
     }
 
     if ("method" in message) {
+      if (
+        message.method === ccbuddyProtocolNotifications.pluginStartupDegraded &&
+        ccbuddyPluginStartupDegradedSchema.safeParse(
+          (message as CCbuddyProtocolNotification).params,
+        ).success
+      ) {
+        this.pluginStartupDegraded = true;
+      }
       if (
         message.method === "startup/storageState" &&
         this.storageStartup.accept((message as CCbuddyProtocolNotification).params)

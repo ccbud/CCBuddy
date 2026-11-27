@@ -8,7 +8,7 @@ import type {
   ReactNode,
 } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TID_CHAT_SEND_BUTTON } from "@ccbuddy/shared";
+import { TID_CHAT_SEND_BUTTON } from "@ccbuddy/shared/test-ids";
 import { ArrowUpIcon, Hand, XIcon } from "lucide-react";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { Button } from "@/components/ui/button.js";
@@ -18,6 +18,7 @@ import {
   LexicalChatInput,
   type ChatComposerPasteEvent,
   type LexicalChatInputHandle,
+  type UserInputPresence,
 } from "@/LexicalChatInput.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import type { AppSlashCommand } from "@/slashCommandHelpers.js";
@@ -77,7 +78,11 @@ export function ChatPromptEditor({
   shellClassName,
   avoidIosInputFocusZoom = false,
   compactPlaceholder = false,
+  layout = "stacked",
   onChange,
+  onUserInputClear,
+  onUserInputPresenceChange,
+  onUserInputStart,
   onSubmit,
   onModifiedSubmit,
   onCancel,
@@ -89,6 +94,7 @@ export function ChatPromptEditor({
   onDrop,
   excludedSlashCommandNames,
   appSlashCommands,
+  extraPlugins,
   enableMentionPanel,
 }: {
   workspacePath: string;
@@ -137,7 +143,16 @@ export function ChatPromptEditor({
   shellClassName?: string;
   avoidIosInputFocusZoom?: boolean;
   compactPlaceholder?: boolean;
+  /**
+   * stacked：输入区在上、工具栏在下；inline：[+] 输入区 [控件][发送] 排成一行，控件只显示图标
+   * （Side Pane 完整视图浮窗，docs/ui/side-pane-full-view.md）。两种布局共用同一棵 DOM 树，
+   * 切换时编辑器不重新挂载。
+   */
+  layout?: "stacked" | "inline";
   onChange?: (value: string) => void;
+  onUserInputClear?: () => void;
+  onUserInputPresenceChange?: (presence: UserInputPresence) => void;
+  onUserInputStart?: () => void;
   // 适配：返回 false 表示业务层拒绝/延迟本次提交，Lexical 不自行 reset（草稿保留）。
   onSubmit: (value: string) => boolean | void;
   onModifiedSubmit?: (value: string) => boolean | void;
@@ -153,9 +168,12 @@ export function ChatPromptEditor({
   appSlashCommands?: readonly AppSlashCommand[];
   /** mention 面板开关（透传 LexicalChatInput）。 */
   enableMentionPanel?: boolean;
+  /** 额外挂进编辑器的 Lexical 插件（透传 LexicalChatInput）。 */
+  extraPlugins?: ReactNode;
 }) {
   const { intl } = useCCbuddyIntl();
-  const toolbarRef = useComposerToolbarFit();
+  const isInline = layout === "inline";
+  const toolbarRef = useComposerToolbarFit({ iconOnly: isInline });
   const internalInputApiRef = useRef<LexicalChatInputHandle | null>(null);
   const resolvedInputApiRef = inputApiRef ?? internalInputApiRef;
   const [internalTriggerPanelContainer, setInternalTriggerPanelContainer] =
@@ -337,33 +355,57 @@ export function ChatPromptEditor({
       : undefined;
 
   const editorNode = (
-    <LexicalChatInput
-      placeholder={placeholder}
-      disabled={disabled}
-      submitDisabled={submitDisabled}
-      allowSubmitWhenEmpty={allowSubmitWhenEmpty}
-      enterSubmits={enterSubmits}
-      onSubmit={handleEditorSubmit}
-      onModifiedSubmit={onModifiedSubmit}
-      onChange={handleTextChange}
-      onFocus={onFocus}
-      triggerPanelContainer={resolvedTriggerPanelContainer}
-      workspacePath={workspacePath}
-      workspaceIdentity={workspaceIdentity}
-      taskId={taskId}
-      skillCatalogSessionId={skillCatalogSessionId}
-      inputTestId={inputTestId}
-      editorApiRef={resolvedInputApiRef}
-      promptHistory={promptHistory}
-      avoidIosInputFocusZoom={avoidIosInputFocusZoom}
-      compactPlaceholder={compactPlaceholder}
-      onWhiteboardMentionSelected={onWhiteboardMentionSelected}
-      onPaste={onPaste}
-      excludedSlashCommandNames={excludedSlashCommandNames}
-      appSlashCommands={appSlashCommands}
-      enableMentionPanel={enableMentionPanel}
-    />
+    // 单行时输入区至少占一半宽度，上下留白与 h-7 控件对齐；两行布局下 contents 不改变原有排版。
+    <div className={isInline ? "min-w-1/2 flex-1 py-1 [&_[contenteditable]]:min-h-5" : "contents"}>
+      <LexicalChatInput
+        extraPlugins={extraPlugins}
+        placeholder={placeholder}
+        disabled={disabled}
+        submitDisabled={submitDisabled}
+        allowSubmitWhenEmpty={allowSubmitWhenEmpty}
+        enterSubmits={enterSubmits}
+        onSubmit={handleEditorSubmit}
+        onModifiedSubmit={onModifiedSubmit}
+        onChange={handleTextChange}
+        onUserInputClear={onUserInputClear}
+        onUserInputPresenceChange={onUserInputPresenceChange}
+        onUserInputStart={onUserInputStart}
+        onFocus={onFocus}
+        triggerPanelContainer={resolvedTriggerPanelContainer}
+        workspacePath={workspacePath}
+        workspaceIdentity={workspaceIdentity}
+        taskId={taskId}
+        skillCatalogSessionId={skillCatalogSessionId}
+        inputTestId={inputTestId}
+        editorApiRef={resolvedInputApiRef}
+        promptHistory={promptHistory}
+        avoidIosInputFocusZoom={avoidIosInputFocusZoom}
+        compactPlaceholder={compactPlaceholder}
+        onWhiteboardMentionSelected={onWhiteboardMentionSelected}
+        onPaste={onPaste}
+        excludedSlashCommandNames={excludedSlashCommandNames}
+        appSlashCommands={appSlashCommands}
+        enableMentionPanel={enableMentionPanel}
+      />
+    </div>
   );
+  const actionMenuNode = hasActionMenu ? (
+    <span data-composer-action-menu className="flex shrink-0 items-center">
+      <ChatPromptActionMenu
+        actionMenuTitle={actionMenuTitle}
+        excludedSlashCommandNames={excludedSlashCommandNames}
+        attachmentAction={attachmentAction}
+        disabled={disabled}
+        disabledReason={disabledReason}
+        inputApiRef={resolvedInputApiRef}
+        workspacePath={workspacePath}
+        workspaceIdentity={workspaceIdentity}
+        sessionId={taskId}
+        container={resolvedTriggerPanelContainer}
+        showPlugins={enableMentionPanel !== false}
+      />
+    </span>
+  ) : null;
 
   return (
     <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} className={cn("relative", className)}>
@@ -374,11 +416,13 @@ export function ChatPromptEditor({
         />
       )}
       <div
+        data-composer-layout={layout}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          "relative flex flex-col gap-3 overflow-hidden rounded-2xl border border-input-border bg-input p-3 transition-colors hover:border-input-border-hover focus-within:!border-input-border-focused focus-within:bg-input-focused",
+          "relative flex flex-col gap-3 overflow-hidden rounded-2xl border-[0.5px] border-input-border bg-input p-3 shadow-(--shadow-composer-soft) transition-colors hover:border-input-border-hover focus-within:!border-input-border-focused focus-within:bg-input-focused",
+          isInline && "flex-row flex-wrap items-end gap-2 p-2",
           (isWorkspaceFileDropActive || isExternalFileDropActive) &&
             "border-brand bg-input-focused ring-1 ring-brand/30",
           shellClassName,
@@ -393,33 +437,27 @@ export function ChatPromptEditor({
           </div>
         ) : null}
 
-        {topContent}
+        {topContent ? (
+          // 单行布局下附件等内容单独占输入行上方一整行。
+          <div className={isInline ? "basis-full" : "contents"}>{topContent}</div>
+        ) : null}
+        {/* 单行布局把「+」放到输入区左侧；只有菜单按钮换位置重新挂载，编辑器位置不变。 */}
+        {isInline ? actionMenuNode : null}
         {inputLeadingContent ? (
-          <div className="flex min-w-0 items-start gap-2">
+          <div className={cn("flex min-w-0 items-start gap-2", isInline && "flex-1")}>
             <div className="shrink-0">{inputLeadingContent}</div>
             <div className="min-w-0 flex-1">{editorNode}</div>
           </div>
         ) : (
           editorNode
         )}
-        <div ref={toolbarRef} className="group/toolbar flex items-end gap-3">
+        <div
+          ref={toolbarRef}
+          className={cn("group/toolbar flex items-end gap-3", isInline && "shrink-0 gap-1.5")}
+        >
           <div className="flex min-w-0 flex-1 items-center" data-composer-leading-actions>
             <div className="flex shrink-0 items-center gap-1" data-composer-leading-content>
-              {hasActionMenu ? (
-                <ChatPromptActionMenu
-                  actionMenuTitle={actionMenuTitle}
-                  excludedSlashCommandNames={excludedSlashCommandNames}
-                  attachmentAction={attachmentAction}
-                  disabled={disabled}
-                  disabledReason={disabledReason}
-                  inputApiRef={resolvedInputApiRef}
-                  workspacePath={workspacePath}
-                  workspaceIdentity={workspaceIdentity}
-                  sessionId={taskId}
-                  container={resolvedTriggerPanelContainer}
-                  showPlugins={enableMentionPanel !== false}
-                />
-              ) : null}
+              {isInline ? null : actionMenuNode}
               {/* Bugfix：权限/模式选择曾作为 leadingActions 先于动作菜单渲染，导致常驻顺序与产品规范相反。 */}
               {leadingActions}
               {onModeSwitchContainerChange ? (
@@ -456,7 +494,7 @@ export function ChatPromptEditor({
                   disabled={submitDisabled}
                   data-testid={submitTestId ?? TID_CHAT_SEND_BUTTON}
                   aria-label={submitLabel}
-                  className="gap-1 rounded-lg bg-brand text-ui-base text-foreground-inverse hover:bg-brand/80"
+                  className="gap-1 rounded-full bg-brand text-ui-base text-foreground-inverse hover:bg-brand/80"
                 >
                   {submitting ? <Spinner className="size-4" /> : <ArrowUpIcon className="size-4" />}
                   <span className="sr-only">{submitLabel}</span>

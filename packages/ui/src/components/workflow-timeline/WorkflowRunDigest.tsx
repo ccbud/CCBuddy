@@ -5,7 +5,8 @@ import {
   SlidersHorizontalIcon,
   SquareIcon,
 } from "lucide-react";
-import { TID_CHAT_WORKFLOW_RUN_DIGEST, testId } from "@ccbuddy/shared";
+import { TID_CHAT_WORKFLOW_RUN_DIGEST } from "@ccbuddy/shared";
+import { testId } from "@ccbuddy/shared/test-ids";
 import type { WorkflowRunState } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { cn } from "@/components/lib/utils.js";
 import { Button } from "@/components/ui/button.js";

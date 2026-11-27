@@ -1,5 +1,7 @@
+import { committedToolSearchDelivery } from "./turn-output-token-continuation.js";
 import type { ToolSearchExecutionContext } from "@ccbuddy/contracts";
 import { getTurnTools } from "./turn-tool-visibility.js";
+import { isOffPeakUserTakeover, refreshOffPeakTurnAfterTakeover } from "../off-peak/turn.js";
 
 import { beginLocalTurnPreparation } from "@ccbuddy/contracts";
 import {
@@ -16,12 +18,21 @@ import {
 } from "../deps.js";
 import type { MessageId, ModelNetworkStatusEvent, ModelToolContract } from "../deps.js";
 import {
+  buildAssistantEntries,
   createRuntimeAssistantEntry,
   type RuntimeMessageEntry,
 } from "../../agent/message-history.js";
 import {
+  createProviderToolRoundEntries,
+  orderedAssistantHistoryBlocks,
+  providerToolRoundsCompactGroupKey,
+  withCompactGroupKey,
+} from "../provider-tool-rounds/contract.js";
+import {
+  createContentFilteredModelResultError,
   createModelContextExceededFinishError,
   createCompactRapidRefillError,
+  isContentFilteredEmptyModelResult,
   objectKeys,
   projectExecutionErrorPayload,
   finalizeSuspiciousEmptyModelResult,
@@ -49,6 +60,7 @@ import {
 } from "./turn-stop.js";
 import { createStreamingToolCoordinator } from "./streaming-tool-coordinator.js";
 import { persistCancelledStreamSnapshot } from "./cancelled-stream-persistence.js";
+import { persistTextBlockParts } from "./message-persistence.js";
 import {
   beginStartPlanBusyAdmissionRetryAttempt,
   createStartPlanBusyAutoRetryExhaustedError,
@@ -100,7 +112,7 @@ export async function runModelBackedTurnStep(
     latestRealUserMessageIndex?: number;
     messages: RunModelTextRequestOptions["messages"];
     sourceEntries: readonly (RuntimeMessageEntry | undefined)[];
-    recordedMessages: RunModelTextRequestOptions["messages"];
+    originEntries?: readonly (readonly RuntimeMessageEntry[])[];
     requestEntries: readonly RuntimeMessageEntry[];
     tools: ModelToolContract[];
     toolSearch?: ToolSearchExecutionContext;
@@ -146,7 +158,7 @@ async function runModelBackedTurnStepImpl(
     latestRealUserMessageIndex?: number;
     messages: RunModelTextRequestOptions["messages"];
     sourceEntries: readonly (RuntimeMessageEntry | undefined)[];
-    recordedMessages: RunModelTextRequestOptions["messages"];
+    originEntries?: readonly (readonly RuntimeMessageEntry[])[];
     requestEntries: readonly RuntimeMessageEntry[];
     tools: ModelToolContract[];
     toolSearch?: ToolSearchExecutionContext;
@@ -202,8 +214,7 @@ async function runModelBackedTurnStepImpl(
   const modelRequestEvent = this.createEvent(
     SessionEventType.ModelRequest,
     {
-      // 自动续写提示只属于本次请求，不应写入持久化的 ModelRequest 轨迹。
-      messages: options.recordedMessages,
+      messages: options.messages,
       providerId: String(model.providerId),
       modelId: String(model.modelId),
       querySource,
@@ -258,6 +269,7 @@ async function runModelBackedTurnStepImpl(
       latestRealUserMessageIndex: options.latestRealUserMessageIndex,
       messages: options.messages,
       sourceEntries: options.sourceEntries,
+      originEntries: options.originEntries,
       model,
       onStreamSnapshot: (snapshot) => {
         latestStreamSnapshot = snapshot;
@@ -329,6 +341,31 @@ async function runModelBackedTurnStepImpl(
       }
       return "continue";
     }
+    if (
+      !state.turnAbortSignal.aborted &&
+      isOffPeakUserTakeover(error) &&
+      refreshOffPeakTurnAfterTakeover(this, state)
+    ) {
+      await streamingToolCoordinator.abandon("model_failed");
+      await this.persistAssistantMessage(
+        assistantMessageId,
+        state.userMessageId,
+        assistantCreatedAt,
+        {
+          toolSearchDelivery: committedToolSearchDelivery(state.turnRequestState),
+          completed: Date.now(),
+          finish: "off_peak_request_replaced",
+        },
+        modelTraceContext,
+        model,
+      );
+      state.modelResponse = "";
+      state.modelStepCount += 1;
+      recordModelHistoryRound(state);
+      state.turnMachine = new TurnMachineImpl(state.turnMachine.receiveModelResponse(""));
+      state.turnMachine = new TurnMachineImpl(state.turnMachine.aggregateResults());
+      return "continue";
+    }
     const admissionRetryDelayMs = getStartPlanBusyAdmissionRetryDelayMs({
       error: finalError,
       providerId: executionModelSelection.providerId,
@@ -368,6 +405,7 @@ async function runModelBackedTurnStepImpl(
         state.userMessageId,
         assistantCreatedAt,
         {
+          toolSearchDelivery: committedToolSearchDelivery(state.turnRequestState),
           completed: Date.now(),
           finish: "start_plan_admission_retry_discarded",
         },
@@ -427,19 +465,50 @@ async function runModelBackedTurnStepImpl(
         traceContext: modelTraceContext,
       });
       const reasoning = latestStreamSnapshot.reasoning.filter(hasAssistantReasoningContent);
-      if (latestStreamSnapshot.text.length > 0 || reasoning.length > 0) {
+      const modelRef = state.model
+        ? { providerId: state.model.providerId, modelId: state.model.modelId }
+        : undefined;
+      const orderedBlocks = orderedAssistantHistoryBlocks(latestStreamSnapshot);
+      if (orderedBlocks) {
+        // 有序快照与冷恢复共用 buildAssistantEntries；本地工具仍不进入（已知差异，见 spec）。
+        const entries = buildAssistantEntries({
+          blocks: orderedBlocks,
+          model: modelRef,
+          groupKey: providerToolRoundsCompactGroupKey(latestStreamSnapshot.providerToolRounds),
+        });
+        commitTurnRequestEntries(this, state.turnRequestState, entries);
+        if (entries.length > 0) recordModelHistoryRound(state);
+      }
+      // 已收起的服务端内置工具轮在流中就已落盘，取消时同样要进入 live history。
+      const providerRoundEntries = createProviderToolRoundEntries(
+        latestStreamSnapshot.providerToolRounds,
+        modelRef,
+        hasAssistantReasoningContent,
+      );
+      const hasCurrentRound = latestStreamSnapshot.text.length > 0 || reasoning.length > 0;
+      if (!orderedBlocks && (hasCurrentRound || providerRoundEntries.length > 0)) {
         // 取消时 durable snapshot 已经持久化，但成功路径的 live history commit
         // 和 historyRoundCount 不会执行，导致当前进程与 cold resume 的 provider history 不一致。
-        commitTurnRequestEntries(this, state.turnRequestState, [
-          createRuntimeAssistantEntry(
-            latestStreamSnapshot.text,
-            undefined,
-            reasoning,
-            state.model
-              ? { providerId: state.model.providerId, modelId: state.model.modelId }
-              : undefined,
+        commitTurnRequestEntries(
+          this,
+          state.turnRequestState,
+          withCompactGroupKey(
+            [
+              ...providerRoundEntries,
+              ...(hasCurrentRound
+                ? [
+                    createRuntimeAssistantEntry(
+                      latestStreamSnapshot.text,
+                      undefined,
+                      reasoning,
+                      modelRef,
+                    ),
+                  ]
+                : []),
+            ],
+            providerToolRoundsCompactGroupKey(latestStreamSnapshot.providerToolRounds),
           ),
-        ]);
+        );
         recordModelHistoryRound(state);
       }
     }
@@ -458,6 +527,7 @@ async function runModelBackedTurnStepImpl(
       state.userMessageId,
       assistantCreatedAt,
       {
+        toolSearchDelivery: committedToolSearchDelivery(state.turnRequestState),
         completed: Date.now(),
         error: {
           name: finalError instanceof Error ? finalError.name : "UnknownError",
@@ -500,7 +570,15 @@ async function runModelBackedTurnStepImpl(
     this.messageHistory.setCacheHit(result.usage.cacheReadTokens);
   }
 
-  let toolCalls = this.extractToolCallsFromResult(result);
+  // 服务端内置工具在流中已切成独立的前序轮次（各自带结果提交），不是本 step 的最终调用：
+  // 续写、超窗、fileChanges 不计它们；空结果判定仍算作有内容（最后一轮正文可以为空）。
+  // web_search 等未切轮的 provider 调用仍按完整 tool call 处理（docs/model-request-output-tokens.md）。
+  const extractedToolCalls = this.extractToolCallsFromResult(result);
+  const providerRoundCallIds = new Set(
+    (result.providerToolRounds ?? []).map((round) => round.toolCall.id),
+  );
+  let toolCalls = extractedToolCalls.filter((toolCall) => !providerRoundCallIds.has(toolCall.id));
+  const providerExecutedToolCallCount = extractedToolCalls.length - toolCalls.length;
   const providerToolCallCount = toolCalls.length;
   const localTerminalResponse = state.automationCreateLimitReached === true;
   if (state.automationCreateLimitReached && toolCalls.length > 0) {
@@ -516,6 +594,17 @@ async function runModelBackedTurnStepImpl(
     state.modelResponse = buildAutomationCreateLimitFallback(state.input);
   } else if (state.automationCreateLimitReached && state.modelResponse.trim().length === 0) {
     state.modelResponse = buildAutomationCreateLimitFallback(state.input);
+  }
+  if (result.textBlocks && state.modelResponse !== result.text) {
+    // fallback 替换了模型文字：只保留一个 fallback 文字块，序号排在已有块之后，
+    // 写库与 live history 都读 result.textBlocks，两边保持一致。
+    result.textBlocks = [
+      {
+        type: "text",
+        text: state.modelResponse,
+        blockIndex: maxResultBlockIndex(result) + 1,
+      },
+    ];
   }
   const usage = result.usage ?? {};
   const responseLength = state.modelResponse.length;
@@ -575,8 +664,36 @@ async function runModelBackedTurnStepImpl(
   }
   if (
     !localTerminalResponse &&
+    isContentFilteredEmptyModelResult(
+      result.finishReason,
+      rawFinishReason,
+      responseLength,
+      toolCalls.length + providerExecutedToolCallCount,
+    )
+  ) {
+    this.logger?.warn("Model output was blocked by provider content filter", {
+      ...traceContextToLogContext(modelTraceContext),
+      event: "model.response.content_filtered",
+      finishReason: result.finishReason,
+      module: "core.runtime",
+      rawFinishReason,
+      status: "completed",
+    });
+    throw createContentFilteredModelResultError({
+      finishReason: result.finishReason,
+      model: executionModelSelection,
+      rawFinishReason,
+    });
+  }
+  if (
+    !localTerminalResponse &&
     outputTokenContinuation === "none" &&
-    isSuspiciousEmptyModelResult(result.finishReason, responseLength, toolCalls.length, usage)
+    isSuspiciousEmptyModelResult(
+      result.finishReason,
+      responseLength,
+      toolCalls.length + providerExecutedToolCallCount,
+      usage,
+    )
   ) {
     this.logger?.warn("Model returned an empty non-stop result", {
       ...traceContextToLogContext(modelTraceContext),
@@ -608,6 +725,7 @@ async function runModelBackedTurnStepImpl(
         messageID: assistantMessageId,
         type: "reasoning",
         text: reasoning.text,
+        ...(reasoning.blockIndex !== undefined ? { blockIndex: reasoning.blockIndex } : {}),
         metadata: reasoning.providerOptions,
         time: {
           start: modelStartedAt,
@@ -617,22 +735,16 @@ async function runModelBackedTurnStepImpl(
       modelTraceContext,
     );
   }
-  if (state.modelResponse.length > 0) {
-    await this.persistPart(
-      {
-        id: createPartId(),
-        sessionID: this.sessionId,
-        messageID: assistantMessageId,
-        type: "text",
-        text: state.modelResponse,
-        time: {
-          start: modelStartedAt,
-          end: Date.now(),
-        },
-      },
-      modelTraceContext,
-    );
-  }
+  await persistTextBlockParts(
+    this,
+    {
+      messageId: assistantMessageId,
+      textBlocks: result.textBlocks,
+      text: state.modelResponse,
+      time: { start: modelStartedAt, end: Date.now() },
+    },
+    modelTraceContext,
+  );
 
   const cacheHit =
     querySource === "main_turn" ? recordMainTurnCacheHitUsage(this, result.usage) : undefined;
@@ -698,9 +810,6 @@ async function runModelBackedTurnStepImpl(
     .map((toolCall) => streamingToolCoordinator.admit(toolCall));
   const streamedToolResults = await streamingToolCoordinator.drain(executableToolCalls);
   if (outputTokenContinuation !== "none") {
-    // 首次命中 output-limit 时，当前 request 可能带有一次性的 project-memory attachment；
-    // query-local 状态必须从实际请求数组推进，不能退回请求前的数组。
-    state.turnRequestState.entries = options.requestEntries;
     const assistantCommitted = await persistCompletedAssistantStep(this, state, {
       assistantPersistenceAnchor,
       assistantCreatedAt,
@@ -711,7 +820,7 @@ async function runModelBackedTurnStepImpl(
     });
     if (assistantCommitted) recordModelHistoryRound(state);
     if (outputTokenContinuation === "continue") {
-      appendOutputTokenContinuation(state.turnRequestState);
+      await appendOutputTokenContinuation(this, state);
       state.reactiveCompactAttemptedInCurrentModelStep = false;
       state.turnMachine = new TurnMachineImpl(state.turnMachine.aggregateResults());
       return "output_continuation";
@@ -786,6 +895,20 @@ async function runModelBackedTurnStepImpl(
   return toolStepResult;
 }
 
+function maxResultBlockIndex(result: RuntimeModelTextResult): number {
+  const indices = [
+    ...(result.reasoning ?? []),
+    ...(result.textBlocks ?? []),
+    ...(result.toolCalls ?? []),
+    ...(result.providerToolRounds ?? []).flatMap((round) => [
+      ...round.reasoning,
+      ...(round.textBlocks ?? []),
+      round.toolCall,
+    ]),
+  ].map((block) => block.blockIndex ?? -1);
+  return Math.max(-1, ...indices);
+}
+
 function buildAutomationCreateLimitFallback(input: string): string {
   if (/\p{Script=Han}/u.test(input)) {
     return "定时任务已达到 20 个上限，本次未创建。请前往“自动化”手动删除一个已有任务后重试。";
@@ -837,6 +960,7 @@ async function recoverModelStepAfterContextExceeded(
       rapidRefillCount: rapidRefill.consecutiveRapidRefills,
       model: state.model,
       turnRequestState: state.turnRequestState,
+      getContinuationTools: () => getTurnTools(this, state),
     },
   );
   if (compactOutcome !== "compacted") {

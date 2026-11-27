@@ -13,7 +13,7 @@ import {
   subscribePluginUiInstances,
 } from "./pluginUiInstanceStore.js";
 import {
-  getPluginUiDisclosureVersion,
+  getPluginUiDisclosureSnapshot as getPluginUiDisclosureVersion,
   getPluginUiManualPin,
   setPluginUiManualPin,
   subscribePluginUiDisclosure,
@@ -155,10 +155,10 @@ describe("plugin row view-cache retention", () => {
     const pins = vi.fn(() => getPluginUiManualPin(key, "tool"));
     subscribePluginUiInstances(instances);
     subscribePluginUiDisclosure(pins);
-    const version = getPluginUiDisclosureVersion();
+    const version = getPluginUiDisclosureVersion(key);
     getPluginUiRowDisposition(key, "tool");
     getPluginUiManualPin(key, "tool");
-    expect(getPluginUiDisclosureVersion()).toBe(version);
+    expect(getPluginUiDisclosureVersion(key)).toBe(version);
     expect(pins).not.toHaveBeenCalled();
     clearPluginUiSessionViewState(key);
     clearPluginUiSessionViewState(key);

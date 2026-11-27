@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createNodeContextSourceAdapter } from "@ccbuddy/adapters/context";
 import { createNodeExecutionAdapter } from "@ccbuddy/adapters/exec";
 import { createNodeFileSystemAdapter } from "@ccbuddy/adapters/fs";
@@ -22,7 +23,6 @@ import {
   type JsonSchema,
   type PdfDocumentPort,
   type Logger,
-  type McpPort,
   type ModelRequestAdmission,
   type SessionId,
   type SessionStorePort,
@@ -32,6 +32,7 @@ import {
   type TraceContext,
   type WorkflowAgentCallInput,
   type WorkflowEscalatePort,
+  type WorkflowWebSearchBudgetPort,
   type WorkflowSubmitPort,
 } from "@ccbuddy/contracts";
 import { collectDisabledPaths } from "../skill-command-overrides.js";
@@ -50,7 +51,6 @@ export interface ScriptWorkflowAgentRuntimeDeps {
   imageProcessorPort: ImageProcessorPort;
   pdfDocumentPort?: PdfDocumentPort;
   logger: Logger;
-  mcpPort?: McpPort;
   /** 父会话的 model factory：child 与主 turn 从同一份 Registry 视图造 Model，不各自冻结。 */
   modelFactory: NonNullable<AgentRuntimeDeps["modelFactory"]>;
   permissionService: PermissionService;
@@ -67,7 +67,7 @@ export interface ScriptWorkflowAgentRuntimeDeps {
   workingDirectory: string;
 }
 
-export function createScriptWorkflowAgentRuntime(input: {
+export async function createScriptWorkflowAgentRuntime(input: {
   childSessionId: SessionId;
   deps: ScriptWorkflowAgentRuntimeDeps;
   request: WorkflowAgentCallInput;
@@ -93,6 +93,8 @@ export function createScriptWorkflowAgentRuntime(input: {
    * （core 的注册门同样以端口存在为准），这是 actor 遇到真阻塞时唯一的求助通道。
    */
   workflowEscalatePort?: WorkflowEscalatePort;
+  /** 每个 ask 的 WebSearch 预算端口（dwf actor 恒有）；缺席即无上限（legacy `Workflow` 子代理）。 */
+  webSearchBudget?: WorkflowWebSearchBudgetPort;
   /**
    * 模型请求准入端口。dwf actor 由 driver
    * 给出（每次模型请求尝试先过进程级闸门）；legacy `Workflow` 工具的子代理不传——不受闸门约束、
@@ -113,7 +115,7 @@ export function createScriptWorkflowAgentRuntime(input: {
    * （apps/ccbuddy-cli/packages/dynamic-workflow/docs/execution-engine.md「Subagent sessions」）。
    */
   browserControlPort?: BrowserControlPort;
-}): AgentRuntime {
+}): Promise<AgentRuntime> {
   // dwf actor 经 configOverrides.workflowActor 走 builder 的叠加路径，此时 systemPrompt 必须
   // 缺席（builder 对二者同在抛错）——父会话自带的 custom system prompt 不得漏给子代理，所以
   // 从继承的配置里把它剥掉，而不是靠后面的覆盖。
@@ -122,6 +124,7 @@ export function createScriptWorkflowAgentRuntime(input: {
     input.configOverrides?.workflowActor === undefined
       ? (input.request.opts?.systemPrompt ?? inheritedSystemPrompt)
       : undefined;
+  const childMcp = await input.deps.runtime.createChildMcpAccess();
   const parentSelection = input.deps.runtime.getSessionModelSelection();
   const requestedSelection = input.request.opts?.model
     ? parseProviderQualifiedModelSelection(input.request.opts.model)
@@ -142,6 +145,8 @@ export function createScriptWorkflowAgentRuntime(input: {
       // 「Permissions inside a run」）。
       mode: "yolo",
       modelSelection,
+      // 父 Shell 在首条输入才解析，子会话须继承父 runtime 已初始化的 shell。
+      bashShellSelection: input.deps.runtime.getSessionShellSelection(),
       parentSessionId: input.deps.sessionId,
       subagents: { enabled: false },
       taskType: "workflow_child",
@@ -151,6 +156,7 @@ export function createScriptWorkflowAgentRuntime(input: {
       toolAllowlist: input.request.opts?.tools,
       workingDirectory: input.deps.workingDirectory,
       ...input.configOverrides,
+      mcp: childMcp.config,
     },
     {
       ...createRuntimeDeps(input.deps, input.traceContext, input.childSessionId, {
@@ -170,6 +176,7 @@ export function createScriptWorkflowAgentRuntime(input: {
           ? {}
           : { parentTurnId: input.traceContext.turnId }),
       }),
+      ...childMcp.deps,
       ...(input.browserControlPort === undefined
         ? {}
         : {
@@ -183,9 +190,8 @@ export function createScriptWorkflowAgentRuntime(input: {
       ...(input.workflowSubmitPort && input.workflowSubmitSchema
         ? { workflowSubmitSchema: input.workflowSubmitSchema }
         : {}),
-      ...(input.workflowEscalatePort
-        ? { workflowEscalatePort: input.workflowEscalatePort }
-        : {}),
+      ...(input.workflowEscalatePort ? { workflowEscalatePort: input.workflowEscalatePort } : {}),
+      ...(input.webSearchBudget ? { webSearchBudget: input.webSearchBudget } : {}),
       ...(input.modelRequestAdmission
         ? { modelRequestAdmission: input.modelRequestAdmission }
         : {}),
@@ -243,6 +249,7 @@ function createRuntimeDeps(
           caCertFile: deps.configResult.config.network.caCertFile,
         },
         outputRootDir: join(deps.storageRoot, "cli", "exec"),
+        bashOutputTempDir: tmpdir(),
         processEnv: deps.appOptions.env ?? process.env,
       }),
     fileSystemPort: deps.appOptions.fileSystemPort ?? createNodeFileSystemAdapter(),
@@ -259,7 +266,6 @@ function createRuntimeDeps(
     imageProcessorPort: deps.imageProcessorPort,
     pdfDocumentPort: deps.pdfDocumentPort,
     logger: deps.logger,
-    mcpPort: deps.mcpPort,
     modelFactory: deps.modelFactory,
     resolveEffectiveModelSelection: deps.appOptions.resolveEffectiveModelSelection,
     // permissionBroker + providerRuntimeHeadersPort 都在这里面：父 runtime 派生，路由身份已改写成父会话。

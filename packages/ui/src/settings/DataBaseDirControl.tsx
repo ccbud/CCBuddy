@@ -1,12 +1,12 @@
-import { FolderOpen, Loader2 } from "lucide-react";
+import { FolderOpen, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { isDataBaseDirForbiddenWindowsInstallDirError } from "@ccbuddy/shared";
 import {
-  isDataBaseDirForbiddenWindowsInstallDirError,
   TID_SETTINGS_DATA_BASE_DIR_BROWSE,
   TID_SETTINGS_DATA_BASE_DIR_INPUT,
   TID_SETTINGS_DATA_BASE_DIR_SAVE,
   TID_SETTINGS_DATA_BASE_DIR_STATUS,
-} from "@ccbuddy/shared";
+} from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
@@ -108,7 +108,7 @@ export function DataBaseDirControl({
           onClick={() => void handleSave()}
         >
           {isSaving ? (
-            <Loader2 className="size-4 animate-spin" />
+            <LoaderCircle className="size-4 animate-spin" />
           ) : (
             intl.formatMessage({ id: "settings.dataBaseDirSave" })
           )}

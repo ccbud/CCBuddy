@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createNodeContextSourceAdapter } from "@ccbuddy/adapters/context";
 import { createNodeExecutionAdapter } from "@ccbuddy/adapters/exec";
 import { createNodeFileSystemAdapter } from "@ccbuddy/adapters/fs";
@@ -30,7 +31,6 @@ import {
   type ImageProcessorPort,
   type PdfDocumentPort,
   type Logger,
-  type McpPort,
   type SessionEventSink,
   type SessionId,
   type SessionStorePort,
@@ -57,7 +57,6 @@ interface CreateWorkflowFacadeDeps {
   imageProcessorPort: ImageProcessorPort;
   pdfDocumentPort?: PdfDocumentPort;
   logger: Logger;
-  mcpPort?: McpPort;
   /** 父会话的 model factory（与 script-workflow-child-runtime.ts 同一约定）。 */
   modelFactory: NonNullable<AgentRuntimeDeps["modelFactory"]>;
   permissionService: PermissionService;
@@ -85,7 +84,8 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
       await deps.prepareUserExecutionBoundary({ traceContext: request.traceContext });
       const workflowKind = request.workflowKind ?? builtInExpertWorkflowDefinition.kind;
       const childSessionId = createSessionId(`workflow_${request.activityId}`);
-      const childTraceContext = createChildTraceContext(request.traceContext ?? deps.traceContext, {
+      const parentTraceContext = request.traceContext ?? deps.traceContext;
+      const childTraceContext = createChildTraceContext(parentTraceContext, {
         attributes: {
           parentSessionId: deps.sessionId,
           workflowActivityId: request.activityId,
@@ -94,6 +94,7 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
           workflowRunId: request.runId,
         },
         sessionId: childSessionId,
+        rootSessionId: parentTraceContext.rootSessionId ?? deps.sessionId,
       });
       const parentSelection = deps.runtime.getSessionModelSelection();
       await request.onChildSessionStarted?.({
@@ -103,7 +104,7 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
         sessionId: childSessionId,
         traceId: childTraceContext.traceId,
       });
-      const childRuntime = createWorkflowChildRuntime(deps, {
+      const childRuntime = await createWorkflowChildRuntime(deps, {
         childSessionId,
         childTraceContext,
         workflowKind,
@@ -272,22 +273,26 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
   });
 }
 
-function createWorkflowChildRuntime(
+async function createWorkflowChildRuntime(
   deps: CreateWorkflowFacadeDeps,
   options: {
     childSessionId: SessionId;
     childTraceContext: TraceContext;
     workflowKind: string;
   },
-): AgentRuntime {
+): Promise<AgentRuntime> {
+  const childMcp = await deps.runtime.createChildMcpAccess();
   return new AgentRuntime(
     options.childSessionId,
     {
       ...deps.runtimeConfig,
+      mcp: childMcp.config,
       agentName: options.workflowKind === "expert" ? "ccbuddy-expert" : "ccbuddy-workflow",
       // workflow child 不在 Guarded 合同内；只隔离父任务模式，不继承审批。
       mode: "yolo",
       modelSelection: deps.runtime.getSessionModelSelection(),
+      // 父 Shell 在首条输入才解析，不能继承 app 创建时尚未初始化的静态配置。
+      bashShellSelection: deps.runtime.getSessionShellSelection(),
       parentSessionId: deps.sessionId,
       taskType: "workflow_child",
       workingDirectory: deps.workingDirectory,
@@ -310,6 +315,7 @@ function createWorkflowChildRuntime(
             caCertFile: deps.configResult.config.network.caCertFile,
           },
           outputRootDir: join(deps.storageRoot, "cli", "exec"),
+          bashOutputTempDir: tmpdir(),
           processEnv: deps.appOptions.env ?? process.env,
         }),
       fileSystemPort: deps.appOptions.fileSystemPort ?? createNodeFileSystemAdapter(),
@@ -337,7 +343,7 @@ function createWorkflowChildRuntime(
               disabledPaths: collectDisabledPaths(deps.configResult.config.skillOverrides),
             }))
           : undefined,
-      mcpPort: deps.mcpPort,
+      ...childMcp.deps,
       eventSink: deps.eventSink,
       modelFactory: deps.modelFactory,
       resolveEffectiveModelSelection: deps.appOptions.resolveEffectiveModelSelection,

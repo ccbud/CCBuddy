@@ -139,11 +139,13 @@ async function ensureNodeBinary(repoRoot: string, target: ServerTarget): Promise
 
 async function ensureAgentBundle(repoRoot: string, skipBuild: boolean): Promise<string> {
   const bundlePath = join(repoRoot, "apps/ccbuddy-cli/packages/cli/dist/ccbuddy.cjs");
-  if (await pathExists(bundlePath)) return bundlePath;
   if (skipBuild) {
+    if (await pathExists(bundlePath)) return bundlePath;
     throw new Error(`Agent bundle missing: ${bundlePath} (remove --skip-agent-build to build it)`);
   }
-  log("agent bundle missing, building via scripts/build-desktop-agent-cli.mjs");
+  // Bug 原因：第一目标过去只按 bundle 是否存在决定构建，bootstrap 会把上一代 dist
+  // 复制进所有平台 archive。只有本轮第一目标真实构建后，后续目标才允许 skipBuild 复用。
+  log("building current agent bundle via scripts/build-desktop-agent-cli.mjs");
   await runCommand(
     process.execPath,
     [join(repoRoot, "scripts/build-desktop-agent-cli.mjs")],
@@ -173,6 +175,17 @@ async function resolveNativeToolsDir(repoRoot: string, target: ServerTarget): Pr
     ],
     repoRoot,
   );
+  if (platform === "win32") {
+    await runCommand(
+      process.execPath,
+      [
+        join(repoRoot, "scripts/build-windows-runtime-host.mjs"),
+        `--arch=${arch}`,
+        `--output-dir=${join(cacheDir, "runtime-host")}`,
+      ],
+      repoRoot,
+    );
+  }
   if (!(await pathExists(cacheDir)))
     throw new Error(`Native search tools preparation produced no directory for ${target}`);
   return cacheDir;
@@ -253,6 +266,7 @@ async function main(): Promise<void> {
     appVersion,
     distDir,
     agentBundlePath,
+    bundledSkillsDir: join(repoRoot, "apps/ccbuddy-cli/packages/bundled-skills"),
     nodeBinaryPath,
     notices: {
       thirdParty: thirdParty.toString("utf8"),
@@ -265,6 +279,7 @@ async function main(): Promise<void> {
     officialPluginsDir,
     outputDir: join(packageRoot, "dist-release"),
     archive: !argv.includes("--no-archive"),
+    componentArchives: !argv.includes("--skip-component-archives"),
   });
 
   log(`release dir: ${staged.releaseDir}`);

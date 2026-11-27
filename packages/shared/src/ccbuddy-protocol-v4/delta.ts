@@ -13,12 +13,14 @@ import { conversationRowSchema } from "./rows.js";
 import { sharedContextImportStateSchema } from "./shared-context-import.js";
 import {
   backgroundWorkSummarySchema,
+  activitySummaryDismissedSchema,
   commandStateSummarySchema,
   goalStateSchema,
   inputRoutingSchema,
   pendingInteractionSchema,
   planStateSchema,
   queueStateSchema,
+  runtimeInitializationSchema,
   sessionActionAvailabilitySchema,
   sessionConfigStateSchema,
   sessionControlSchema,
@@ -27,6 +29,7 @@ import {
   sessionUsageStateSchema,
   subagentProjectionStateSchema,
   workspaceHookAdmissionStateSchema,
+  workspaceMcpAdmissionStateSchema,
 } from "./snapshot.js";
 import {
   WORKFLOW_RUNS_LIMITS,
@@ -38,6 +41,7 @@ import {
 
 // StatePatch：键级整体替换（Object.assign），键集合封闭。键内绝不深合并。
 export const statePatchSchema = z.object({
+  runtimeInitialization: runtimeInitializationSchema.optional(),
   revision: z.number().optional(),
   control: sessionControlSchema.optional(),
   sharedContextImport: sharedContextImportStateSchema.optional(),
@@ -51,6 +55,8 @@ export const statePatchSchema = z.object({
   pendingInteractions: z.array(pendingInteractionSchema).optional(),
   pendingCommands: z.array(commandStateSummarySchema).optional(),
   backgroundWorks: z.array(backgroundWorkSummarySchema).optional(),
+  activitySummaryDismissed: activitySummaryDismissedSchema.optional(),
+  completedActivityCount: z.number().int().nonnegative().nullable().optional(),
   subagents: subagentProjectionStateSchema.optional(),
   // workflow run 的实时运行态。容器本身不 strict，所以旧桌面收到这个新键只是**剥离一个键**、
   // 保住 patch 其余全部键——这正是它不需要任何版本偏斜防御的原因。
@@ -59,6 +65,7 @@ export const statePatchSchema = z.object({
   plan: planStateSchema.nullable().optional(),
   // 软门禁：null = pending 清零(提示条消失);对象 = 待审核状态更新。
   workspaceHookAdmission: workspaceHookAdmissionStateSchema.nullable().optional(),
+  workspaceMcpAdmission: workspaceMcpAdmissionStateSchema.nullable().optional(),
 });
 export type StatePatch = z.infer<typeof statePatchSchema>;
 

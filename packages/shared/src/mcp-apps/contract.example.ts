@@ -1,4 +1,5 @@
-import type { McpToolUiDescriptor, PluginSandboxHandle } from "./contract.js";
+import type { McpToolUiDescriptor } from "./contract.js";
+import type { PluginSandboxHandle } from "./pluginSandboxRegister.js";
 import {
   MCP_APPS_CSP_RELAXATION_META_KEY,
   MCP_APPS_SET_WIDGET_STATE_METHOD,
@@ -34,6 +35,7 @@ export const exampleSandboxHandle: PluginSandboxHandle = {
     heightHint: 320,
     minFrameHeight: 120,
     showInline: false,
+    backgroundRetention: true,
     permissions: ["clipboardWrite"],
   },
 };

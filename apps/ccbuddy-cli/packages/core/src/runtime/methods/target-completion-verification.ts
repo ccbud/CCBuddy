@@ -131,7 +131,7 @@ async function verifyTargetCompletion(
     modelTraceContext,
   );
   // verifier 和轮内每个 model step 一样，按本次请求的模型重新投影前缀。
-  // 修复原因：轮次结束后改语言、output style 等重建不带模型，默认写成 MCS 文案；
+  // 修复原因：轮次结束后改 output style 等重建不带模型，默认写成 MCS 文案；
   // 不支持 MCS 的模型收到的 Harness 文案与实际送达方式矛盾，前缀缓存也失效。
   rebuildContextPrefix(this, { model });
   const prepared = prepareRuntimeProviderRequest(this, {
@@ -319,12 +319,13 @@ async function generateTargetCompletionVerificationText(
   const maxAttempts = TARGET_VERIFIER_START_PLAN_BUSY_RETRY_DELAYS_MS.length + 1;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
+      using statusSink = this.createModelStatusSink(input.traceContext, input.events);
       const invocationContext = {
         metadata: traceContextToLogContext(input.traceContext),
         modelCall: {
           operation: "goal_completion_verification" as const,
         },
-        statusSink: this.createModelStatusSink(input.traceContext, input.events),
+        statusSink,
         traceContext: input.traceContext,
         refreshRuntimeHeadersBeforeAttempt: createRefreshRuntimeHeadersBeforeModelAttempt(this, {
           abortSignal: input.abortSignal,

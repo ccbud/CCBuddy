@@ -16,7 +16,12 @@ releaseDate: '2026-09-24T00:00:00.000Z'
 `;
   let requestedPath: string | undefined;
   const provider = new ManifestUpdateProvider(
-    { manifestUrl, releaseChannel: "stable", releasePlatform: "darwin-aarch64" },
+    {
+      provider: "custom",
+      manifestUrl,
+      releaseChannel: "stable",
+      releasePlatform: "darwin-aarch64",
+    },
     {} as ConstructorParameters<typeof ManifestUpdateProvider>[1],
     {
       executor: {

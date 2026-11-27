@@ -40,9 +40,44 @@ export interface RuntimeTaskMessageSink {
   send(message: RuntimeTaskPendingMessage): Promise<"queued" | "steered">;
 }
 
+export interface SubagentRunningToolActivity {
+  toolCallId: string;
+  toolName: string;
+  startedAt: number;
+  /** Bash 命令、Read 路径等一行摘要；只给模型判断用，有长度上限。 */
+  summary?: string;
+}
+
+/** 后台 Agent 的进展事实（subagent/background-stall.ts 写，停滞提醒与 TaskOutput 读）。 */
+export interface SubagentActivitySnapshot {
+  lastProgressAt: number;
+  runningTools: SubagentRunningToolActivity[];
+  /** child 正在等用户审批；此时无进展是在等人，不提醒主代理。由 pendingPermissionToolCallIds 派生。 */
+  waitingForPermission: boolean;
+  /**
+   * 还在等审批的工具调用。并行工具组里可能同时有多个审批挂起，一个结束不代表全部结束
+   * （!3563 评审 SG-02）；缺省按空处理（旧快照）。
+   */
+  pendingPermissionToolCallIds?: string[];
+  /**
+   * 已经结束的审批（requestId）与工具调用（toolCallId），各保留最近 64 个。审批请求的发布可能
+   * 晚于超时、取消后的 Resolved / ToolCallError 到达，迟到的 PermissionRequested 不能把已结束的
+   * 审批重新挂起（!3563 评审第四轮 CR-01）。
+   */
+  endedPermissionRequestIds?: string[];
+  endedToolCallIds?: string[];
+}
+
 export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
+  /** local_agent 的进展事实；只在有 child 事件后出现。 */
+  activity?: SubagentActivitySnapshot;
+  /** 内存执行归属；重启不会恢复闲时后台任务。 */
+  offPeakExecutionId?: string;
+  offPeakCancelled?: boolean;
   /** task 注册时所属 active conversation branch；用于迟到 completion fencing。 */
   branchGeneration?: number;
+  /** local_bash 登记时的命令原文；compaction 补回运行中的后台命令时用。 */
+  command?: string;
   exitCode?: number;
   type: RuntimeTaskType;
   isBackgrounded?: boolean;
@@ -68,15 +103,20 @@ export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
 }
 
 export interface RuntimeTaskRegistry {
+  subscribe?(listener: () => void): () => void;
+  setOffPeakExecutionId?(executionId: string | undefined): void;
   all(): Record<string, RuntimeTaskSnapshot>;
   get(id: string): RuntimeTaskSnapshot | undefined;
   drainMessages(id: string): RuntimeTaskPendingMessage[];
-  queueMessage(
-    id: string,
-    message: RuntimeTaskPendingMessage,
-  ): RuntimeTaskSnapshot | undefined;
+  queueMessage(id: string, message: RuntimeTaskPendingMessage): RuntimeTaskSnapshot | undefined;
   register(task: RuntimeTaskSnapshot): void;
   remove(id: string): void;
+  /**
+   * 把运行中的任务标为后台；任务不存在或已结束时返回 false。
+   * 返回 true 时必须在本次调用内同步唤醒 `waitForBackgroundRequest` 的等待者：立即发送时 executor
+   * 判为 wait 后等 Agent handler 返回，handler 靠这次唤醒在几个微任务内返回 `async_launched`；
+   * 改成稍后唤醒，立即发送会一直等到 child 结束。
+   */
   requestBackground(id: string): boolean;
   setActiveBranchGeneration?(generation: number): void;
   update(
@@ -110,6 +150,20 @@ const TERMINAL_STATUSES = new Set<RuntimeTaskSnapshot["status"]>([
 ]);
 
 export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
+  private offPeakExecutionId: string | undefined;
+  private readonly listeners = new Set<() => void>();
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  setOffPeakExecutionId(executionId: string | undefined): void {
+    this.offPeakExecutionId = executionId;
+  }
+  private changed(): void {
+    for (const listener of this.listeners) listener();
+  }
   private activeBranchGeneration = 0;
   private readonly backgroundWaiters = new Map<string, Set<RuntimeTaskWaiter>>();
   private readonly tasks = new Map<string, RuntimeTaskSnapshot>();
@@ -118,11 +172,15 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
   register(task: RuntimeTaskSnapshot): void {
     const stamped = {
       ...task,
+      ...((task.offPeakExecutionId ?? this.offPeakExecutionId)
+        ? { offPeakExecutionId: task.offPeakExecutionId ?? this.offPeakExecutionId }
+        : {}),
       branchGeneration: task.branchGeneration ?? this.activeBranchGeneration,
     };
     this.tasks.set(stamped.taskId, stamped);
     this.resolveIfTerminal(stamped.taskId, stamped);
     this.resolveIfBackgrounded(stamped.taskId, stamped);
+    this.changed();
   }
 
   setActiveBranchGeneration(generation: number): void {
@@ -139,6 +197,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     this.tasks.set(id, next);
     this.resolveIfTerminal(id, next);
     this.resolveIfBackgrounded(id, next);
+    this.changed();
     return next;
   }
 
@@ -148,6 +207,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     const next: RuntimeTaskSnapshot = { ...task, isBackgrounded: true };
     this.tasks.set(id, next);
     this.resolveBackgroundWaiters(id, next);
+    this.changed();
     return true;
   }
 
@@ -155,6 +215,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     this.tasks.delete(id);
     this.resolveTerminalWaiters(id, undefined);
     this.resolveBackgroundWaiters(id, undefined);
+    this.changed();
   }
 
   get(id: string): RuntimeTaskSnapshot | undefined {
@@ -165,10 +226,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     return Object.fromEntries(this.tasks);
   }
 
-  queueMessage(
-    id: string,
-    message: RuntimeTaskPendingMessage,
-  ): RuntimeTaskSnapshot | undefined {
+  queueMessage(id: string, message: RuntimeTaskPendingMessage): RuntimeTaskSnapshot | undefined {
     return this.update(id, (task) => ({
       ...task,
       pendingMessages: [...(task.pendingMessages ?? []), message],
@@ -180,6 +238,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     if (!task || !task.pendingMessages || task.pendingMessages.length === 0) return [];
     const messages = task.pendingMessages;
     this.tasks.set(id, { ...task, pendingMessages: [] });
+    this.changed();
     return messages;
   }
 
@@ -242,10 +301,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     }
   }
 
-  private resolveBackgroundWaiters(
-    id: string,
-    task: RuntimeTaskSnapshot | undefined,
-  ): void {
+  private resolveBackgroundWaiters(id: string, task: RuntimeTaskSnapshot | undefined): void {
     this.resolveWaiters(this.backgroundWaiters, id, task);
   }
 

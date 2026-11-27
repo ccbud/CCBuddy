@@ -60,7 +60,6 @@ export interface CCbuddySessionResumeParams extends CCbuddyTaskTarget {
 }
 
 export interface CCbuddySessionListParams extends CCbuddySessionWorkspaceTarget {
-  includeArchived?: boolean;
   limit?: number;
 }
 

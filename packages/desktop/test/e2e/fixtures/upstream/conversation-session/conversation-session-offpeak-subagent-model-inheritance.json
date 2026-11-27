@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-offpeak-subagent-model-inheritance",
+  "spec": "./test/e2e/conversation-session/automations/conversation-session-offpeak-subagent-model-inheritance.test.ts",
+  "fixtures": [
+    {
+      "id": "offpeak-subagents-ordinary-prompt",
+      "description": "OP10 用户发送消息接管后，同会话后续后台唤起也使用普通 provider。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "闲时 mock gateway 独立承载 execution-scoped Active Model；本响应只稳定证明下一条普通 prompt 已回到用户 provider。"
+      },
+      "maxMatches": 8,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["E2E_OFFPEAK_SUBAGENTS_ORDINARY_PROMPT"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "upstream-e2e-offpeak-subagents-ordinary",
+          "inputTokens": 128,
+          "outputTokens": 12,
+          "text": "E2E_OFFPEAK_SUBAGENTS_ORDINARY_OK"
+        }
+      }
+    }
+  ]
+}

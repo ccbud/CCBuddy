@@ -1,3 +1,8 @@
+import { createPage } from "../../../ui/src/plugin-ui/adapters/pluginUiManagedPage.js";
+import { acquirePluginUiPage } from "../../../ui/src/plugin-ui/adapters/pluginUiPageRegistry.js";
+import { attachPluginUiToolResults } from "../../../ui/src/plugin-ui/adapters/pluginUiBackground.js";
+import { buildPluginUiSurfaceKey } from "../../../ui/src/plugin-ui/contract.js";
+import { subscribePage } from "../../../ui/src/plugin-ui/adapters/pluginUiPageRegistry.js";
 import { registerPluginUiSessionActions } from "../../../ui/src/plugin-ui/adapters/pluginUiSessionActions.js";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,6 +22,8 @@ import type {
 const harness = (window as any).harness;
 const ready = Promise.withResolvers<void>();
 (window as any).harnessReady = ready.promise;
+const paused = Promise.withResolvers<void>();
+(window as any).fixturePaused = paused.promise;
 const drained = new Set<() => void>();
 const channels = new Map<string, Set<(value: any) => void>>();
 const emit = (name: string, value: unknown) => {
@@ -49,9 +56,12 @@ const agent = {
       "subscribeConversationV4",
       "unsubscribeConversationV4",
       "resyncConversationV4",
+      "getSessionLifecycle",
     ].map((method) => [method, (p: unknown) => harness.v4(method, p)]),
   ),
+  onDynamicPluginUiToolResult: () => (handler: any) => subscribe("ui-result", handler),
   onDynamicConversationFrame: () => (handler: any) => subscribe("frame", handler),
+  onDynamicSessionLifecycle: () => (handler: any) => subscribe("session-lifecycle", handler),
   onDynamicLocalTtftFacts: () => (handler: any) => subscribe("ttft", handler),
   onAgentRuntimeRestarted: (handler: any) => subscribe("restart", handler),
   onAgentRuntimeLifecycle: (handler: any) => subscribe("lifecycle", handler),
@@ -67,6 +77,7 @@ const services = {
 };
 const platform = {
   pluginSandbox: {
+    setExecutionActive: window.ccbuddyPluginSandbox?.setExecutionActive,
     getOwnerWebContentsId: () => harness.owner(),
     disposeSandbox: (id: string, init: number) => harness.dispose(id, init),
     consumeUserGesture: async () => false,
@@ -90,9 +101,9 @@ const realSetTimeout = window.setTimeout.bind(window),
   realClearTimeout = window.clearTimeout.bind(window);
 const fakeIds = new Map<number, () => void>();
 let nextTimer = -1;
-// 只控制产品的五分钟保活期限；握手、teardown、v4 keep-warm 仍用真实完成事件/时钟。
+// 只控制产品的五分钟/三十分钟期限；握手、teardown、keep-warm 仍用真实完成事件。
 window.setTimeout = ((run: () => void, ms: number, ...args: any[]) => {
-  if (ms !== 300_000) return realSetTimeout(run, ms, ...args);
+  if (ms < 300_000 || ms > 1_800_000) return realSetTimeout(run, ms, ...args);
   const id = nextTimer--;
   deadlines.add(run);
   fakeIds.set(id, run);
@@ -111,11 +122,13 @@ function Anchor({
   enabled,
   sequence,
   remote,
+  visible = true,
 }: {
   side: boolean;
   enabled: boolean;
   sequence?: number;
   remote?: boolean;
+  visible?: boolean;
 }) {
   const input: UsePluginUiHostInput = {
     ...config,
@@ -140,8 +153,10 @@ function Anchor({
     if (host.phase === "running" || !host.supported) ready.resolve();
     if (host.phase === "error") ready.reject(new Error(host.error ?? "managed page failed"));
   }, [host.phase, host.pageKey, enabled]);
+  if (config.mode.startsWith("background-cold")) return null;
   return side ? (
     <PluginUiSidePaneView
+      visible={visible}
       scopeRef={config.scope.scope}
       host={host}
       loadingLabel="loading"
@@ -161,8 +176,12 @@ function Anchor({
 }
 function Fixture() {
   const [state, setState] = useState({
-    inline: true,
-    sidebar: false,
+    inline: config.mode !== "background-hidden" && !config.mode.startsWith("background-admission"),
+    sidebar: config.mode === "background-hidden",
+    sidebarVisible: true,
+    sidebarActive: true,
+    chatVisible: true,
+    workspaceVisible: true,
     sequence: undefined as number | undefined,
     remote: config.mode === "remote",
   });
@@ -197,9 +216,76 @@ function Fixture() {
         </div>
         <div
           id="sidebar-anchor"
-          style={{ position: "absolute", left: 500, top: 20, width: 450, height: 600 }}
+          aria-hidden={!state.sidebarVisible || !state.chatVisible || !state.workspaceVisible}
+          style={{
+            position: "absolute",
+            left: 500,
+            top: 20,
+            width: state.sidebarVisible ? 450 : 0,
+            height: 600,
+            display: config.mode === "background-hidden" ? "none" : undefined,
+            overflow: "hidden",
+            opacity: state.sidebarVisible && state.chatVisible && state.workspaceVisible ? 1 : 0,
+            pointerEvents:
+              state.sidebarVisible && state.chatVisible && state.workspaceVisible
+                ? undefined
+                : "none",
+          }}
         >
-          {state.sidebar && <Anchor side enabled sequence={state.sequence} remote={state.remote} />}
+          {/* 复现应用收起时锁宽、切标签时 forceMount 的真实布局；锚点一直连接。 */}
+          <div style={{ width: 450, height: 600, display: state.sidebarActive ? "block" : "none" }}>
+            {state.sidebar && (
+              <Anchor
+                side
+                enabled
+                visible={
+                  state.sidebarVisible &&
+                  state.sidebarActive &&
+                  state.chatVisible &&
+                  state.workspaceVisible
+                }
+                sequence={state.sequence}
+                remote={state.remote}
+              />
+            )}
+          </div>
+        </div>
+        <div style={{ position: "absolute", left: 500, top: 650 }}>
+          <button
+            id="toggle-sidebar"
+            onClick={() =>
+              setState((previous) => ({ ...previous, sidebarVisible: !previous.sidebarVisible }))
+            }
+          >
+            Toggle sidebar
+          </button>
+          <button
+            id="switch-sidebar-tab"
+            onClick={() =>
+              setState((previous) => ({ ...previous, sidebarActive: !previous.sidebarActive }))
+            }
+          >
+            Switch tab
+          </button>
+          <button
+            id="switch-main-page"
+            onClick={() =>
+              setState((previous) => ({ ...previous, chatVisible: !previous.chatVisible }))
+            }
+          >
+            Switch page
+          </button>
+          <button
+            id="switch-workspace"
+            onClick={() =>
+              setState((previous) => ({
+                ...previous,
+                workspaceVisible: !previous.workspaceVisible,
+              }))
+            }
+          >
+            Switch workspace
+          </button>
         </div>
       </PlatformProvider>
     </ServiceProvider>
@@ -211,6 +297,11 @@ const layout = () =>
   );
 (window as any).setAnchors = async (inline: boolean, sidebar: boolean, sequence?: number) => {
   flushSync(() => renderState({ inline, sidebar, sequence }));
+  await layout();
+};
+(window as any).revealBackgroundPage = async () => {
+  config.mode = "background";
+  flushSync(() => renderState({ inline: false, sidebar: true }));
   await layout();
 };
 (window as any).setShowcasePresentation = async (
@@ -252,12 +343,15 @@ const layout = () =>
   deadlines.clear();
   for (const run of pending) run();
 };
-(window as any).removeTask = () =>
+(window as any).removeTask = () => {
+  // 删除任务同时撤掉呈现入口；不能让测试中仍挂载的 hook 再次请求已删除任务。
+  flushSync(() => renderState({ inline: false, sidebar: false }));
   emit("task", {
     type: "workspace_task_list_changed",
     reason: "task_deleted",
     taskId: config.scope.sessionId,
   });
+};
 (window as any).runtimeUnavailable = () =>
   emit("lifecycle", {
     workspaceKey: config.scope.workspaceIdentity ?? config.scope.workspacePath,
@@ -299,7 +393,7 @@ const layout = () =>
 };
 void harness
   .config()
-  .then((value: any) => {
+  .then(async (value: any) => {
     config = value;
     if (config.mode === "sampling") {
       let unregister: (() => void) | undefined;
@@ -332,7 +426,30 @@ void harness
           notify();
         });
     }
+    if (config.mode.startsWith("background-admission")) {
+      // 故意不挂 Anchor/usePluginUiHost，也没有 conversation lease；只保留生产窗口接收器。
+      const key = buildPluginUiSurfaceKey(
+        { ...config.scope, ...config.presentation },
+        config.scope.scope,
+      );
+      subscribePage(key, () => {
+        const page = pluginUiPages.get(key);
+        if (page) current = page.snapshot();
+      });
+      const off = attachPluginUiToolResults(services as never, platform as never, () => ({
+        theme: "light",
+        locale: "en",
+      }));
+      (window as any).stopBackgroundReceiver = off;
+      ready.resolve();
+    }
     if (config.mode === "web") platform.pluginSandbox = undefined as never;
+    if (config.mode.endsWith("-minimized")) {
+      const start = Promise.withResolvers<void>();
+      (window as any).startFixture = start.resolve;
+      paused.resolve();
+      await start.promise;
+    }
     createRoot(document.getElementById("root")!).render(
       config.mode === "rows" ? (
         <ServiceProvider services={services as never}>
@@ -346,3 +463,50 @@ void harness
     );
   })
   .catch(ready.reject);
+
+const originalNow = Date.now;
+let retentionOffset = 0;
+(window as any).advanceRetention = (ms: number) => {
+  retentionOffset += ms;
+  Date.now = () => originalNow() + retentionOffset;
+  (window as any).expireOffscreen();
+};
+(window as any).addRetentionPages = async (count: number) => {
+  const keys: string[] = [];
+  for (let index = 0; index < count; index++) {
+    const input = {
+      ...config,
+      theme: "light",
+      locale: "en-US",
+      displayMode: "inline",
+      width: 400,
+      hostVersion: "fixture",
+      toolInput: undefined,
+      toolResult: undefined,
+      scope: { ...config.scope, scope: { kind: "toolCall", toolCallId: `retained-${index}` } },
+    } as UsePluginUiHostInput;
+    const key = buildPluginUiSurfaceKey(
+      { ...input.scope, ...input.presentation },
+      input.scope.scope,
+    );
+    const page = await acquirePluginUiPage(key, () =>
+      createPage(key, input, platform as any, services as any),
+    );
+    await new Promise<void>((resolve, reject) => {
+      const check = () => {
+        const { phase, error } = page.snapshot();
+        if (phase === "running" || phase === "error") {
+          off();
+          if (error) reject(new Error(error));
+          else resolve();
+        }
+      };
+      const off = page.subscribe(check);
+      check();
+    });
+    keys.push(key);
+  }
+  return keys;
+};
+(window as any).retentionStates = (keys: string[]) =>
+  keys.map((key) => pluginUiPages.get(key)?.snapshot().phase);

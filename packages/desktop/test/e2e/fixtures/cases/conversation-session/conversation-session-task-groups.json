@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-task-groups",
+  "spec": "./test/e2e/conversation-session/task-management/conversation-session-task-groups.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-task-groups.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-task-groups-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "grp06-first-send",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "Fixed response exercises the real Host/CLI creation and group placement, without testing model content."
+    },
+    {
+      "id": "grp06-pending-placement",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "Fixed response isolates group admission failure from the real Host/CLI accepted task and directory lifecycle."
+    }
+  ]
+}

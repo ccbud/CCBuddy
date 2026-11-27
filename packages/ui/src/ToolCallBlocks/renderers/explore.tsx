@@ -1,202 +1,24 @@
-/* eslint-disable max-lines -- Explore 聚合渲染同时维护分类、父级摘要和可复用子工具摘要，拆开会让父子展示规则更难对齐 */
-import { SearchIcon } from "lucide-react";
 import { extractPlanStepsFromToolInput, extractPlanStepsFromToolOutput } from "@ccbuddy/shared";
-import { ToolCallBlock } from "@/ToolCallBlocks.js";
-import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
-import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { getExecuteSecondaryText } from "@/ToolCallBlocks/renderers/execute.js";
 import { buildReadSummary, ReadFileChip } from "@/ToolCallBlocks/renderers/read.js";
+import { getWebFetchPrimaryText } from "@/ToolCallBlocks/renderers/web-fetch.js";
 import { getSearchPrimaryText } from "@/ToolCallBlocks/renderers/search.js";
-import { renderFilePath } from "@/ToolCallBlocks/shared.js";
 import { resolveToolCallIdentity } from "@/lib/toolIdentity.js";
-import { ToolLayout } from "../ToolLayout.js";
-import type { ToolCallBlockRenderContext } from "../shared.js";
-import { useCallback, type ReactNode } from "react";
+import type { ToolCallBlockRenderContext } from "@/ToolCallBlocks/shared.js";
+import { type ReactNode } from "react";
 import type { TaskChatToolCallTreeNode } from "@/lib/toolCallTree.js";
 import type { CCbuddyPlanStep } from "@ccbuddy/shared";
-
-const EXPLORE_TOOL_ICON = <SearchIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
 type IntlLike = {
   formatMessage: (descriptor: { id: string }, values?: Record<string, string>) => string;
 };
 
-export type ExploreChildSummary = {
+type AgentChildSummary = {
   animationKey: string;
   primaryText: ReactNode;
   secondaryText?: ReactNode;
   title?: string;
 };
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function unwrapShellCommand(command: string): string {
-  const trimmed = command.trim();
-  const shellCommandMatch = trimmed.match(/^(?:\/bin\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/i);
-  if (!shellCommandMatch?.[1]) {
-    return trimmed;
-  }
-
-  const rawInnerCommand = shellCommandMatch[1].trim();
-  if (
-    (rawInnerCommand.startsWith('"') && rawInnerCommand.endsWith('"')) ||
-    (rawInnerCommand.startsWith("'") && rawInnerCommand.endsWith("'"))
-  ) {
-    return rawInnerCommand.slice(1, -1).trim();
-  }
-
-  return rawInnerCommand;
-}
-
-function collectCommandStrings(input: unknown): string[] {
-  const commandCandidates: string[] = [];
-
-  const collectFromValue = (value: unknown) => {
-    if (typeof value === "string") {
-      const command = value.trim();
-      if (command.length > 0) {
-        commandCandidates.push(command);
-      }
-      return;
-    }
-
-    if (!Array.isArray(value)) {
-      return;
-    }
-
-    if (value.every((item) => typeof item === "string")) {
-      const commandParts = value as string[];
-      const shellCommandIndex = commandParts.findIndex((part) => part === "-lc");
-      if (shellCommandIndex >= 0 && typeof commandParts[shellCommandIndex + 1] === "string") {
-        const shellCommand = commandParts[shellCommandIndex + 1]!.trim();
-        if (shellCommand.length > 0) {
-          commandCandidates.push(shellCommand);
-          return;
-        }
-      }
-
-      const joinedCommand = commandParts.join(" ").trim();
-      if (joinedCommand.length > 0) {
-        commandCandidates.push(joinedCommand);
-      }
-      return;
-    }
-
-    for (const item of value) {
-      if (!isPlainRecord(item)) {
-        continue;
-      }
-
-      const parsedCommand = item.cmd;
-      if (typeof parsedCommand === "string" && parsedCommand.trim().length > 0) {
-        commandCandidates.push(parsedCommand.trim());
-      }
-    }
-  };
-
-  collectFromValue(input);
-
-  if (!isPlainRecord(input)) {
-    return Array.from(
-      new Set(
-        commandCandidates.flatMap((candidate) => unwrapShellCommand(candidate).split(/&&|\|\||;/g)),
-      ),
-    )
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-
-  for (const key of ["command", "cmd", "script", "parsed_cmd"] as const) {
-    collectFromValue(input[key]);
-  }
-
-  return Array.from(
-    new Set(
-      commandCandidates.flatMap((candidate) => unwrapShellCommand(candidate).split(/&&|\|\||;/g)),
-    ),
-  )
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-type ExploreBucket = "search" | "list" | "file";
-
-function getBucketLabel(intl: IntlLike, bucket: ExploreBucket, count: number) {
-  switch (bucket) {
-    case "search":
-      return intl.formatMessage({
-        id:
-          count === 1
-            ? "chat.toolCall.explore.bucket.search.one"
-            : "chat.toolCall.explore.bucket.search.other",
-      });
-    case "list":
-      return intl.formatMessage({
-        id:
-          count === 1
-            ? "chat.toolCall.explore.bucket.list.one"
-            : "chat.toolCall.explore.bucket.list.other",
-      });
-    case "file":
-      return intl.formatMessage({
-        id:
-          count === 1
-            ? "chat.toolCall.explore.bucket.file.one"
-            : "chat.toolCall.explore.bucket.file.other",
-      });
-    default:
-      return intl.formatMessage({ id: "chat.toolCall.explore.bucket.items" });
-  }
-}
-
-function classifyExploreToolCall({
-  kind,
-  title,
-  input,
-}: {
-  kind: string;
-  title?: string;
-  input: unknown;
-}): ExploreBucket {
-  const fingerprint = `${kind} ${title ?? ""}`.toLowerCase();
-  const command = collectCommandStrings(input).join(" ; ").toLowerCase();
-
-  if (
-    /(\bgrep\b|\bsearch\b|\bfetch\b|\bweb.?search\b|\bweb.?fetch\b)/i.test(fingerprint) ||
-    /(^|\s)(rg|grep|ripgrep|git\s+grep)(\s|$)/i.test(command)
-  ) {
-    return "search";
-  }
-
-  if (
-    /(\bglob\b|\bfind\b|\blist\b|\btree\b|\bdir\b|\bls\b)/i.test(fingerprint) ||
-    /(^|\s)(ls|find|tree|dir)(\s|$)/i.test(command)
-  ) {
-    return "list";
-  }
-
-  return "file";
-}
-
-function formatExploreSummary(intl: IntlLike, counts: Record<ExploreBucket, number>) {
-  const summaryParts: string[] = [];
-
-  if (counts.search > 0) {
-    summaryParts.push(`${counts.search} ${getBucketLabel(intl, "search", counts.search)}`);
-  }
-  if (counts.list > 0) {
-    summaryParts.push(`${counts.list} ${getBucketLabel(intl, "list", counts.list)}`);
-  }
-  if (counts.file > 0) {
-    summaryParts.push(`${counts.file} ${getBucketLabel(intl, "file", counts.file)}`);
-  }
-
-  return summaryParts.length > 0
-    ? summaryParts.join(", ")
-    : intl.formatMessage({ id: "chat.toolCall.explore.emptySummary" });
-}
 
 function getChildActionKindLabel(
   intl: IntlLike,
@@ -205,6 +27,8 @@ function getChildActionKindLabel(
   switch (family) {
     case "file-read":
       return intl.formatMessage({ id: "chat.toolCall.read.reading" });
+    case "web-fetch":
+      return intl.formatMessage({ id: "chat.toolCall.webFetch.fetching" });
     case "search":
       return intl.formatMessage({ id: "chat.toolCall.search.searching" });
     case "shell":
@@ -247,7 +71,7 @@ function readTodoPlanFromToolCall(
 function getTodoChildSummary(
   intl: IntlLike,
   childToolCall: ToolCallBlockRenderContext["toolCallNode"]["toolCall"],
-): ExploreChildSummary | null {
+): AgentChildSummary | null {
   const plan = readTodoPlanFromToolCall(childToolCall);
   if (!plan || plan.length === 0) {
     return {
@@ -271,7 +95,12 @@ function getTodoChildSummary(
     id: isComplete ? "chat.toolCall.todo.updated" : "chat.toolCall.todo.updating",
   });
   const progressText = `${completedCount}/${plan.length}`;
-  const primaryText = activeStep?.title ? `${progressText} · ${activeStep.title}` : progressText;
+  const primaryText = (
+    <span className="inline-flex min-w-0 items-center gap-2">
+      <span className="shrink-0">{progressText}</span>
+      {activeStep?.title ? <span className="min-w-0 truncate">{activeStep.title}</span> : null}
+    </span>
+  );
 
   return {
     animationKey: `todo:${childToolCall.toolId}:${completedCount}:${plan.length}:${activeStep?.id ?? "none"}:${activeStep?.title ?? ""}`,
@@ -285,12 +114,12 @@ function getTodoChildSummary(
   };
 }
 
-function getLatestExploreChildSummary(
+function getLatestAgentChildSummary(
   intl: IntlLike,
   childToolCall: ToolCallBlockRenderContext["toolCallNode"]["toolCall"],
   context: ToolCallBlockRenderContext,
   options: { includeChildActionKindLabel?: boolean } = {},
-): ExploreChildSummary | null {
+): AgentChildSummary | null {
   const childIdentity = resolveToolCallIdentity(childToolCall);
   const actionKindLabel =
     options.includeChildActionKindLabel === true
@@ -325,11 +154,21 @@ function getLatestExploreChildSummary(
         actionKindLabel,
         <ReadFileChip summary={readSummary} clickable={canOpenPreview} onClick={openFilePreview} />,
       ),
-      secondaryText: renderFilePath(readSummary.filePath),
       title: readSummary.path,
     };
   }
 
+  if (childIdentity.family === "web-fetch") {
+    const primaryText = getWebFetchPrimaryText(childToolCall.input);
+    return {
+      animationKey: `fetch:${childToolCall.toolId}:${primaryText}`,
+      primaryText: renderChildActionKindPrefix(
+        actionKindLabel,
+        <span className="min-w-0 truncate">{primaryText}</span>,
+      ),
+      title: primaryText,
+    };
+  }
   if (childIdentity.family === "search") {
     const primaryText = getSearchPrimaryText(intl, childToolCall.input);
 
@@ -372,7 +211,7 @@ function getLatestExploreChildSummary(
   };
 }
 
-export function getLatestExploreChildSummaryFromChildren(
+export function getLatestAgentChildSummaryFromChildren(
   intl: IntlLike,
   childToolCalls: readonly TaskChatToolCallTreeNode[],
   context: ToolCallBlockRenderContext,
@@ -384,107 +223,11 @@ export function getLatestExploreChildSummaryFromChildren(
       continue;
     }
 
-    const summary = getLatestExploreChildSummary(intl, childToolCall, context, options);
+    const summary = getLatestAgentChildSummary(intl, childToolCall, context, options);
     if (summary) {
       return summary;
     }
   }
 
   return null;
-}
-
-export function ExploreToolCallBlock(context: ToolCallBlockRenderContext) {
-  const { intl } = useCCbuddyIntl();
-  const { toolCallNode, isRunning, statusLabel, errorText } = context;
-  const { toolCall, childToolCalls } = toolCallNode;
-  const counts = childToolCalls.reduce<Record<ExploreBucket, number>>(
-    (acc, childToolCallNode) => {
-      const bucket = classifyExploreToolCall({
-        kind: childToolCallNode.toolCall.kind,
-        title: childToolCallNode.toolCall.title,
-        input: childToolCallNode.toolCall.input,
-      });
-      acc[bucket] += 1;
-      return acc;
-    },
-    { search: 0, list: 0, file: 0 },
-  );
-  const summary = formatExploreSummary(intl, counts);
-  const kindLabel = intl.formatMessage({
-    id: "chat.toolCall.explore.label",
-  });
-  const collapsedChildSummary = isRunning
-    ? getLatestExploreChildSummaryFromChildren(intl, childToolCalls, context, {
-        includeChildActionKindLabel: true,
-      })
-    : null;
-  const renderContent = useCallback(
-    () =>
-      childToolCalls.length > 0 ? (
-        <div className="ml-2 space-y-2 border-border border-l pl-3.5 border-border">
-          {childToolCalls.map((childToolCallNode) => (
-            <ToolCallBlock
-              key={childToolCallNode.toolCall.toolId}
-              toolCallNode={childToolCallNode}
-              workspacePath={context.workspacePath}
-              showIcon={false}
-              onOpenCodeViewer={context.onOpenCodeViewer}
-              onOpenFileLink={context.onOpenFileLink}
-              onOpenBrowserUrl={context.onOpenBrowserUrl}
-              onOpenAutomationsMain={context.onOpenAutomationsMain}
-              onLoadFullToolCallFields={context.onLoadFullToolCallFields}
-            />
-          ))}
-        </div>
-      ) : null,
-    [
-      childToolCalls,
-      context.onLoadFullToolCallFields,
-      context.onOpenAutomationsMain,
-      context.onOpenBrowserUrl,
-      context.onOpenCodeViewer,
-      context.onOpenFileLink,
-      context.workspacePath,
-    ],
-  );
-
-  return (
-    <>
-      <ToolLayout
-        toolId={toolCall.toolId}
-        icon={EXPLORE_TOOL_ICON}
-        canToggle={context.canToggle ?? true}
-        forceOpen={context.forceOpen ?? false}
-        kindLabel={kindLabel}
-        expandedKindLabel={kindLabel}
-        sourceLabel={context.sourceLabel}
-        primaryText={collapsedChildSummary ? collapsedChildSummary.primaryText : summary}
-        expandedPrimaryText={summary}
-        secondaryText={collapsedChildSummary?.secondaryText}
-        expandedSecondaryText={null}
-        summaryContentSeparator="·"
-        animateSummaryContent
-        disableSummaryContentAnimation={context.disableSummaryContentAnimation}
-        summaryContentKey={
-          collapsedChildSummary?.animationKey ??
-          `explore:${toolCall.toolId}:${isRunning ? "running" : "done"}:${summary}`
-        }
-        statusLabel={statusLabel}
-        statusTooltip={toolCall.status === "failed" ? errorText : undefined}
-        showFailureStatus={toolCall.status === "failed"}
-        isRunning={isRunning}
-        title={collapsedChildSummary?.title ?? (isRunning ? summary : toolCall.title)}
-        expandedTitle={toolCall.title}
-        renderContent={renderContent}
-      />
-      <ToolSnapshotFieldNotice
-        refs={toolCall.snapshotRefs ?? []}
-        onLoadFullToolCallFields={
-          context.onLoadFullToolCallFields
-            ? () => context.onLoadFullToolCallFields?.(toolCall.toolId)
-            : undefined
-        }
-      />
-    </>
-  );
 }

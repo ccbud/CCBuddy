@@ -1,6 +1,10 @@
 // MCP Port - Model Context Protocol adapter boundary
 
-import type { McpServerFailureKind, OfficialMcpAuthPortFailureReason } from "@ccbuddy/shared";
+import type {
+  McpServerFailureKind,
+  OfficialMcpAuthPortFailureReason,
+  WorkspaceMcpTrustReview,
+} from "@ccbuddy/shared";
 import type { McpAppsToolVisibility, McpToolUiDescriptor } from "@ccbuddy/shared/mcp-apps";
 import type { JsonSchema } from "../model/index.js";
 import type { TraceContext } from "../tracing/tracer.js";
@@ -11,7 +15,7 @@ export type McpServerIsolation = "session" | "workspace";
 
 /** 公共 MCP 配置校验完成后由宿主附加的运行时来源。 */
 export interface McpServerRuntimeSource {
-  kind: "builtin" | "plugin";
+  kind: "builtin" | "plugin" | "workspace" | "user";
 }
 
 export interface McpServerConfigBase {
@@ -103,6 +107,22 @@ export interface McpSseServerConfig extends McpServerConfigBase {
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig | McpSseServerConfig;
 
+/**
+ * MCP 配置的唯一身份：键排序、丢弃 undefined 字段后序列化。pool 连接 key、adapter 复用判断、
+ * MCP App 连接摘要与 session 的配置变化判断共用它；修复前三处各自比较（排序 key、深比较、
+ * 原样 JSON），`{ timeoutMs: undefined }` 与 `{}` 会被判成不同配置并重建共享连接。
+ */
+export function mcpConfigKey(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(mcpConfigKey).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .toSorted()
+    .filter((key) => record[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${mcpConfigKey(record[key])}`)
+    .join(",")}}`;
+}
+
 export type McpServerStatusKind =
   | "connecting"
   | "connected"
@@ -112,11 +132,14 @@ export type McpServerStatusKind =
   | "untrusted";
 
 export interface McpServerStatus {
+  workspaceTrust?: WorkspaceMcpTrustReview;
   status: McpServerStatusKind;
   transport: McpServerTransportType;
   toolCount: number;
   updatedAt: string;
   error?: string;
+  /** 端点/传输诊断码，与供 UI 分类的 failureKind 分开。 */
+  errorCode?: string;
   failureKind?: McpServerFailureKind;
   serverRequestId?: string;
   protocolEra?: "legacy" | "modern";
@@ -150,6 +173,23 @@ export const CCBUDDY_MCP_BROWSER_SCREENSHOT_CONTENT_INDICES_META_KEY =
  */
 export const CCBUDDY_MCP_NODE_REPL_CUA_APP_META_KEY = "ccbuddy/nodeReplCuaApp";
 /**
+ * 本次 node_repl cell 调用过浏览器运行时（list/execute 请求到达主线程的浏览器代理 broker，不论成败），
+ * 值为 `true`。会话能力标签 `browser_use` 据此派生（docs/design/v2/model/session-features-header.md）。
+ *
+ * **只能由 node-repl-host 写入**：只由主线程 broker 记进调用账本，`toMcpRunResult` 先删掉 cell 经
+ * sandbox API 写入的同名键，再只按账本 facts 写回；Worker 的结果消息不采信（MR !3207 评审 CR-01）。
+ * 已知缺口：cell 可经 `node:inspector` 影响主线程（docs/design/v2/tool/20-node-repl-call-ledger.md
+ * 「可信边界」）。不复用 `ccbuddy/browserUse`：那个键在命令失败时也会写，且属于 Browser Use meta 契约，
+ * 含义不随统计口径变化。
+ */
+export const CCBUDDY_MCP_NODE_REPL_BROWSER_USE_META_KEY = "ccbuddy/nodeReplBrowserUse";
+/**
+ * 本次 node_repl cell 调用过 Computer Use 运行时（任一 CUA 方法的请求到达主线程的 CUA broker，含失败和
+ * broker 侧拒绝），值为 `true`。会话能力标签 `computer_use` 据此派生；写入规则同
+ * `CCBUDDY_MCP_NODE_REPL_BROWSER_USE_META_KEY`。
+ */
+export const CCBUDDY_MCP_NODE_REPL_COMPUTER_USE_META_KEY = "ccbuddy/nodeReplComputerUse";
+/**
  * 官方 Server MCP 响应头里的 `x-request-id`，附在失败的 tool result 上（值为 string）。
  *
  * 用短前缀 `ccbuddy/` 而不是 `com.ccbuddy/`：这不是跨语言协议——服务端在 header 里给，客户端
@@ -161,6 +201,8 @@ export const CCBUDDY_MCP_NODE_REPL_CUA_APP_META_KEY = "ccbuddy/nodeReplCuaApp";
 export const CCBUDDY_MCP_SERVER_REQUEST_ID_META_KEY = "ccbuddy/officialMcpServerRequestId";
 
 export interface McpToolDescriptor {
+  /** live discovery；展示缓存必须显式使用 catalogOnly:true 的投影。 */
+  catalogOnly?: false;
   alwaysLoad?: boolean;
   searchHint?: string;
   serverName: string;
@@ -292,11 +334,106 @@ export interface McpNotificationPort {
   onNotification(notification: McpServerNotification): void;
 }
 
+export interface McpConfigurationSnapshot {
+  enabled: boolean;
+  servers: Record<string, McpServerConfig>;
+  trustedOfficialCuaServerNames?: readonly string[];
+}
+export interface McpConfigurationSource {
+  getSnapshot(): McpConfigurationSnapshot;
+  subscribe(listener: () => void): () => void;
+  close(): void;
+}
+
 export interface McpConnectionSnapshot {
   statuses: Record<string, McpServerStatus>;
   tools: McpToolDescriptor[];
 }
 
+/**
+ * 单个 server 的内存快照：只读当前连接层状态，不发起网络/进程 I/O。
+ * `tools` / `toolsVersion` 只在该 server 曾经成功拿到 tools/list 时出现；
+ * 空数组表示"已确认没有工具"，与"还没拿到列表"（undefined）严格区分。
+ * 断线后保留最后一次成功列表与版本（展示保留），执行前仍要重新取 live 连接。
+ * 授权未完成就结束（`failureKind: "oauth_authorization_failed"`）的行同样保留上次的工具，执行准入时重连。
+ * 来源 `builtin` 的 stdio server 超过自动重启上限（`failureKind: "unexpected_disconnect"`）时也保留，执行准入时重启。
+ */
+export interface McpServerToolSnapshot {
+  status: McpServerStatus;
+  tools?: McpToolDescriptor[];
+  /** 不透明版本号；同一 server 列表每次成功替换都会变化。 */
+  toolsVersion?: string;
+}
+
+export interface McpWaitForServerOptions {
+  signal?: AbortSignal;
+  timeoutMs: number;
+  /**
+   * 工具执行前检查与 MCP App 打开前：server 已断线时走与 callTool 相同的重连路径再等待。
+   * ToolSearch 不传，不触发自动重连。
+   */
+  reconnect?: boolean;
+  /**
+   * 仅供工具执行准入，与 reconnect 一起传：授权未完成就结束、保留了目录的 server 也重连，
+   * 仍需授权时发起交互授权。MCP App 打开不传，不发起授权。
+   */
+  reauthorize?: boolean;
+}
+
+export interface McpToolCatalogScope {
+  servers: Record<string, McpServerConfig>;
+  workingDirectory?: string;
+  /** 身份隔离使用 workspaceIdentity；本地缺省时才 fallback 到 workingDirectory。 */
+  workspaceIdentity?: string;
+}
+
+export type McpCatalogToolDescriptor = Pick<
+  McpToolDescriptor,
+  | "serverName"
+  | "toolName"
+  | "name"
+  | "description"
+  | "inputSchema"
+  | "outputSchema"
+  | "alwaysLoad"
+  | "searchHint"
+  | "visibility"
+>;
+
+/** 展示定义不能携带执行注解；消费方必须解析 live 定义。 */
+export type McpToolDefinition =
+  | McpToolDescriptor
+  | (McpCatalogToolDescriptor & {
+      catalogOnly: true;
+      annotations?: never;
+      timeoutMs?: never;
+      official?: never;
+      ui?: never;
+    });
+
+export interface McpToolCatalogLookupResult {
+  /** 按 server 命中的缓存；[] 是缓存过的合法空列表，缺 key 才是未命中。 */
+  byServer: Record<string, McpCatalogToolDescriptor[]>;
+  /** complete：所有启用的 server 都命中。 */
+  status: "complete" | "incomplete";
+}
+
+export interface McpToolCatalogPublication {
+  lookup: McpToolCatalogLookupResult;
+  /** 有效生产者发布；prepare/lookup 不撤销其他生产者，invalidate 后拒绝该来源迟到写入。 */
+  publish(snapshot: Readonly<Record<string, McpServerToolSnapshot>>): void;
+  invalidate?(serverNames?: readonly string[]): void;
+}
+
+/**
+ * 进程级 MCP tool catalog 只负责 provider advertisement 快路径。
+ * 它不持有 live client，也不能作为工具执行或权限判断的事实来源。
+ */
+export interface McpToolCatalogPort {
+  prepare(scope: McpToolCatalogScope): McpToolCatalogPublication;
+}
+
+/** 相同 `mcpConfigKey` 的连接请求只复用当前记录与连接任务，不探测、不重启失败连接。 */
 export interface McpConnectOptions {
   /**
    * authorization_code OAuth callback 的等待上限。
@@ -304,9 +441,8 @@ export interface McpConnectOptions {
    */
   oauthAuthorizationTimeoutMs?: number;
   /**
-   * 复用既有连接前先校验其存活性（见 McpPort.pingServer），已死则重连。
-   * 设置页刷新这类"用户明确要求重新探测"的调用必须置位；session 启动不需要，
-   * 复用池中刚建立的连接即可。
+   * 显式校验（设置页刷新、手动连接）：connected 时 ping，失败或未连接时重新连接，允许交互授权；
+   * 连接中、disabled、untrusted 只返回当前状态。调用方 signal 只取消自己的等待。
    */
   revalidate?: boolean;
   signal?: AbortSignal;
@@ -314,6 +450,11 @@ export interface McpConnectOptions {
   workingDirectory?: string;
   /** 身份隔离使用 workspaceIdentity；本地缺省时才 fallback 到 workingDirectory。 */
   workspaceIdentity?: string;
+  /**
+   * 会话所属 workspace 的 key，只用于发往 Host 的请求（官方 MCP 授权头）。受管 worktree 会话 =
+   * 项目；连接池分组仍按 workspaceIdentity || workingDirectory（stdio 进程的工作目录就是 cwd）。
+   */
+  workspaceKey?: string;
 }
 
 export interface McpCallToolRequest {
@@ -341,8 +482,13 @@ export interface McpToolCallProgress {
 }
 
 export interface McpCallToolOptions {
-  /** 页面写操作固定此连接；禁止恢复或重新授权后自动重放。 */
+  /** MCP App 调用固定打开时的连接身份与 generation；换代后拒绝，不重试，也不做授权恢复。 */
   appConnection?: { identity: string; generation: number };
+  /**
+   * 模型调用在重连后重试前由租约持有方确认仍可重放；返回 false 时直接返回原错误。
+   * 自动重试只在会话过期或连接关闭时发生一次，见 `docs/mcp-async-tool-catalog-cache.md`。
+   */
+  retryAllowed?: () => boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
   /** 收到服务端进度通知时回调；SDK 侧同时以 resetTimeoutOnProgress 让每次进度重置超时。 */
@@ -378,6 +524,8 @@ export interface OfficialMcpAuthHeadersPort {
     targetOrigin: string;
     workspaceIdentity?: string;
     workspacePath?: string;
+    /** 会话所属 workspace 的 key；Host 按它路由，缺省按 identity || workspacePath。 */
+    workspaceKey?: string;
     signal?: AbortSignal;
   }): Promise<OfficialMcpAuthHeadersResult>;
 }
@@ -427,9 +575,17 @@ export interface McpElicitationPort {
 }
 
 export interface McpPort {
+  /** 只读重算工作区准入并通知会话投影，不连接、授权或重放工具。 */
+  refreshWorkspaceTrustAdmission?(reannounce?: boolean): Promise<void>;
+  /** 内存目录或连接状态变化；订阅不发起 I/O。 */
+  onSnapshotChanged?(listener: () => void): () => void;
   /** 可信配置派生的稳定来源与现有连接代际。断线时不签发新页面凭证。 */
   onAppConnectionInvalidated?(serverName: string, listener: () => void): () => void;
   appConnectionSnapshot?(serverName: string): { identity: string; generation: number } | null;
+  /** 等待目标 server 已有连接任务；不重连、不等待其它 server，owner 失效后返回 null。 */
+  waitForAppConnection?(
+    serverName: string,
+  ): Promise<{ identity: string; generation: number } | null>;
 
   connectConfiguredServers(
     servers: Record<string, McpServerConfig>,
@@ -442,7 +598,8 @@ export interface McpPort {
   ): Promise<McpServerStatus>;
   disconnectServer(name: string): Promise<McpServerStatus | undefined>;
   /**
-   * 主动探测连接是否仍然存活，返回 false 表示 transport 已断。
+   * 主动探测连接是否仍然存活，false 表示本次未确认存活，不是重新建连的指令。
+   * 探测失败由 adapter 复用失效入口（远程进入恢复，stdio 进入 failed）；显式校验使用 connectServer 的 revalidate。
    * HTTP/SSE MCP 被停掉时不会派发 onclose，status() 会长期停在 connected；
    * 只有显式 ping 才能把这种"无声死亡"暴露出来。实现可选：未实现时调用方按存活处理。
    */
@@ -450,10 +607,20 @@ export interface McpPort {
   status(): Promise<Record<string, McpServerStatus>>;
   listTools(): Promise<McpToolDescriptor[]>;
   /**
-   * 自端口创建以来收到 `notifications/tools/list_changed` 的累计次数。
-   * runtime 在回合开始前比较该值，变了才重新 listTools 并重注册；未实现表示端口不会主动变化。
+   * 同步读取每个 server 的内存快照（请求准备阶段用，不等待任何 server）。
+   * getter 只读内存、不发起 I/O：list_changed 标脏的 server 由通知触发后台刷新，本次返回旧列表。
    */
-  toolListRevision?(): number;
+  getToolSnapshot(): Record<string, McpServerToolSnapshot>;
+  /**
+   * 等待该 server 已有的启动任务结束（复用同一个启动 Promise，不新建连接、不重连）。
+   * 启动转为 OAuth 授权 pending 时也结束本次等待（不取消授权或共享连接）。
+   * 超时返回 `{ timedOut: true }` 且不取消启动；signal 中止时以 signal.reason 拒绝。
+   * 没有启动任务时立即返回 `{ timedOut: false }`，调用方再读 getToolSnapshot 得到结果。
+   */
+  waitForServer?(
+    serverName: string,
+    options: McpWaitForServerOptions,
+  ): Promise<{ timedOut: boolean }>;
   callTool(request: McpCallToolRequest, options?: McpCallToolOptions): Promise<McpToolCallResult>;
   /**
    * 读取 MCP 资源（插件 UI 的 `ui://` HTML）。与 pingServer 同样可选：mock port 不必实现，
@@ -482,5 +649,10 @@ export interface McpPort {
   ): Promise<void>;
   /** 删除 subscriberKey 以 prefix 开头的全部登记（会话关闭）；返回真正向 server 退订的 uri 数。 */
   unsubscribeResourcesBySubscriber?(subscriberKeyPrefix: string): Promise<number>;
+  /**
+   * 关闭本端口的准入和所属资源。pool lease 只取消本会话等待/调用并归还引用；
+   * 独占连接等待 adapter 释放，共享连接仍由 pool 与其余 lease 持有。
+   * child 借用端口不得关闭父会话持有的 lease。
+   */
   close(): Promise<void>;
 }

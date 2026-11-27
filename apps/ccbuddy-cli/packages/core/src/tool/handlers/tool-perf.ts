@@ -87,9 +87,7 @@ export function fileByteCount(content: string): number {
   return Buffer.byteLength(content, "utf8");
 }
 
-export function readToolExecutionTelemetry(
-  output: unknown,
-): ToolExecutionTelemetry | undefined {
+export function readToolExecutionTelemetry(output: unknown): ToolExecutionTelemetry | undefined {
   if (typeof output !== "object" || output === null || Array.isArray(output)) {
     return undefined;
   }

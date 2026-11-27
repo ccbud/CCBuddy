@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-glm52-reasoning-request-shape",
+  "spec": "./test/e2e/conversation-session/models/conversation-session-glm52-reasoning-request-shape.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-glm52-reasoning-request-shape.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "glm52-reasoning-request-shape-title",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "真实标题请求通过 thinking.type=disabled 与 reasoning_effort=none 明确关闭思考；旧 matcher 禁止整个 thinking 字段导致 Missing Fixture 500。"
+    },
+    {
+      "id": "glm52-reasoning-max-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "核心断言在 provider/model 身份、OpenAI-compatible transport 和 GLM-5.2 max 请求 body；响应只需稳定完成并包含约定文本。"
+    },
+    {
+      "id": "glm52-reasoning-nothink-main",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "核心断言在同一 provider/model 下后续请求切换 nothink 后的 GLM-5.2 专属请求 body；响应只需稳定完成并包含约定文本。"
+    }
+  ]
+}

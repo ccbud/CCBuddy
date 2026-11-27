@@ -5,6 +5,30 @@ Test-only OpenAI protocol trajectory recorder for ccbuddy-cli prompt assembly ch
 This tool lives under `tools/` so it is available in the pnpm workspace but stays out of
 the production CLI and SEA packaging path.
 
+## Current limitations
+
+Fixture recording was repaired and validated on 2026-10-21: every `fixture.json`
+case with `mockResponses` records offline. Prompt-only cases (`prompt.txt`) and
+`system-reminder-sr9-runtime` have no mock responses and still need a real upstream
+(`--model`, `--upstream-base-url`). `model-io` still rejects the current default CLI
+log when `request.body.messages` has been pruned. See the
+[CLI capture guide](../../docs/usage/13-automation.md) for the verified scope and
+capture boundaries. Do not reconstruct missing provider messages from a different
+message representation merely to make conversion succeed.
+
+Recording rules:
+
+- Each case runs with a temporary home and `CCBUDDY_STORAGE_DIR`. User skills,
+  plugins, `~/.ccbuddy/AGENTS.md` and the user's session database never enter a
+  recording, and the recording leaves no session in the user's database.
+- The recorder registers one Registry provider for the fixture model. Its
+  capabilities come only from the Registry model declaration; use the fixture
+  `modelProperties` field (for example `{ "supportsNativeWebSearch": true }`) to
+  change them.
+- A request that matches no mock gets HTTP 400, so the case fails at once without
+  provider retries. A streaming request receives the chat-completion mock as SSE
+  chunks.
+
 ## Commands
 
 ```bash
@@ -25,7 +49,7 @@ pnpm --filter @ccbuddy/prompt-trajectory derive -- \
   --out /tmp/ccbuddy-prompt-trajectory/basic-live
 
 pnpm --filter @ccbuddy/prompt-trajectory model-io -- \
-  --input ~/.ccbuddy/cli/debug/model-io-<session>.jsonl \
+  --input ~/.ccbuddy/cli/rollout/model-io-<session>.jsonl \
   --out /tmp/ccbuddy-prompt-trajectory/model-io-session
 ```
 
@@ -103,3 +127,26 @@ the converter preserves that complete assistant message after verifying its text
 tool calls against the response summary. Appending blocks to the final user message
 also remains in the same trajectory. Rewriting existing content still starts a new
 segment. `non-incremental-change` is not a provider cache-miss indicator.
+
+For ToolSearch-only synthesis, `model-io` and `derive` accept
+`--ignore-tool-search-changes` (off by default):
+
+```bash
+pnpm --filter @ccbuddy/prompt-trajectory model-io -- \
+  --input /path/to/model-io-session.jsonl --out /tmp/toolsearch-synthesis \
+  --ignore-tool-search-changes
+```
+
+This comparison mode ignores native `tool_reference` blocks and the two reference-removal
+placeholders inside results paired with `ToolSearch` calls, plus standalone ToolSearch
+catalog reminder blocks in user messages (current Native/Local and older log formats).
+It also ignores the derived `Tool loaded.` text
+immediately following a result batch, up to one per successful ToolSearch result containing
+native references. The same text elsewhere remains significant. Call IDs, inputs, error flags,
+ordinary result text, other tools, thinking, and unrelated history edits remain significant. Top-level
+`tools` changes already do not split trajectories.
+
+Only comparison changes: each output segment still contains its last recorded request
+and final response, without merging schemas or restoring earlier references. The manifest
+records `ignoreToolSearchChanges: true`. Original logs remain untouched. Use them to inspect
+individual requests; this synthesis mode does not establish provider cache hits.

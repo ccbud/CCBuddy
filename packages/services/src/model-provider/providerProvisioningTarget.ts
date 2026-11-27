@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- Provisioning target keeps transaction and rollback invariants together. */
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { atomicWritePrivateTextFile, withFileLock } from "@ccbuddy/shared/node";
 import {
   type PersonalProviderConfigRepository,
@@ -8,19 +9,21 @@ import {
 import { decodeProviderConfigFile, encodeProviderConfigFile } from "@ccbuddy/provider-node";
 import {
   providerProvisioningEnvelopeSchema,
+  OAUTH_SESSION_REVISION_KEY,
   providerProvisioningResultSchema,
   isProviderProvisioningAccountCredentialKey,
   type ProviderProvisioningEnvelope,
   type ProviderProvisioningResult,
   type ProviderProvisioningErrorCode,
 } from "@ccbuddy/shared";
-import type { ICredentialService } from "../credential/credential.js";
+import type { LocalCredentialService } from "#src/credential/credentialService.js";
 import type { ISettingService } from "../setting/setting.js";
 import type { ProviderRuntime } from "./providerRuntime.js";
 import type { AccountProviderService } from "@ccbuddy/provider";
 import type { IProviderProvisioningTargetService } from "./providerProvisioning.js";
 import {
   PROVIDER_PROVISIONING_OAUTH_CREDENTIAL_KEYS,
+  PROVIDER_PROVISIONING_LEGACY_OAUTH_CREDENTIAL_KEYS,
   readProvisionablePersonalConfig,
 } from "./providerProvisioningSource.js";
 
@@ -32,7 +35,7 @@ export interface ProviderProvisioningTargetOptions {
   readonly providerRuntime: ProviderRuntime;
   readonly personalRepository: PersonalProviderConfigRepository;
   readonly accountProviderSource: Pick<AccountProviderService, "refresh">;
-  readonly credentialService: ICredentialService;
+  readonly credentialService: Pick<LocalCredentialService, "loadMany" | "updateMany">;
   readonly settingService: ISettingService;
   readonly personalConfigFilePath: string;
   readonly stateFilePath: string;
@@ -80,7 +83,11 @@ export function createProviderProvisioningTarget(
         const applied: AppliedProvisioningState = {
           settings: false,
           settingsExpected: envelope.accountSettings,
-          credentials: [],
+          settingsVersion: Math.max(
+            Date.now(),
+            (before.settings.providerFamilyDomainUpdatedAt ?? 0) + 1,
+          ),
+          credentials: null,
           personalConfig: false,
           personalConfigExpected: personalUpdate,
         };
@@ -89,20 +96,41 @@ export function createProviderProvisioningTarget(
         try {
           // 先登记再写入：底层原子写即使在替换完成后才抛错，也必须进入回滚集合。
           applied.settings = true;
-          await options.settingService.update({
-            providerFamilyDomain: envelope.accountSettings.providerFamilyDomain ?? undefined,
-            providerFamilyConnectionSelections:
-              envelope.accountSettings.providerFamilyConnectionSelections,
-          });
+          await options.settingService.update(
+            {
+              providerFamilyDomainUpdatedAt: applied.settingsVersion,
+              providerFamilyDomain: envelope.accountSettings.providerFamilyDomain ?? undefined,
+              providerFamilyConnectionSelections:
+                envelope.accountSettings.providerFamilyConnectionSelections,
+            },
+            {
+              // 原因：Host 同步也与本地连接选择竞争，提交必须比较捕获的完整快照和版本。
+              providerFamilyDomain: before.settings.providerFamilyDomain,
+              providerFamilyConnectionSelections:
+                before.settings.providerFamilyConnectionSelections,
+              providerFamilyDomainUpdatedAt: before.settings.providerFamilyDomainUpdatedAt ?? 0,
+            },
+          );
 
           const incomingCredentials = new Map(
             oauthCredentials.map((credential) => [credential.key, credential.value]),
           );
-          for (const key of before.credentials.keys()) {
-            const value = incomingCredentials.get(key);
-            applied.credentials.push({ key, value: value ?? null });
-            if (value === undefined) await options.credentialService.delete(key);
-            else await options.credentialService.save(key, value);
+          const credentials = Object.fromEntries(
+            Object.keys(before.credentials).map((key) => [
+              key,
+              incomingCredentials.get(key) ?? null,
+            ]),
+          );
+          // revision 属于目标进程的会话提交，不能重放 Source 旧代次制造 A→B→A。
+          // 同 syncId 已在前面零写入返回；每次真正应用都生成新的目标代次。
+          credentials[OAUTH_SESSION_REVISION_KEY] = randomUUID();
+          applied.credentials = credentials;
+          if (
+            !(await options.credentialService.updateMany(credentials, {
+              expected: before.credentials,
+            }))
+          ) {
+            throw new Error("OAuth 会话在同步期间被其它操作修改");
           }
 
           applied.personalConfig = true;
@@ -165,13 +193,14 @@ export function createProviderProvisioningTarget(
 interface BeforeState {
   readonly personal: ProviderConfigLayerUpdate;
   readonly settings: Awaited<ReturnType<ISettingService["get"]>>;
-  readonly credentials: ReadonlyMap<string, string | null>;
+  readonly credentials: Readonly<Record<string, string | null>>;
 }
 
 interface AppliedProvisioningState {
   settings: boolean;
   settingsExpected: ProviderProvisioningEnvelope["accountSettings"];
-  credentials: Array<{ key: string; value: string | null }>;
+  settingsVersion: number;
+  credentials: Readonly<Record<string, string | null>> | null;
   personalConfig: boolean;
   personalConfigExpected: ProviderConfigLayerUpdate;
 }
@@ -189,18 +218,14 @@ async function captureBeforeState(
     readProvisionablePersonalConfig(options.personalRepository, options.personalConfigFilePath),
     options.settingService.get(),
   ]);
-  const credentials = new Map<string, string | null>();
   const credentialKeys = new Set<string>([
     ...OAUTH_CREDENTIAL_KEYS,
     ...((await options.listProvisioningCredentialKeys?.()) ?? []),
     ...envelope.credentials.map((entry) => entry.key),
   ]);
-  for (const key of credentialKeys) {
-    if (!OAUTH_CREDENTIAL_KEYS.has(key)) {
-      continue;
-    }
-    credentials.set(key, await options.credentialService.load(key));
-  }
+  const credentials = await options.credentialService.loadMany(
+    [...credentialKeys].filter((key) => OAUTH_CREDENTIAL_KEYS.has(key)),
+  );
   return {
     personal,
     settings,
@@ -228,21 +253,19 @@ async function rollback(
       errors.push(error);
     }
   }
-  for (const { key, value } of applied.credentials) {
+  if (applied.credentials) {
     try {
-      const previous = before.credentials.get(key) ?? null;
-      const current = await options.credentialService.load(key);
-      if (current === previous) {
-        continue;
-      }
-      if (current !== value) {
-        errors.push(new Error(`Credential ${key} 在同步期间被其它操作修改，跳过回滚`));
-        continue;
-      }
-      if (previous === null) {
-        await options.credentialService.delete(key);
-      } else {
-        await options.credentialService.save(key, previous);
+      const current = await options.credentialService.loadMany(Object.keys(before.credentials));
+      if (!sameCredentials(current, before.credentials)) {
+        // 比较与回滚写入在同一凭据锁内完成；并发登录时整组保留，不逐键拼接两代会话。
+        if (
+          !(await options.credentialService.updateMany(
+            { ...before.credentials, [OAUTH_SESSION_REVISION_KEY]: randomUUID() },
+            { expected: applied.credentials },
+          ))
+        ) {
+          throw new Error("OAuth 会话在同步期间被其它操作修改，跳过整组回滚");
+        }
       }
     } catch (error) {
       errors.push(error);
@@ -254,13 +277,24 @@ async function rollback(
       const previousSettings = toProvisioningAccountSettings(before.settings);
       if (sameAccountSettings(current, previousSettings)) {
         // 写入失败发生在落盘前，目标已经处于回滚前的状态。
-      } else if (!sameAccountSettings(current, applied.settingsExpected)) {
+      } else if (
+        !sameAccountSettings(current, applied.settingsExpected) ||
+        (current.providerFamilyDomainUpdatedAt ?? 0) !== applied.settingsVersion
+      ) {
         errors.push(new Error("Account Settings 在同步期间被其它操作修改，跳过回滚"));
       } else {
-        await options.settingService.update({
-          providerFamilyDomain: before.settings.providerFamilyDomain,
-          providerFamilyConnectionSelections: before.settings.providerFamilyConnectionSelections,
-        });
+        await options.settingService.update(
+          {
+            providerFamilyDomain: before.settings.providerFamilyDomain,
+            providerFamilyConnectionSelections: before.settings.providerFamilyConnectionSelections,
+          },
+          {
+            // 原因：归属检查与写入间仍有竞态，回滚也必须在锁内比较本次提交版本。
+            providerFamilyDomain: current.providerFamilyDomain,
+            providerFamilyConnectionSelections: current.providerFamilyConnectionSelections,
+            providerFamilyDomainUpdatedAt: applied.settingsVersion,
+          },
+        );
       }
     } catch (error) {
       errors.push(error);
@@ -304,13 +338,24 @@ function sameAccountSettings(
   return JSON.stringify(toProvisioningAccountSettings(current)) === JSON.stringify(expected);
 }
 
+function sameCredentials(
+  left: Readonly<Record<string, string | null>>,
+  right: Readonly<Record<string, string | null>>,
+): boolean {
+  return Object.keys(right).every((key) => left[key] === right[key]);
+}
+
 function validateCredentialEntries(envelope: ProviderProvisioningEnvelope): void {
   const seen = new Set<string>();
+  const oauthKeys =
+    envelope.schemaVersion === 3
+      ? OAUTH_CREDENTIAL_KEYS
+      : new Set<string>(PROVIDER_PROVISIONING_LEGACY_OAUTH_CREDENTIAL_KEYS);
   for (const entry of envelope.credentials) {
     if (seen.has(entry.key)) throw new Error(`重复 Provisioning Credential key: ${entry.key}`);
     seen.add(entry.key);
     const allowed =
-      (entry.scope === "oauth-session" && OAUTH_CREDENTIAL_KEYS.has(entry.key)) ||
+      (entry.scope === "oauth-session" && oauthKeys.has(entry.key)) ||
       (entry.scope === "account-provider" && isProviderProvisioningAccountCredentialKey(entry.key));
     if (!allowed) throw new Error(`不允许同步的 Credential key: ${entry.key}`);
   }

@@ -1,3 +1,4 @@
+import type { GenUiModelContext } from "@ccbuddy/shared/gen-ui";
 import type { RuntimeInputPresentation } from "./runtime-input-presentation.js";
 // ============================================================
 // Session Ports - Core interfaces for session management
@@ -37,6 +38,28 @@ export function inheritPermissionMode<T extends CollaborationMode | undefined>(
   resolved: T,
 ): T | "guarded" {
   return parent === "guarded" && resolved === "yolo" ? "guarded" : resolved;
+}
+
+/**
+ * 从严到宽，按各模式的默认策略排列；auto 尚未实现，不参与比较。
+ * 例外：guarded 的危险命令审批先于 allow 规则，配置 allow 规则时 build/edit 可能放行 guarded 会询问的命令。
+ */
+const PERMISSION_MODE_STRICTNESS: readonly CollaborationMode[] = [
+  "plan",
+  "build",
+  "edit",
+  "guarded",
+  "yolo",
+];
+
+/** 子模式只能收紧父模式：返回更严格的一个；任一方无法比较时继承父模式。 */
+export function restrictPermissionMode(
+  parent: CollaborationMode,
+  child: CollaborationMode,
+): CollaborationMode {
+  const parentRank = PERMISSION_MODE_STRICTNESS.indexOf(parent);
+  const childRank = PERMISSION_MODE_STRICTNESS.indexOf(child);
+  return parentRank >= 0 && childRank >= 0 && childRank < parentRank ? child : parent;
 }
 export type SessionStatus = "idle" | "running" | "waiting" | "paused" | "completed" | "error";
 export type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -152,6 +175,8 @@ export interface PendingSteerInputInfo {
   commandKind?: TurnSteerCommandKind;
   source?: TurnSteerSource;
   inputPresentation?: RuntimeInputPresentation;
+  /** Host 准入注入的可信 automation 身份；队列提升时必须原样恢复。 */
+  automationId?: string;
   /** 当前排队输入附带的工具隐藏列表；automation busy 入队必须在消费时继续生效。 */
   toolDisallowlist?: readonly string[];
   queuedAt: Date;
@@ -259,6 +284,10 @@ export interface Session {
 }
 
 export interface TurnSteerInput {
+  /** 临时执行的选型不可成为普通 Session 续跑默认；不包含请求凭据。 */
+  modelSelectionScope?: "execution";
+  /** 仅加速卡输入携带普通模型快照，不含凭据；用于接纳时更新 Session。 */
+  highspeedFallbackSelection?: ModelSelection;
   input: string;
   inputId?: string;
   queryId?: QueryId;
@@ -271,6 +300,8 @@ export interface TurnSteerInput {
   attachments?: PendingTurnAttachment[];
   pendingInputId?: string;
   traceContext?: TraceContext;
+  /** Host 准入注入的可信 automation 身份；不能从 inputId/queryId 推断。 */
+  automationId?: string;
   /** 当前输入消费时不向 provider 暴露的工具名。 */
   toolDisallowlist?: readonly string[];
 }
@@ -289,6 +320,7 @@ export type TurnSteerDeliveryMode = "guide" | "queue";
 /** message.data metadata.highspeed 的持久化契约；不包含运行时凭据。 */
 export interface HighspeedMessageMetadata {
   schemaVersion: 1;
+  ownerKey?: string;
   cardId: string;
   taskId: string;
   provider: string;
@@ -303,16 +335,28 @@ export interface HighspeedMessageMetadata {
   toolDurationMs?: number;
   otherDurationMs?: number;
   fallbackAt?: number;
-  fallbackReason?: "highspeed_card_expired" | "highspeed_request_failed";
+  fallbackReason?:
+    | "highspeed_card_expired"
+    | "highspeed_request_failed"
+    | "highspeed_selection_unavailable";
 }
 
-/** 协议无关的输入 intent metadata；bootstrap v4 在事件边界组装为 ConversationInputIntent。 */
+/**
+ * 协议无关的输入 intent metadata；bootstrap v4 在事件边界组装为 ConversationInputIntent。
+ * 与 @ccbuddy/shared 的 conversationInputSourceSchema 一一对应（docs/design/v2/conversation-input-source.md）。
+ */
 export type TurnInputSourceMetadata =
   | { kind: "pluginUi"; pluginId: string; toolCallId: string }
-  | { kind: "genUi"; path: string; title?: string };
+  | { kind: "genUi"; path: string; title?: string }
+  // title 只读旧数据（规格 0.13）：标题是会变的派生展示字段，新数据只带身份。
+  | { kind: "session"; sessionId: string; title?: string }
+  // 扩展经 Window Host 代发；只由 Host 注入，模型与工具不能设置。
+  | { kind: "extension"; pluginId: string };
 
+// 仅当前 CLI 实例内传递本次输入的能力。Symbol 键不进入 JSON 历史，冷恢复不能继承旧端的授权。
+export const PLUGIN_DISCOVERY_INPUT = Symbol("pluginDiscoveryInput");
 export interface TurnInputIntentMetadata {
-  genUiContext?: import("@ccbuddy/shared/gen-ui").GenUiModelContext;
+  [PLUGIN_DISCOVERY_INPUT]?: true;
   planEnabled?: boolean;
   conversationQuotes?: Array<{
     text: string;
@@ -321,6 +365,10 @@ export interface TurnInputIntentMetadata {
     senderId?: string;
     messageId?: string;
     sentAt?: string;
+    /** 用户对该选区的批注，随引用一起作为模型材料。 */
+    comment?: string;
+    /** 选区来自子 agent 输出时的 agent 类型。 */
+    agent?: string;
   }>;
   inputOrigin?: "desktop" | "mobile";
   botGroupSource?: {
@@ -389,6 +437,8 @@ export interface TurnInputIntentMetadata {
     messageCount?: number;
   }>;
   highspeed?: HighspeedMessageMetadata;
+  /** 发送时冻结的页面状态；不得混入用户正文或出队时重新读取。 */
+  genUiContext?: GenUiModelContext;
   sharedContextRefs?: Array<{
     kind: "shared_context_import";
     context_id: string;
@@ -399,7 +449,7 @@ export interface TurnInputIntentMetadata {
     queueItemId?: string;
     clientId?: string;
   };
-  /** 插件 UI 代发（MCP Apps ui/message）的来源；用户亲自输入时缺省。 */
+  /** 插件、交互视图或会话代发的结构化来源；用户亲自输入时缺省。 */
   source?: TurnInputSourceMetadata;
 }
 
@@ -427,6 +477,8 @@ export interface PendingTurnInput {
   delivery?: TurnSteerDeliveryMode;
   intent?: TurnInputIntentMetadata;
   attachments?: PendingTurnAttachment[];
+  /** Host 准入注入的可信 automation 身份；队列编辑和提升必须原样保留。 */
+  automationId?: string;
   /** 当前 pending input drain 后不向 provider 暴露的工具名。 */
   toolDisallowlist?: readonly string[];
   turnId: TurnId;

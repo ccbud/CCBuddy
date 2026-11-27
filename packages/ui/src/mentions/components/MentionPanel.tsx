@@ -7,9 +7,9 @@ import {
   TID_PROMPT_SUGGESTION_SECTION,
   TID_PROMPT_SUGGESTION_STATUS,
   testId,
-} from "@ccbuddy/shared";
+} from "@ccbuddy/shared/test-ids";
 import { cn } from "@/components/lib/utils.js";
-import { Info, LoaderIcon } from "lucide-react";
+import { CircleAlertIcon, Info } from "lucide-react";
 import {
   EMPTY_SCROLL_MASK_STATE,
   getVerticalScrollMaskStyle,
@@ -37,6 +37,10 @@ export interface MentionPanelSection {
   loadingText?: string;
   loading?: boolean;
   errorText?: string | null;
+  /** 组内一行弱提示（插件分组的失败状态），不用错误行的红底。 */
+  noticeText?: string | null;
+  /** 项目名称在单组搜索结果中也需要可见。 */
+  showHeader?: boolean;
 }
 
 interface MentionPanelProps {
@@ -48,6 +52,8 @@ interface MentionPanelProps {
   sections: MentionPanelSection[];
   emptyText: string;
   selectedIndex: number;
+  /** 当前触发符与查询；变化时即使选中项不变也重新定位（重新输入关键字回到开头）。 */
+  selectionScope?: string | null;
   hasActiveQuery: boolean;
   onSelect: (index: number) => void;
 }
@@ -61,7 +67,7 @@ type VirtualRow =
   | {
       kind: "status";
       sectionId: string;
-      content: "loading" | "error" | "empty";
+      content: "loading" | "error" | "notice" | "empty";
       text: string;
     }
   | {
@@ -73,6 +79,7 @@ type VirtualRow =
 
 const OPTION_ROW_HEIGHT = 34;
 const STATUS_ROW_HEIGHT = 40;
+const LOADING_ROW_COUNT = 4;
 export const SECTION_HEADER_ROW_HEIGHT = 34;
 
 // 分组标题改用 base 字号后，旧的 28px 虚拟行装不下默认行高与 12px 上下 padding。
@@ -86,7 +93,7 @@ export function buildVirtualRows(sections: MentionPanelSection[]): VirtualRow[] 
   const shouldRenderSectionHeader = sections.length > 1;
 
   for (const section of sections) {
-    if (shouldRenderSectionHeader && section.title.trim().length > 0) {
+    if ((shouldRenderSectionHeader || section.showHeader) && section.title.trim().length > 0) {
       rows.push({
         kind: "section_header",
         sectionId: section.id,
@@ -100,6 +107,13 @@ export function buildVirtualRows(sections: MentionPanelSection[]): VirtualRow[] 
         sectionId: section.id,
         content: "error",
         text: section.errorText,
+      });
+    } else if (section.noticeText) {
+      rows.push({
+        kind: "status",
+        sectionId: section.id,
+        content: "notice",
+        text: section.noticeText,
       });
     } else if (section.loading) {
       rows.push({
@@ -139,6 +153,7 @@ export function MentionPanel({
   sections,
   emptyText,
   selectedIndex,
+  selectionScope,
   hasActiveQuery,
   onSelect,
   trigger,
@@ -149,7 +164,19 @@ export function MentionPanel({
 
   const virtualRows = useMemo(() => buildVirtualRows(sections), [sections]);
 
+  // 加载占位与结果行高度不同；同数量切换时也必须让虚拟列表重新计算布局。
+  const getItemKey = useCallback(
+    (index: number) => {
+      const row = virtualRows[index];
+      if (!row) return index;
+      if (row.kind === "option") return JSON.stringify([row.sectionId, row.kind, row.option.id]);
+      return JSON.stringify([row.sectionId, row.kind, row.kind === "status" ? row.content : ""]);
+    },
+    [virtualRows],
+  );
+
   const virtualizer = useVirtualizer({
+    getItemKey,
     count: virtualRows.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: (index) =>
@@ -157,7 +184,9 @@ export function MentionPanel({
         ? OPTION_ROW_HEIGHT
         : virtualRows[index]?.kind === "section_header"
           ? SECTION_HEADER_ROW_HEIGHT
-          : STATUS_ROW_HEIGHT,
+          : virtualRows[index]?.kind === "status" && virtualRows[index].content === "loading"
+            ? OPTION_ROW_HEIGHT * LOADING_ROW_COUNT
+            : STATUS_ROW_HEIGHT,
     overscan: 8,
   });
   const totalVirtualSize = virtualizer.getTotalSize();
@@ -195,12 +224,37 @@ export function MentionPanel({
       ),
     [virtualRows, selectedIndex],
   );
+  const selectedOptionKey = selectedVirtualIndex >= 0 ? getItemKey(selectedVirtualIndex) : null;
+  const revealedSelectionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (selectedVirtualIndex >= 0) {
+    if (selectedVirtualIndex < 0 || selectedOptionKey === null) return;
+    // Bug 根因（ZCT-2122356778527907840）：这里曾在每次 virtualRows 换引用时都滚回选中项。
+    // 候选刷新（后台任务状态变化触发 state:projects）会重建 virtualRows，而滚轮不改变选中项，
+    // 默认选中首项，于是用户滚到中段的列表被拉回开头。
+    // 修法：只在“选中项身份”变化时定位，身份 = 查询 + 选中序号 + 该选项的行 key。
+    // 键盘移动、换查询、前置分组加载完使首项换人都会改变身份；同一结果的刷新不会。
+    const selectionIdentity = JSON.stringify([
+      selectionScope ?? null,
+      selectedIndex,
+      selectedOptionKey,
+    ]);
+    if (revealedSelectionRef.current === selectionIdentity) return;
+    revealedSelectionRef.current = selectionIdentity;
+    // 前置分组可能仍在加载，首项不一定在列表顶部；只定位到该选项紧邻的标题。
+    if (selectedIndex === 0 && virtualRows[selectedVirtualIndex - 1]?.kind === "section_header") {
+      virtualizer.scrollToIndex(selectedVirtualIndex - 1, { align: "start" });
+    } else {
       virtualizer.scrollToIndex(selectedVirtualIndex, { align: "auto" });
     }
-  }, [selectedVirtualIndex, virtualizer]);
+  }, [
+    selectedIndex,
+    selectedOptionKey,
+    selectedVirtualIndex,
+    selectionScope,
+    virtualRows,
+    virtualizer,
+  ]);
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
@@ -258,7 +312,7 @@ export function MentionPanel({
       {virtualRows.length > 0 ? (
         <div
           ref={scrollContainerRef}
-          className="max-h-56 overflow-y-auto px-1 py-0.75"
+          className="max-h-56 overflow-y-auto px-1 py-0.75 [overflow-anchor:none]"
           role="listbox"
           aria-label={title}
           onMouseLeave={() => setHoveredOptionIndex(null)}
@@ -337,13 +391,22 @@ function StatusRow({ row }: { row: Extract<VirtualRow, { kind: "status" }> }) {
   if (row.content === "loading") {
     return (
       <div
-        className="flex items-center gap-2 rounded-xl px-5 py-2 text-ui-base text-foreground-subtle"
+        role="status"
+        aria-label={row.text}
+        aria-busy="true"
         data-testid={testId(TID_PROMPT_SUGGESTION_STATUS, row.sectionId)}
         data-section-id={row.sectionId}
         data-status="loading"
       >
-        <LoaderIcon className="size-3.5 shrink-0 animate-spin" />
-        <span>{row.text}</span>
+        {Array.from({ length: LOADING_ROW_COUNT }, (_, index) => (
+          <div key={index} aria-hidden="true" className="py-px">
+            <div className="flex h-8 items-center gap-3 px-3 motion-safe:animate-pulse">
+              <span className="size-5 shrink-0 rounded-md bg-surface-hover" />
+              <span className="h-3 w-28 rounded-sm bg-surface-hover" />
+              <span className="hidden h-2.5 w-40 rounded-sm bg-surface-hover sm:block" />
+            </div>
+          </div>
+        ))}
       </div>
     );
   }
@@ -357,6 +420,20 @@ function StatusRow({ row }: { row: Extract<VirtualRow, { kind: "status" }> }) {
         data-status="error"
       >
         {row.text}
+      </div>
+    );
+  }
+
+  if (row.content === "notice") {
+    return (
+      <div
+        className="flex items-center gap-2 rounded-xl px-5 py-2 text-ui-sm text-foreground-subtle"
+        data-testid={testId(TID_PROMPT_SUGGESTION_STATUS, row.sectionId)}
+        data-section-id={row.sectionId}
+        data-status="notice"
+      >
+        <CircleAlertIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 truncate">{row.text}</span>
       </div>
     );
   }

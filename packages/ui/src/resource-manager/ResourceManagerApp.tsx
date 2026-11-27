@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  TID_RESOURCE_MANAGER_TAB,
-  testId,
-  type ResourceUsageCategory,
-  type ResourceUsageSnapshot,
-  type StorageManagementBridge,
-  type NetworkCaptureBridge,
-} from "@ccbuddy/shared";
+import type { ResourceManagerAppProps, ResourceManagerTab } from "@/resource-manager/contract.js";
+import { type ResourceUsageCategory, type ResourceUsageSnapshot } from "@ccbuddy/shared";
+import { TID_RESOURCE_MANAGER_TAB, testId } from "@ccbuddy/shared/test-ids";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { useCCbuddyIntl } from "@/i18n/index.js";
 import { StorageSection } from "./storage/StorageSection.js";
@@ -20,19 +15,8 @@ import {
   type ResourceUsageGroupView,
 } from "./resourceUsageView.js";
 
-export interface ResourceManagerAppProps {
-  /** 缺省表示桥接不可用（例如非桌面环境） */
-  getSnapshot?: () => Promise<ResourceUsageSnapshot>;
-  setSamplingActive?: (active: boolean) => void;
-  /** 存储管理桥（window.resourceManager.storage）；缺省时「存储」tab 显示接口不可用 */
-  storage?: StorageManagementBridge;
-  network?: NetworkCaptureBridge;
-  refreshIntervalMs?: number;
-  /** 初始 tab，默认 CPU */
-  initialTab?: ResourceManagerTab;
-}
+export type { ResourceManagerAppProps, ResourceManagerTab } from "@/resource-manager/contract.js";
 
-export type ResourceManagerTab = "cpu" | "memory" | "storage" | "network";
 const RESOURCE_MANAGER_TABS: ResourceManagerTab[] = ["cpu", "memory", "storage", "network"];
 const TAB_LABEL_IDS: Record<ResourceManagerTab, string> = {
   cpu: "resourceManager.cpu",
@@ -44,6 +28,7 @@ const TAB_LABEL_IDS: Record<ResourceManagerTab, string> = {
 const DEFAULT_REFRESH_INTERVAL_MS = 1_000;
 const CATEGORY_LABEL_IDS: Record<ResourceUsageCategory, string> = {
   base: "resourceManager.category.base",
+  task: "resourceManager.category.task",
   "builtin-plugin": "resourceManager.category.builtinPlugin",
   "community-plugin": "resourceManager.category.communityPlugin",
 };
@@ -68,6 +53,7 @@ export function ResourceManagerApp({
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<ResourceUsageCategory, boolean>>({
     base: true,
+    task: true,
     "builtin-plugin": true,
     "community-plugin": true,
   });

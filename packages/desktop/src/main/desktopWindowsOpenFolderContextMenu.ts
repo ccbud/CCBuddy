@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
-import type { Locale } from "@ccbuddy/shared";
+import { toZhOrEnLocale, type Locale } from "@ccbuddy/shared";
 
 // 修复原因：原注册表键会让 CCbuddy 覆盖 CCbuddy 的文件夹右键菜单，产品必须各自拥有入口。
 const MENU_KEY_NAME = "CCbuddy.OpenInCCbuddy";
 const DIRECTORY_MENU_KEY = `HKCU\\Software\\Classes\\Directory\\shell\\${MENU_KEY_NAME}`;
 const DRIVE_MENU_KEY = `HKCU\\Software\\Classes\\Drive\\shell\\${MENU_KEY_NAME}`;
-const MENU_LABELS: Record<Locale, string> = {
+// 系统右键菜单只内置中英；其它界面语言用英文。
+const MENU_LABELS: Record<"zh-CN" | "en-US", string> = {
   "zh-CN": "在 CCbuddy 中打开",
   "en-US": "Open in CCbuddy",
 };
@@ -21,7 +22,7 @@ export interface WindowsOpenFolderRegistryOperation {
 }
 
 export function getWindowsOpenFolderMenuName(locale: Locale): string {
-  return MENU_LABELS[locale] ?? MENU_LABELS["en-US"];
+  return MENU_LABELS[toZhOrEnLocale(locale)];
 }
 
 function quoteWindowsCommandArg(value: string): string {

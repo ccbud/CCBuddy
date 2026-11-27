@@ -2,7 +2,10 @@
 import { createInMemorySessionEventStore } from "@ccbuddy/adapters/storage";
 import type { ModelSelection } from "@ccbuddy/contracts";
 import {
+  CCBUDDY_REPLY_LANGUAGE_REQUEST_TIMEOUT_MS,
+  ccbuddyProtocolMethods,
   ccbuddyProviderTestModelConnectivityParamsSchema,
+  ccbuddySessionReadReplyLanguageResultSchema,
   ccbuddyWorkspaceReadPresentationParamsSchema,
   type CCbuddyWorkspaceRef,
 } from "@ccbuddy/shared";
@@ -10,11 +13,13 @@ import type { CCbuddyApp, CCbuddyAppOptions } from "../app/types.js";
 import { listProtocolSlashCommands } from "./slash-commands.js";
 import {
   parseParams,
+  protocolTraceFromTraceContext,
   type CCbuddyProtocolAgentServerContext,
   type CCbuddyProtocolSessionRecord,
 } from "./server-types.js";
-import { runSessionModelConfigMutation } from "../ccbuddy-protocol-v4/model-config-mutation.js";
 import { createProviderRuntimeHeadersPort } from "./provider-runtime-headers.js";
+import { offPeakLifecycleNotificationSchema } from "@ccbuddy/shared";
+import { V4_NOTIFICATIONS } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 
 export async function readWorkspacePresentation(
   context: CCbuddyProtocolAgentServerContext,
@@ -29,6 +34,10 @@ export async function readWorkspacePresentation(
       dynamicWorkflowEnabled: context.appRuntimePreferences.dynamicWorkflowEnabled,
       env: context.deps.env,
       logger: context.logger,
+      pluginPreparation: context.deps?.pluginPreparation,
+      pluginDiscovery: context.deps?.pluginDiscovery,
+      workspaceIdentity: params.workspace.workspaceIdentity,
+      remoteSessionId: params.workspace.remoteSessionId,
       workingDirectory: params.workspace.workspacePath,
     }),
   };
@@ -73,11 +82,20 @@ export async function createWorkspaceCCbuddyApp(
 ): Promise<CCbuddyApp> {
   const providerRuntimeHeadersPort =
     options.providerRuntimeHeadersPort ?? createProviderRuntimeHeadersPort(context, workspace);
+  const readReplyLanguage = options.readReplyLanguage ?? createReplyLanguageReader(context);
   return context.deps.createCCbuddyApp({
     ...options,
+    // Hook Trust 等对外字段用会话所属 workspace 的 key；受管 worktree 会话 = 项目 key。
+    workspaceKey: workspace.workspaceKey,
+    onOffPeakLifecycleEvent: (event) =>
+      context.notify({
+        method: V4_NOTIFICATIONS.offPeakLifecycle,
+        params: offPeakLifecycleNotificationSchema.parse(event),
+      }),
     includeVisualize: true,
     platform: context.deps.platform,
     providerRuntimeHeadersPort,
+    readReplyLanguage,
     runtimeConfig: {
       ...options.runtimeConfig,
       // createCCbuddyApp 会把 workingDirectory 规范化为执行 cwd。把协议入口的
@@ -110,27 +128,6 @@ export function hasSessionModelProvider(
   return record.app.listModels().some((model) => model.ref.providerId === providerId);
 }
 
-async function ensureSessionModelAvailableUnlocked(
-  context: CCbuddyProtocolAgentServerContext,
-  record: CCbuddyProtocolSessionRecord,
-): Promise<boolean> {
-  // 存量模型失效时不能静默改成 Registry 第一项覆盖用户选择；失效选择保持未绑定，
-  // 由恢复/Composer 的选择校验和首发门禁处理；这里不能再写入另一份默认模型事实。
-  // 保留该过渡入口是为了让旧协议调用方平稳退场。
-  void context;
-  void record;
-  return false;
-}
-
-export async function ensureSessionModelAvailable(
-  context: CCbuddyProtocolAgentServerContext,
-  record: CCbuddyProtocolSessionRecord,
-): Promise<boolean> {
-  return runSessionModelConfigMutation(record.app, () =>
-    ensureSessionModelAvailableUnlocked(context, record),
-  );
-}
-
 export function resolveSessionModelContextWindow(
   _context: CCbuddyProtocolAgentServerContext,
   record: Pick<CCbuddyProtocolSessionRecord, "app" | "workspace" | "restoredModelSelection">,
@@ -139,4 +136,27 @@ export function resolveSessionModelContextWindow(
   const selection = record.app.runtime.getSessionModelSelection() ?? record.restoredModelSelection;
   const value = selection && record.app.getModelOption?.(selection)?.contextWindow;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * 回复语言的独立反向请求（docs/i18n/agent-reply-language.md）：Host 从内存同步应答，
+ * 单独的方法与短超时让这次读取的耗时可控，不受其他反向请求排队影响。
+ * 只做传输：失败原样抛出，由 core 统一跳过本次公告。
+ */
+function createReplyLanguageReader(
+  context: CCbuddyProtocolAgentServerContext,
+): NonNullable<CCbuddyAppOptions["readReplyLanguage"]> {
+  return async ({ sessionId, signal, traceContext }) => {
+    const result = await context.requestClient(
+      ccbuddyProtocolMethods.sessionReadReplyLanguage,
+      { sessionId },
+      ccbuddySessionReadReplyLanguageResultSchema,
+      {
+        signal,
+        trace: protocolTraceFromTraceContext(traceContext),
+        timeoutMs: CCBUDDY_REPLY_LANGUAGE_REQUEST_TIMEOUT_MS,
+      },
+    );
+    return result.language;
+  };
 }

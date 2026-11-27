@@ -1,14 +1,13 @@
-import { activeSessionMessages, modelMessageContentToText } from "../deps.js";
+import { getConversationModelOnlyTurnTriggerSource, isBotInputClientId } from "@ccbuddy/shared";
 import type { GenUiModelContext } from "@ccbuddy/shared/gen-ui";
-import { attachGenUiContext } from "../../agent/gen-ui-context.js";
+import { attachGenUiContext } from "../../agent/message-history.js";
+import { activeSessionMessages, modelMessageContentToText } from "../deps.js";
+import { buildPromptAttachmentBlocks } from "../../system-reminder/prompt-attachment.js";
 import {
-  buildPromptAttachmentBlocks,
-  buildPromptAttachmentReminderBodies,
-  type PromptAttachmentReminderInput,
-} from "../../system-reminder/prompt-attachment.js";
-import {
-  realUserRuntimeMetadata,
-  systemReminderAttachmentEntry,
+  buildUserMessageEntries,
+  isPastedInlineImageAttachment,
+  promptAttachmentInputForResolvedAttachment,
+  isFailedTextAttachmentPlaceholder,
   type RuntimeMessageEntry,
 } from "../../agent/message-history.js";
 import type {
@@ -18,6 +17,21 @@ import type {
   ModelMessageContentBlock,
 } from "../deps.js";
 import type { ResolvedTurnAttachment, RunModelTextRequestOptions } from "../types.js";
+
+/**
+ * 隐藏提醒记录：公告、批次提示、中断标记等只给模型看的 system_reminder 记录。它是模型上下文，
+ * 不是对话消息：rewind 锚点回溯、turnNumber、对话指针和 fork 选型回退都跳过它
+ * （meta-user-context.md）。会开启一轮的 model-only 输入（goal continuation 等）不算。
+ */
+export function isHiddenReminderMessage(message: MessageWithParts): boolean {
+  const semantics = message.info.semantics;
+  return (
+    message.info.role === "user" &&
+    semantics?.kind === "system_reminder" &&
+    semantics.uiVisibility === "hidden" &&
+    getConversationModelOnlyTurnTriggerSource(message) === null
+  );
+}
 
 export function getLatestActiveSessionMessageId(
   messages: MessageWithParts[],
@@ -35,6 +49,8 @@ export function getLatestActiveSessionMessageId(
 
   for (let index = activeMessages.length - 1; index >= 0; index--) {
     const message = activeMessages[index]!;
+    // 与 live 一致：隐藏提醒不移动对话指针。
+    if (isHiddenReminderMessage(message)) continue;
     if (message.info.role === "user" || message.info.role === "assistant") {
       return message.info.id;
     }
@@ -114,61 +130,32 @@ export function buildRuntimeUserEntriesFromTurn(
   options: {
     browserAmbientContext?: { tabCount: number; currentUrl?: string };
     genUiContext?: GenUiModelContext;
+    /** Host 可信注入的输入来源（clientMode 派生），决定 ambient 块里是否声明设计模式。 */
+    inputOrigin?: "desktop" | "mobile";
+    /** 提交端 clientId（Host 写进命令信封）；Bot 输入是 `bot:` 前缀，Host 也记为 desktop。 */
+    inputClientId?: string;
   } = {},
 ): RuntimeMessageEntry[] {
-  const realUserBlocks: ModelMessageContentBlock[] = [];
-  const pastedImageBlocks: ModelMessageContentBlock[] = [];
-  const promptAttachmentEntries: RuntimeMessageEntry[] = [];
-
-  for (const attachment of attachments) {
-    if (isPastedInlineImageAttachment(attachment)) {
-      pastedImageBlocks.push(attachment.contentBlock);
-      continue;
-    }
-
-    const promptAttachmentInput = promptAttachmentInputForResolvedAttachment(attachment);
-    if (promptAttachmentInput) {
-      const reminderBody = buildPromptAttachmentReminderBodies(promptAttachmentInput).join("\n");
-      promptAttachmentEntries.push(
-        systemReminderAttachmentEntry("prompt_attachment", reminderBody),
-      );
-      continue;
-    }
-
-    if (isFailedTextAttachmentPlaceholder(attachment)) {
-      continue;
-    }
-
-    realUserBlocks.push(attachment.contentBlock);
-  }
-
-  const blocks: ModelMessageContentBlock[] = [];
-  if (input.length > 0) {
-    blocks.push({
-      type: "text",
-      text: formatBrowserAmbientUserInput(input, options.browserAmbientContext),
-    });
-  }
-  blocks.push(...realUserBlocks, ...pastedImageBlocks);
-
-  return [
-    attachGenUiContext(
-      {
-        message: {
-          role: "user",
-          content: normalizeRealUserContent(blocks),
-        },
-        metadata: realUserRuntimeMetadata(),
-      },
-      options.genUiContext,
-    ),
-    ...promptAttachmentEntries,
-  ];
+  const [userEntry, ...attachmentEntries] = buildUserMessageEntries(
+    input.length > 0
+      ? formatBrowserAmbientUserInput(
+          input,
+          options.browserAmbientContext,
+          isBotInputClientId(options.inputClientId) ? undefined : options.inputOrigin,
+        )
+      : input,
+    attachments,
+  );
+  return [attachGenUiContext(userEntry, options.genUiContext), ...attachmentEntries];
 }
+
+const DESIGN_MODE_AMBIENT_LINE =
+  "- Design mode: available. Design tools appear in the in-app browser on design pages (data-ccbuddy-design, or local pages with :root CSS variables, data-variant or section.slide; the address bar element picker shows them anywhere): picked elements arrive as web element references with screenshots (Shift-click picks several), and numeric edits in the properties panel (element styles, :root CSS variables) are written straight into local HTML files by the app, so re-read the file before editing it; plus data-variant switching and slide paging.";
 
 export function formatBrowserAmbientUserInput(
   input: string,
   context?: { tabCount: number; currentUrl?: string },
+  inputOrigin?: "desktop" | "mobile",
 ): string {
   if (!context || !Number.isInteger(context.tabCount) || context.tabCount <= 0) return input;
   const tabLabel = context.tabCount === 1 ? "tab" : "tabs";
@@ -178,96 +165,14 @@ export function formatBrowserAmbientUserInput(
     "# In app browser:",
     `- The user has the in-app browser open with ${context.tabCount} ${tabLabel}.`,
     ...(context.currentUrl ? [`- Current URL: ${context.currentUrl}`] : []),
+    // 设计工具（选元素 / 属性面板）只在桌面窗口里可操作。手机远控、Bot 驱动同一会话时 Host 照样能收集到
+    // 桌面 IAB 的 ambient state，所以只有 Host 确认是桌面输入（inputOrigin 由 clientMode 派生，调用方已按
+    // `bot:` clientId 排除 Bot 输入）才声明；design 技能据此决定提不提设计模式。
+    ...(inputOrigin === "desktop" ? [DESIGN_MODE_AMBIENT_LINE] : []),
     "</in-app-browser-context>",
     "",
     "## My request for CCbuddy:",
     input,
   ];
   return lines.join("\n");
-}
-
-function normalizeRealUserContent(
-  blocks: readonly ModelMessageContentBlock[],
-): ModelMessageContent {
-  if (blocks.length === 0) return "";
-  if (blocks.length === 1 && blocks[0]!.type === "text") {
-    return blocks[0]!.text;
-  }
-  return blocks.map((block) => ({ ...block })) as ModelMessageContentBlock[];
-}
-
-function isPastedInlineImageAttachment(attachment: ResolvedTurnAttachment): boolean {
-  if (attachment.contentBlock.type === "image") {
-    return attachment.contentBlock.source?.kind === "inline";
-  }
-  return (
-    attachment.contentBlock.type === "text" &&
-    attachment.mime.startsWith("image/") &&
-    /^\[Attached image\/[^:]+: \[image #\d+\]\]$/u.test(attachment.contentBlock.text)
-  );
-}
-
-function shouldAddReadLikePromptAttachmentReminder(
-  attachment: ResolvedTurnAttachment,
-): attachment is ResolvedTurnAttachment & {
-  contentBlock: Extract<ModelMessageContentBlock, { type: "text" }>;
-  source: NonNullable<ResolvedTurnAttachment["source"]>;
-} {
-  if (attachment.contentBlock.type !== "text") return false;
-  if (!attachment.mime.startsWith("text/")) return false;
-  if (!attachment.source) return false;
-  if (attachment.metadata.storageKind !== "inline") return false;
-  if (
-    attachment.metadata.recoverability !== "provider_ready" &&
-    attachment.metadata.recoverability !== "preview_only"
-  ) {
-    return false;
-  }
-  return attachment.metadata.preview?.text === attachment.contentBlock.text;
-}
-
-function promptAttachmentInputForResolvedAttachment(
-  attachment: ResolvedTurnAttachment,
-): (PromptAttachmentReminderInput & { content: string; kind: "file" | "inline_text" }) | undefined {
-  if (shouldAddReadLikePromptAttachmentReminder(attachment)) {
-    return {
-      content: attachment.contentBlock.text,
-      kind: "file",
-      // provider-visible 的 Read 输入要和用户提交的附件引用一致。
-      // local file 的 filename 只是展示名；只有缺少 source 时才用它兜底，避免 live/hydrate 轨迹漂移。
-      label: attachment.source.text.value ?? attachment.filename,
-      preview: attachment.metadata.preview,
-    };
-  }
-
-  if (shouldAddInlinePromptAttachmentReminder(attachment)) {
-    return {
-      content: attachment.contentBlock.text,
-      kind: "inline_text",
-      label: attachment.filename,
-      preview: attachment.metadata.preview,
-    };
-  }
-
-  return undefined;
-}
-
-function shouldAddInlinePromptAttachmentReminder(
-  attachment: ResolvedTurnAttachment,
-): attachment is ResolvedTurnAttachment & {
-  contentBlock: Extract<ModelMessageContentBlock, { type: "text" }>;
-} {
-  return (
-    attachment.contentBlock.type === "text" &&
-    attachment.mime.startsWith("text/") &&
-    !attachment.source
-  );
-}
-
-function isFailedTextAttachmentPlaceholder(attachment: ResolvedTurnAttachment): boolean {
-  return (
-    attachment.contentBlock.type === "text" &&
-    attachment.mime.startsWith("text/") &&
-    attachment.metadata.errorCode === "attachment_read_failed"
-  );
 }

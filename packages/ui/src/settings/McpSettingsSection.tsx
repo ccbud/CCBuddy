@@ -6,14 +6,16 @@
  * Supports the unified CCbuddy Agent MCP source backed by settings directories.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { convertToCCbuddyAgentMcpServer } from "@ccbuddy/shared";
 import {
-  convertToCCbuddyAgentMcpServer,
   TID_MCP_OPEN_AUTHORIZATION_BUTTON,
   TID_PLUGIN_MCP_SERVER_ROW,
   testId,
-} from "@ccbuddy/shared";
+} from "@ccbuddy/shared/test-ids";
 import type {
   RemoteTarget,
+  WorkspaceMcpTrustDecision,
+  CCbuddyWorkspaceMcpTrustResult,
   CCbuddyAvailablePluginSummary,
   CCbuddyAgentMcpServer,
   CCbuddyMcpListMode,
@@ -23,6 +25,7 @@ import type {
 } from "@ccbuddy/shared";
 import {
   isCCbuddyAgentMcpStatusModeUnsupportedError,
+  type IServiceAccessor,
   type IMcpSyncService,
 } from "@ccbuddy/services";
 import { Button } from "@/components/ui/button.js";
@@ -63,23 +66,36 @@ import {
   SettingsResourceList,
 } from "@/settings/SettingsResourceGroup.js";
 import { McpServersImportDialog } from "@/settings/ExternalAgentImportDialog.js";
-import { RemoteSyncDialogs, shouldShowRemoteSyncActions } from "@/settings/RemoteSyncActions.js";
+import {
+  formatRemoteSyncTargetLabel,
+  shouldShowRemoteSyncActions,
+  useSettingsDataSyncEntry,
+} from "@/data-sync/index.js";
 import { useMcpStore } from "@/store/mcpStore.js";
 import { usePluginManagementStore } from "@/store/pluginManagementStore.js";
 import { usePlatform } from "@/hooks/usePlatform.js";
-import { useBaseWorkspaceServices, useWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
-import { useTabStore } from "@/store/TabStoreProvider.js";
-import type { WorkspaceTabState } from "@/store/tabStore.js";
+import { useConfigWorkspaceServices as useWorkspaceServices } from "@/workspace-config-catalog/index.js";
+import type { ConfigWorkspaceTarget } from "@/workspace-config-catalog/index.js";
 import { getPluginWorkspaceKey } from "@/settings/PluginScopeMenu.js";
 import { ExternalLink, Import, Plus, UploadCloud } from "lucide-react";
 import { SettingsSegmentedTabs } from "@/settings/SettingsSegmentedTabs.js";
-import { formatRemoteSkillSyncTarget } from "@/settings/RemoteSkillSyncDialog.js";
 import { selectPluginsForScope } from "@/settings/pluginCapabilityProjection.js";
 
 const DEFAULT_MCP_SOURCE: ServerScope = "ccbuddyagentmcp";
 const MCP_OAUTH_AUTHORIZATION_STATUS_REFRESH_MS = 1_000;
 const MCP_OAUTH_AUTHORIZATION_STATUS_REFRESH_DURATION_MS = 5 * 60_000;
 const MCP_OAUTH_AUTHORIZATION_FOLLOWUP_REFRESH_ATTEMPTS = 10;
+
+export async function applyWorkspaceMcpTrustDecision(
+  request: WorkspaceMcpTrustDecision,
+  isCurrentTarget: () => boolean,
+  decide: (request: WorkspaceMcpTrustDecision) => Promise<CCbuddyWorkspaceMcpTrustResult>,
+): Promise<boolean> {
+  if (!isCurrentTarget()) return false;
+  const result = await decide(request);
+  if (!result.accepted) throw new Error(result.reasonCode ?? "workspace_mcp_trust_unavailable");
+  return isCurrentTarget();
+}
 
 export function createMcpOAuthAuthorizationStatusRefreshDeadline(
   now: () => number = Date.now,
@@ -338,7 +354,11 @@ export function buildMcpOAuthAuthorizationStatusRefreshServers(
     if (!hasPendingAuthorization || seenNames.has(server.name)) {
       continue;
     }
-    const ccbuddyAgentServer = convertToCCbuddyAgentMcpServer(server.name, server.config);
+    const ccbuddyAgentServer = convertToCCbuddyAgentMcpServer(
+      server.name,
+      server.config,
+      server.scope === "workspace" ? "workspace" : "user",
+    );
     if (!ccbuddyAgentServer) {
       continue;
     }
@@ -377,21 +397,12 @@ export function buildPluginMcpServerStatusListKey(plugins: CCbuddyPluginInfo[]):
     .map((plugin) => {
       const declaredNames = plugin.declaredMcpServerNames ?? [];
       const runtimeNames = plugin.mcpServerNames;
-      const hostNames = plugin.hostMcpServerNames ?? [];
-      if (
-        (!plugin.enabled && hostNames.length === 0) ||
-        (declaredNames.length === 0 && runtimeNames.length === 0 && hostNames.length === 0)
-      ) {
+      if (!plugin.enabled || (declaredNames.length === 0 && runtimeNames.length === 0)) {
         return "";
       }
-      const pluginKey = `${plugin.id}:${plugin.enabled ? "enabled" : "disabled"}:${[
-        ...declaredNames,
-      ]
+      return `${plugin.id}:${plugin.enabled ? "enabled" : "disabled"}:${[...declaredNames]
         .sort()
         .join(",")}:${[...runtimeNames].sort().join(",")}`;
-      return hostNames.length > 0
-        ? `${pluginKey}:host=${[...hostNames].sort().join(",")}`
-        : pluginKey;
     })
     .filter(Boolean)
     .join("|");
@@ -460,12 +471,7 @@ function PluginMcpServerList({
           id: "settings.mcp.plugin.disconnectedDescription",
         });
       }
-      return item.hostProvided
-        ? intl.formatMessage(
-            { id: "settings.mcp.host.activeDescription" },
-            { pluginName: item.pluginName },
-          )
-        : intl.formatMessage({ id: "settings.mcp.plugin.activeDescription" });
+      return intl.formatMessage({ id: "settings.mcp.plugin.activeDescription" });
     }
     if (!item.pluginEnabled) {
       return intl.formatMessage({
@@ -546,16 +552,19 @@ interface McpSettingsSectionProps {
   remoteSessionId?: string;
   remoteTarget?: RemoteTarget;
   localWorkspacePath?: string;
-
   scopeFilter: "user" | "workspace";
   parentScopeKey: string;
-  workspaceTabs: WorkspaceTabState[];
+  workspaceTabs: ConfigWorkspaceTarget[];
   searchQuery: string;
   onVisibleCountChange?: (count: number) => void;
   onEditorOpenChange?: (open: boolean) => void;
   onFormScopeKeyChange?: (scopeKey: string | null) => void;
   onOpenPluginStore?: () => void;
   showMarketplaceBreadcrumb?: boolean;
+  /** Scope 选中在线远端设备的「用户」时为该设备；同步按钮只在此时显示。 */
+  dataSyncSourceServerId?: string | null;
+  unscopedServices?: IServiceAccessor;
+  cacheAuthorityKey?: string;
 }
 
 export function McpSettingsSection({
@@ -563,7 +572,6 @@ export function McpSettingsSection({
   workspaceIdentity,
   remoteSessionId,
   remoteTarget,
-  localWorkspacePath,
   scopeFilter,
   parentScopeKey,
   workspaceTabs,
@@ -573,6 +581,9 @@ export function McpSettingsSection({
   onFormScopeKeyChange,
   onOpenPluginStore,
   showMarketplaceBreadcrumb = false,
+  dataSyncSourceServerId,
+  unscopedServices,
+  cacheAuthorityKey,
 }: McpSettingsSectionProps) {
   const { intl, locale } = useCCbuddyIntl();
   const confirmDialog = useConfirmDialog();
@@ -581,9 +592,9 @@ export function McpSettingsSection({
     remoteSessionId,
     workspaceIdentity,
     remoteTarget,
+    { unscopedServices, forceUnscoped: Boolean(cacheAuthorityKey || unscopedServices) },
   );
   const platform = usePlatform();
-  const baseServices = useBaseWorkspaceServices();
 
   const storedServers = useMcpStore((s) => s.servers);
   const storedStatusSnapshots = useMcpStore((s) => s.statusSnapshots);
@@ -592,16 +603,19 @@ export function McpSettingsSection({
   const installedPlugins = usePluginManagementStore((state) => state.installedPlugins);
   const pluginStoreWorkspacePath = usePluginManagementStore((state) => state.workspacePath);
   const pluginStoreWorkspaceIdentity = usePluginManagementStore((state) => state.workspaceIdentity);
+  const pluginStoreAuthorityKey = usePluginManagementStore((state) => state.authorityKey);
   const pluginConfigScope = usePluginManagementStore((state) => state.configScope);
   const initializePlugins = usePluginManagementStore((state) => state.initialize);
   const currentProjectPath = useMcpStore((s) => s.currentProjectPath);
   const currentWorkspaceIdentity = useMcpStore((s) => s.currentWorkspaceIdentity);
-  const storeActiveWorkspacePath = useTabStore((s) => s.activeWorkspacePath);
-  const storeActiveWorkspaceIdentity = useTabStore((s) => s.activeWorkspaceIdentity ?? undefined);
-  const activeWorkspacePath = workspacePath ?? storeActiveWorkspacePath;
-  const activeWorkspaceIdentity = workspaceIdentity ?? storeActiveWorkspaceIdentity;
-  const activeWorkspaceKey = activeWorkspaceIdentity?.trim() || activeWorkspacePath || "";
-  const currentMcpStoreWorkspaceKey = currentWorkspaceIdentity?.trim() || currentProjectPath;
+  const currentAuthorityKey = useMcpStore((s) => s.currentAuthorityKey);
+  // Bug 原因：props 缺省时曾回退到当前 tab 的路径和 identity。远端「用户」本来就没有 identity，
+  // 回退后混入当前 tab 的 identity，读写落到当前 tab 所在设备。
+  // 修法：只用 Scope 目标（props）这一组绑定；唯一调用方 PluginsSection 总会传入目标路径。
+  const activeWorkspacePath = workspacePath ?? undefined;
+  const activeWorkspaceIdentity = workspaceIdentity;
+  const activeWorkspaceKey = `${cacheAuthorityKey?.trim() || "workspace"}\0${activeWorkspaceIdentity?.trim() || activeWorkspacePath || ""}`;
+  const currentMcpStoreWorkspaceKey = `${currentAuthorityKey?.trim() || "workspace"}\0${currentWorkspaceIdentity?.trim() || currentProjectPath}`;
   // 修复原因：active tab 会先于异步 MCP 目录加载切换；过渡帧不能把 A 的配置和
   // snapshot 投影到 B，更不能让后续 effect 把这些敏感配置发送给 B 的 Agent。
   const mcpStoreMatchesActiveWorkspace =
@@ -624,7 +638,6 @@ export function McpSettingsSection({
   const [formScopeKey, setFormScopeKey] = useState(parentScopeKey);
   const [editingServer, setEditingServer] = useState<CCbuddyMcpServer | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
-  const [remoteMcpSyncOpen, setRemoteMcpSyncOpen] = useState(false);
   const query = searchQuery;
   const [editorMode, setEditorMode] = useState<McpEditorMode>("form");
   const [mcpConfigReadyWorkspaceKey, setMcpConfigReadyWorkspaceKey] = useState("");
@@ -835,16 +848,16 @@ export function McpSettingsSection({
     if (refreshingStatusList) return;
     setRefreshingStatusList(true);
     try {
-      await loadMcpFromUserDirectory(services.mcpSyncService, activeWorkspaceIdentity);
+      await loadMcpFromUserDirectory();
       if (activeWorkspacePath && !mcpConfigReadyWorkspaceKey) {
         const loaded = await ensureLoadedForWorkspace(
           activeWorkspacePath,
           services.mcpSyncService,
           activeWorkspaceIdentity,
+          cacheAuthorityKey,
         );
         const state = useMcpStore.getState();
-        const loadedWorkspaceKey =
-          state.currentWorkspaceIdentity?.trim() || state.currentProjectPath;
+        const loadedWorkspaceKey = `${state.currentAuthorityKey?.trim() || "workspace"}\0${state.currentWorkspaceIdentity?.trim() || state.currentProjectPath}`;
         if (loaded && loadedWorkspaceKey === activeWorkspaceKey) {
           setMcpConfigReadyWorkspaceKey(activeWorkspaceKey);
           // ref 只在 render 时同步；这里补写一次，否则同一 tick 内紧接着的请求仍会
@@ -863,6 +876,7 @@ export function McpSettingsSection({
     activeWorkspaceIdentity,
     activeWorkspaceKey,
     activeWorkspacePath,
+    cacheAuthorityKey,
     ensureLoadedForWorkspace,
     loadMcpFromUserDirectory,
     mcpConfigReadyWorkspaceKey,
@@ -889,14 +903,14 @@ export function McpSettingsSection({
       activeWorkspacePath,
       services.mcpSyncService,
       activeWorkspaceIdentity,
+      cacheAuthorityKey,
     )
       .then((loaded) => {
         if (cancelled || !loaded) {
           return;
         }
         const state = useMcpStore.getState();
-        const loadedWorkspaceKey =
-          state.currentWorkspaceIdentity?.trim() || state.currentProjectPath;
+        const loadedWorkspaceKey = `${state.currentAuthorityKey?.trim() || "workspace"}\0${state.currentWorkspaceIdentity?.trim() || state.currentProjectPath}`;
         if (loadedWorkspaceKey === activeWorkspaceKey) {
           setMcpConfigReadyWorkspaceKey(activeWorkspaceKey);
         }
@@ -915,6 +929,7 @@ export function McpSettingsSection({
     activeWorkspaceIdentity,
     activeWorkspaceKey,
     activeWorkspacePath,
+    cacheAuthorityKey,
     ensureLoadedForWorkspace,
     services.mcpSyncService,
   ]);
@@ -927,11 +942,13 @@ export function McpSettingsSection({
       pluginService: services.pluginManagementService,
       workspaceIdentity: activeWorkspaceIdentity,
       workspacePath: activeWorkspacePath,
+      authorityKey: cacheAuthorityKey,
       configScope: scopeFilter,
     });
   }, [
     activeWorkspaceIdentity,
     activeWorkspacePath,
+    cacheAuthorityKey,
     initializePlugins,
     scopeFilter,
     services.pluginManagementService,
@@ -1149,12 +1166,8 @@ export function McpSettingsSection({
     [query, scopedServers],
   );
   const connectedRemoteSyncTarget =
-    shouldShowRemoteSyncActions({
-      remoteSessionId,
-      remoteTarget,
-      clientMode: "desktop-continuous",
-      hasLocalSourceService: Boolean(baseServices.mcpSyncService),
-    }) && activeWorkspacePath
+    shouldShowRemoteSyncActions({ remoteSessionId, remoteTarget, isWebRemoteControl: false }) &&
+    activeWorkspacePath
       ? remoteTarget
       : null;
   const isRemoteSyncContext = Boolean(connectedRemoteSyncTarget);
@@ -1164,9 +1177,13 @@ export function McpSettingsSection({
       // 远端 MCP 设置页必须和 Skills 一样只展示远端工作区可读写的资源。
       return [];
     }
+    // 插件 store 的 key 必须与 pluginManagementStoreLoading.buildWorkspaceKey 同格式
+    // （authority\0identity|path），否则带 Source authority 的 activeWorkspaceKey 永远匹配不上。
+    const pluginStoreWorkspaceKey = `${pluginStoreAuthorityKey?.trim() || "workspace"}\0${
+      pluginStoreWorkspaceIdentity?.trim() || pluginStoreWorkspacePath || ""
+    }`;
     const pluginStoreMatchesTarget =
-      (pluginStoreWorkspaceIdentity?.trim() || pluginStoreWorkspacePath || "") ===
-        activeWorkspaceKey && pluginConfigScope === scopeFilter;
+      pluginStoreWorkspaceKey === activeWorkspaceKey && pluginConfigScope === scopeFilter;
     if (!pluginStoreMatchesTarget) {
       return [];
     }
@@ -1179,6 +1196,7 @@ export function McpSettingsSection({
     activeWorkspaceKey,
     isRemoteSyncContext,
     pluginConfigScope,
+    pluginStoreAuthorityKey,
     pluginStoreWorkspaceIdentity,
     pluginStoreWorkspacePath,
     plugins,
@@ -1204,6 +1222,8 @@ export function McpSettingsSection({
       filteredServers
         .map((server, index) => ({ index, server }))
         .toSorted((left, right) => {
+          // Bug 原因：Source authority 提交从旧基线重放时恢复了已废弃的「需要关注」分组，
+          // 把诊断分组改版重新拆成两套列表。异常项只在 Installed 内稳定置顶，避免重复分组。
           const leftAttention = Boolean(
             left.server.authorization?.authorizationUrl || left.server.status === "error",
           );
@@ -1220,8 +1240,19 @@ export function McpSettingsSection({
     onVisibleCountChange?.(filteredMcpCount);
   }, [filteredMcpCount, onVisibleCountChange]);
   const remoteMcpSyncTargetLabel = connectedRemoteSyncTarget
-    ? formatRemoteSkillSyncTarget(connectedRemoteSyncTarget, activeWorkspacePath ?? "")
+    ? formatRemoteSyncTargetLabel(connectedRemoteSyncTarget, activeWorkspacePath ?? "")
     : "";
+  // 同步按钮打开数据同步弹窗的 MCP 分类。设置页入口不传 workspace 映射：MCP 只做 home 改写。
+  const dataSync = useSettingsDataSyncEntry({
+    category: "mcp",
+    sourceServerId: dataSyncSourceServerId,
+    onPushFinished: async () => {
+      const loaded = await loadMcpFromUserDirectory();
+      if (loaded) {
+        await requestMcpServerStatusList();
+      }
+    },
+  });
 
   async function handleToggle(id: string, enabled: boolean) {
     await toggleServer(id, enabled);
@@ -1250,6 +1281,79 @@ export function McpSettingsSection({
     void requestMcpServerStatusList();
   }
 
+  const trustTargetRef = useRef({
+    workspaceKey: activeWorkspaceKey,
+    service: services.mcpSyncService,
+  });
+  trustTargetRef.current = { workspaceKey: activeWorkspaceKey, service: services.mcpSyncService };
+
+  const trustAbortRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      trustAbortRef.current?.abort();
+      trustAbortRef.current = null;
+    },
+    [activeWorkspaceKey, services.mcpSyncService],
+  );
+
+  async function handleWorkspaceMcpTrust(server: CCbuddyMcpServer) {
+    const review = server.workspaceTrust;
+    if (trustAbortRef.current) return;
+    const controller = new AbortController();
+    const target = trustTargetRef.current;
+    const isCurrentTarget = () =>
+      !controller.signal.aborted &&
+      target.workspaceKey === trustTargetRef.current.workspaceKey &&
+      target.service === trustTargetRef.current.service;
+    const workspacePath = activeWorkspacePath;
+    const decide = services.mcpSyncService.setWorkspaceMcpTrust;
+    if (!review || !workspacePath || !decide || server.scope !== "workspace") return;
+    trustAbortRef.current = controller;
+    const trusted = !review.trusted;
+    const confirmed = await confirmDialog(
+      {
+        title: intl.formatMessage(
+          { id: trusted ? "settings.mcp.trust.title" : "settings.mcp.trust.revokeTitle" },
+          { name: server.name },
+        ),
+        description: [
+          intl.formatMessage({ id: "settings.mcp.trust.description" }),
+          ...review.sourcePaths,
+        ].join("\n\n"),
+        // Host 已脱敏并格式化声明；使用代码组件保留缩进，不重新读取原始配置。
+        codeBlock: { code: review.display, language: "json" },
+        scrollableDescription: true,
+        intent: "workspace-mcp-trust",
+        confirmLabel: intl.formatMessage({
+          id: trusted ? "settings.mcp.trust.action" : "settings.mcp.trust.revoke",
+        }),
+      },
+      controller.signal,
+    );
+    if (!confirmed) {
+      if (trustAbortRef.current === controller) trustAbortRef.current = null;
+      return;
+    }
+    try {
+      const current = await applyWorkspaceMcpTrustDecision(
+        {
+          workspacePath,
+          ...(activeWorkspaceIdentity ? { workspaceIdentity: activeWorkspaceIdentity } : {}),
+          serverName: server.name,
+          declarationDigest: review.declarationDigest,
+          trusted,
+        },
+        isCurrentTarget,
+        (request) => decide.call(services.mcpSyncService, request),
+      );
+      if (current) await requestMcpServerStatusList({ mode: "status" });
+    } catch {
+      if (isCurrentTarget()) toast(intl.formatMessage({ id: "settings.mcp.trust.failed" }));
+    } finally {
+      if (trustAbortRef.current === controller) trustAbortRef.current = null;
+    }
+  }
+
   async function handleSave(form: FormState, prev?: CCbuddyMcpServer) {
     if (!activeWorkspacePath) {
       return;
@@ -1258,6 +1362,7 @@ export function McpSettingsSection({
       activeWorkspacePath,
       services.mcpSyncService,
       activeWorkspaceIdentity,
+      cacheAuthorityKey,
     );
     if (!loaded) {
       return;
@@ -1283,6 +1388,7 @@ export function McpSettingsSection({
 
   async function handleDelete(server: CCbuddyMcpServer) {
     const confirmed = await confirmDialog({
+      confirmVariant: "destructive",
       title: intl.formatMessage({ id: "settings.mcp.deleteConfirmTitle" }, { name: server.name }),
       description: intl.formatMessage({
         id: "settings.mcp.deleteConfirmDescription",
@@ -1426,17 +1532,19 @@ export function McpSettingsSection({
 
   return (
     <div className="space-y-4">
-      {connectedRemoteSyncTarget ? (
+      {dataSync.visible ? (
         <div className="flex justify-end">
           <ControlHintTooltip title={intl.formatMessage({ id: "settings.mcp.remoteSync.open" })}>
             <Button
               type="button"
               variant="outline"
               size="icon-lg"
+              data-testid="data-sync-entry-mcp"
+              disabled={dataSync.disabled}
               aria-label={intl.formatMessage({
                 id: "settings.mcp.remoteSync.open",
               })}
-              onClick={() => setRemoteMcpSyncOpen(true)}
+              onClick={dataSync.open}
             >
               <UploadCloud className="size-3.5" aria-hidden="true" />
             </Button>
@@ -1474,6 +1582,7 @@ export function McpSettingsSection({
             <SettingsResourceGroupHeader
               actions={
                 <SettingsResourceHeaderActions
+                  refreshTestId="mcp-settings-refresh"
                   onRefresh={() => void handleManualRefresh()}
                   refreshing={refreshingStatusList}
                   onImport={() => setImportDialogOpen(true)}
@@ -1496,6 +1605,7 @@ export function McpSettingsSection({
               onEdit={handleEdit}
               onToggle={handleToggle}
               onOpenAuthorization={handleOpenAuthorization}
+              onTrust={handleWorkspaceMcpTrust}
               emptyTitle={intl.formatMessage({ id: "settings.mcp.emptyTitle" })}
               emptyDescription={intl.formatMessage({
                 id: "settings.mcp.emptyDescription",
@@ -1571,33 +1681,10 @@ export function McpSettingsSection({
         settingsSyncService={services.settingsSyncService}
         onOpenChange={setImportDialogOpen}
         onImported={async () => {
-          await loadMcpFromUserDirectory(services.mcpSyncService, activeWorkspaceIdentity);
+          await loadMcpFromUserDirectory();
         }}
       />
-      <RemoteSyncDialogs
-        canSyncSkills={false}
-        canSyncMcp={Boolean(connectedRemoteSyncTarget && activeWorkspacePath)}
-        skillOpen={false}
-        mcpOpen={remoteMcpSyncOpen}
-        onSkillOpenChange={() => {}}
-        onMcpOpenChange={setRemoteMcpSyncOpen}
-        localMcpSyncService={baseServices.mcpSyncService}
-        remoteMcpSyncService={services.mcpSyncService}
-        remoteTarget={connectedRemoteSyncTarget}
-        skillWorkspacePath=""
-        mcpWorkspacePath={activeWorkspacePath ?? ""}
-        mcpLocalWorkspacePath={localWorkspacePath}
-        onSkillsSynced={() => {}}
-        onMcpSynced={async () => {
-          const loaded = await loadMcpFromUserDirectory(
-            services.mcpSyncService,
-            activeWorkspaceIdentity,
-          );
-          if (loaded) {
-            await requestMcpServerStatusList();
-          }
-        }}
-      />
+      {dataSync.dialog}
     </div>
   );
 }

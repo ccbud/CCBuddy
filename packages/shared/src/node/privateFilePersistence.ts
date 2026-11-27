@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -9,6 +10,93 @@ const DEFAULT_LOCK_OWNERLESS_GRACE_MS = 100;
 const DEFAULT_LOCK_MAX_WAIT_MS = 8_000;
 const DEFAULT_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800] as const;
 const processFileLockTails = new Map<string, Promise<void>>();
+const credentialOperationScope = new AsyncLocalStorage<ReadonlyMap<string, string>>();
+export type CredentialFileGuard = <T>(operation: () => Promise<T>) => Promise<T>;
+
+/** 登录等跨请求流程保留最初代次，不能在迟到响应写入时重新领取新代次。 */
+export async function captureCredentialFileGuard(filePath: string): Promise<CredentialFileGuard> {
+  const generation =
+    credentialOperationScope.getStore()?.get(filePath) ?? (await credentialGeneration(filePath));
+  const scope = new Map(credentialOperationScope.getStore());
+  scope.set(filePath, generation);
+  return (operation) =>
+    credentialOperationScope.run(scope, async () => {
+      await assertCredentialGeneration(filePath, generation);
+      const result = await operation();
+      await assertCredentialGeneration(filePath, generation);
+      return result;
+    });
+}
+
+/** 当前恢复代次；文件不存在时为空串。自动重置与损坏恢复都会推进它。 */
+export async function credentialGeneration(filePath: string): Promise<string> {
+  try {
+    return await readFile(`${filePath}.recovery-generation`, "utf8");
+  } catch (error) {
+    if (getErrorCode(error) === "ENOENT") return "";
+    throw error;
+  }
+}
+
+async function assertCredentialGeneration(filePath: string, expected: string): Promise<void> {
+  if ((await credentialGeneration(filePath)) !== expected) {
+    throw Object.assign(new Error("Credential store changed; retry with the current store"), {
+      code: "CCBUDDY_CREDENTIAL_STORE_CHANGED",
+    });
+  }
+}
+
+/**
+ * 先加密后写盘的请求在加密前领取恢复代次，其中的 withCredentialFileMutation 在锁内校验到写盘。
+ * 已在代次作用域内（如登录流程的 captureCredentialFileGuard）时沿用外层代次。
+ *
+ * Bug 原因：写入方加密后才在文件变更流程领取代次；加密（可能经凭据桥在 Main 完成）在自动重置前、
+ * 写盘在重置后时，屏障领取的已是新代次，旧密钥密文覆盖新登录且返回成功。
+ * 修复依据：代次每次推进都是新随机值；锁内代次仍等于领取值，说明期间没有重置。
+ */
+export async function withCredentialGeneration<T>(
+  filePath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (credentialOperationScope.getStore()?.has(filePath)) return operation();
+  const scope = new Map(credentialOperationScope.getStore());
+  scope.set(filePath, await credentialGeneration(filePath));
+  return credentialOperationScope.run(scope, operation);
+}
+
+/** 恢复会使已接收的旧读写失效；代次与凭据分离，不能用进程内计数代替跨进程检查。 */
+export async function withCredentialFileRead<T>(
+  filePath: string,
+  read: () => Promise<T>,
+): Promise<T> {
+  // 普通读取不能争用写锁：慢写入曾使正常登录读取等待 8 秒后超时。
+  // 前后代次检查拒绝跨恢复的旧结果；恢复替换前的损坏原件仍由读取方严格解析并拒绝。
+  const expected = credentialOperationScope.getStore()?.get(filePath);
+  const current = await credentialGeneration(filePath);
+  if (expected !== undefined) await assertCredentialGeneration(filePath, expected);
+  const generation = expected ?? current;
+  let result: T;
+  try {
+    result = await read();
+  } catch (error) {
+    await assertCredentialGeneration(filePath, generation);
+    throw error;
+  }
+  await assertCredentialGeneration(filePath, generation);
+  return result;
+}
+
+export async function withCredentialFileMutation<T>(
+  filePath: string,
+  mutate: () => Promise<T>,
+): Promise<T> {
+  const generation =
+    credentialOperationScope.getStore()?.get(filePath) ?? (await credentialGeneration(filePath));
+  return withFileLock(filePath, async () => {
+    await assertCredentialGeneration(filePath, generation);
+    return mutate();
+  });
+}
 
 export interface SharedFileLockOptions {
   lockRetryDelaysMs?: readonly number[];

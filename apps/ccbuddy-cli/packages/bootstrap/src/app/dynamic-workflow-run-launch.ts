@@ -303,12 +303,13 @@ export function launchDynamicWorkflowRun(
       actor,
       persona,
       escalatePort,
+      webSearchBudgetPort,
       seed,
       submitPort,
       submitProfile,
       modelRequestAdmission,
     }) => {
-      const runtime = deps.createActorRuntime({
+      const runtime = await deps.createActorRuntime({
         runId,
         sessionId,
         actor,
@@ -320,6 +321,7 @@ export function launchDynamicWorkflowRun(
         ...(modelRequestAdmission === undefined ? {} : { modelRequestAdmission }),
         // 升级端口与 submit 端口同路下传：core 侧的注册门以端口存在为准，所以恒传。
         escalatePort,
+        webSearchBudgetPort,
         // resume 的 pin：这个 actor 上一次跑在哪个模型上。必须在**造 runtime 之前**读，
         // 因为下面那行 journalActorResolvedModel 会把这一轮的解析结果写回同一个字段。
         //
@@ -399,7 +401,9 @@ export function launchDynamicWorkflowRun(
     // 关联锚点随 run 落库：重启后工具卡 join 与 resume 通知都只能从 dwf_run 还原它。
     ...(toolCallId === undefined ? {} : { toolCallId }),
     // 修订续跑：lineage 指针落库（createRun 一次写死），导入缓存注入引擎（纯数据，核心零 I/O）。
-    ...(resumedFrom === undefined ? {} : { resumedFrom }),
+    // 传的是 lineageFrom 而不是入参：它同时是脚本读到的 run.resumedFrom，resume 那一世入参缺席，
+    // 只递入参的话脚本在续跑时会读到 undefined（引擎命中既有行时不再落库，传它无害）。
+    ...(lineageFrom === undefined ? {} : { resumedFrom: lineageFrom }),
     ...(importedCache === undefined ? {} : { importedCache }),
     // 用量起点与缓存同车：引擎在 createRun 时把它写成 spent_tokens 的初值，命中既有行时忽略。
     ...(input.inheritedTokens === undefined ? {} : { inheritedTokens: input.inheritedTokens }),

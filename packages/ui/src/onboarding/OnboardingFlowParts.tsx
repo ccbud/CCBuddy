@@ -1,4 +1,4 @@
-import { CheckIcon, FolderIcon, Loader2Icon } from "lucide-react";
+import { CheckIcon, FolderIcon, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Progress } from "@/components/ui/progress.js";
 import {
@@ -22,8 +22,6 @@ import {
   type ExternalAgentImportCategoryState,
   type ImportResourceCategory,
 } from "@/settings/ExternalAgentImportDialog.js";
-
-export { OnboardingWelcomeView } from "@/onboarding/OnboardingWelcomeView.js";
 
 export interface OnboardingWorkspaceCandidate {
   workspacePath: string;
@@ -136,7 +134,7 @@ export function OnboardingSessionsStep(props: {
             void props.migration.scan();
           }}
         >
-          {props.migration.isScanning ? <Loader2Icon className="size-4 animate-spin" /> : null}
+          {props.migration.isScanning ? <LoaderCircle className="size-4 animate-spin" /> : null}
           {intl.formatMessage({ id: "settings.migration.scan" })}
         </Button>
       </div>
@@ -245,7 +243,7 @@ export function OnboardingAgentSettingsStep(props: {
           />
         ) : loading ? (
           <div className="flex items-center justify-center gap-2 py-8 text-ui-base text-foreground-subtle">
-            <Loader2Icon className="size-4 animate-spin" />
+            <LoaderCircle className="size-4 animate-spin" />
             <span>{intl.formatMessage({ id: "common.loading" })}</span>
           </div>
         ) : error ? (
@@ -298,7 +296,7 @@ export function OnboardingMigrationStep(props: {
         </div>
 
         <div className="flex gap-3">
-          <Loader2Icon className="size-5 animate-spin" />
+          <LoaderCircle className="size-5 animate-spin" />
           <div>
             <div className="text-ui-base font-medium text-foreground">
               {intl.formatMessage(
@@ -323,6 +321,8 @@ export function OnboardingFinishStep(props: {
   settingsImportedCount: number;
   settingsSkippedCount: number;
   settingsFailedCount: number;
+  /** 没有打开项目、需要项目才能导入而记为失败的设置项数。 */
+  settingsWorkspaceRequiredCount: number;
 }) {
   const { intl } = useCCbuddyIntl();
 
@@ -341,6 +341,17 @@ export function OnboardingFinishStep(props: {
         {props.finishExecution.error ? (
           <div className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-ui-base text-foreground">
             {props.finishExecution.error}
+          </div>
+        ) : null}
+        {props.settingsWorkspaceRequiredCount > 0 ? (
+          <div
+            data-testid="onboarding-finish-workspace-required"
+            className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-ui-base text-foreground"
+          >
+            {intl.formatMessage(
+              { id: "onboarding.finish.workspaceRequired" },
+              { count: String(props.settingsWorkspaceRequiredCount) },
+            )}
           </div>
         ) : null}
       </div>

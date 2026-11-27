@@ -3,6 +3,11 @@ import type { DynamicWorkflowClientConfig } from "@ccbuddy/shared";
 import type { ICodingPlanSubscriptionService } from "@ccbuddy/services";
 import { logger } from "@/logger.js";
 
+//   - 服务端 client/configs 请求失败由 Host 自己按 onDemand 提供
+//     （DYNAMIC_WORKFLOW_MODE_ON_FETCH_FAILURE），不会走到这里的 catch；
+//   - 这里的失败是到 Host 的 RPC 失败，按 disabled 处理，但**不记住失败**：换一份 service
+//     实例会重试。手机 `/remote` 在工作区桥接前拿到的是 unsupported 代理，必然抛错，
+//     桥接完成后 accessor 会换一份，那一次必须能纠正回来。
 export type DynamicWorkflowAvailabilityStatus = "loading" | "ready";
 
 export interface DynamicWorkflowAvailabilitySnapshot {
@@ -11,7 +16,7 @@ export interface DynamicWorkflowAvailabilitySnapshot {
   readonly enabled: boolean;
   /**
    * 未就绪或取数失败时为 null；`source` 只用于观测，区分「服务端关」与「本地覆盖」。
-   * `offeredMode` 是服务端提供的模式（设置行是否出现、哪个选项标「默认」），`mode` 是生效模式。
+   * `offeredMode` 是服务端提供的默认模式（哪个选项标「默认」），`mode` 是生效模式。
    */
   readonly config: DynamicWorkflowClientConfig | null;
 }

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-ask-user-question-custom-mixed-manual-multi-question",
+  "spec": "./test/e2e/conversation-session/permissions/conversation-session-ask-user-question-custom-mixed-manual-multi-question.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-ask-user-question-custom-mixed-manual-multi-question.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-ask-user-question-custom-mixed-manual-multi-question-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "upstream-conversation-ask-user-question-custom-mixed-manual-multi-question-call",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "稳定制造三题 AskUserQuestion 等待态，避免真实模型生成非法选项数量或题目结构漂移影响鼠标和 Enter 混合答案采集复现。"
+    },
+    {
+      "id": "upstream-conversation-ask-user-question-custom-mixed-manual-multi-question-final",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "该响应证明三题鼠标和 Enter 混合提交后的自定义回答已被 agent 消费，核心断言在答案采集和 UI 已回答记录。"
+    }
+  ]
+}

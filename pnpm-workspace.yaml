@@ -1,4 +1,5 @@
 packages:
+  - apps/dev-docs
   - packages/*
   - apps/ccbuddy-cli
   - apps/ccbuddy-cli/packages/*

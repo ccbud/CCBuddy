@@ -1,10 +1,10 @@
 import { HardDrive } from "lucide-react";
+import { type StorageVolumeGroup } from "@ccbuddy/shared";
 import {
-  type StorageVolumeGroup,
   TID_RESOURCE_MANAGER_STORAGE_DISK_CARD,
   TID_RESOURCE_MANAGER_STORAGE_ROOT,
   testId,
-} from "@ccbuddy/shared";
+} from "@ccbuddy/shared/test-ids";
 import { cn } from "@/components/lib/utils.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { formatBytes } from "@/resource-manager/resourceUsageView.js";

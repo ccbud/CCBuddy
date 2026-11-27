@@ -127,28 +127,35 @@ export function formatTaskNotification(input: TaskNotificationInput): string {
 }
 
 function formatLocalBashTaskNotification(input: TaskNotificationInput): string {
-  const lines = ["<task-notification>", `<task-id>${escapeLocalBashXml(input.taskId)}</task-id>`];
+  const lines = ["<task-notification>", `<task-id>${escapeXmlText(input.taskId)}</task-id>`];
   if (input.toolUseId) {
-    lines.push(`<tool-use-id>${escapeLocalBashXml(input.toolUseId)}</tool-use-id>`);
+    lines.push(`<tool-use-id>${escapeXmlText(input.toolUseId)}</tool-use-id>`);
   }
   if (input.outputFile) {
-    lines.push(`<output-file>${escapeLocalBashXml(input.outputFile)}</output-file>`);
+    lines.push(`<output-file>${escapeXmlText(input.outputFile)}</output-file>`);
   }
-  lines.push(`<status>${escapeLocalBashXml(input.status)}</status>`);
-  lines.push(`<summary>${escapeLocalBashXml(input.summary)}</summary>`);
+  lines.push(`<status>${escapeXmlText(input.status)}</status>`);
+  lines.push(`<summary>${escapeXmlText(input.summary)}</summary>`);
   lines.push("</task-notification>");
 
   return lines.join("\n");
 }
 
+// 每条后台 agent 通知都带这句 <note>。child 结束时封存自己的后台通知、不会自己恢复，
+// 所以 completed 且还有后台子任务时也用这一句。
+const LOCAL_AGENT_NOTIFICATION_NOTE =
+  "A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.";
+
+// 只转义 & < >（引号原样），summary 后固定跟 <note>，不输出 <error>——
+// 失败原因已经在 summary 的 "failed: " 后面。
 function formatLocalAgentTaskNotification(input: TaskNotificationInput): string {
-  const lines = ["<task-notification>", `<task-id>${escapeXml(input.taskId)}</task-id>`];
-  if (input.toolUseId) lines.push(`<tool-use-id>${escapeXml(input.toolUseId)}</tool-use-id>`);
-  if (input.outputFile) lines.push(`<output-file>${escapeXml(input.outputFile)}</output-file>`);
-  lines.push(`<status>${escapeXml(input.status)}</status>`);
-  lines.push(`<summary>${escapeXml(input.summary)}</summary>`);
-  if (input.result !== undefined) lines.push(`<result>${escapeXml(input.result)}</result>`);
-  if (input.error !== undefined) lines.push(`<error>${escapeXml(input.error)}</error>`);
+  const lines = ["<task-notification>", `<task-id>${escapeXmlText(input.taskId)}</task-id>`];
+  if (input.toolUseId) lines.push(`<tool-use-id>${escapeXmlText(input.toolUseId)}</tool-use-id>`);
+  if (input.outputFile) lines.push(`<output-file>${escapeXmlText(input.outputFile)}</output-file>`);
+  lines.push(`<status>${escapeXmlText(input.status)}</status>`);
+  lines.push(`<summary>${escapeXmlText(input.summary)}</summary>`);
+  lines.push(`<note>${LOCAL_AGENT_NOTIFICATION_NOTE}</note>`);
+  if (input.result !== undefined) lines.push(`<result>${escapeXmlText(input.result)}</result>`);
 
   const usage = formatLocalAgentUsage(input.usage);
   if (usage) lines.push(usage);
@@ -178,14 +185,15 @@ function formatLocalWorkflowTaskNotification(input: TaskNotificationInput): stri
       : formatWorkflowProviderStopError(input.failure, input.taskId);
   if (providerStopError !== undefined) {
     // 块里有要让模型照抄的 `run_id="…"`：只转义 <>&，引号原样（与 bash 通知同一策略）。
-    lines.push(`<error>\n${escapeLocalBashXml(providerStopError)}\n</error>`);
+    lines.push(`<error>\n${escapeXmlText(providerStopError)}\n</error>`);
   } else if (input.error !== undefined) {
     lines.push(`<error>${escapeXml(input.error)}</error>`);
   }
   // 渐进产物排在 result / error **之后**：run 的收场是模型首先要读的，产物是补充材料。
   // 顺序也决定了 120k 总截断先斩谁——被斩掉的应该是这一节，而不是 run 的结果。
   if (input.reports !== undefined) {
-    const shown = input.reports.shown < input.reports.count ? ` shown="${input.reports.shown}"` : "";
+    const shown =
+      input.reports.shown < input.reports.count ? ` shown="${input.reports.shown}"` : "";
     lines.push(
       `<reports count="${input.reports.count}"${shown}>`,
       escapeXml(input.reports.preview),
@@ -216,6 +224,9 @@ function formatLocalWorkflowTaskNotification(input: TaskNotificationInput): stri
         hasArtifacts: input.artifacts !== undefined,
         runId: input.taskId,
         scriptPath: input.scriptPath,
+        autoResumesAfterReset:
+          input.failure?.providerStop?.kind === "quota" &&
+          input.failure.providerStop.resetAt !== undefined,
       }),
     );
   }
@@ -238,6 +249,8 @@ function workflowDeliveryGuidance(input: {
   hasArtifacts: boolean;
   runId: string;
   scriptPath: string | undefined;
+  /** 带重置时刻的额度停止：宿主会自动续跑（bootstrap 的 dynamic-workflow-quota-resume.ts）。 */
+  autoResumesAfterReset: boolean;
 }): string {
   const { status, stopReason, hasArtifacts, scriptPath } = input;
   // 产物那一句只在 `<artifacts>` 节真的在场时追加：文案说的是「上面列出的产物」，一个没有
@@ -275,7 +288,9 @@ function workflowDeliveryGuidance(input: {
       // 有文件时多一句「编辑它、传 `path`」：这一支的整个论证就是「你是为改脚本才停的」，
       // 而改脚本最便宜的做法是 Edit 那个文件，不是把整份脚本再贴一遍。
       `You stopped this workflow with TaskStop. If you stopped it to fix the script, do that now: call AmendWorkflow with this run's ID and the corrected script — everything that settled before the stop is imported as cache, and the sooner the fix runs the less it re-pays. (Next time, amend the running run directly: AmendWorkflow stops it for you.)${
-        scriptPath === undefined ? "" : ` Its script is at ${scriptPath}: edit that file and pass \`path\`.`
+        scriptPath === undefined
+          ? ""
+          : ` Its script is at ${scriptPath}: edit that file and pass \`path\`.`
       }`,
       "Otherwise present what it finished: the reported items above are finished findings — show them individually with their evidence. Resume it unchanged only if that is what the user wants.",
       ...artifactsShort,
@@ -284,7 +299,9 @@ function workflowDeliveryGuidance(input: {
   if (stopReason === "provider") {
     return [
       "A provider-side error stopped this run; the <error> block above names the cause and the fix. Present what the run finished: the reported items above are finished findings — show them individually with their evidence.",
-      `Then resolve the cause with the user before calling ResumeWorkflowRun with run_id="${input.runId}" — finished steps replay from the journal. Do not rebuild the workflow.`,
+      input.autoResumesAfterReset
+        ? "The run resumes by itself after the usage cap resets (the <error> block says when): tell the user, and do not call ResumeWorkflowRun or rebuild the workflow before then."
+        : `Then resolve the cause with the user before calling ResumeWorkflowRun with run_id="${input.runId}" — finished steps replay from the journal. Do not rebuild the workflow.`,
       ...artifactsShort,
     ].join("\n");
   }
@@ -377,6 +394,13 @@ function formatUsage(input: TaskNotificationInput["usage"]): string[] {
   return lines;
 }
 
+// 一批通知作为一轮输入文本时的分隔符。模型上下文里每条通知是一个文本块，不依赖它拆分。
+const TASK_NOTIFICATION_BATCH_SEPARATOR = "\n\n";
+
+export function joinTaskNotificationBatch(notifications: readonly string[]): string {
+  return notifications.join(TASK_NOTIFICATION_BATCH_SEPARATOR);
+}
+
 export function truncateTaskNotification(value: string): string {
   if (value.length <= TASK_NOTIFICATION_MAX_CHARS) return value;
   return `${value.slice(0, TASK_NOTIFICATION_MAX_CHARS)}\n[truncated]`;
@@ -401,7 +425,8 @@ export function escapeXml(value: string): string {
   });
 }
 
-function escapeLocalBashXml(value: string): string {
+// 只转义 & < >；bash、后台 agent 通知和 workflow 的 provider 停止块共用。
+function escapeXmlText(value: string): string {
   return value.replace(/[<>&]/gu, (char) => {
     switch (char) {
       case "<":

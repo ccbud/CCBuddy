@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findOfficialMcpReservedHeaders } from "@ccbuddy/shared";
 import type {
@@ -12,32 +12,43 @@ import type {
 import { CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE } from "@ccbuddy/contracts";
 import { CCBUDDY_PLUGIN_ID_ENV_KEY } from "@ccbuddy/shared";
 import type { LoadedPlugin } from "./types.js";
-import { isNotFoundError, isPluginOptionValue, isRecord, resolveInside } from "./helpers.js";
+import {
+  isNotFoundError,
+  isPluginOptionValue,
+  isRecord,
+  resolveInside,
+  rethrowPluginMaterialInterrupt,
+} from "./helpers.js";
 import { buildOfficialProvenance, parseCCbuddyOfficialAuth } from "./mcp-official-auth.js";
 
 const SUPPORTED_MCP_TYPES = new Set(["stdio", "http", "sse"]);
 const TEMPLATE_PATTERN = /\$\{([^}]+)\}/g;
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-export function loadPluginMcpServerDefinitions(input: {
+export async function loadPluginMcpServerDefinitions(input: {
   diagnostics: PluginDiagnostic[];
   loaded: LoadedPlugin;
-}): Record<string, unknown> {
-  const fromFile = loadMcpServersFromFile(join(input.loaded.rootPath, ".mcp.json"), input);
-  const fromManifest = loadMcpServersFromSpec(input.loaded.manifest.mcpServers, input);
-  return { ...fromFile, ...fromManifest };
+}): Promise<Record<string, unknown>> {
+  const servers: Record<string, unknown> = {};
+  // 按声明顺序串行读取，后声明的同名 server 覆盖先声明的。
+  for (const source of pluginMcpSources(input))
+    Object.assign(
+      servers,
+      typeof source === "string" ? await loadMcpServersFromFile(source, input) : source,
+    );
+  return servers;
 }
 
 export function resolvePluginMcpServers(input: {
   dataPath: string;
-  definitions?: Record<string, unknown>;
+  definitions: Record<string, unknown>;
   diagnostics: PluginDiagnostic[];
   env: Record<string, string | undefined>;
   loaded: LoadedPlugin;
   options: PluginOptionValues;
   workingDirectory: string;
 }): Record<string, McpServerConfig> {
-  const merged = input.definitions ?? loadPluginMcpServerDefinitions(input);
+  const merged = input.definitions;
   const context = createVariableContext(input);
   const result: Record<string, McpServerConfig> = {};
 
@@ -68,14 +79,25 @@ function toNamespacedServerName(loaded: LoadedPlugin, serverName: string): strin
   return `plugin:${loaded.manifest.name}:${serverName}`;
 }
 
-function loadMcpServersFromSpec(
+/** 插件发现与 MCP 配置加载共用声明顺序和路径校验，读取方式由调用方决定。 */
+export function pluginMcpSources(input: {
+  diagnostics: PluginDiagnostic[];
+  loaded: LoadedPlugin;
+}): Array<string | Record<string, unknown>> {
+  return [
+    join(input.loaded.rootPath, ".mcp.json"),
+    ...mcpSourcesFromSpec(input.loaded.manifest.mcpServers, input),
+  ];
+}
+
+function mcpSourcesFromSpec(
   spec: unknown,
   input: {
     diagnostics: PluginDiagnostic[];
     loaded: LoadedPlugin;
   },
-): Record<string, unknown> {
-  if (spec === undefined) return {};
+): Array<string | Record<string, unknown>> {
+  if (spec === undefined) return [];
   if (typeof spec === "string") {
     const path = resolveInside(input.loaded.rootPath, spec);
     if (!path) {
@@ -86,26 +108,32 @@ function loadMcpServersFromSpec(
         pluginId: input.loaded.id,
         severity: "error",
       });
-      return {};
+      return [];
     }
-    return loadMcpServersFromFile(path, input);
+    return [path];
   }
   if (Array.isArray(spec)) {
-    return Object.assign({}, ...spec.map((item) => loadMcpServersFromSpec(item, input)));
+    return spec.flatMap((item) => mcpSourcesFromSpec(item, input));
   }
-  return normalizeMcpServersShape(spec, input);
+  return [normalizeMcpServersShape(spec, input)];
 }
 
-function loadMcpServersFromFile(
+async function loadMcpServersFromFile(
   path: string,
   input: {
     diagnostics: PluginDiagnostic[];
     loaded: LoadedPlugin;
   },
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   try {
-    return normalizeMcpServersShape(JSON.parse(readFileSync(path, "utf8")), input);
+    return normalizeMcpServersShape(
+      input.loaded.materials
+        ? await input.loaded.materials.json(path)
+        : JSON.parse(await readFile(path, "utf8")),
+      input,
+    );
   } catch (error) {
+    rethrowPluginMaterialInterrupt(error);
     if (isNotFoundError(error)) return {};
     input.diagnostics.push({
       code: "plugin_mcp_read_failed",
@@ -118,7 +146,7 @@ function loadMcpServersFromFile(
   }
 }
 
-function normalizeMcpServersShape(
+export function normalizeMcpServersShape(
   value: unknown,
   input: {
     diagnostics: PluginDiagnostic[];

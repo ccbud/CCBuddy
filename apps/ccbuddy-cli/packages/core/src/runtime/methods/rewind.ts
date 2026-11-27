@@ -99,13 +99,13 @@ export async function executeRewindCommand(
                     })
                   ).response
                 : (
-                  await this.rewindWorkspaceToCheckpoint({
-                    abortSignal,
-                    events,
-                    targetCheckpointId: command.targetCheckpointId,
-                    traceContext: turnTraceContext,
-                  })
-                ).response;
+                    await this.rewindWorkspaceToCheckpoint({
+                      abortSignal,
+                      events,
+                      targetCheckpointId: command.targetCheckpointId,
+                      traceContext: turnTraceContext,
+                    })
+                  ).response;
       throwIfTurnAborted(abortSignal);
 
       const turnUsage = createModelUsageSummaryFromEvents(events);

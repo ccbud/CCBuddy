@@ -1,11 +1,12 @@
-import { InternalChannels, type RemoteTarget } from "@ccbuddy/shared";
+import {
+  InternalChannels,
+  scopedServicePortPayloadSchema,
+  type ScopedServicePortPayload,
+} from "@ccbuddy/shared";
 
-export interface RemoteWorkspaceServicePortRegistration {
-  attachmentId: string;
+export type RemoteWorkspaceServicePortRegistration = ScopedServicePortPayload & {
   port: MessagePort;
-  sessionId: string;
-  target: RemoteTarget;
-}
+};
 
 export function parseRemoteWorkspaceServicePortMessage(
   event: MessageEvent,
@@ -19,11 +20,32 @@ export function parseRemoteWorkspaceServicePortMessage(
     return null;
   }
   const port = event.ports[0];
-  const attachmentId = typeof event.data.attachmentId === "string" ? event.data.attachmentId : null;
-  const sessionId = typeof event.data.sessionId === "string" ? event.data.sessionId : null;
-  const target = "target" in event.data ? (event.data.target as RemoteTarget | null) : null;
-  if (!port || !attachmentId || !sessionId || !target) return null;
-  return { attachmentId, port, sessionId, target };
+  const { type: _type, ...payload } = event.data;
+  const parsed = scopedServicePortPayloadSchema.safeParse(payload);
+  if (!port || !parsed.success) return null;
+  return {
+    ...parsed.data,
+    port,
+  };
+}
+
+export function parseRemoteWorkspaceServicePortReleasedMessage(
+  event: MessageEvent,
+): Pick<RemoteWorkspaceServicePortRegistration, "attachmentId" | "sessionId"> | null {
+  if (event.source !== window) return null;
+  const data = event.data as {
+    type?: unknown;
+    attachmentId?: unknown;
+    sessionId?: unknown;
+  } | null;
+  if (
+    data?.type !== InternalChannels.ScopedServicePortReleased ||
+    typeof data.attachmentId !== "string" ||
+    typeof data.sessionId !== "string"
+  ) {
+    return null;
+  }
+  return { attachmentId: data.attachmentId, sessionId: data.sessionId };
 }
 
 export function notifyRemoteWorkspaceServicePortReady(

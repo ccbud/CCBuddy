@@ -1,5 +1,5 @@
 import {
-  createLocalServices,
+  createServerHostServices,
   createTopicResourcePeers,
   getAppConfigDir,
 } from "@ccbuddy/services/node";
@@ -7,7 +7,7 @@ import {
   materializeBundledCCbuddyBuiltinProviderConfig,
   readBundledCCbuddyBuiltinProviderConfig,
 } from "./bundledCCbuddyBuiltinProviderConfig.js";
-import { createHttpServer } from "./http.js";
+import { createHttpServer, resolveHttpServerId } from "./http.js";
 
 async function main(): Promise<void> {
   const ccbuddyBuiltinProviderConfigFilePath = await materializeBundledCCbuddyBuiltinProviderConfig(
@@ -22,13 +22,20 @@ async function main(): Promise<void> {
   const staticRoot = process.env["CCBUDDY_WEB_STATIC_ROOT"]?.trim() || undefined;
   const authToken = process.env["CCBUDDY_SERVER_AUTH_TOKEN"]?.trim() || undefined;
   const topicResourcePeers = createTopicResourcePeers();
-  const services = createLocalServices({
-    topicResourceRelayChannel: (request) => topicResourcePeers.getChannel(request),
-    ccbuddyBuiltinProviderConfigFilePath,
-    providerProvisioningTargetEnabled: Boolean(authToken),
-  });
+  const serverId = resolveHttpServerId();
+  const { services, workspaceIdentityMapper, migrationFailedPathCount } =
+    await createServerHostServices({
+      topicResourceRelayChannel: (request) => topicResourcePeers.getChannel(request),
+      sourceServerId: serverId,
+      ccbuddyBuiltinProviderConfigFilePath,
+      providerProvisioningTargetEnabled: Boolean(authToken),
+    });
 
   createHttpServer(services, port, {
+    serverId,
+    workspaceIdentityMapper,
+    migrationFailedPathCount,
+    virtualProjects: true,
     topicResourcePeers,
     ...(host ? { host } : {}),
     ...(staticRoot ? { staticRoot, spaFallback: true } : {}),

@@ -1,5 +1,5 @@
-// queue 命令组：deleteQueueItem / editQueueItem / reorderQueueItem / setAutoDrain /
-// setFollowupMode / sendQueuedNow（原生重做，组文件样板见 session-flow.ts）。
+// queue 命令组：deleteQueueItem / editQueueItem / lockQueueItemEdit / releaseQueueItemEdit /
+// reorderQueueItem / setAutoDrain / setFollowupMode / sendQueuedNow（原生重做，组文件样板见 session-flow.ts）。
 // 决策逻辑直驱 core（app 层 queue API，批1 已搬运）；queueItemId ≡ core 的
 // pendingInputId（同一 id 空间，无需翻译）。queue 变更的事件由 core runtime 自发，
 // 经 gateway ingest 推进 v4 投影——本组不需要 legacy 广播钩子。
@@ -9,10 +9,10 @@ import type {
   CommandResult,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { isHighspeedProviderId } from "@ccbuddy/shared";
-import { createModelExecutionContext } from "../../../ccbuddy-protocol/model-execution.js";
+import { createModelExecutionContext } from "../../../session-execution/index.js";
 import { mapAttachmentRefsToTurnAttachments } from "../attachment-refs.js";
 import { inputIntentMetadataFromQueueItem } from "../input-intent.js";
-import { startPromptTurn } from "../prompt-turn.js";
+import { startPromptTurn, turnBackgroundAttributionOf } from "../prompt-turn.js";
 import { requireRecord } from "../record-access.js";
 import type { V4CommandCoreHost } from "../types.js";
 import {
@@ -59,6 +59,24 @@ export class V4QueueItemNotEditableError extends Error {
   }
 }
 
+/** 冻结项（composer 编辑态，docs/ui/composer-edit-mode.md）拒绝删除、重排、立即发送和他人改写。 */
+export class V4QueueItemEditLockedError extends Error {
+  readonly reasonCode = "guard.queueItemEditLocked";
+  constructor(queueItemId: string) {
+    super(`v4 queue item is locked by composer edit: ${queueItemId}`);
+    this.name = "V4QueueItemEditLockedError";
+  }
+}
+
+/** editQueueItem 声明的编辑锁已被解除或换主：提交不能覆盖他人此后看到的内容。 */
+export class V4QueueEditLockLostError extends Error {
+  readonly reasonCode = "guard.queueEditLockLost";
+  constructor(queueItemId: string) {
+    super(`v4 queue edit lock is no longer held: ${queueItemId}`);
+    this.name = "V4QueueEditLockLostError";
+  }
+}
+
 export class V4QueuePromotionLeaseUnavailableError extends Error {
   readonly reasonCode = "guard.queuePromotionBusy";
   constructor(activeLeaseId?: string) {
@@ -78,6 +96,10 @@ async function deleteQueueItem(
   const payload = envelope.payload as CommandPayloadMap["deleteQueueItem"];
   const record = requireRecord(host, envelope.sessionId);
   const queueItem = host.getQueueItem?.(record.app.sessionId, payload.queueItemId) ?? null;
+  // Core 同样拒绝删除冻结项；这里先给出可判别的 guard，避免误报成 itemMissing。
+  if (record.app.runtime.getPendingInputEditLock?.(payload.queueItemId)) {
+    throw new V4QueueItemEditLockedError(payload.queueItemId);
+  }
   // 未命中（并发 drain/重复删除的竞态）= noop，不算失败；留 warn 供观测。
   const removed = await record.app.removeQueueItem(payload.queueItemId);
   if (!removed) {
@@ -107,14 +129,112 @@ async function editQueueItem(
     // 但 commandKind 仍是 compact，消费时产生与 UI 文案不一致的压缩副作用。
     throw new V4QueueItemNotEditableError(payload.queueItemId);
   }
+  // 附件映射在写回前完成：引用失效要在改写队列项之前暴露。
+  const attachments = payload.attachments
+    ? await mapAttachmentRefsToTurnAttachments(record.app, payload.attachments)
+    : undefined;
+  // 用户在编辑态改了模型：入队时冻结的 Highspeed 卡与暂存凭据不能再覆盖新选择。
+  const modelChanged =
+    payload.modelSelection !== undefined &&
+    JSON.stringify(payload.modelSelection) !== JSON.stringify(queueItem?.modelSelection);
   // core reducer 同 id 原地更新（保位）；未命中 = noop + warn（同 delete 的竞态语义）。
-  const edited = await record.app.editQueueItem(payload.queueItemId, payload.newText);
-  if (!edited) {
+  const result = await record.app.editQueueItem(payload.queueItemId, payload.newText, {
+    ...(payload.editorId ? { editorId: payload.editorId } : {}),
+    ...(payload.attachments
+      ? {
+          attachmentRefs: payload.attachments.map((ref) => ({ ...ref })),
+          ...(attachments ? { attachments } : {}),
+        }
+      : {}),
+    ...(payload.conversationQuotes ? { conversationQuotes: payload.conversationQuotes } : {}),
+    ...(payload.modelSelection ? { modelSelection: payload.modelSelection } : {}),
+    ...(payload.mode ? { mode: payload.mode } : {}),
+    ...(payload.planEnabled !== undefined ? { planEnabled: payload.planEnabled } : {}),
+    ...(modelChanged ? { dropHighspeed: true } : {}),
+  });
+  if (result === "editLocked") throw new V4QueueItemEditLockedError(payload.queueItemId);
+  if (result === "lockLost") throw new V4QueueEditLockLostError(payload.queueItemId);
+  if (result === "missing") {
     host.logger?.warn?.("v4 editQueueItem missed", {
       queueItemId: payload.queueItemId,
       sessionId: record.app.sessionId,
     });
+    // 编辑态据此进入失效态（原项已被消费或删除），不能把未命中当成已保存。
+    throw new V4CommandNoopError("queue.itemMissing");
   }
+  if (modelChanged && queueItem) {
+    host.deleteQueuedTurnExecution?.(record.app.sessionId, queueItem.sourceCommandId);
+  }
+  // 编辑提交同时解锁；冻结的若是队首，需要重评自动续跑。
+  await host.afterLegacyStateMutation?.(record, "queue_item_edited");
+  return undefined;
+}
+
+/**
+ * 编辑提交后把新模型/mode 应用到其他排队项（docs/ui/composer-edit-mode.md）。
+ * 同一命令内逐项走 editQueueItem 的原地改写路径，正文缺省由 core 保留原输入；
+ * 弹窗期间已被提升、删除、冻结的项跳过，不报错——用户的意图只针对仍在等待的项。
+ */
+async function applyQueueItemsConfig(
+  host: V4CommandCoreHost,
+  envelope: CommandEnvelope,
+): Promise<CommandResult | undefined> {
+  const payload = envelope.payload as CommandPayloadMap["applyQueueItemsConfig"];
+  const record = requireRecord(host, envelope.sessionId);
+  let applied = 0;
+  for (const queueItemId of payload.queueItemIds) {
+    const queueItem = host.getQueueItem?.(record.app.sessionId, queueItemId) ?? null;
+    if (!queueItem || queueItem.kind === "compact" || queueItem.dispatch.state !== "queued") {
+      continue;
+    }
+    const modelChanged =
+      payload.modelSelection !== undefined &&
+      JSON.stringify(payload.modelSelection) !== JSON.stringify(queueItem.modelSelection);
+    const result = await record.app.editQueueItem(queueItemId, undefined, {
+      ...(payload.modelSelection ? { modelSelection: payload.modelSelection } : {}),
+      ...(payload.mode ? { mode: payload.mode } : {}),
+      ...(modelChanged ? { dropHighspeed: true } : {}),
+    });
+    if (result !== "edited") continue;
+    applied += 1;
+    if (modelChanged) host.deleteQueuedTurnExecution?.(record.app.sessionId, queueItem.sourceCommandId);
+  }
+  if (applied === 0) throw new V4CommandNoopError("queue.itemMissing");
+  return undefined;
+}
+
+/** composer 编辑态冻结排队项：编辑期间自动续跑停在该项前，所有端可见锁归属。 */
+async function lockQueueItemEdit(
+  host: V4CommandCoreHost,
+  envelope: CommandEnvelope,
+): Promise<CommandResult | undefined> {
+  const payload = envelope.payload as CommandPayloadMap["lockQueueItemEdit"];
+  const record = requireRecord(host, envelope.sessionId);
+  const queueItem = host.getQueueItem?.(record.app.sessionId, payload.queueItemId) ?? null;
+  if (queueItem?.kind === "compact") throw new V4QueueItemNotEditableError(payload.queueItemId);
+  const result = await record.app.lockQueueItemEdit(payload.queueItemId, {
+    editorId: payload.editorId,
+    clientId: envelope.clientId,
+    // inputOrigin 由 Host 可信注入，只用于其他端展示锁来自桌面还是手机。
+    ...(envelope.inputOrigin ? { inputOrigin: envelope.inputOrigin } : {}),
+  });
+  if (result === "reserved") throw new V4QueueItemReservedError(payload.queueItemId);
+  if (result === "lockedByOther") throw new V4QueueItemEditLockedError(payload.queueItemId);
+  if (result === "missing") throw new V4CommandNoopError("queue.itemMissing");
+  return undefined;
+}
+
+/** 解除编辑锁：发起端取消/刷新自愈，或其他端在发起端离线时手动解除。 */
+async function releaseQueueItemEdit(
+  host: V4CommandCoreHost,
+  envelope: CommandEnvelope,
+): Promise<CommandResult | undefined> {
+  const payload = envelope.payload as CommandPayloadMap["releaseQueueItemEdit"];
+  const record = requireRecord(host, envelope.sessionId);
+  const released = await record.app.releaseQueueItemEdit(payload.queueItemId);
+  if (!released) throw new V4CommandNoopError("queue.editLockMissing");
+  // 冻结的可能正是队首：解锁后必须重评自动续跑，否则空闲会话会一直停在这里。
+  await host.afterLegacyStateMutation?.(record, "queue_edit_lock_released");
   return undefined;
 }
 
@@ -124,6 +244,9 @@ async function reorderQueueItem(
 ): Promise<CommandResult | undefined> {
   const payload = envelope.payload as CommandPayloadMap["reorderQueueItem"];
   const record = requireRecord(host, envelope.sessionId);
+  if (record.app.runtime.getPendingInputEditLock?.(payload.queueItemId)) {
+    throw new V4QueueItemEditLockedError(payload.queueItemId);
+  }
   // beforeQueueItemId = null → 移到队尾（协议与 app API 同形，直传）。
   const moved = await record.app.reorderQueueItem(payload.queueItemId, payload.beforeQueueItemId);
   if (!moved) {
@@ -201,8 +324,16 @@ async function sendQueuedNow(
       }
       foregroundPromotionLeaseAcquired = true;
     };
+    // 冻结项不能被提升；auto-drain 据此只停住、不把队列误判为失败而暂停。
+    if (record.app.runtime.getPendingInputEditLock?.(payload.queueItemId)) {
+      throw new V4QueueItemEditLockedError(payload.queueItemId);
+    }
     if (autoDrainPromotion) acquirePromotionLease("idle-only");
     if (!(await record.app.reserveQueueItem(payload.queueItemId, reservationId, traceOptions))) {
+      // reserve 与加锁之间有 await 窗口；被锁抢先时仍报可判别的锁错误。
+      if (record.app.runtime.getPendingInputEditLock?.(payload.queueItemId)) {
+        throw new V4QueueItemEditLockedError(payload.queueItemId);
+      }
       throw new V4QueueItemReservedError(payload.queueItemId);
     }
     queueItemReserved = true;
@@ -218,9 +349,8 @@ async function sendQueuedNow(
         ? undefined
         : await mapAttachmentRefsToTurnAttachments(record.app, queueItem.attachments);
     if (!autoDrainPromotion) acquirePromotionLease("after-current");
-    let preempted = false;
     if (!autoDrainPromotion) {
-      preempted = await preemptActiveTurnAndWait(host, record, {
+      await preemptActiveTurnAndWait(host, record, {
         abortMessage: "v4 sendQueuedNow preempts active turn",
         goalPausedMutationReason: "send_queued_now_goal_paused",
         preserveQueueAutoDrainOnCancel: true,
@@ -232,7 +362,14 @@ async function sendQueuedNow(
       throw new V4QueueItemReservedError(payload.queueItemId);
     }
     if (queueItem.kind === "compact") {
-      await startManualCompact(host, record, queueItem.sourceCommandId, foregroundPromotionLeaseId);
+      // 旧提升只传 commandId，丢失入队时的 B；与普通输入一样恢复完整意图，禁止重读 Composer。
+      const intent = inputIntentMetadataFromQueueItem(queueItem, queueItem.text);
+      intent.modelSelection ??= resolveSessionFallbackModelSelection(record);
+      await startManualCompact(host, record, {
+        inputId: queueItem.sourceCommandId,
+        foregroundPromotionLeaseId,
+        intent,
+      });
       leaseReleaseOwnedByBackground = true;
     } else if (queueItem.kind === "sendGoalCommand") {
       const intent = inputIntentMetadataFromQueueItem(queueItem, objective ?? queueItem.text);
@@ -257,50 +394,71 @@ async function sendQueuedNow(
         queueItem.highspeed !== undefined &&
         payload.highspeedMeta.cardId === queueItem.highspeed.cardId &&
         payload.highspeedMeta.taskId === queueItem.highspeed.taskId;
+      const ordinarySelection = isHighspeedProviderId(intent.modelSelection?.providerId)
+        ? resolveSessionFallbackModelSelection(record)
+        : intent.modelSelection;
+      // Bug 根因：旧版本已把临时 Highspeed Selection 持久化到 QueueItem。进程升级后
+      // execution bundle 必然丢失；若不在提升边界迁移，会继续用内部 Provider 并直接报错。
+      intent.modelSelection = ordinarySelection;
       if (refreshedHighspeedMatchesQueue && payload.highspeedMeta) {
         intent.highspeed = payload.highspeedMeta;
-        // Selection 与执行材料必须同批替换（协议已用 superRefine 保证成对到达）。
-        if (payload.modelSelection) intent.modelSelection = payload.modelSelection;
       }
-      // 凭据不入队列持久化面：先用本次补供的材料，其次取 CLI 内存按 sourceCommandId 的暂存。
+      // 凭据不入队列持久化面：先用本次补供的完整 bundle，其次取 CLI 内存暂存。
+      const refreshedExecution =
+        refreshedHighspeedMatchesQueue && payload.modelSelection && payload.modelExecution
+          ? { modelSelection: payload.modelSelection, modelExecution: payload.modelExecution }
+          : undefined;
       const stagedExecution =
-        (refreshedHighspeedMatchesQueue ? payload.modelExecution : undefined) ??
+        refreshedExecution ??
         host.readQueuedTurnExecution?.(record.app.sessionId, queueItem.sourceCommandId);
-      const highspeedSelected = isHighspeedProviderId(intent.modelSelection?.providerId);
-      // 规则 9：卡在排队期间可能过期。提升前重新判定有效性，过期或凭据缺失都退回会话模型。
+      // Bug 根因：QueueItem.modelSelection 同时承担普通模型和临时加速模型，导致编辑恢复与
+      // 降级目标互相污染。提升边界才临时应用 bundle；失败时保留队列项自己的普通 Selection。
       const highspeedStillValid =
-        highspeedSelected &&
         intent.highspeed !== undefined &&
         intent.highspeed.expiresAt > Date.now() &&
-        stagedExecution !== undefined;
-      if (highspeedSelected && !highspeedStillValid) {
-        if (intent.highspeed && intent.highspeed.expiresAt > Date.now()) {
-          // Bug 原因：现场出现有效卡的队列项在手动提升时静默退回普通模型，原日志只覆盖
-          // provider 安装失败，无法区分「凭据暂存缺失」与「卡本身已过期」。
-          host.logger?.warn?.("v4 queued Highspeed execution unavailable; using session model", {
+        stagedExecution !== undefined &&
+        isHighspeedProviderId(stagedExecution.modelSelection.providerId);
+      if (highspeedStillValid && stagedExecution) {
+        intent.modelSelection = stagedExecution.modelSelection;
+      } else if (intent.highspeed) {
+        if (intent.highspeed.expiresAt > Date.now()) {
+          host.logger?.warn?.("v4 queued Highspeed execution unavailable; using queued model", {
             cardId: intent.highspeed.cardId,
             queueItemId: queueItem.queueItemId,
             reason: "execution_missing",
             sessionId: record.app.sessionId,
           });
         }
-        // 退回必须同时改写 Selection：只删卡标记会让本轮带着加速 provider 却没有任何凭据。
-        // 与 retry/edit 重发共用同一 fallback resolver（spec §3 规则 13）。
         delete intent.highspeed;
-        intent.modelSelection = resolveSessionFallbackModelSelection(record);
         host.deleteQueuedTurnExecution?.(record.app.sessionId, queueItem.sourceCommandId);
       }
+      // 退回目标统一为上面的普通 Selection（规则 9）。新队列项的 bundle target 本来就相同；
+      // 旧队列项“立即发送”且服务仍持有同一张卡时，Renderer 以持久化的临时 Provider 重新准备，
+      // target 也是临时 Provider，这里改回，避免降级仍落到内部 Provider。
+      const turnExecution =
+        highspeedStillValid && stagedExecution
+          ? {
+              ...stagedExecution.modelExecution,
+              ...(stagedExecution.modelExecution.selectionFallback
+                ? {
+                    selectionFallback: {
+                      ...stagedExecution.modelExecution.selectionFallback,
+                      target: ordinarySelection,
+                    },
+                  }
+                : {}),
+            }
+          : undefined;
       const started = await startPromptTurn(host, record, {
         content: queueItem.text,
         inputId: queueItem.sourceCommandId,
-        // 手动提升若实际抢占旧执行，同样是 human steer；自动 drain 不产生此标记。
-        ...(preempted && !attachments?.length ? { inputPresentation: "user_steer" as const } : {}),
+        // 手动提升即使抢占了旧执行，被点文本也是普通用户消息，与自动 drain 相同（原因见 sendText）。
         intent,
         requireIdle: true,
+        // Bug 根因：提升曾只回放 inputId 和 denylist，导致可信 automation attribution 丢失。
+        ...turnBackgroundAttributionOf({ automationId: queueItem.automationId }),
         toolDisallowlist: queueItem.toolDisallowlist,
-        ...(highspeedStillValid && stagedExecution
-          ? { modelExecution: createModelExecutionContext(stagedExecution) }
-          : {}),
+        ...(turnExecution ? { modelExecution: createModelExecutionContext(turnExecution) } : {}),
         ...(attachments ? { attachments } : {}),
       });
       // 旧 fake app/兼容命令可能不返回 admission receipt；真实 app 已在 Core admission
@@ -342,8 +500,11 @@ async function sendQueuedNow(
 }
 
 export const queueHandlers = {
+  applyQueueItemsConfig,
   deleteQueueItem,
   editQueueItem,
+  lockQueueItemEdit,
+  releaseQueueItemEdit,
   reorderQueueItem,
   setAutoDrain,
   setFollowupMode,

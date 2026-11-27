@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { createConfig } from "@ccbuddy/adapters/config";
+import { createConfigWithPluginMigrations } from "@ccbuddy/adapters/config";
 import { createNodeCustomCommandAdapter } from "@ccbuddy/adapters/commands";
 import type {
   CustomCommandContent,
@@ -7,10 +7,14 @@ import type {
   CustomCommandLoadOutcome,
   Logger,
 } from "@ccbuddy/contracts";
-import { resolveCCbuddyPlugins } from "./plugins.js";
+import { resolveCCbuddyPlugins, type ResolveCCbuddyPluginsOptions } from "./plugins.js";
 import { collectDisabledPaths } from "./skill-command-overrides.js";
 
 export interface ListCCbuddyCustomCommandsOptions {
+  workspaceIdentity?: string;
+  remoteSessionId?: string;
+  pluginPreparation?: ResolveCCbuddyPluginsOptions["pluginPreparation"];
+  pluginDiscovery?: ResolveCCbuddyPluginsOptions["pluginDiscovery"];
   env?: NodeJS.ProcessEnv;
   homeDirectory?: string;
   logger?: Logger;
@@ -33,7 +37,7 @@ export interface CCbuddyCustomCommandInspection {
 export async function listCCbuddyCustomCommands(
   options: ListCCbuddyCustomCommandsOptions = {},
 ): Promise<CustomCommandLoadOutcome> {
-  const discovery = createCustomCommandDiscovery(options);
+  const discovery = await createCustomCommandDiscovery(options);
   return await discovery.adapter.discoverCommands({
     workingDirectory: discovery.workingDirectory,
   });
@@ -42,7 +46,7 @@ export async function listCCbuddyCustomCommands(
 export async function inspectCCbuddyCustomCommand(
   options: InspectCCbuddyCustomCommandOptions,
 ): Promise<CCbuddyCustomCommandInspection> {
-  const discovery = createCustomCommandDiscovery(options);
+  const discovery = await createCustomCommandDiscovery(options);
   const workingDirectory = discovery.workingDirectory;
   const adapter = discovery.adapter;
   const outcome = await adapter.discoverCommands({ workingDirectory });
@@ -63,23 +67,27 @@ export async function inspectCCbuddyCustomCommand(
 export async function loadCCbuddyCustomCommand(
   options: InspectCCbuddyCustomCommandOptions,
 ): Promise<CustomCommandContent> {
-  const discovery = createCustomCommandDiscovery(options);
+  const discovery = await createCustomCommandDiscovery(options);
   return await discovery.adapter.loadCommand({
     name: normalizeCommandName(options.name),
     workingDirectory: discovery.workingDirectory,
   });
 }
 
-function createCustomCommandDiscovery(options: ListCCbuddyCustomCommandsOptions) {
+async function createCustomCommandDiscovery(options: ListCCbuddyCustomCommandsOptions) {
   const workingDirectory = resolve(options.workingDirectory ?? process.cwd());
-  const configResult = createConfig({
+  const configResult = await createConfigWithPluginMigrations({
     env: options.env,
     projectConfigPath: options.projectConfigPath,
     workingDirectory,
     skipUserConfig: options.skipUserConfig,
     userConfigPath: options.userConfigPath,
   });
-  const pluginOutcome = resolveCCbuddyPlugins({
+  const pluginOutcome = await resolveCCbuddyPlugins({
+    pluginPreparation: options.pluginPreparation,
+    pluginDiscovery: options.pluginDiscovery,
+    workspaceIdentity: options.workspaceIdentity,
+    remoteSessionId: options.remoteSessionId,
     configResult,
     env: options.env,
     logger: options.logger,

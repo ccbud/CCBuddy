@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-plugin-mcp-skill-workspace-disabled",
+  "spec": "./test/e2e/conversation-session/plugins/conversation-session-plugin-mcp-skill-workspace-disabled.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-plugin-mcp-skill-workspace-disabled.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-plugin-mcp-skill-workspace-disabled-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "workspace-disabled-noop",
+      "description": "Workspace 显式 false 时不广告 Plugin MCP tool。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "固定普通文本响应，断言 disabled runtime 不进入工具注册。"
+    }
+  ]
+}

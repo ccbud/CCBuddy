@@ -1,8 +1,13 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "ignorePatterns": [
+    ".gitlab/**/*.yml",
+    "apps/ccbuddy-cli/tests/gb2312.js",
+    "docs/electron/docs/fiddles/**/*.html",
+    "packages/ccbuddy-cua/**",
     "packages/desktop/src/renderer/src/plugin-sandbox/genUiTweakRuntime.js",
     "apps/ccbuddy-cli/packages/visualize-plugin/skills/visualize/assets/**",
+    "apps/ccbuddy-cli/packages/design-plugin/skills/design/design-resources/**",
     "THIRD-PARTY-NOTICES.md",
     "third-party/inventory.json",
     "third-party/upstream/**",

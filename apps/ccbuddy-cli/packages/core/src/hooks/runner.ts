@@ -1,4 +1,6 @@
 import {
+  HookEventName,
+  HookOnError,
   HookOutcome,
   SessionEventType,
   isCoreError,
@@ -21,6 +23,7 @@ import {
   resolveHookDescriptor,
   resolveHookFailureOutcome,
   resolveHookRunAdmission,
+  verifyHookBeforeDispatch,
 } from "./runner-helpers.js";
 import type {
   HookRegistration,
@@ -87,8 +90,39 @@ export class InMemoryHookRunner implements HookRunner {
       // dispatch 前重新解析授权决定。预扫描结果可能已过时——前序 Hook
       // 执行期间用户 revoke、管理员收紧 policy 或 trust store reload 都会改变
       // 结论。security revision 的价值就在执行边界重验，授权决定不得缓存。
-      const admission = resolveHookRunAdmission(hook, input, this.logger);
+      let admission = resolveHookRunAdmission(hook, input, this.logger);
+      let verifyFailed = false;
+      if (admission.allowed && hook.verifyBeforeDispatch) {
+        // 项目 Hook 入口脚本复核（D24）：等待期间可能发生 revoke / policy 收紧，复核通过后必须再验一次。
+        admission = await verifyHookBeforeDispatch(
+          hook,
+          input,
+          hook.timeoutMs ?? this.defaultTimeoutMs,
+          options.signal,
+          this.logger,
+        );
+        if (admission.allowed) admission = resolveHookRunAdmission(hook, input, this.logger);
+        else verifyFailed = true;
+      }
       if (!admission.allowed) {
+        // 已信任 Hook 的入口脚本复核失败（被删、不可读、内容变化、超时）按 Hook 出错处理：
+        // 修复前脚本缺失会以非零退出触发 onError: deny，复核前移后不能变成静默放行（第二轮 CR 需确认项）。
+        // 未信任、被撤销或用户中断不算出错，不拦截。
+        const denyReason =
+          verifyFailed && !hook.async && !options.signal?.aborted
+            ? resolveDenyOnErrorReason(
+                hook,
+                input,
+                HookOutcome.Failed,
+                admission.reasonCode ?? "workspace_hook_script_unavailable",
+              )
+            : undefined;
+        if (denyReason !== undefined) {
+          mergeHookRunResult(
+            result,
+            processHookOutput(input.hookEventName, preToolUseDenyOutput(denyReason)),
+          );
+        }
         await this.emitHookEvent(
           SessionEventType.HookRunBlocked,
           input,
@@ -103,9 +137,11 @@ export class InMemoryHookRunner implements HookRunner {
             durationMs: 0,
             errorCode: admission.reasonCode,
             outcome: HookOutcome.Blocked,
-            ...(admission.reasonCode
-              ? { blockReason: sanitizeHookDisplayText(admission.reasonCode) }
-              : {}),
+            ...(denyReason !== undefined
+              ? { blockReason: denyReason }
+              : admission.reasonCode
+                ? { blockReason: sanitizeHookDisplayText(admission.reasonCode) }
+                : {}),
           },
         );
         continue;
@@ -182,6 +218,7 @@ export class InMemoryHookRunner implements HookRunner {
             )
           : undefined;
         const safeDiagnostics = blocked ? sanitizeHookDiagnostics(diagnostics) : undefined;
+        if (!blocked) this.logAllowedToolCall(input, hook, hookIndex, durationMs);
 
         await this.emitHookEvent(
           blocked ? SessionEventType.HookRunBlocked : SessionEventType.HookRunCompleted,
@@ -212,8 +249,19 @@ export class InMemoryHookRunner implements HookRunner {
         const durationMs = Date.now() - startedAt;
         const outcome = resolveHookFailureOutcome(error);
         const errorMessage = sanitizeHookDisplayText(readHookErrorMessage(error));
+        // hook 自身出错，原先一律放行（fail-open）：一条读错字段而崩溃的守卫等于不存在，且没人知道。
+        // `onError: "deny"` 让这次出错与「hook 以退出码 2 拦截」同形，交给下游同一条 deny 路径。
+        const denyReason = resolveDenyOnErrorReason(hook, input, outcome, errorMessage);
+        if (denyReason !== undefined) {
+          mergeHookRunResult(
+            result,
+            processHookOutput(input.hookEventName, preToolUseDenyOutput(denyReason)),
+          );
+        }
         await this.emitHookEvent(
-          SessionEventType.HookRunFailed,
+          denyReason === undefined
+            ? SessionEventType.HookRunFailed
+            : SessionEventType.HookRunBlocked,
           input,
           hookInvocationId,
           hookRunId,
@@ -226,8 +274,9 @@ export class InMemoryHookRunner implements HookRunner {
             durationMs,
             errorCode: isCoreError(error) ? error.code : undefined,
             errorMessage,
-            outcome,
+            outcome: denyReason === undefined ? outcome : HookOutcome.Blocked,
             stderrPreview: errorMessage,
+            ...(denyReason === undefined ? {} : { blockReason: denyReason }),
           },
         );
 
@@ -243,12 +292,45 @@ export class InMemoryHookRunner implements HookRunner {
           hookIndex,
           matcher: hook.matcher,
           module: "core.hooks",
+          ...(denyReason === undefined ? {} : { onError: HookOnError.Deny }),
+          outcome,
           source: hook.source,
         });
       }
     }
 
     return result;
+  }
+
+  /**
+   * 放行也留痕：用户、项目、插件配置的 PreToolUse hook 放行一次工具调用记一条 info。原先只有
+   * 拦截与失败落盘，一条静默放行一切的守卫在日志里与「没装守卫」无法区分。内置 hook 不记
+   * （它们挂在别的事件上，且与消息流同量级）；只在配置了 PreToolUse hook 的工具调用上产生。
+   */
+  private logAllowedToolCall(
+    input: HookInput,
+    hook: HookRegistration,
+    hookIndex: number,
+    durationMs: number,
+  ): void {
+    if (input.hookEventName !== HookEventName.PreToolUse) return;
+    if (hook.sourceKind === undefined || hook.sourceKind === "internal") return;
+    this.logger?.info("PreToolUse hook allowed tool call", {
+      ...traceContextToLogContext({
+        traceId: input.traceId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+      }),
+      durationMs,
+      event: "hook.run.allowed",
+      hookIndex,
+      matcher: hook.matcher,
+      module: "core.hooks",
+      source: hook.source,
+      sourceKind: hook.sourceKind,
+      toolCallId: input.toolCallId,
+      toolName: input.toolName,
+    });
   }
 
   private async runBackgroundHook(options: {
@@ -459,4 +541,35 @@ function sanitizeHookDiagnostics(
 
 export function createInMemoryHookRunner(options?: HookRunnerOptions): InMemoryHookRunner {
   return new InMemoryHookRunner(options);
+}
+
+/**
+ * `onError: "deny"` 只在 PreToolUse 上、且 hook 真的运行过并出错时生效。用户中断不算出错：
+ * 把它变成拦截，会让「取消」看起来像策略拒绝。返回拦截理由；不拦截时返回 undefined。
+ */
+function resolveDenyOnErrorReason(
+  hook: HookRegistration,
+  input: HookInput,
+  outcome: HookOutcome,
+  errorMessage: string,
+): string | undefined {
+  if (hook.onError !== HookOnError.Deny) return undefined;
+  if (input.hookEventName !== HookEventName.PreToolUse) return undefined;
+  if (outcome === HookOutcome.Cancelled) return undefined;
+  return sanitizeHookDisplayText(
+    `PreToolUse hook failed and its onError is "deny", so the tool call is blocked: ${errorMessage}`,
+  );
+}
+
+/** 与退出码 2 的拦截同形（configured-runner-callback.ts 的 createExitCodeBlockOutput）。 */
+function preToolUseDenyOutput(reason: string): HookJSONOutput {
+  return {
+    continue: false,
+    reason,
+    hookSpecificOutput: {
+      hookEventName: HookEventName.PreToolUse,
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  };
 }

@@ -405,5 +405,5 @@ function buildRemoteServerCommand(
       );
     }
   }
-  return `${envParts.join(" ")} ~/.ccbuddy/server/node ~/.ccbuddy/server/ccbuddy-server.cjs`;
+  return `${envParts.join(" ")} ~/.ccbuddy/server/node ~/.ccbuddy/server/ccbuddy-server.cjs --prepare-credentials`;
 }

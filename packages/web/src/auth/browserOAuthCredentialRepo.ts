@@ -1,12 +1,12 @@
 import {
   BIGMODEL_PROVIDER_ID,
-  ZAI_PROVIDER_ID,
   type OAuthProviderId,
   type OAuthTokenSet,
   type OAuthCachedSessionRestoreResult,
   type UserInfo,
   resolveJwtExpiration,
 } from "@ccbuddy/shared";
+import { isWebOAuthProviderId, type WebOAuthProviderId } from "./webOAuthProviderId.js";
 import { toUserInfo } from "./zaiWebOAuthProvider.js";
 
 const ACTIVE_PROVIDER_KEY = "oauth:active_provider";
@@ -18,12 +18,7 @@ const BIGMODEL_USER_INFO_KEY = "oauth:bigmodel:user_info";
 const OAUTH_PENDING_NONCE_KEY = "oauth_pending_nonce";
 const OAUTH_PENDING_PROVIDER_KEY = "oauth_pending_provider";
 
-/** 本仓支持的登录 provider。private 分享的 owner 身份是 provider 特定的，两边都要能登。 */
-export type WebOAuthProviderId = typeof ZAI_PROVIDER_ID | typeof BIGMODEL_PROVIDER_ID;
-
-export function isWebOAuthProviderId(value: unknown): value is WebOAuthProviderId {
-  return value === ZAI_PROVIDER_ID || value === BIGMODEL_PROVIDER_ID;
-}
+export { isWebOAuthProviderId, type WebOAuthProviderId } from "./webOAuthProviderId.js";
 
 /**
  * 每个 provider 用独立的 key 段。

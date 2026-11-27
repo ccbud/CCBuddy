@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { posix, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { buildRemoteWorkspaceIdentity } from "@ccbuddy/shared";
+import { buildRemoteWorkspaceIdentity, buildServerRemoteWorkspaceIdentity } from "@ccbuddy/shared";
 import type { ProjectMigrationContext } from "#src/project-storage/contract.js";
 import {
   ensureHost,
@@ -54,6 +54,42 @@ function createProject(
   return id;
 }
 
+function migrateConnectionHosts(db: DatabaseSync, settings: ProjectMigrationContext["settings"]) {
+  const aliases = new Map<string, string>();
+  const preferred = new Set(settings?.sourceServers?.map((source) => source.preferredProfileId));
+  const profiles = [...(settings?.connectionProfiles ?? [])]
+    .filter((profile) => profile.lifecycleState !== "retired")
+    .sort((a, b) => Number(preferred.has(b.profileId)) - Number(preferred.has(a.profileId)));
+  const written = new Set<string>();
+  for (const profile of profiles) {
+    const addressIdentity = buildRemoteWorkspaceIdentity("/", profile.target);
+    const addressId = hostForWorkspace(addressIdentity).hostId;
+    const stableId = profile.sourceServerId
+      ? hostForWorkspace(
+          buildServerRemoteWorkspaceIdentity({
+            serverId: profile.sourceServerId,
+            workspacePath: "/",
+          }),
+        ).hostId
+      : addressId;
+    aliases.set(addressId, stableId);
+    aliases.set(stableId, stableId);
+    if (written.has(stableId)) continue;
+    written.add(stableId);
+    ensureHost(db, addressIdentity, stableId);
+    db.prepare(
+      "UPDATE hosts SET kind=?,target_json=?,membership_id=?,last_opened_at=? WHERE host_id=?",
+    ).run(
+      profile.target.kind,
+      JSON.stringify(profile.target),
+      randomUUID(),
+      profile.lastConnectedAt ?? null,
+      stableId,
+    );
+  }
+  return aliases;
+}
+
 export function migrateProjects(db: DatabaseSync, context: ProjectMigrationContext): void {
   const now = (context.now ?? Date.now)();
   addProjectSchema(db);
@@ -61,6 +97,9 @@ export function migrateProjects(db: DatabaseSync, context: ProjectMigrationConte
   initializeLegacyTaskIdentity(db, false, context.hostId);
   const settings = context.settings;
   const remoteOwner = (context.hostId ?? "local") !== "local";
+  const hostAliases = remoteOwner
+    ? new Map<string, string>()
+    : migrateConnectionHosts(db, settings);
   const workspaces = new Map<string, { path: string; hostId: string }>();
   // Bug 原因：历史任务目录不代表用户仍保留该工作区，扫描 tasks 会复活已移除的项目入口。
   // 首次项目集合与顺序只取旧 settings；其他历史任务保留原目录，按现有规则保持未归类。
@@ -73,7 +112,8 @@ export function migrateProjects(db: DatabaseSync, context: ProjectMigrationConte
     if (entry.kind !== "remote" || (context.hostId ?? "local") !== "local") continue;
     const identity =
       entry.workspaceIdentity ?? buildRemoteWorkspaceIdentity(entry.workspacePath, entry.target);
-    const hostId = ensureHost(db, identity);
+    const knownHostId = hostAliases.get(hostForWorkspace(identity).hostId);
+    const hostId = ensureHost(db, identity, knownHostId);
     db.prepare(
       "UPDATE hosts SET target_json=coalesce(target_json,?),last_connection_status=?,last_connection_error=?,last_opened_at=? WHERE host_id=?",
     ).run(
@@ -100,9 +140,7 @@ export function migrateProjects(db: DatabaseSync, context: ProjectMigrationConte
   if (remoteOwner && tableExists(db, "tasks")) {
     const conversations = new Set(
       (settings?.lastWorkspaceSession ?? []).flatMap((entry) =>
-        entry.kind === "local" && entry.workspacePurpose === "conversation"
-          ? [entry.workspacePath]
-          : [],
+        entry.workspacePurpose === "conversation" ? [entry.workspacePath] : [],
       ),
     );
     for (const row of db

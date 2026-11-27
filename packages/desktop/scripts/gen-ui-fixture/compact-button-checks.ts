@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+/** 用真实文字 Range 检查字号变化后的边界，避免只验证 min-height。 */
 export async function checkCompactButtons(
   read: (code: string) => Promise<any>,
   send: (method: string, params?: any) => Promise<any>,
@@ -39,8 +40,8 @@ export async function checkCompactButtons(
       assert.ok(button.top >= 0 && button.bottom >= 0, JSON.stringify(button));
       assert.ok(button.line <= button.inner, JSON.stringify(button));
     }
-    for (let index = 1; index < buttons.length; index++)
-      assert.ok(buttons[index].left - buttons[index - 1].right >= 7.5);
+    for (let i = 1; i < buttons.length; i++)
+      assert.ok(buttons[i].left - buttons[i - 1].right >= 7.5);
   } finally {
     await read("document.querySelector('#compact-probe').remove()");
   }

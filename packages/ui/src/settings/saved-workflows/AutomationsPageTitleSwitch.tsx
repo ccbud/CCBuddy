@@ -1,5 +1,6 @@
 import { useCallback, type KeyboardEvent } from "react";
-import { TID_AUTOMATIONS_PAGE_TAB, testId } from "@ccbuddy/shared";
+import { TID_AUTOMATIONS_PAGE_TAB } from "@ccbuddy/shared";
+import { testId } from "@ccbuddy/shared/test-ids";
 import { cn } from "@/components/lib/utils.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 

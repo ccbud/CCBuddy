@@ -1,21 +1,72 @@
+import { mobilePluginDiscoveryTelemetrySchema, telemetryUiModeSchema } from "./telemetry.js";
+import { remoteConversationTelemetryEventSchema } from "./conversation-telemetry/remoteTelemetryEvent.js";
 import { databaseStartupControlSchema, databaseStartupStateSchema } from "./database-startup.js";
 import { mcpAppInstanceSchema } from "./mcp-apps/instance.js";
 import { automationSessionCreateTelemetrySchema } from "./sessionCreateTelemetry.js";
 /* eslint-disable max-lines -- 跨进程运行时 schema 集中在共享包入口，保持单一校验与导出面。 */
 import { z } from "zod";
+
+export const CREDENTIAL_PLAINTEXT_MAX_BYTES = 1_048_576;
+// UTF-8 明文经过 Base64 后会膨胀；保留 IV、tag、版本和指纹的固定开销。
+export const CREDENTIAL_CIPHERTEXT_MAX_CHARS =
+  Math.ceil(CREDENTIAL_PLAINTEXT_MAX_BYTES / 3) * 4 + 128;
+export const credentialPlaintextSchema = z
+  .string()
+  .max(CREDENTIAL_PLAINTEXT_MAX_BYTES)
+  .refine(
+    (value) => new TextEncoder().encode(value).byteLength <= CREDENTIAL_PLAINTEXT_MAX_BYTES,
+    "Credential plaintext exceeds the UTF-8 byte limit",
+  );
+export const credentialCiphertextSchema = z.string().max(CREDENTIAL_CIPHERTEXT_MAX_CHARS);
+export const credentialCipherRequestSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    operation: z.enum(["encrypt", "decrypt"]),
+    value: credentialCiphertextSchema,
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    if (
+      request.operation === "encrypt" &&
+      !credentialPlaintextSchema.safeParse(request.value).success
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "Credential plaintext exceeds the UTF-8 byte limit",
+      });
+  });
+export const credentialCipherResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), value: credentialCiphertextSchema }).strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      error: z.object({ code: z.string(), message: z.string() }).strict(),
+    })
+    .strict(),
+]);
+export const credentialCipherReplySchema = z
+  .object({ requestId: z.string().uuid(), result: credentialCipherResultSchema })
+  .strict();
+export type CredentialCipherRequest = z.infer<typeof credentialCipherRequestSchema>;
+export type CredentialCipherReply = z.infer<typeof credentialCipherReplySchema>;
+
 import { networkCaptureControlSchema, networkCaptureBatchSchema } from "./networkCapture.js";
 import { browserCommandSchema } from "./browser-use/commands.js";
 import { browserCommandResultSchema } from "./browser-use/result.js";
 import { modelSelectionSchema } from "./model-selection.js";
+import { localeSchema, replyLanguageSchema } from "./validationAppSettings.js";
 import { ccbuddyProcessDiagnosticSchema } from "./process-diagnostic.js";
 import { PROCESS_RESOURCE_CLI_LANES } from "./processResourceTelemetry.js";
 import {
   providerProvisioningErrorCodeSchema,
+  providerProvisioningLaneStatusSchema,
   providerProvisioningTriggerSchema,
 } from "./provider-provisioning.js";
 import { ccbuddyProviderSchema } from "./providers.js";
 import { REMOTE_ASSET_INSTALL_MODES } from "./remoteAssetInstallMode.js";
 import { isKnownRemoteResourcePackageId } from "./remoteResourcePackages.js";
+import { sourceServerArtifactPolicySchema } from "./source-server/release.js";
 import {
   taskOwnerCommandDeliverySchema,
   taskOwnerCommandRequestSchema,
@@ -46,6 +97,7 @@ export {
   appSettingsSchema,
   localeSchema,
   postUpdateReleaseNotesPayloadSchema,
+  REPLY_LANGUAGE_MAX_LENGTH,
 } from "./validationAppSettings.js";
 export { isValidWslUser, WSL_USER_MAX_LENGTH, wslUserSchema } from "./wslUserValidation.js";
 export { ccbuddyTaskModeSchema } from "./ccbuddy-task-mode-schema.js";
@@ -153,6 +205,7 @@ export const taskNotificationPayloadSchema = z.object({
 });
 
 export const telemetryRendererContextSchema = z.object({
+  uiMode: telemetryUiModeSchema.optional(),
   clientTimezone: nonEmptyStringSchema,
   clientLanguage: nonEmptyStringSchema,
   screenResolution: nonEmptyStringSchema,
@@ -190,6 +243,7 @@ export const remoteAssetDirsSchema = z.object({
   remoteCdnBaseUrl: z.string().optional(),
   remoteCdnBaseUrls: z.array(z.string()).optional(),
   remoteCacheDir: z.string().optional(),
+  sourceServerArtifactPolicy: sourceServerArtifactPolicySchema.optional(),
 });
 
 const hostAgentWarmupTargetSchema = z.object({
@@ -198,6 +252,9 @@ const hostAgentWarmupTargetSchema = z.object({
 });
 
 export const hostInitLocalMessageSchema = z.object({
+  browserBackendIdentity: z
+    .object({ id: nonEmptyStringSchema, generation: z.number().int().nonnegative() })
+    .optional(),
   type: z.literal("init-local"),
   databaseStartupId: z.string().min(1).max(128).optional(),
   hostId: nonEmptyStringSchema.optional(),
@@ -209,6 +266,11 @@ export const hostInitLocalMessageSchema = z.object({
   // 启动只预热 active workspace（desktop STARTUP_AGENT_WARMUP_LIMIT = 1），协议层同步收紧上限。
   agentWarmupTargets: z.array(hostAgentWarmupTargetSchema).max(1).optional(),
   agentSpawnFallbackCwd: nonEmptyStringSchema.optional(),
+  remoteAssets: remoteAssetDirsSchema.optional(),
+  /** spawn 时刻 Main 的实时界面语言；后续变化由 application-locale-changed 推送。 */
+  locale: localeSchema.optional(),
+  /** spawn 时刻 Main 持有的 Agent 回复语言（null 为未设置）；后续变化由 reply-language-changed 推送。 */
+  replyLanguage: replyLanguageSchema.nullable().optional(),
   ccbuddyBuiltinProviderConfigFilePath: nonEmptyStringSchema,
   runtimeProcessEnvPatch: z
     .record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string())
@@ -217,10 +279,14 @@ export const hostInitLocalMessageSchema = z.object({
 
 export const windowHostRemoteWorkspaceDescriptorSchema = z
   .object({
+    /** 本次请求直接复用的在线连接；只包含脱敏目标，不是 session 持久状态。 */
+    reusedConnectionTarget: remoteTargetSchema.optional(),
+    sourceServerId: nonEmptyStringSchema.optional(),
     remoteSessionId: nonEmptyStringSchema,
     target: remoteTargetSchema,
     workspacePath: nonEmptyStringSchema.optional(),
     workspaceIdentity: nonEmptyStringSchema.optional(),
+    workspacePurpose: z.enum(["project", "conversation"]).optional(),
     generation: z.number().int().positive(),
   })
   .strict();
@@ -228,11 +294,34 @@ export type WindowHostRemoteWorkspaceDescriptor = z.infer<
   typeof windowHostRemoteWorkspaceDescriptorSchema
 >;
 
+/** Desktop Main → Preload → Renderer 的 remote workspace MessagePort 元数据合同。 */
+export const scopedServicePortPayloadSchema = windowHostRemoteWorkspaceDescriptorSchema
+  .pick({
+    sourceServerId: true,
+    target: true,
+    workspacePurpose: true,
+  })
+  .extend({
+    attachmentId: nonEmptyStringSchema,
+    sessionId: nonEmptyStringSchema,
+    workspacePath: nonEmptyStringSchema,
+    workspaceIdentity: nonEmptyStringSchema,
+  })
+  .strict();
+export type ScopedServicePortPayload = z.infer<typeof scopedServicePortPayloadSchema>;
+
 export const windowHostAttachmentScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("local") }).strict(),
   z
     .object({
+      kind: z.literal("source-settings"),
+      sourceServerId: nonEmptyStringSchema,
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("remote"),
+      sourceServerId: nonEmptyStringSchema.optional(),
       remoteSessionId: nonEmptyStringSchema,
       workspacePath: nonEmptyStringSchema,
       workspaceIdentity: nonEmptyStringSchema,
@@ -249,6 +338,7 @@ export const hostConnectRemoteWorkspaceMessageSchema = z
     remoteAssets: remoteAssetDirsSchema,
     workspacePath: nonEmptyStringSchema.optional(),
     workspaceIdentity: nonEmptyStringSchema.optional(),
+    confirmSourceServerInstall: z.boolean().optional(),
   })
   .strict();
 
@@ -266,6 +356,16 @@ export const hostBindRemoteWorkspaceContextMessageSchema = z
     remoteSessionId: nonEmptyStringSchema,
     workspacePath: nonEmptyStringSchema,
     workspaceIdentity: nonEmptyStringSchema,
+    workspacePurpose: z.enum(["project", "conversation"]).optional(),
+    legacyRouteHint: nonEmptyStringSchema.optional(),
+  })
+  .strict();
+
+export const hostCancelRemoteWorkspaceBindMessageSchema = z
+  .object({
+    type: z.literal("cancel-remote-workspace-bind"),
+    requestId: nonEmptyStringSchema,
+    remoteSessionId: nonEmptyStringSchema,
   })
   .strict();
 
@@ -280,6 +380,7 @@ export const hostDisposeRemoteWorkspaceSessionMessageSchema = z
 export const hostAttachServicePortMessageSchema = z
   .object({
     type: z.literal("attach-service-port"),
+    terminalOwnerId: nonEmptyStringSchema.optional(),
     // main 只能声明 attachment 来源；connectionId 仍由 host process 分配。
     // desktop reload/remote reattach 必须显式 continuous，普通 Web/Bot attachment 保留 replayable。
     requestId: nonEmptyStringSchema,
@@ -343,29 +444,6 @@ export const hostTaskOwnerCommandResultMessageSchema = z.object({
   result: taskOwnerCommandResultSchema,
 });
 
-export const hostBotRemoteWorkspaceReconnectResultMessageSchema = z.object({
-  type: z.literal("bot-remote-workspace-reconnect-result"),
-  requestId: nonEmptyStringSchema,
-  ok: z.boolean(),
-  sessionId: nonEmptyStringSchema.optional(),
-  error: z.string().optional(),
-});
-
-export const hostBotRemoteWorkspaceConnectionStatusResultMessageSchema = z.object({
-  type: z.literal("bot-remote-workspace-connection-status-result"),
-  requestId: nonEmptyStringSchema,
-  ok: z.boolean(),
-  connected: z.boolean().optional(),
-  error: z.string().optional(),
-});
-
-export const hostBotRemoteWorkspaceRuntimePortMessageSchema = z.object({
-  type: z.literal("bot-remote-workspace-runtime-port"),
-  requestId: nonEmptyStringSchema,
-  ok: z.boolean(),
-  error: z.string().optional(),
-});
-
 export const sessionMessageRequestSchema = z.object({
   content: nonEmptyStringSchema,
   createdAt: nonEmptyStringSchema,
@@ -414,6 +492,9 @@ export const hostCronRunMessageSchema = z.object({
   runId: nonEmptyStringSchema,
   workspacePath: nonEmptyStringSchema,
   workspaceIdentity: z.string().optional(),
+  projectId: nonEmptyStringSchema.nullable().optional(),
+  hostId: nonEmptyStringSchema.optional(),
+  additionalDirectories: z.array(nonEmptyStringSchema).max(256).optional(),
   prompt: nonEmptyStringSchema,
   targetTaskId: nonEmptyStringSchema.optional(),
   modelSelection: modelSelectionSchema.optional(),
@@ -428,6 +509,9 @@ export const hostOffPeakRunMessageSchema = z.object({
   offPeakTaskId: nonEmptyStringSchema,
   workspacePath: nonEmptyStringSchema,
   workspaceIdentity: z.string().optional(),
+  projectId: nonEmptyStringSchema.nullable().optional(),
+  hostId: nonEmptyStringSchema.optional(),
+  additionalDirectories: z.array(nonEmptyStringSchema).max(256).optional(),
   prompt: nonEmptyStringSchema,
   // 权限四档映射现有 CCbuddyTaskMode；与 cron-run 的 mode 同样按宽松 string 传输
   permissionMode: nonEmptyStringSchema,
@@ -443,6 +527,41 @@ export const hostBrowserExecuteResultMessageSchema = z.object({
   requestId: nonEmptyStringSchema,
   result: browserCommandResultSchema,
 });
+
+export const hostCredentialCipherResultMessageSchema = credentialCipherReplySchema
+  .extend({
+    type: z.literal("credential-cipher-result"),
+  })
+  .strict();
+
+export const hostCredentialCipherRequestResponseSchema = credentialCipherRequestSchema
+  .safeExtend({
+    type: z.literal("credential-cipher-request"),
+  })
+  .strict();
+
+/** 目标数据根路径上限：覆盖 Windows 长路径，同时限制私有通道载荷。 */
+const CREDENTIAL_KEY_SHARE_TARGET_MAX_CHARS = 32_767;
+export const CREDENTIAL_KEY_SHARE_UNAVAILABLE_ERROR_CODE = "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE";
+
+// Host → Main：数据存储路径切换后请求登记系统密钥。路径保持原值，不做 trim 等改写。
+export const hostCredentialKeyShareRequestResponseSchema = z
+  .object({
+    type: z.literal("credential-key-share-request"),
+    requestId: z.string().uuid(),
+    targetBaseDir: z.string().min(1).max(CREDENTIAL_KEY_SHARE_TARGET_MAX_CHARS),
+  })
+  .strict();
+
+// Main → Host：登记结果。失败只返回受控错误码，原生异常不穿过通道。
+export const hostCredentialKeyShareResultMessageSchema = z
+  .object({
+    type: z.literal("credential-key-share-result"),
+    requestId: z.string().uuid(),
+    ok: z.boolean(),
+    errorCode: z.literal(CREDENTIAL_KEY_SHARE_UNAVAILABLE_ERROR_CODE).optional(),
+  })
+  .strict();
 
 export const hostLocalMediaPreviewPathAuthorizeResultMessageSchema = z
   .object({
@@ -474,6 +593,7 @@ export const hostPluginSandboxRegisterResultMessageSchema = z
         heightHint: z.number().int().positive().optional(),
         minFrameHeight: z.number().int().positive().optional(),
         showInline: z.boolean().optional(),
+        backgroundRetention: z.boolean().optional(),
         // 资源声明的浏览器权限随句柄回 renderer（进 hostContext.permissions）；与登记请求的 permissions 同一枚举。
         permissions: z
           .array(z.enum(["camera", "microphone", "geolocation", "clipboardWrite"]))
@@ -499,6 +619,20 @@ export const hostCuaPipFocusChangedMessageSchema = z
   })
   .strict();
 
+export const hostApplicationLocaleChangedMessageSchema = z
+  .object({
+    type: z.literal("application-locale-changed"),
+    locale: localeSchema,
+  })
+  .strict();
+
+export const hostReplyLanguageChangedMessageSchema = z
+  .object({
+    type: z.literal("reply-language-changed"),
+    replyLanguage: replyLanguageSchema.nullable(),
+  })
+  .strict();
+
 export const hostProviderProvisioningExecuteMessageSchema = z
   .object({
     type: z.literal("provider-provisioning-execute"),
@@ -506,6 +640,67 @@ export const hostProviderProvisioningExecuteMessageSchema = z
     environmentKey: nonEmptyStringSchema,
     remoteSessionId: nonEmptyStringSchema,
     trigger: providerProvisioningTriggerSchema,
+  })
+  .strict();
+
+/** main → host：数据同步页读取 / 重试 Provisioning lane 的结果（按 requestId 关联）。 */
+export const hostProviderProvisioningLaneResultMessageSchema = z
+  .object({
+    type: z.literal("provider-provisioning-lane-result"),
+    requestId: nonEmptyStringSchema,
+    status: providerProvisioningLaneStatusSchema,
+  })
+  .strict();
+
+/** 手机只提交项目意图；实际目录和远端 scope 必须由窗口 Host 准备。 */
+export const hostPrepareProjectWorkspaceMessageSchema = z
+  .object({
+    type: z.literal("prepare-project-workspace"),
+    requestId: nonEmptyStringSchema,
+    clientMode: z.literal("web-remote-replayable"),
+    projectId: nonEmptyStringSchema.nullable().optional(),
+    hostId: nonEmptyStringSchema.optional(),
+    draftId: z.string().uuid().optional(),
+    reuseDraft: z.boolean().optional(),
+    task: z
+      .object({ taskId: nonEmptyStringSchema, workspaceKey: nonEmptyStringSchema })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (request) => (request.task ? request.projectId === undefined : request.projectId !== undefined),
+    "Exactly one task or draft intent is required",
+  )
+  .refine(
+    (request) =>
+      (!request.draftId || request.projectId === null) &&
+      (!request.reuseDraft || Boolean(request.draftId)),
+    "Only an unclassified draft can reuse its directory",
+  );
+export type HostProjectWorkspaceNavigationInput = Pick<
+  z.infer<typeof hostPrepareProjectWorkspaceMessageSchema>,
+  "projectId" | "hostId" | "task" | "draftId" | "reuseDraft"
+>;
+export const hostProjectWorkspacePreparedValueSchema = z
+  .object({
+    hostId: nonEmptyStringSchema,
+    projectId: nonEmptyStringSchema.nullable(),
+    workspacePath: nonEmptyStringSchema,
+    workspaceIdentity: nonEmptyStringSchema.optional(),
+    additionalDirectories: z.array(nonEmptyStringSchema),
+    remote: windowHostRemoteWorkspaceDescriptorSchema.optional(),
+  })
+  .strict();
+export type HostPreparedProjectWorkspace = z.infer<typeof hostProjectWorkspacePreparedValueSchema>;
+export const hostProjectWorkspacePreparedResponseSchema = z
+  .object({
+    type: z.literal("project-workspace-prepared"),
+    requestId: nonEmptyStringSchema,
+    result: z.discriminatedUnion("ok", [
+      z.object({ ok: z.literal(true), value: hostProjectWorkspacePreparedValueSchema }).strict(),
+      z.object({ ok: z.literal(false), error: nonEmptyStringSchema }).strict(),
+    ]),
   })
   .strict();
 
@@ -520,6 +715,7 @@ export type HostResourceUsageSnapshotRequestMessage = z.infer<
 >;
 
 export const hostIncomingMessageSchema = z.discriminatedUnion("type", [
+  hostPrepareProjectWorkspaceMessageSchema,
   z.object({ type: z.literal("network-capture"), control: networkCaptureControlSchema }).strict(),
   z
     .object({ type: z.literal("database-startup-control"), control: databaseStartupControlSchema })
@@ -532,7 +728,11 @@ export const hostIncomingMessageSchema = z.discriminatedUnion("type", [
   hostConnectRemoteWorkspaceMessageSchema,
   hostCancelRemoteWorkspaceConnectMessageSchema,
   hostBindRemoteWorkspaceContextMessageSchema,
+  hostCancelRemoteWorkspaceBindMessageSchema,
   hostDisposeRemoteWorkspaceSessionMessageSchema,
+  z
+    .object({ type: z.literal("set-terminal-owner"), ownerId: nonEmptyStringSchema.nullable() })
+    .strict(),
   hostAttachServicePortMessageSchema,
   hostDetachServicePortMessageSchema,
   hostDisposeMessageSchema,
@@ -542,9 +742,6 @@ export const hostIncomingMessageSchema = z.discriminatedUnion("type", [
   hostTaskRunLeaseResultMessageSchema,
   hostTaskOwnerCommandDeliverMessageSchema,
   hostTaskOwnerCommandResultMessageSchema,
-  hostBotRemoteWorkspaceReconnectResultMessageSchema,
-  hostBotRemoteWorkspaceConnectionStatusResultMessageSchema,
-  hostBotRemoteWorkspaceRuntimePortMessageSchema,
   hostSessionMessageDeliverMessageSchema,
   hostSessionMessageDeliveryResultMessageSchema,
   hostFeedbackLogArchiveResultMessageSchema,
@@ -552,15 +749,47 @@ export const hostIncomingMessageSchema = z.discriminatedUnion("type", [
   hostOffPeakRunMessageSchema,
   hostBrowserExecuteResultMessageSchema,
   hostLocalMediaPreviewPathAuthorizeResultMessageSchema,
+  hostCredentialCipherResultMessageSchema,
+  hostCredentialKeyShareResultMessageSchema,
   hostPluginSandboxRegisterResultMessageSchema,
   hostCuaPipFocusChangedMessageSchema,
+  hostApplicationLocaleChangedMessageSchema,
+  hostReplyLanguageChangedMessageSchema,
   hostProviderProvisioningExecuteMessageSchema,
+  hostProviderProvisioningLaneResultMessageSchema,
 ]);
 
 export const hostRemoteWorkspaceConnectedResponseSchema = z
   .object({
     type: z.literal("remote-workspace-connected"),
     requestId: nonEmptyStringSchema,
+    descriptor: windowHostRemoteWorkspaceDescriptorSchema,
+  })
+  .strict();
+
+export const hostRemoteWorkspaceContextBoundResponseSchema = z
+  .object({
+    type: z.literal("remote-workspace-context-bound"),
+    requestId: nonEmptyStringSchema,
+    // Desktop tab rekey only；手机 replayable attachment 不消费该提示。
+    previousWorkspaceIdentity: nonEmptyStringSchema.optional(),
+  })
+  .strict();
+
+export const hostRemoteWorkspaceContextBindFailedResponseSchema = z
+  .object({
+    type: z.literal("remote-workspace-context-bind-failed"),
+    requestId: nonEmptyStringSchema,
+    error: nonEmptyStringSchema,
+    reasonCode: nonEmptyStringSchema.optional(),
+    retryable: z.boolean().optional(),
+  })
+  .strict();
+
+export const hostRemoteWorkspaceReconnectedResponseSchema = z
+  .object({
+    type: z.literal("remote-workspace-reconnected"),
+    previousRemoteSessionId: nonEmptyStringSchema,
     descriptor: windowHostRemoteWorkspaceDescriptorSchema,
   })
   .strict();
@@ -579,6 +808,17 @@ export const hostRemoteWorkspaceConnectFailedResponseSchema = z
     type: z.literal("remote-workspace-connect-failed"),
     requestId: nonEmptyStringSchema,
     error: nonEmptyStringSchema,
+    reasonCode: nonEmptyStringSchema.optional(),
+    retryable: z.boolean().optional(),
+    profileId: z.string().uuid().optional(),
+    resolvedWslTarget: z
+      .object({
+        kind: z.literal("wsl"),
+        distro: nonEmptyStringSchema,
+        user: wslUserSchema.refine((value) => value.length > 0),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -590,6 +830,12 @@ export const hostRemoteWorkspaceClosedResponseSchema = z
     exitCode: z.number().int().nullable().optional(),
     signal: z.string().nullable().optional(),
     error: z.string().optional(),
+    recoverable: z.boolean().optional(),
+    recoveryAttempt: z.number().int().positive().optional(),
+    recoveryLimit: z.number().int().positive().optional(),
+    recoveryBudgetExhausted: z.boolean().optional(),
+    reasonCode: nonEmptyStringSchema.optional(),
+    retryable: z.boolean().optional(),
   })
   .strict();
 
@@ -787,6 +1033,28 @@ export const hostMcpTelemetryResponseSchema = z
   .strict();
 export type HostMcpTelemetryResponse = z.infer<typeof hostMcpTelemetryResponseSchema>;
 
+export const hostPluginTelemetryResponseSchema = z
+  .object({
+    type: z.literal("plugin-telemetry"),
+    event: rendererTelemetryEventPayloadSchema.refine((event) =>
+      ["plugin_lifecycle", "plugin_discovery", "plugin_usage", "plugin_runtime_error"].includes(
+        event.elementName,
+      ),
+    ),
+  })
+  .strict();
+export type HostPluginTelemetryResponse = z.infer<typeof hostPluginTelemetryResponseSchema>;
+
+export const hostRemoteConversationTelemetryResponseSchema = z
+  .object({
+    type: z.literal("remote-conversation-telemetry"),
+    event: remoteConversationTelemetryEventSchema,
+  })
+  .strict();
+export type HostRemoteConversationTelemetryResponse = z.infer<
+  typeof hostRemoteConversationTelemetryResponseSchema
+>;
+
 export const hostSessionCreateTelemetryResponseSchema = z
   .object({
     type: z.literal("session-create-telemetry"),
@@ -800,6 +1068,22 @@ export type HostSessionCreateTelemetryResponse = z.infer<
 export const hostAgentRunningTaskCountChangedResponseSchema = z.object({
   type: z.literal("agent-running-task-count-changed"),
   runningTaskCount: z.number().int().nonnegative(),
+});
+
+/**
+ * 关闭窗口或退出应用会中断、且无法恢复的 Host 事项（docs/git/worktree.md §6.4）。
+ * 第一版只有"正在新 worktree 中启动的任务"；以后可加入其他会被关闭中断的 Host 任务。
+ */
+export const hostQuitBlockerSchema = z.object({
+  kind: z.enum(["worktree-creating"]),
+  count: z.number().int().positive(),
+});
+export type HostQuitBlocker = z.infer<typeof hostQuitBlockerSchema>;
+
+export const hostQuitBlockersChangedResponseSchema = z.object({
+  type: z.literal("quit-blockers-changed"),
+  /** 当前完整集合；空数组表示没有阻止退出的事项。 */
+  blockers: z.array(hostQuitBlockerSchema),
 });
 
 export const hostWorkspaceRunningTaskCountChangedResponseSchema = z.object({
@@ -871,30 +1155,6 @@ export const hostTaskOwnerCommandResultResponseSchema = z.object({
   result: taskOwnerCommandResultSchema,
 });
 
-export const hostBotRemoteWorkspaceReconnectRequestResponseSchema = z.object({
-  type: z.literal("bot-remote-workspace-reconnect-request"),
-  requestId: nonEmptyStringSchema,
-  workspacePath: nonEmptyStringSchema,
-  workspaceIdentity: nonEmptyStringSchema,
-  target: remoteTargetSchema,
-});
-
-export const hostBotRemoteWorkspaceConnectionStatusRequestResponseSchema = z.object({
-  type: z.literal("bot-remote-workspace-connection-status-request"),
-  requestId: nonEmptyStringSchema,
-  workspacePath: nonEmptyStringSchema,
-  workspaceIdentity: nonEmptyStringSchema,
-  target: remoteTargetSchema,
-});
-
-export const hostBotRemoteWorkspaceRuntimePortRequestResponseSchema = z.object({
-  type: z.literal("bot-remote-workspace-runtime-port-request"),
-  requestId: nonEmptyStringSchema,
-  workspacePath: nonEmptyStringSchema,
-  workspaceIdentity: nonEmptyStringSchema,
-  target: remoteTargetSchema,
-});
-
 export const hostSessionMessageSendRequestedResponseSchema = z.object({
   type: z.literal("session-message-send-requested"),
   request: sessionMessageRequestSchema,
@@ -932,6 +1192,8 @@ export const hostOffPeakRunResultResponseSchema = z.object({
   type: z.literal("off-peak-run-result"),
   offPeakTaskId: nonEmptyStringSchema,
   ok: z.boolean(),
+  /** Host 已在开放 CLI 生命周期事件前完成接纳落库；调度器只清理退避。 */
+  lifecycleManaged: z.literal(true).optional(),
   conversationId: z.string().optional(),
   sessionId: z.string().optional(),
   error: z.string().optional(),
@@ -952,6 +1214,7 @@ export const hostOffPeakSchedulerWakeRequestResponseSchema = z.object({
 
 // host → main：执行一条 browser-use 命令（main 用 WebContentsView+CDP 执行）。
 export const hostBrowserExecuteRequestResponseSchema = z.object({
+  controlScopeId: nonEmptyStringSchema.optional(),
   type: z.literal("browser-execute-request"),
   requestId: nonEmptyStringSchema,
   // 迁移兼容：旧 host bundle 没有 browserId/context；新 browser-client 链路始终携带。
@@ -985,8 +1248,9 @@ export const hostPluginSandboxRegisterRequestResponseSchema = z
     workspacePath: z.string().optional(),
     workspaceIdentity: z.string().optional(),
     ownerWebContentsId: z.number().int().nonnegative(),
-    sessionId: nonEmptyStringSchema,
-    contentKind: z.literal("gen-ui").optional(),
+    // 只有扩展视图不属于会话（docs/plugins/extension-host.md §8），见下方 refine。
+    sessionId: nonEmptyStringSchema.optional(),
+    contentKind: z.enum(["gen-ui", "extension"]).optional(),
     pluginId: nonEmptyStringSchema.optional(),
     // 资源所属 MCP server 运行时名：沙箱 partition 按它派生。
     serverName: nonEmptyStringSchema.optional(),
@@ -1017,13 +1281,21 @@ export const hostPluginSandboxRegisterRequestResponseSchema = z
     heightHint: z.number().int().positive().optional(),
     minFrameHeight: z.number().int().positive().optional(),
     showInline: z.boolean().optional(),
+    backgroundRetention: z.boolean().optional(),
   })
   .strict()
   .refine(
     (value) =>
-      value.contentKind === "gen-ui"
-        ? !value.pluginId && !value.serverName && !value.permissions?.length
-        : Boolean(value.pluginId && value.serverName),
+      value.contentKind === "extension"
+        ? // 扩展视图：按插件归属，没有会话与 MCP server 名，也不能带原生权限。
+          Boolean(value.pluginId) &&
+          !value.sessionId &&
+          !value.serverName &&
+          !value.permissions?.length
+        : Boolean(value.sessionId) &&
+          (value.contentKind === "gen-ui"
+            ? !value.pluginId && !value.serverName && !value.permissions?.length
+            : Boolean(value.pluginId && value.serverName)),
     "Invalid sandbox provenance",
   );
 
@@ -1050,7 +1322,20 @@ export const hostNetworkTelemetryBatchResponseSchema = z.object({
 export const hostProviderProvisioningSourceChangedResponseSchema = z
   .object({
     type: z.literal("provider-provisioning-source-changed"),
-    trigger: providerProvisioningTriggerSchema.exclude(["environment-online"]),
+    trigger: providerProvisioningTriggerSchema.exclude(["environment-online", "user-retry"]),
+  })
+  .strict();
+
+/**
+ * host → main：数据同步页按设备读取（read）、等当前执行结束后读取（wait）或重试（retry）
+ * Provisioning lane。Main 总是回 provider-provisioning-lane-result。
+ */
+export const hostProviderProvisioningLaneRequestResponseSchema = z
+  .object({
+    type: z.literal("provider-provisioning-lane-request"),
+    requestId: nonEmptyStringSchema,
+    sourceServerId: nonEmptyStringSchema,
+    action: z.enum(["read", "wait", "retry"]),
   })
   .strict();
 
@@ -1069,7 +1354,7 @@ export const hostResourceUsageProcessSchema = z
   .object({
     pid: z.number().int().positive(),
     name: nonEmptyStringSchema,
-    category: z.enum(["base", "builtin-plugin", "community-plugin"]),
+    category: z.enum(["base", "task", "builtin-plugin", "community-plugin"]),
     groupKey: nonEmptyStringSchema,
     groupLabel: nonEmptyStringSchema,
     cpuPercent: z.number().finite().nonnegative(),
@@ -1090,6 +1375,7 @@ export type HostResourceUsageSnapshotResultResponse = z.infer<
 >;
 
 export const hostResponseMessageSchema = z.discriminatedUnion("type", [
+  hostProjectWorkspacePreparedResponseSchema,
   z.object({ type: z.literal("network-capture-batch"), batch: networkCaptureBatchSchema }).strict(),
   z
     .object({ type: z.literal("database-startup-state"), state: databaseStartupStateSchema })
@@ -1097,6 +1383,9 @@ export const hostResponseMessageSchema = z.discriminatedUnion("type", [
   hostResourceUsageSnapshotResultResponseSchema,
   hostRemoteWorkspaceConnectionLogResponseSchema,
   hostRemoteWorkspaceConnectedResponseSchema,
+  hostRemoteWorkspaceContextBoundResponseSchema,
+  hostRemoteWorkspaceContextBindFailedResponseSchema,
+  hostRemoteWorkspaceReconnectedResponseSchema,
   hostRemoteWorkspaceConnectFailedResponseSchema,
   hostRemoteWorkspaceClosedResponseSchema,
   hostLogResponseSchema,
@@ -1111,7 +1400,10 @@ export const hostResponseMessageSchema = z.discriminatedUnion("type", [
   hostMcpResourceSamplesResponseSchema,
   hostToolExecResourceResponseSchema,
   hostSessionCreateTelemetryResponseSchema,
+  hostRemoteConversationTelemetryResponseSchema,
+  hostPluginTelemetryResponseSchema,
   hostAgentRunningTaskCountChangedResponseSchema,
+  hostQuitBlockersChangedResponseSchema,
   hostWorkspaceRunningTaskCountChangedResponseSchema,
   hostCuaOperationStateResponseSchema,
   hostBroadcastEnvelopeSchema,
@@ -1124,19 +1416,19 @@ export const hostResponseMessageSchema = z.discriminatedUnion("type", [
   hostTaskRunLeaseReleaseResponseSchema,
   hostTaskOwnerCommandRequestResponseSchema,
   hostTaskOwnerCommandResultResponseSchema,
-  hostBotRemoteWorkspaceReconnectRequestResponseSchema,
-  hostBotRemoteWorkspaceConnectionStatusRequestResponseSchema,
-  hostBotRemoteWorkspaceRuntimePortRequestResponseSchema,
   hostSessionMessageSendRequestedResponseSchema,
   hostSessionRouteAnnounceResponseSchema,
   hostSessionMessageDeliverResultResponseSchema,
   hostFeedbackLogArchiveRequestResponseSchema,
   hostBrowserExecuteRequestResponseSchema,
   hostLocalMediaPreviewPathAuthorizeRequestResponseSchema,
+  hostCredentialCipherRequestResponseSchema,
+  hostCredentialKeyShareRequestResponseSchema,
   hostPluginSandboxRegisterRequestResponseSchema,
   hostNetworkTelemetryBatchResponseSchema,
   hostProviderProvisioningSourceChangedResponseSchema,
   hostProviderProvisioningExecutionResultResponseSchema,
+  hostProviderProvisioningLaneRequestResponseSchema,
   hostCronRunResultResponseSchema,
   hostOffPeakRunResultResponseSchema,
   hostCronSchedulerWakeRequestResponseSchema,

@@ -1,16 +1,25 @@
 /* oxlint-disable eslint(max-lines) -- UnifiedBrowserView 集中维护稳定 webview 的导航、事件和 guest 生命周期；横向滚动链已下沉独立 hook。 */
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type {
   BrowserViewScreenshotSurfacePreparePayload,
   EmbeddedBrowserViewportPreference,
 } from "@ccbuddy/shared";
+import { browserPreviewSourceUrl, EmbeddedBrowserWebviewChannels } from "@ccbuddy/shared";
 import { cn } from "@/components/lib/utils.js";
 import { usePlatform } from "@/hooks/usePlatform.js";
 import { useWebElementPicker } from "@/hooks/useWebElementPicker.js";
+import type { WebElementRect } from "@/lib/webElementContext.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { logger } from "@/logger.js";
 import { BrowserSiteSettingsEntry } from "@/browser-use/BrowserSiteSettingsEntry.js";
 import { BrowserToolbar } from "@/EmbeddedBrowserPaneParts.js";
+import { useBrowserPageExport } from "@/browser-use/useBrowserPageExport.js";
+import { captureBrowserElementScreenshot } from "@/browser-use/browserElementScreenshot.js";
+import { BrowserDesignInspector } from "@/browser-use/BrowserDesignInspector.js";
+import { BrowserDesignToolbar } from "@/browser-use/BrowserDesignToolbar.js";
+import { useBrowserDesignMode } from "@/browser-use/useBrowserDesignMode.js";
+import { useBrowserFileLiveReload } from "@/browser-use/useBrowserFileLiveReload.js";
+import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { EmbeddedBrowserPermissionPrompts } from "@/browser-use/EmbeddedBrowserPermissionPrompts.js";
 import { BrowserViewportSurface } from "@/browser-use/BrowserViewportSurface.js";
 import { BrowserViewportToolbar } from "@/browser-use/BrowserViewportToolbar.js";
@@ -20,6 +29,14 @@ import { useEmbeddedBrowserWheelChain } from "@/browser-use/useEmbeddedBrowserWh
 import { useDesktopZoomFactor } from "@/browser-use/useDesktopZoomFactor.js";
 import { useResponsiveBrowserViewportControl } from "@/browser-use/useResponsiveBrowserViewportControl.js";
 import type { HumanBrowserViewportPreferenceChangeSource } from "@/browser-use/useResponsiveBrowserViewportControl.js";
+import {
+  getBrowserVisitScopeKey,
+  isTrackableBrowserVisitUrl,
+  recordBrowserVisit,
+  removeBrowserRecentVisit,
+  updateBrowserVisitMetadata,
+  useBrowserRecentVisits,
+} from "@/store/browserRecentVisitsStore.js";
 import {
   DEFAULT_BROWSER_URL,
   INITIAL_BROWSER_STATE,
@@ -40,8 +57,8 @@ type PendingGuestNavigationCompletion = {
  * UnifiedBrowserView —— 统一浏览器视图（`<webview>` + CDP-on-guest 架构）。
  *
  * 网页像素由 renderer 内的 `<webview>` guest 直接渲染（DOM 内合成，可被 DOM 浮层覆盖，
- * 彻底解决 WebContentsView 原生层遮挡菜单的问题）。human 的导航/前进后退/刷新/元素拾取
- * 直接调用 webview 方法（低延迟、无握手依赖）；chrome 状态由 webview 事件驱动。
+ * 彻底解决 WebContentsView 原生层遮挡菜单的问题）。human 导航经过 main 的本地文件准入，
+ * 前进后退/刷新/元素拾取直接调用 webview 方法；chrome 状态由 webview 事件驱动。
  *
  * 同时在 did-attach 时把 guest 的 webContentsId 上报给 main（browserViewAttachGuest），
  * 让 main 能给该 guest 挂 CDP（webContents.debugger），供 agent 通过协议控制这个 tab。
@@ -59,6 +76,7 @@ export function UnifiedBrowserView({
   initialUrl,
   faviconUrl,
   navigationRequest,
+  automaticRestoreUrl,
   onUrlChange,
   onPageMetadataChange,
   onNavigationRequestHandled,
@@ -93,6 +111,8 @@ export function UnifiedBrowserView({
   faviconUrl?: string | null;
   /** 外部请求把该 tab 导航到某 URL（{id,url}）；消费后回执 onNavigationRequestHandled。 */
   navigationRequest?: { id: string; url: string } | null;
+  /** main 驱动的自动恢复 URL；仅匹配其提交时跳过访问排序。 */
+  automaticRestoreUrl?: string | null;
   /** 当前 URL 变化回传（human tab URL 持久化）。 */
   onUrlChange?: (url: string) => void;
   /** 页面标题/favicon 变化回传（驱动 tab 标签）。 */
@@ -127,6 +147,13 @@ export function UnifiedBrowserView({
   const platform = usePlatform();
   const { intl } = useCCbuddyIntl();
   const desktopZoomFactor = useDesktopZoomFactor();
+  const effectiveWorkspaceKey = workspaceKey ?? (workspaceIdentity?.trim() || workspacePath);
+  const recentVisitsScopeKey = getBrowserVisitScopeKey({
+    workspaceKey: effectiveWorkspaceKey ?? "",
+    ...(remoteSessionId ? { remoteSessionId } : {}),
+    sessionId: sessionId ?? "",
+  });
+  const recentVisits = useBrowserRecentVisits(recentVisitsScopeKey);
 
   const [addressValue, setAddressValue] = useState("");
   const [browserState, setBrowserState] = useState<BrowserState>(INITIAL_BROWSER_STATE);
@@ -145,6 +172,16 @@ export function UnifiedBrowserView({
     setPermissionGuestWebContentsId(id > 0 ? id : undefined);
   }, [webview, browserState.isReady]);
   const [guestAttachRetryNonce, setGuestAttachRetryNonce] = useState(0);
+  // 恢复失败不能留下“跳过下一个提交”的状态，否则会漏记用户的首次真实访问。
+  // 崩溃恢复只抑制已提交页面的自动重载，不改变 residency restore 的消费时序。
+  const restoreVisitUrlRef = useRef<string | null>(
+    isResidencyRestore && automaticRestoreUrl && isTrackableBrowserVisitUrl(automaticRestoreUrl)
+      ? automaticRestoreUrl
+      : null,
+  );
+  useEffect(() => {
+    if (!isResidencyRestore) restoreVisitUrlRef.current = null;
+  }, [isResidencyRestore]);
   useBrowserScreenshotSurfaceReady({
     request: screenshotSurfaceRequest ?? null,
     webview,
@@ -226,9 +263,9 @@ export function UnifiedBrowserView({
   // 已消费的 initialUrl / navigationRequest，避免重复导航。
   const lastAppliedInitialUrlRef = useRef<string | null>(null);
   const lastHandledNavigationRequestIdRef = useRef<string | null>(null);
-  const lastRestorableUrlRef = useRef<string | null>(
-    initialUrl && initialUrl !== DEFAULT_BROWSER_URL ? initialUrl : null,
-  );
+  // 只记录主框架已提交的 URL。附件 URL 会开始下载但不提交页面，曾在导航前被写入恢复状态，
+  // 每次 rebind / 重新挂载都会再下载一次。
+  const lastRestorableUrlRef = useRef<string | null>(null);
   const guestRecoveryInProgressRef = useRef(false);
   // 失败 guest 接到外部导航时，回执必须等替代 guest 实际接管 loadURL 后再完成。
   const pendingGuestNavigationCompletionRef = useRef<PendingGuestNavigationCompletion | null>(null);
@@ -266,6 +303,7 @@ export function UnifiedBrowserView({
   }, []);
   const onPageMetadataChangeRef = useRef(onPageMetadataChange);
   onPageMetadataChangeRef.current = onPageMetadataChange;
+  const activeCommittedUrlRef = useRef(DEFAULT_BROWSER_URL);
   const onUrlChangeRef = useRef(onUrlChange);
   onUrlChangeRef.current = onUrlChange;
 
@@ -407,6 +445,18 @@ export function UnifiedBrowserView({
     }
   }, [browserKey, platform]);
 
+  // 按元素 rect 由 main 取帧裁剪，给点选进输入框的元素 token 用（截图随消息发出、不占附件行）。宿主不支持取帧（Web 端）时只带文字。
+  const captureGuestPage = platform.captureBrowserGuestPage;
+  const captureElement = useMemo(
+    () =>
+      captureGuestPage
+        ? (rect: WebElementRect) =>
+            webview
+              ? captureBrowserElementScreenshot({ captureGuestPage, rect, webview })
+              : Promise.resolve(null)
+        : undefined,
+    [captureGuestPage, webview],
+  );
   const {
     cancelPicking: cancelWebElementPicking,
     isPicking: isWebElementPicking,
@@ -419,44 +469,131 @@ export function UnifiedBrowserView({
     workspacePath: workspacePath ?? "",
     workspaceIdentity: workspaceKey ?? workspaceIdentity,
   });
+  // 人类 tab 的「选择元素」就是设计模式的点选；Agent tab 仍用元素 chip 选择器，两者不同时拦截页面点击。
+  const cancelPickingForDesign = useCallback(() => {
+    void cancelWebElementPicking();
+  }, [cancelWebElementPicking]);
+  const isHumanBrowser = onHumanViewportPreferenceChange !== undefined;
+  // file:// 指向本机磁盘，自动刷新与设计工具写回一律走本机 base host，与当前 workspace 是否远端无关。
+  const { fileService: localFileService, fileWatcherService: localFileWatcherService } =
+    useBaseWorkspaceServices();
+  const designChipTarget = useMemo(
+    () =>
+      isHumanBrowser && workspacePath
+        ? {
+            workspacePath,
+            ...((workspaceKey ?? workspaceIdentity)
+              ? { workspaceIdentity: workspaceKey ?? workspaceIdentity }
+              : {}),
+          }
+        : null,
+    [isHumanBrowser, workspaceIdentity, workspaceKey, workspacePath],
+  );
+  const design = useBrowserDesignMode({
+    captureElement,
+    chipTarget: designChipTarget,
+    currentUrl: browserState.currentUrl,
+    fileService: localFileService,
+    onSelectModeStart: cancelPickingForDesign,
+    isVisible,
+    probeEnabled: isHumanBrowser,
+    remoteSessionId,
+    workspaceIdentity,
+    webview,
+    webviewGeneration,
+  });
 
   // ---- 从 webview 同步 chrome 状态（url/前进后退/标题）----
-  const syncBrowserState = useCallback((target: ElectronWebviewTag) => {
-    // guest 在 dom-ready 前 / 导航 churn / 重附过程中未 attach，同步方法会抛
-    // "must be attached to the DOM"，统一走 safeWebviewCall 兜底，避免冒泡到 window.onerror。
-    const onDetached = (error: unknown) => {
-      logger.debug("[browser-use] 跳过未就绪 webview 的状态同步", {
-        error: error instanceof Error ? error.message : String(error),
+  const syncBrowserState = useCallback(
+    (target: ElectronWebviewTag) => {
+      // guest 在 dom-ready 前 / 导航 churn / 重附过程中未 attach，同步方法会抛
+      // "must be attached to the DOM"，统一走 safeWebviewCall 兜底，避免冒泡到 window.onerror。
+      const onDetached = (error: unknown) => {
+        logger.debug("[browser-use] 跳过未就绪 webview 的状态同步", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      };
+      const currentUrl =
+        safeWebviewCall(() => target.getURL(), "", onDetached) || DEFAULT_BROWSER_URL;
+      const canGoBack = safeWebviewCall(() => target.canGoBack(), false, onDetached);
+      const canGoForward = safeWebviewCall(() => target.canGoForward(), false, onDetached);
+      const title = safeWebviewCall(() => target.getTitle(), "", onDetached);
+      if (currentUrl !== DEFAULT_BROWSER_URL) {
+        lastRestorableUrlRef.current = currentUrl;
+      }
+      setBrowserState((prev) => ({
+        ...prev,
+        canGoBack,
+        canGoForward,
+        currentUrl,
+        isReady: true,
+        title,
+      }));
+      onPageMetadataChangeRef.current?.({ title: title || undefined });
+      updateBrowserVisitMetadata(recentVisitsScopeKey, currentUrl, {
+        title,
+        faviconUrl: null,
       });
-    };
-    const currentUrl =
-      safeWebviewCall(() => target.getURL(), "", onDetached) || DEFAULT_BROWSER_URL;
-    const canGoBack = safeWebviewCall(() => target.canGoBack(), false, onDetached);
-    const canGoForward = safeWebviewCall(() => target.canGoForward(), false, onDetached);
-    const title = safeWebviewCall(() => target.getTitle(), "", onDetached);
-    if (currentUrl !== DEFAULT_BROWSER_URL) {
-      lastRestorableUrlRef.current = currentUrl;
-    }
-    setAddressValue(displayBrowserUrl(currentUrl));
-    setBrowserState((prev) => ({
-      ...prev,
-      canGoBack,
-      canGoForward,
-      currentUrl,
-      isReady: true,
-      title,
-    }));
-    onPageMetadataChangeRef.current?.({ title: title || undefined });
-    // 页面 url 不可信：仅用于展示与 tab 持久化，不参与任何执行路径。
-    if (currentUrl !== DEFAULT_BROWSER_URL) {
-      onUrlChangeRef.current?.(currentUrl);
+      // 页面 url 不可信：仅用于展示与 tab 持久化，不参与任何执行路径。
+      if (currentUrl !== DEFAULT_BROWSER_URL) {
+        onUrlChangeRef.current?.(currentUrl);
+      }
+    },
+    [recentVisitsScopeKey],
+  );
+
+  const downloadNavigationRef = useRef({ urls: new Set<string>(), failedUrl: "" });
+
+  // 一次导航结束后恢复 URL 跟随已提交的 URL：下载响应、ERR_ABORTED、ERR_FAILED 都不提交页面，
+  // 回落后 initialUrl / 恢复 URL 不再指向附件，重新挂载时不会再次下载。
+  const settleRestorableUrl = useCallback((target: ElectronWebviewTag) => {
+    const committedUrl = safeWebviewCall(() => target.getURL(), "") || DEFAULT_BROWSER_URL;
+    lastRestorableUrlRef.current = committedUrl === DEFAULT_BROWSER_URL ? null : committedUrl;
+    onUrlChangeRef.current?.(committedUrl);
+    const { urls, failedUrl } = downloadNavigationRef.current;
+    if (urls.has(failedUrl)) {
+      // 下载不会提交页面；移除普通状态回填后，必须在确认下载时显式恢复地址。
+      // 通知可能晚于拒绝到达，只替换原下载地址，不能覆盖后续草稿或新导航。
+      setAddressValue((value) =>
+        value === displayBrowserUrl(failedUrl) ? displayBrowserUrl(committedUrl) : value,
+      );
     }
   }, []);
+
+  const isDownloadNavigationFailure = useCallback((url: string, message: string) => {
+    if (!message.includes("ERR_FAILED")) return false;
+    downloadNavigationRef.current.failedUrl = url;
+    return downloadNavigationRef.current.urls.has(url);
+  }, []);
+
+  const loadBrowserUrl = useCallback(
+    async (target: ElectronWebviewTag, url: string) => {
+      // file 的额外读取权限必须在 main/session 边界收敛，不能只检查首次 attach 的 src。
+      if (!platform.browserViewLoadUrl) throw new Error("Browser navigation is unavailable");
+      await platform.browserViewLoadUrl({ webContentsId: target.getWebContentsId(), url });
+    },
+    [platform],
+  );
 
   // ---- webview 事件接线 + did-attach 上报 guestId ----
   useEffect(() => {
     if (!webview) return;
 
+    const stopDownloadSubscription = platform.onBrowserViewDownloadStarted?.((payload) => {
+      if (safeWebviewCall(() => webview.getWebContentsId(), -1) !== payload.webContentsId) return;
+      const navigation = downloadNavigationRef.current;
+      payload.urls.forEach((url) => navigation.urls.add(url));
+      // will-download 与 loadURL 拒绝可先后到达；晚到时收敛同 URL 的下载错误与地址。
+      if (navigation.urls.has(navigation.failedUrl)) {
+        settleRestorableUrl(webview);
+        setBrowserState((prev) => ({
+          ...prev,
+          errorMessage: null,
+          loadErrorCode: null,
+          isLoading: false,
+        }));
+      }
+    });
     const handleDidAttach = () => {
       // navigationHistory.restore 只能用于从未加载过页面的新 guest。若等到
       // dom-ready 才上报，默认 about:blank 已提交，只能退化为 URL 重载；attach 后立即上报，
@@ -485,10 +622,13 @@ export function UnifiedBrowserView({
         setBrowserState((prev) => ({ ...prev, isReady: true }));
         void (async () => {
           try {
-            await webview.loadURL(pending);
+            await loadBrowserUrl(webview, pending);
           } catch (loadError: unknown) {
             const message = loadError instanceof Error ? loadError.message : String(loadError);
-            if (!message.includes("ERR_ABORTED")) {
+            if (
+              !message.includes("ERR_ABORTED") &&
+              !isDownloadNavigationFailure(pending, message)
+            ) {
               setBrowserState((prev) => ({
                 ...prev,
                 errorMessage: intl.formatMessage({ id: "browser.loadFailed" }, { message }),
@@ -496,6 +636,7 @@ export function UnifiedBrowserView({
               }));
             }
           } finally {
+            settleRestorableUrl(webview);
             // 只把外部请求写入 pendingUrl 后就回执是不够的：失败 guest 永远不会消费它。
             // 替代 guest 到达 dom-ready 并完成一次 loadURL 尝试，才算真正接管该导航意图。
             completePendingGuestNavigation(pendingCompletion);
@@ -508,6 +649,7 @@ export function UnifiedBrowserView({
     };
 
     const handleDidStartLoading = () => {
+      downloadNavigationRef.current = { urls: new Set(), failedUrl: "" };
       void cancelWebElementPicking();
       setBrowserState((prev) => ({
         ...prev,
@@ -523,26 +665,58 @@ export function UnifiedBrowserView({
       syncBrowserState(webview);
     };
 
-    const handleNavigation = () => {
+    const handleNavigation = (event: ElectronWebviewNavigationEvent) => {
+      const isMainFrame = event.type === "did-navigate" || event.isMainFrame === true;
+      if (isMainFrame) {
+        // 首次 guest 的 about:blank 提交早于排队 URL，普通加载结束也会读到旧地址。
+        // 地址栏只随主框架导航提交更新，并跳过仍有待导航 URL 的初始化空白页。
+        if (event.url !== DEFAULT_BROWSER_URL || !pendingUrlRef.current) {
+          setAddressValue(displayBrowserUrl(event.url));
+        }
+        activeCommittedUrlRef.current = event.url;
+        if (isTrackableBrowserVisitUrl(event.url)) {
+          // 恢复抑制只覆盖首个可记录的主框架提交；重定向提交也会结束本次恢复生命周期，
+          // 避免旧恢复 URL 在后续页面链接、历史或 Agent 导航中吞掉真实访问。
+          const isAutomaticRestoreCommit = restoreVisitUrlRef.current === event.url;
+          restoreVisitUrlRef.current = null;
+          if (!isAutomaticRestoreCommit) {
+            recordBrowserVisit(recentVisitsScopeKey, {
+              url: event.url,
+              title: "",
+              faviconUrl: null,
+              lastVisitedAt: Date.now(),
+            });
+          }
+        }
+      }
       syncBrowserState(webview);
     };
 
     const handleTitleUpdated = (event: ElectronWebviewTitleEvent) => {
       setBrowserState((prev) => ({ ...prev, title: event.title }));
       onPageMetadataChangeRef.current?.({ title: event.title || undefined });
+      updateBrowserVisitMetadata(recentVisitsScopeKey, activeCommittedUrlRef.current, {
+        title: event.title,
+        faviconUrl: null,
+      });
     };
 
     const handleDidFailLoad = (event: ElectronWebviewDidFailLoadEvent) => {
-      // 忽略子帧失败与 -3(ERR_ABORTED，被后续导航打断)。
-      if (!event.isMainFrame || event.errorCode === -3) return;
+      // 忽略子帧、-3(ERR_ABORTED，被后续导航打断)与下载失败。
+      if (!event.isMainFrame) return;
+      if (restoreVisitUrlRef.current === event.validatedURL) restoreVisitUrlRef.current = null;
+      if (event.errorCode === -3) return;
+      if (event.errorCode === -2 && isDownloadNavigationFailure(event.validatedURL, "ERR_FAILED"))
+        return;
       logger.warn("[browser-use] 页面加载失败", {
         errorCode: event.errorCode,
         errorDescription: event.errorDescription,
         url: event.validatedURL,
       });
+      // 失败的主框架导航没有提交，不能当成当前页 URL：它会被 residency 上报成恢复地址，
+      // 附件 URL 因此每轮恢复都再下载一次。地址栏与错误态仍用 validatedURL。
       setBrowserState((prev) => ({
         ...prev,
-        currentUrl: event.validatedURL || prev.currentUrl,
         errorMessage: intl.formatMessage(
           { id: "browser.loadFailed" },
           { message: event.errorDescription },
@@ -586,6 +760,8 @@ export function UnifiedBrowserView({
 
       guestRecoveryInProgressRef.current = true;
       const recoveryUrl = lastRestorableUrlRef.current;
+      restoreVisitUrlRef.current =
+        recoveryUrl && isTrackableBrowserVisitUrl(recoveryUrl) ? recoveryUrl : null;
       void cancelWebElementPicking();
 
       logger.warn("[browser-use] guest renderer 异常退出，原位重建并恢复最近 URL", {
@@ -598,6 +774,7 @@ export function UnifiedBrowserView({
         const detached = await detachBrowserGuestBeforeReplacement();
         if (!detached) {
           guestRecoveryInProgressRef.current = false;
+          restoreVisitUrlRef.current = null;
           setBrowserState((prev) => ({
             ...prev,
             errorMessage: null,
@@ -645,6 +822,7 @@ export function UnifiedBrowserView({
     webview.addEventListener("render-process-gone", handleRenderProcessGone);
 
     return () => {
+      stopDownloadSubscription?.();
       webview.removeEventListener("did-attach", handleDidAttach);
       webview.removeEventListener("dom-ready", handleDomReady);
       webview.removeEventListener("did-start-loading", handleDidStartLoading);
@@ -662,11 +840,15 @@ export function UnifiedBrowserView({
     detachBrowserGuestBeforeReplacement,
     intl,
     isResidencyRestore,
+    isDownloadNavigationFailure,
     isSelected,
     platform,
+    recentVisitsScopeKey,
     reportBrowserGuest,
     setGuestZoomFactor,
+    settleRestorableUrl,
     syncBrowserState,
+    loadBrowserUrl,
     webview,
   ]);
 
@@ -690,10 +872,9 @@ export function UnifiedBrowserView({
   useEffect(() => {
     const effectiveWorkspaceKey = workspaceKey ?? (workspaceIdentity?.trim() || workspacePath);
     if (!effectiveWorkspaceKey || !sessionId) return;
-    const restoreUrl =
-      browserState.currentUrl && browserState.currentUrl !== DEFAULT_BROWSER_URL
-        ? browserState.currentUrl
-        : (lastRestorableUrlRef.current ?? null);
+    // 恢复 URL 只有 lastRestorableUrlRef 一个数据源（只在主框架提交后写入），
+    // 不再回退到 currentUrl：后者可能被未提交的导航或失败态改写。
+    const restoreUrl = lastRestorableUrlRef.current;
     void platform
       .browserViewReportResidency?.({
         tabId: browserKey,
@@ -776,7 +957,7 @@ export function UnifiedBrowserView({
     [browserKey, cancelWebElementPicking, detachBrowserGuestBeforeReplacement],
   );
 
-  // ---- 导航（human 直驱 webview.loadURL；未就绪则排队到 dom-ready 消费）----
+  // ---- 导航（human 通过 main 准入；未就绪则排队到 dom-ready 消费）----
   const openUrl = useCallback(
     async (input: string, source: "toolbar" | "restore" | "request" = "toolbar") => {
       const nextUrl = normalizeBrowserUrl(input);
@@ -790,6 +971,8 @@ export function UnifiedBrowserView({
         return;
       }
 
+      // 主动导航取代旧恢复意图，包括目标相同的重试；initialUrl 同步不代表用户动作。
+      if (source !== "restore") restoreVisitUrlRef.current = null;
       // 外部请求若只能排队给尚未就绪的 guest，必须等 dom-ready 真正接管 loadURL 后再回执；
       // 地址栏/恢复导航没有上游消费确认，不需要等待该生命周期信号。
       const navigationTakenOver =
@@ -800,8 +983,6 @@ export function UnifiedBrowserView({
       // launch-failed 后 isReady=false，只把地址栏 URL 写进 pendingUrl 不够：
       // 失效 guest 永远不会再触发 dom-ready，失败态与排队导航都会永久卡住。
       if (browserState.guestFailure && (source === "toolbar" || source === "request")) {
-        lastRestorableUrlRef.current = nextUrl;
-        onUrlChange?.(nextUrl);
         const rebuilt = await rebuildBrowserGuest(
           nextUrl,
           source === "request" ? "external-navigation" : "address-navigation",
@@ -824,8 +1005,6 @@ export function UnifiedBrowserView({
 
       setAddressValue(displayBrowserUrl(nextUrl));
       setHasNavigated(true);
-      lastRestorableUrlRef.current = nextUrl;
-      onUrlChange?.(nextUrl);
       setBrowserState((prev) => ({ ...prev, errorMessage: null, loadErrorCode: null }));
       lastRequestedUrlRef.current = nextUrl;
 
@@ -836,15 +1015,18 @@ export function UnifiedBrowserView({
       }
 
       try {
-        await webview.loadURL(nextUrl);
+        await loadBrowserUrl(webview, nextUrl);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (message.includes("ERR_ABORTED")) return;
+        if (message.includes("ERR_ABORTED") || isDownloadNavigationFailure(nextUrl, message))
+          return;
         setBrowserState((prev) => ({
           ...prev,
           errorMessage: intl.formatMessage({ id: "browser.loadFailed" }, { message }),
           isLoading: false,
         }));
+      } finally {
+        settleRestorableUrl(webview);
       }
     },
     [
@@ -853,8 +1035,10 @@ export function UnifiedBrowserView({
       browserState.isReady,
       completePendingGuestNavigation,
       intl,
-      onUrlChange,
+      isDownloadNavigationFailure,
       rebuildBrowserGuest,
+      loadBrowserUrl,
+      settleRestorableUrl,
       waitForGuestNavigationTakeover,
       webview,
     ],
@@ -863,7 +1047,6 @@ export function UnifiedBrowserView({
   // ---- 挂载时导航到初始/恢复 URL（human tab 恢复态）----
   useEffect(() => {
     if (!initialUrl || initialUrl === DEFAULT_BROWSER_URL) return;
-    lastRestorableUrlRef.current = initialUrl;
     if (lastAppliedInitialUrlRef.current === initialUrl) return;
     if (browserState.currentUrl === initialUrl) {
       lastAppliedInitialUrlRef.current = initialUrl;
@@ -929,18 +1112,66 @@ export function UnifiedBrowserView({
     runWebviewAction(() => webview.openDevTools());
   }, [browserState.isReady, runWebviewAction, webview]);
 
+  // 只给人类用户 tab 开：onHumanViewportPreferenceChange 只在人类主动打开的 tab 上传入。
+  useBrowserFileLiveReload({
+    currentUrl: browserState.currentUrl,
+    enabled: onHumanViewportPreferenceChange !== undefined,
+    fileService: localFileService,
+    fileWatcherService: localFileWatcherService,
+    isOwnWrite: design.isOwnSourceWrite,
+    isVisible,
+    webview,
+  });
+
+  const pageExport = useBrowserPageExport({
+    currentUrl: browserState.currentUrl,
+    isReady: browserState.isReady,
+    webview,
+  });
+
   const handleOpenExternal = useCallback(() => {
     if (!webview || !browserState.isReady) return;
     runWebviewAction(() => {
-      const currentUrl = webview.getURL();
+      const currentUrl = browserPreviewSourceUrl(webview.getURL());
       // 安全边界：系统默认浏览器入口只允许 Web URL 和 file URL，仍禁止 about/data 等内联协议。
       if (!isDefaultBrowserOpenableUrl(currentUrl)) return;
       platform.openExternal(currentUrl);
     });
   }, [browserState.isReady, platform, runWebviewAction, webview]);
 
+  const { stopSelecting: stopDesignSelecting, requestSelectMode: requestDesignSelectMode } = design;
+
+  // 页面里按 Cmd/Ctrl + Z：guest preload 只认真实按键、且按键目标不是页面输入框时才发（页面脚本发不出这条），
+  // 只在点选时撤销 / 重做写回（!3450 CR-01）；任何本机 HTML 点选时都可能写回过，不只设计稿
+  const { undo: undoDesignWrite, redo: redoDesignWrite } = design;
+  const designUndoActive = design.mode === "select";
+  useEffect(() => {
+    if (!webview || !designUndoActive) return;
+    const handleIpcMessage = (event: ElectronWebviewIpcMessageEvent) => {
+      if (event.channel !== EmbeddedBrowserWebviewChannels.DesignUndoShortcut) return;
+      const payload: unknown = event.args[0];
+      const redo =
+        typeof payload === "object" &&
+        payload !== null &&
+        "redo" in payload &&
+        payload.redo === true;
+      void (redo ? redoDesignWrite() : undoDesignWrite());
+    };
+    webview.addEventListener("ipc-message", handleIpcMessage);
+    return () => webview.removeEventListener("ipc-message", handleIpcMessage);
+  }, [designUndoActive, redoDesignWrite, undoDesignWrite, webview]);
+  const isDesignToolsVisible = design.toolsVisible;
+  // 调整面板：设计稿页面，或任何页面上正在点选（人类 tab 的「选择元素」统一成这套点选，11-06）
+  const isDesignPanelAvailable = isDesignToolsVisible || design.mode !== "off";
+  // 人类 tab：地址栏「选择元素」在任何页面上都是同一套点选（再点一次或页面里 Esc 退出），取代原来的元素选择器（11-06）；
+  // 能不能改由页面决定：本机 HTML 在调整面板里直接改，其他页面面板只读、交给 Agent。Agent tab 仍是元素 chip 选择器。
   const handleTogglePicker = useCallback(() => {
     if (!webview || !browserState.isReady) return;
+    if (isHumanBrowser) {
+      void requestDesignSelectMode();
+      return;
+    }
+    stopDesignSelecting();
     void toggleWebElementPicking().catch((error: unknown) => {
       setBrowserState((prev) => ({
         ...prev,
@@ -950,7 +1181,15 @@ export function UnifiedBrowserView({
         ),
       }));
     });
-  }, [browserState.isReady, intl, toggleWebElementPicking, webview]);
+  }, [
+    browserState.isReady,
+    intl,
+    isHumanBrowser,
+    requestDesignSelectMode,
+    stopDesignSelecting,
+    toggleWebElementPicking,
+    webview,
+  ]);
 
   const handleToggleResponsiveMode = useCallback(() => {
     toggleResponsiveMode();
@@ -983,7 +1222,12 @@ export function UnifiedBrowserView({
           onPageMetadataChangeRef.current?.({
             faviconUrl: event.favicons[0] ?? null,
           });
+          updateBrowserVisitMetadata(recentVisitsScopeKey, activeCommittedUrlRef.current, {
+            title: "",
+            faviconUrl: event.favicons[0] ?? null,
+          });
         };
+
         // favicon 是可能只触发一次的 guest 事件；等 useEffect 才接线时，
         // 它可能已在 webview ref 提交与 effect 执行之间发出。ref 阶段同步监听可封住该窗口。
         node.addEventListener("page-favicon-updated", listener);
@@ -1001,12 +1245,16 @@ export function UnifiedBrowserView({
   );
 
   const handleRetryGuest = useCallback(() => {
-    void rebuildBrowserGuest(lastRestorableUrlRef.current, "manual-retry");
+    void rebuildBrowserGuest(
+      lastRestorableUrlRef.current ?? lastRequestedUrlRef.current,
+      "manual-retry",
+    );
   }, [rebuildBrowserGuest]);
 
   // 加载失败只是这次导航被拒，guest 本身还活着：重走 openUrl 即可，不必重建 guest。
   const handleRetryLoad = useCallback(() => {
-    const retryUrl = lastRestorableUrlRef.current ?? browserState.currentUrl;
+    const retryUrl =
+      lastRequestedUrlRef.current ?? lastRestorableUrlRef.current ?? browserState.currentUrl;
     if (!retryUrl) return;
     void openUrl(retryUrl, "toolbar");
   }, [browserState.currentUrl, openUrl]);
@@ -1058,17 +1306,26 @@ export function UnifiedBrowserView({
             />
           ) : null
         }
+        onOpenSiteSettings={
+          permissionOrigin && onOpenPermissionSettings
+            ? () => onOpenPermissionSettings(permissionOrigin)
+            : undefined
+        }
         formatMessage={intl.formatMessage}
         onAddressChange={setAddressValue}
         onGoBack={handleGoBack}
         onGoForward={handleGoForward}
         onOpenExternal={handleOpenExternal}
         onOpenDevTools={handleOpenDevTools}
+        canExport={pageExport.canExport}
+        isExporting={pageExport.isExporting}
+        onExportPdf={pageExport.exportPdf}
+        onExportPng={pageExport.exportPng}
         onPickElement={handleTogglePicker}
         onReload={handleReload}
         onToggleResponsiveMode={handleToggleResponsiveMode}
         onSubmit={handleSubmit}
-        isElementPickerActive={isWebElementPicking}
+        isElementPickerActive={isHumanBrowser ? design.mode === "select" : isWebElementPicking}
         isResponsiveMode={isResponsiveMode}
       />
       {/* 权限弹窗层：只在可见 tab 挂载（多 tab 共享 store，避免重复渲染与
@@ -1076,7 +1333,7 @@ export function UnifiedBrowserView({
       {isVisible ? (
         <EmbeddedBrowserPermissionPrompts guestWebContentsId={permissionGuestWebContentsId} />
       ) : null}
-      {isResponsiveMode ? (
+      {isResponsiveMode && !isDesignToolsVisible ? (
         <BrowserViewportToolbar
           isVisible={isVisible}
           onViewportSizeChange={handleResponsiveViewportInput}
@@ -1085,29 +1342,57 @@ export function UnifiedBrowserView({
           zoom={responsiveViewportZoom}
         />
       ) : null}
-      <BrowserViewportSurface
-        browserRegionRef={browserRegionRef}
-        browserState={browserState}
-        desktopZoomFactor={desktopZoomFactor}
-        isResidencyRestore={isResidencyRestore}
-        formatMessage={intl.formatMessage}
-        isEmptyBrowserState={isEmptyBrowserState}
-        isComposed={isVisible || shouldComposeSurface}
-        isResponsiveMode={effectiveIsResponsiveMode}
-        isViewportEmulated={
-          effectiveIsResponsiveMode && screenshotSurfaceRequest?.viewportMode !== "natural"
-        }
-        onRetryGuest={handleRetryGuest}
-        onRetryLoad={handleRetryLoad}
-        onViewportResize={notifyBrowserViewportResize}
-        onViewportSizeChange={handleResponsiveViewportSizeChange}
-        onWebviewRef={handleWebviewRef}
-        shouldMountWebview={shouldMountWebview}
-        showResizeWarning={showResizeWarning}
-        webviewGeneration={webviewGeneration}
-        viewportSize={effectiveViewportSize}
-        viewportZoom={effectiveViewportZoom}
-      />
+      {isDesignToolsVisible ? (
+        <BrowserDesignToolbar
+          design={design}
+          viewportControls={
+            isResponsiveMode ? (
+              <BrowserViewportToolbar
+                embedded
+                isVisible={isVisible}
+                onViewportSizeChange={handleResponsiveViewportInput}
+                onZoomChange={setResponsiveViewportZoom}
+                viewportSize={responsiveViewportSize}
+                zoom={responsiveViewportZoom}
+              />
+            ) : null
+          }
+        />
+      ) : null}
+      <div className="@container/browser-canvas relative flex min-h-0 flex-1">
+        <BrowserViewportSurface
+          browserRegionRef={browserRegionRef}
+          browserState={browserState}
+          desktopZoomFactor={desktopZoomFactor}
+          isResidencyRestore={isResidencyRestore}
+          formatMessage={intl.formatMessage}
+          isEmptyBrowserState={isEmptyBrowserState}
+          recentVisits={recentVisits}
+          onOpenRecentVisit={(url) => void openUrl(url)}
+          onRemoveRecentVisit={(url) => removeBrowserRecentVisit(recentVisitsScopeKey, url)}
+          designCanvas={isDesignToolsVisible}
+          designStage={isDesignToolsVisible && design.pageInfo?.stageBackdrop === true}
+          isComposed={isVisible || shouldComposeSurface}
+          isResponsiveMode={effectiveIsResponsiveMode}
+          isViewportEmulated={
+            effectiveIsResponsiveMode && screenshotSurfaceRequest?.viewportMode !== "natural"
+          }
+          onRetryGuest={handleRetryGuest}
+          onRetryLoad={handleRetryLoad}
+          onViewportResize={notifyBrowserViewportResize}
+          onViewportSizeChange={handleResponsiveViewportSizeChange}
+          onWebviewRef={handleWebviewRef}
+          shouldMountWebview={shouldMountWebview}
+          showResizeWarning={showResizeWarning}
+          webviewGeneration={webviewGeneration}
+          viewportSize={effectiveViewportSize}
+          viewportZoom={effectiveViewportZoom}
+        />
+        {/* 调整面板悬浮在画布右上，不撑满一列（11-05 反馈） */}
+        {isDesignPanelAvailable && design.panelOpen ? (
+          <BrowserDesignInspector design={design} />
+        ) : null}
+      </div>
     </div>
   );
 }

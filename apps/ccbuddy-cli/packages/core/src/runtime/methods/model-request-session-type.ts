@@ -1,4 +1,8 @@
-import { ModelRequestSessionType, ModelRetryBudget, type SessionTaskType } from "@ccbuddy/contracts";
+import {
+  ModelRequestSessionType,
+  ModelRetryBudget,
+  type SessionTaskType,
+} from "@ccbuddy/contracts";
 
 /**
  * 模型请求按宿主 session 做粗分类；workflow child 不是 subagent，服务端统计统一归 other。

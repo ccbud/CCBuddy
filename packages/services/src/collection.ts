@@ -1,5 +1,12 @@
 import { ProxyChannel, type IChannelServer } from "@ccbuddy/rpc";
 import type { ServiceDescriptor } from "./descriptors.js";
+import { ICredentialService, scopeCredentialServiceForRpc } from "./credential/credential.js";
+
+export interface ServiceExposurePolicy {
+  readonly allowedChannels?: ReadonlySet<string>;
+  /** 仅本机 Desktop MessagePort 的发布点可显式开启；网络/远端发布默认拒绝。 */
+  readonly credentialStoreRecovery?: "local-desktop";
+}
 
 /**
  * ServiceCollection — 服务注册中心
@@ -30,9 +37,19 @@ export class ServiceCollection {
   exposeOnChannelServer(
     server: IChannelServer,
     overrides: ReadonlyMap<string, unknown> = new Map(),
+    exposurePolicy?: ServiceExposurePolicy,
   ): void {
     for (const [channelName, instance] of this._services) {
-      const exposed = overrides.get(channelName) ?? instance;
+      if (exposurePolicy?.allowedChannels && !exposurePolicy.allowedChannels.has(channelName))
+        continue;
+      const selected = overrides.get(channelName) ?? instance;
+      const exposed =
+        channelName === ICredentialService.channelName
+          ? scopeCredentialServiceForRpc(
+              selected as ICredentialService,
+              exposurePolicy?.credentialStoreRecovery === "local-desktop",
+            )
+          : selected;
       server.registerChannel(
         channelName,
         ProxyChannel.fromService(exposed as Record<string, unknown>),

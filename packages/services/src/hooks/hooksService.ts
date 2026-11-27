@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
@@ -9,8 +9,14 @@ import type {
   SettingsDirectorySource,
 } from "@ccbuddy/shared";
 import {
+  resolveWorkspaceHookTrustIdentity,
+  type WorkspaceHookTrustIdentityFs,
+} from "@ccbuddy/shared/managed-worktree";
+import {
   buildWorkspaceHookBundleSnapshot,
   createWorkspaceHookSourceInput,
+  readWorkspaceHookProjectSources,
+  readWorkspaceHookScriptStates,
   resolveWorkspaceHookRuntimeRoot,
   workspaceHooksConfigSchema,
   type WorkspaceHookBundleSnapshotData,
@@ -19,9 +25,10 @@ import {
 } from "@ccbuddy/shared/workspace-hook-discovery";
 import { parseWorkspaceHookTrustStoreContent } from "@ccbuddy/shared/workspace-hook-trust-store-file";
 import { createServiceLogger, type ServiceLogger } from "#src/logger/serviceLogger.js";
+import { getDataBaseDir } from "#src/paths.js";
 import type { IHooksService } from "./hooks.js";
-import { atomicWriteWorkspaceHookConfig } from "./workspaceHookConfigMutation.js";
 import { getWorkspaceAppConfigDir, getCCbuddyDataRootDir } from "../paths.js";
+import { updateJsonObjectFile } from "#src/fs/atomicFileUtils.js";
 import {
   fromLegacyHooksConfig,
   fromProjectSnapshot,
@@ -30,6 +37,16 @@ import {
   toCCbuddyHooksEvents,
   type LegacyHooksConfig,
 } from "./workspaceHookSettingsModel.js";
+
+/** Trust identity resolver 的只读文件端口（Host 侧 node:fs/promises 适配）。 */
+const trustIdentityFs: WorkspaceHookTrustIdentityFs = {
+  readFile: (path) => readFile(path, "utf8"),
+  realpath: (path) => realpath(path),
+  stat: async (path) => {
+    const info = await stat(path).catch(() => null);
+    return info ? { isFile: info.isFile(), isDirectory: info.isDirectory() } : null;
+  },
+};
 
 const SETTINGS_FILE = "settings.json";
 const CCBUDDY_CONFIG_FILE = "config.json";
@@ -217,6 +234,7 @@ async function loadHooksImpl(
   params: {
     workspaceIdentity?: string;
     workspacePath: string;
+    scope?: "all" | "user";
   },
   logger: ServiceLogger,
 ): Promise<{
@@ -225,28 +243,33 @@ async function loadHooksImpl(
   workspaceHookSnapshot?: WorkspaceHookBundleSnapshotData;
 }> {
   const workspacePath = resolve(params.workspacePath);
+  if (params.scope === "user") {
+    const userSource = await readUserCCbuddySource();
+    const runtimeRoot = resolveWorkspaceHookRuntimeRoot([userSource?.hooks]);
+    const hooks = [
+      ...fromUserCCbuddySource({
+        source: userSource,
+        runtimeRoot,
+        workspacePath,
+        location: buildLocation("ccbuddy"),
+      }),
+      ...(await loadLegacyHooksFromLocation("agents")),
+      ...(await loadLegacyHooksFromLocation("claude")),
+    ];
+    return { hooks, hooksEnabled: hooks.some((hook) => hook.enabled) };
+  }
+  // 对外字段（snapshot、Settings 行）保持 workspaceKey：review binding 与路由按它匹配（D23）。
   const workspaceIdentity = params.workspaceIdentity?.trim() || workspacePath;
-  const projectConfigPath = getConfigPath("ccbuddy", workspacePath);
-  const [projectConfig, userSource] = await Promise.all([
-    readJsonFile<CCbuddyConfigFile>(projectConfigPath),
+  // Trust identity 只用于读取持久 Trust record，必须与 CLI 侧同一 resolver 计算：
+  // 受管 worktree 归一到源仓库，其余 workspace 等于 workspaceKey。
+  const trustIdentity = await resolveWorkspaceHookTrustIdentity(
+    { workspacePath, workspaceIdentity: params.workspaceIdentity, dataBaseDir: getDataBaseDir() },
+    trustIdentityFs,
+  );
+  const [{ sources: projectSources }, userSource] = await Promise.all([
+    readWorkspaceHookProjectSources({ workingDirectory: workspacePath }),
     readUserCCbuddySource(),
   ]);
-  const projectHooks = workspaceHooksConfigSchema.safeParse(projectConfig?.hooks);
-  const projectSources: WorkspaceHookSourceInput[] = projectHooks.success
-    ? [
-        {
-          ...createWorkspaceHookSourceInput({
-            path: projectConfigPath,
-            workingDirectory: workspacePath,
-            hooks: projectHooks.data,
-            discoveryOrder: 0,
-            explicitProjectConfig: true,
-          }),
-          baseDir: workspacePath,
-          editable: true,
-        },
-      ]
-    : [];
   const runtimeRoot = resolveWorkspaceHookRuntimeRoot([
     userSource?.hooks,
     ...projectSources.map((source) => source.hooks),
@@ -256,8 +279,10 @@ async function loadHooksImpl(
     workspacePath,
     sources: projectSources,
     runtimeRoot,
+    // 与 Runtime 同一入口脚本绑定（D24），Settings 展示的 digest 才能与 Agent 的 Trust 判定一致。
+    scriptStates: await readWorkspaceHookScriptStates({ workspacePath, sources: projectSources }),
   });
-  const persistentTrust = await readPersistentWorkspaceHookTrustDigests(workspaceIdentity, logger);
+  const persistentTrust = await readPersistentWorkspaceHookTrustDigests(trustIdentity, logger);
   const persistentTrustedDigests = persistentTrust.digests;
   const hooks = [
     ...fromProjectSnapshot({
@@ -286,26 +311,33 @@ async function loadHooksImpl(
   };
 }
 
+/**
+ * 根因：旧实现写入前用 readJsonFile 读取，读失败或 JSON 损坏时返回 null 并按空对象写回，
+ * config.json 里的 MCP、插件等其他配置会被冲掉。
+ * 修法：改用 updateJsonObjectFile——文件损坏时报错不写，写前重读，只改 hooks 字段，原子替换。
+ */
 async function writeCCbuddyHooksConfig(
   workspacePath: string | undefined,
   hooks: Hook[],
 ): Promise<void> {
-  const configPath = getConfigPath("ccbuddy", workspacePath);
-  const existingConfig = (await readJsonFile<CCbuddyConfigFile>(configPath)) ?? {};
-  const enabled = resolveNextRootEnabled(existingConfig.hooks?.enabled, hooks);
-  await atomicWriteWorkspaceHookConfig(configPath, {
-    ...existingConfig,
-    hooks: {
-      ...existingConfig.hooks,
-      ...(enabled !== undefined ? { enabled } : {}),
-      events: toCCbuddyHooksEvents(hooks),
-    },
+  await updateJsonObjectFile(getConfigPath("ccbuddy", workspacePath), (current) => {
+    const existingConfig = current as CCbuddyConfigFile;
+    const enabled = resolveNextRootEnabled(existingConfig.hooks?.enabled, hooks);
+    return {
+      ...existingConfig,
+      hooks: {
+        ...existingConfig.hooks,
+        ...(enabled !== undefined ? { enabled } : {}),
+        events: toCCbuddyHooksEvents(hooks),
+      },
+    };
   });
 }
 
 async function saveHooksImpl(params: {
   workspaceIdentity?: string;
   workspacePath: string;
+  scope?: "all" | "user";
   hooks: Hook[];
 }): Promise<void> {
   const currentProjectConfigPath = getConfigPath("ccbuddy", params.workspacePath);
@@ -323,7 +355,9 @@ async function saveHooksImpl(params: {
         resolve(hook.configuredState.sourcePath) === currentProjectConfigPath),
   );
   await writeCCbuddyHooksConfig(undefined, userHooks);
-  await writeCCbuddyHooksConfig(params.workspacePath, projectHooks);
+  if (params.scope !== "user") {
+    await writeCCbuddyHooksConfig(params.workspacePath, projectHooks);
+  }
 }
 
 export function createHooksService(

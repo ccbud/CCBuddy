@@ -2,10 +2,13 @@ import { recordArmsCustomEventForE2E } from "@ccbuddy/ui";
 import {
   DesktopCommandIds,
   buildLocalMediaPreviewUrl,
+  resolveLocaleFromLanguageTag,
+  unwrapRemoteWorkspaceBindResult,
   type IPlatformService,
 } from "@ccbuddy/shared";
 
 import { desktopBrowserPlatformBridge } from "./desktopBrowserPlatformBridge.js";
+import { registerAppControlNavigationHandler } from "#src/app-control-navigation/renderer.js";
 import { createDesktopPluginSandboxPlatform } from "./plugin-sandbox/desktopPluginSandboxPlatform.js";
 
 declare global {
@@ -18,11 +21,27 @@ export function createDesktopPlatform(options: {
   isLocalDevelopmentRuntime: boolean;
 }): IPlatformService {
   return {
+    onAppControlNavigation: (handler) =>
+      registerAppControlNavigationHandler(
+        {
+          subscribe: (listener) => window.ccbuddy.onAppControlNavigationMessage(listener),
+          register: (generation) =>
+            window.ccbuddy.sendAppControlNavigation({ type: "register", generation }),
+          unregister: (generation) =>
+            window.ccbuddy.sendAppControlNavigation({ type: "unregister", generation }),
+          reply: (message) =>
+            window.ccbuddy.sendAppControlNavigation({ type: "result", ...message }),
+        },
+        handler,
+        crypto.randomUUID(),
+      ),
     canSelectFilePath: true,
+    canOpenLocalFiles: true,
     pluginSandbox: createDesktopPluginSandboxPlatform(),
     createLocalMediaPreviewUrl: buildLocalMediaPreviewUrl,
     isLocalDevelopmentRuntime: options.isLocalDevelopmentRuntime,
     selectDirectory: () => window.ccbuddy.selectDirectory(),
+    selectDirectories: () => window.ccbuddy.selectDirectories(),
     selectFile: () => window.ccbuddy.selectFile(),
     selectFiles: () => window.ccbuddy.selectFiles?.() ?? Promise.resolve([]),
     createTempTextAttachment: (payload) => window.ccbuddy.createTempTextAttachment(payload),
@@ -30,16 +49,32 @@ export function createDesktopPlatform(options: {
       window.ccbuddy.materializeWorkflowArtifactFile(payload),
     onRemoteConnectionLog: (handler) => window.ccbuddy.onRemoteConnectionLog(handler),
     onRemoteSessionClosed: (handler) => window.ccbuddy.onRemoteSessionClosed(handler),
-    onBotRemoteWorkspaceReconnected: (handler) =>
-      window.ccbuddy.onBotRemoteWorkspaceReconnected(handler),
+    // Source 自动重连会替换 logical session；统一由 preload bridge 转发换代事件。
+    onRemoteSessionReconnected: (handler) =>
+      window.ccbuddy.onRemoteSessionReconnected?.(handler) ?? (() => {}),
     activateOrSetWorkspace: (path) =>
       window.ccbuddy.activateOrSetWorkspace?.(path) ?? Promise.resolve({ activated: false }),
     connectRemote: (remoteOptions, requestId, context) =>
       window.ccbuddy.connectRemote(remoteOptions, requestId, context),
+    requestSourceSettingsAttachment: (sourceServerId) =>
+      window.ccbuddy.requestSourceSettingsAttachment?.(sourceServerId) ??
+      Promise.reject(new Error("Source settings attachment bridge unavailable")),
     cancelPendingRemoteConnection: (requestId) =>
       window.ccbuddy.cancelPendingRemoteConnection?.(requestId) ?? Promise.resolve(),
-    bindRemoteWorkspaceSessionContext: (context) =>
-      window.ccbuddy.bindRemoteWorkspaceSessionContext?.(context) ?? Promise.resolve(),
+    bindRemoteWorkspaceSessionContext: async (context) => {
+      if (!window.ccbuddy.bindRemoteWorkspaceSessionContext) {
+        throw new Error("Desktop bindRemoteWorkspaceSessionContext bridge unavailable");
+      }
+      // preload 返回结构化结果，在页面一侧还原错误才能保留 code/retryable。
+      return unwrapRemoteWorkspaceBindResult(
+        await window.ccbuddy.bindRemoteWorkspaceSessionContext(context),
+      );
+    },
+    startWebRemoteControl: (context) => window.ccbuddy.startWebRemoteControl(context),
+    stopWebRemoteControl: () => window.ccbuddy.stopWebRemoteControl(),
+    getWebRemoteControlStatus: () => window.ccbuddy.getWebRemoteControlStatus(),
+    onWebRemoteControlStatusChanged: (handler) =>
+      window.ccbuddy.onWebRemoteControlStatusChanged?.(handler) ?? (() => {}),
     disposeRemoteSession: (sessionId) => window.ccbuddy.disposeRemoteSession(sessionId),
     isDockerAvailable: () => window.ccbuddy.isDockerAvailable(),
     listWSLDistros: () => window.ccbuddy.listWSLDistros(),
@@ -67,11 +102,14 @@ export function createDesktopPlatform(options: {
     startCuaHelperPermissionDrag: window.ccbuddy.startCuaHelperPermissionDrag
       ? () => window.ccbuddy.startCuaHelperPermissionDrag?.()
       : undefined,
+    notifyWebRemoteControlAuthStateChanged: (change) =>
+      window.ccbuddy.notifyWebRemoteControlAuthStateChanged(change),
     registerOAuthState: (payload) => window.ccbuddy.registerOAuthState(payload),
     onOAuthCallback: (callback) => window.ccbuddy.onOAuthCallback(callback),
     onPaymentCallback: (callback) => window.ccbuddy.onPaymentCallback(callback),
     onShareImport: (callback) => window.ccbuddy.onShareImport?.(callback) ?? (() => {}),
     notifyRendererReady: () => window.ccbuddy.notifyRendererReady(),
+    syncTelemetryContext: (context) => window.ccbuddy.syncTelemetryContext(context),
     reportTelemetryEvent: (payload) => window.ccbuddy.reportTelemetryEvent(payload),
     reportArmsCustomEvent: (payload) => {
       recordArmsCustomEventForE2E(payload);
@@ -91,6 +129,9 @@ export function createDesktopPlatform(options: {
       ? (sample) => window.ccbuddy.reportRendererHeapSample!(sample)
       : undefined,
     showTaskNotification: (payload) => window.ccbuddy.showTaskNotification(payload),
+    // 扩展的系统通知（§18.1 H8）：只有桌面实现；Web 与手机远控没有这两个方法，Renderer 按 unsupported 处理。
+    showExtensionNotification: (payload) => window.ccbuddy.showExtensionNotification(payload),
+    onExtensionNotificationClick: (handler) => window.ccbuddy.onExtensionNotificationClick(handler),
     syncWindowTabs: (paths) => window.ccbuddy.syncWindowTabs(paths),
     syncRemoteWorkspaceSessions: (targets) => window.ccbuddy.syncRemoteWorkspaceSessions?.(targets),
     syncWindowUnreadCount: (count) => window.ccbuddy.syncWindowUnreadCount(count),
@@ -188,6 +229,11 @@ export function createDesktopPlatform(options: {
     getCCbuddyStdioTapDevState: () =>
       window.ccbuddy.getCCbuddyStdioTapDevState?.() ??
       Promise.resolve({ enabled: false, visible: false, logDir: "", statePath: "" }),
+    executePreinstalledToolsCommand: (command) =>
+      window.ccbuddy.executePreinstalledToolsCommand!(command),
+    getPreinstalledToolsState: () => window.ccbuddy.getPreinstalledToolsState!(),
+    onPreinstalledToolsState: (callback) =>
+      window.ccbuddy.onPreinstalledToolsState?.(callback) ?? (() => {}),
     onSettingsChanged: (callback) => window.ccbuddy.onSettingsChanged?.(callback) ?? (() => {}),
     onApplicationLocaleChanged: (callback) =>
       window.ccbuddy.onApplicationLocaleChanged?.(callback) ?? (() => {}),
@@ -197,16 +243,20 @@ export function createDesktopPlatform(options: {
     skipUpdateVersion: (version) =>
       window.ccbuddy.skipUpdateVersion?.(version) ?? Promise.resolve(),
     quitAndInstallUpdate: () => window.ccbuddy.quitAndInstallUpdate(),
-    getInstalledEditors: () => window.ccbuddy.getInstalledEditors(),
+    getInstalledEditors: (filePath) => window.ccbuddy.getInstalledEditors(filePath),
+    getFileApplications: (target) => window.ccbuddy.getFileApplications(target),
+    openFileWithApplication: (applicationId, target) =>
+      window.ccbuddy.openFileWithApplication(applicationId, target),
     getApplicationIcon: (bundleId) =>
       window.ccbuddy.getApplicationIcon?.(bundleId) ?? Promise.resolve(null),
     openInEditor: (editorId, path, editorOptions) =>
       window.ccbuddy.openInEditor(editorId, path, editorOptions),
     executeDesktopCommand: (command) => window.ccbuddy.executeDesktopCommand(command),
     setApplicationLocale: (locale) => window.ccbuddy.setApplicationLocale(locale),
+    setReplyLanguage: (language) => window.ccbuddy.setReplyLanguage(language),
     getSystemLocale: () =>
       window.ccbuddy.getSystemLocale?.() ??
-      Promise.resolve(navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US"),
+      Promise.resolve(resolveLocaleFromLanguageTag(navigator.language)),
     setTitleBarTheme: (theme) => window.ccbuddy.setTitleBarTheme(theme),
     getDeviceId: () =>
       (window as Window & { __CCBUDDY_DEVICE_ID__?: string }).__CCBUDDY_DEVICE_ID__ ?? "",

@@ -10,6 +10,8 @@ export const providerProvisioningTriggerSchema = z.enum([
   "configured-default",
   "account-settings",
   "credential",
+  // 数据同步页「模型提供商」分类在最近一次失败后由用户触发的重试；只有 Main 协调器发出。
+  "user-retry",
 ]);
 export type ProviderProvisioningTrigger = z.infer<typeof providerProvisioningTriggerSchema>;
 
@@ -73,8 +75,8 @@ export type ProviderProvisioningCredentialEntry = z.infer<
 
 export const providerProvisioningEnvelopeSchema = z
   .object({
-    // v2 的缺失账号 Key 不再代表删除；旧 Target 必须在任何写入前拒绝该信封。
-    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    // v3 整组携带国内/关联会话；旧 Target 必须在任何写入前拒绝未知版本。
+    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     syncId: nonEmptyString,
     personalConfig: providerProvisioningPersonalConfigSchema,
     accountSettings: providerProvisioningAccountSettingsSchema,
@@ -85,7 +87,7 @@ export const providerProvisioningEnvelopeSchema = z
     (value) =>
       value.schemaVersion === 1 ||
       value.credentials.every((entry) => entry.scope === "oauth-session"),
-    { message: "Provisioning v2 only accepts OAuth credentials", path: ["credentials"] },
+    { message: "Provisioning v2/v3 only accepts OAuth credentials", path: ["credentials"] },
   );
 
 export type ProviderProvisioningEnvelope = z.infer<typeof providerProvisioningEnvelopeSchema>;
@@ -103,6 +105,37 @@ export const providerProvisioningErrorCodeSchema = z.enum([
   "host-execution-failed",
 ]);
 export type ProviderProvisioningErrorCode = z.infer<typeof providerProvisioningErrorCodeSchema>;
+
+/** Host 保存本地 Source 后通知 Main 的触发源；首次上线与用户重试只由 Main 协调器自己产生。 */
+export type ProviderProvisioningSourceTrigger = Exclude<
+  ProviderProvisioningTrigger,
+  "environment-online" | "user-retry"
+>;
+
+/**
+ * Main 协调器按 lane（Environment key）在内存中保留的最近一次执行结果，按 sourceServerId 查询。
+ * 只在本机 Main → Host → Renderer 之间流转，不持久化，不进入远程 workspace RPC 合同与手机白名单。
+ * - `none`：该设备没有已注册的 lane（本机没有打开该设备上的项目），不下发也不能重试。
+ * - `present`：有 lane；`running` 为当前是否有 drain 在执行；`lastResult` 只含时间、结果与固定阶段码，不含 Secret。
+ */
+export const providerProvisioningLaneStatusSchema = z.discriminatedUnion("lane", [
+  z.object({ lane: z.literal("none") }).strict(),
+  z
+    .object({
+      lane: z.literal("present"),
+      running: z.boolean(),
+      lastResult: z
+        .object({
+          at: z.number().int().nonnegative(),
+          outcome: z.enum(["success", "failed"]),
+          errorCode: providerProvisioningErrorCodeSchema.optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+]);
+export type ProviderProvisioningLaneStatus = z.infer<typeof providerProvisioningLaneStatusSchema>;
 
 export const providerProvisioningResultSchema = z
   .object({

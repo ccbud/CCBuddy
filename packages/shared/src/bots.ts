@@ -81,6 +81,10 @@ export interface BotWorkspaceRef {
   label: string;
   workspacePath: string;
   workspaceIdentity?: string;
+  /** 新版选择虚拟项目；旧协议字段名保留。空 roots 在提交时才分配 cwd。 */
+  projectId?: string;
+  hostId?: string;
+  rootPaths?: string[];
 }
 
 export interface BotAllowedCommands {
@@ -185,6 +189,10 @@ export interface BotState {
   workspacePath: string;
   workspaceIdentity?: string;
   workspaceId?: string;
+  /** hostId 缺席表示旧状态待交接；明确 NULL 项目不会再次按目录归入。 */
+  projectId?: string | null;
+  hostId?: string;
+  additionalDirectories?: string[];
   mode: BotContextMode;
   activeTaskId: string | null;
   draftOptions?: BotDraftOptions;
@@ -467,6 +475,24 @@ export interface BotRuntimeInfo {
   message?: string;
   lastUpdateAt?: number;
   offset?: number;
+}
+
+/**
+ * Host 给 Bot 输入（飞书 / Lark / 微信 / Telegram / Discord / 企业微信，私聊与群聊）的 v4 命令信封 clientId。
+ * 跨端契约：services 的 Bot 私聊与群聊入口按它生成，CLI 按前缀识别 Bot 输入（例如不对 IM 用户声明桌面设计模式）。
+ */
+export const BOT_INPUT_CLIENT_ID_PREFIX = "bot:";
+
+export function formatBotInputClientId(input: {
+  botId: string;
+  chatId: string;
+  senderId: string;
+}): string {
+  return `${BOT_INPUT_CLIENT_ID_PREFIX}${input.botId}:${input.chatId}:${input.senderId}`;
+}
+
+export function isBotInputClientId(clientId: string | null | undefined): boolean {
+  return clientId?.startsWith(BOT_INPUT_CLIENT_ID_PREFIX) === true;
 }
 
 export interface BotActor {
@@ -865,6 +891,9 @@ export const botsStateFileSchema = z
         workspacePath: z.string().min(1),
         workspaceIdentity: z.string().min(1).optional(),
         workspaceId: z.string().min(1).optional(),
+        projectId: z.string().min(1).nullable().optional(),
+        hostId: z.string().min(1).optional(),
+        additionalDirectories: z.array(z.string().min(1)).max(256).optional(),
         mode: z.enum(["draft", "task"]),
         activeTaskId: z.string().min(1).nullable(),
         draftOptions: botDraftOptionsSchema.optional(),

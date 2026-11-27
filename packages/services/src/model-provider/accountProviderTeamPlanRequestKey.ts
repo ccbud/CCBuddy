@@ -1,27 +1,30 @@
 import {
-  BIGMODEL_PROVIDER_ID,
   ProjectAccessTokenClient,
   type ApiClient,
   type ProjectAccessTokenMaterial,
   resolveBigModelApiOrigin,
   resolveZaiBusinessBaseUrl,
   type CCbuddyAccountAccess,
-  ZAI_PROVIDER_ID,
+  type ProviderFamilyDomain,
 } from "@ccbuddy/shared";
-import type { ICredentialService } from "#src/credential/credential.js";
+import {
+  isSameOAuthAccountMaterial,
+  type OAuthAccountMaterial,
+} from "#src/oauth/repo/oauthCredentialRepo.js";
 import { createServiceLogger } from "#src/logger/serviceLogger.js";
 import { readApiJson } from "#src/providers/api/apiJson.js";
 
 const log = createServiceLogger("account-provider-team-plan-request-key");
-const CCBUDDY_JWT_TOKEN_KEY = "ccbuddyjwttoken";
 const TEAM_PLAN_RUNTIME_KEY_REQUEST_TIMEOUT_MS = 15_000;
 
 interface TeamPlanRequestKeyDependencies {
   readonly apiClient: ApiClient;
   readonly tokenClient?: ProjectAccessTokenClient;
-  readonly accountIdentity?: string;
+  readonly accountIdentity: string;
   readonly rejectedProjectTokenFingerprint?: string;
-  readonly credentialService?: Pick<ICredentialService, "load">;
+  readonly loadOAuthAccountMaterial: (
+    family: ProviderFamilyDomain,
+  ) => Promise<OAuthAccountMaterial | null>;
   readonly access: Extract<CCbuddyAccountAccess, { planKind: "team-coding-plan" }>;
 }
 
@@ -35,9 +38,9 @@ export async function resolveAccountTeamPlanRuntimeMaterial(
   params: TeamPlanRequestKeyDependencies,
 ): Promise<ProjectAccessTokenMaterial | null> {
   const { family, organizationId, projectId } = params.access;
-  const oauthProviderId = family === "zai" ? ZAI_PROVIDER_ID : BIGMODEL_PROVIDER_ID;
-  const token =
-    (await params.credentialService?.load(`oauth:${oauthProviderId}:access_token`))?.trim() ?? "";
+  const account = await params.loadOAuthAccountMaterial(family);
+  if (!account || account.accountIdentity !== params.accountIdentity) return null;
+  const token = account.accessToken;
   if (!token) {
     log.warn(undefined, "Team Plan runtime key projection skipped: OAuth token missing", {
       family,
@@ -45,8 +48,7 @@ export async function resolveAccountTeamPlanRuntimeMaterial(
     });
     return null;
   }
-  const ccbuddyJwtToken =
-    (await params.credentialService?.load(CCBUDDY_JWT_TOKEN_KEY))?.trim() ?? "";
+  const ccbuddyJwtToken = account.ccbuddyJwtToken;
   if (family === "bigmodel" && ccbuddyJwtToken && token === ccbuddyJwtToken) {
     // BigModel /api/biz 只接受登录 access token，不能使用旧版本误存的 CCbuddy JWT。
     log.warn(undefined, "Team Plan runtime key projection skipped: stale ccbuddy JWT token", {
@@ -74,14 +76,11 @@ export async function resolveAccountTeamPlanRuntimeMaterial(
     origin: host,
     family,
     loginToken: token,
-    accountId: params.accountIdentity ?? family,
+    accountId: account.accountIdentity,
     rejectedProjectTokenFingerprint: params.rejectedProjectTokenFingerprint,
     team: { organizationId, projectId },
   });
-  if (
-    (await params.credentialService?.load(`oauth:${oauthProviderId}:access_token`))?.trim() !==
-    token
-  ) {
+  if (!isSameOAuthAccountMaterial(account, await params.loadOAuthAccountMaterial(family))) {
     client.clear();
     throw new Error("project_token_scope_invalidated");
   }

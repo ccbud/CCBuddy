@@ -49,6 +49,7 @@ import type { resolveWorkspaceGitBranch } from "./tui-workspace-git.js";
 export type BootstrapModule = typeof import("@ccbuddy/bootstrap");
 
 export interface RunDependencies extends PluginsCommandOverrides {
+  migrateStorage?: () => Promise<import("@ccbuddy/shared/sqlite-migrations").MigrationResult>;
   protocolLifecycle?: RunCCbuddyProtocolAgentOptions["lifecycle"];
   protocolInput?: NodeJS.ReadableStream;
   createManagedCdpBrowserRuntime?: (

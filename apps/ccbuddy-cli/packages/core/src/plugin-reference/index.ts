@@ -5,10 +5,7 @@ export {
   MAX_PLUGIN_REFERENCES_PER_TURN,
   type ExtractPluginReferencesResult,
 } from "./references.js";
-export {
-  buildPluginReferenceCatalog,
-  findPluginReferenceCatalogEntry,
-} from "./catalog.js";
+export { buildPluginReferenceCatalog, findPluginReferenceCatalogEntry } from "./catalog.js";
 export {
   buildPluginReferenceReminderBody,
   MAX_PLUGIN_REFERENCE_MCP_SERVERS,

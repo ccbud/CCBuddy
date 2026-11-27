@@ -1,5 +1,5 @@
+import { checkLoading } from "./preview-corner-checks.js";
 import { app, BrowserWindow, ipcMain, protocol, webContents } from "electron";
-import { installProjectFixture } from "./project-service.js";
 import {
   checkCapture,
   checkStaleCapture,
@@ -7,19 +7,14 @@ import {
   checkCopyButton,
 } from "./presentation-checks.js";
 import { checkStandalone } from "./standalone-checks.js";
-import { checkInputSnapshot } from "./context-checks.js";
-import { exitWithFailure } from "./failure-artifacts.js";
-import { checkToolSearchSetting } from "./settings-checks.js";
-import { createReactFixtureActions } from "./react-actions.js";
-import { checkLoading } from "./preview-corner-checks.js";
+import { checkExternalLinks } from "./external-links-checks.js";
+import { checkFileSummary } from "./file-summary-checks.js";
 import {
   checkRuntimeWidgets,
   checkCalendarAndCarousel,
   checkTweakLifecycle,
-  checkWidgetGlobals,
-  currentGenUiGuest as currentGuest,
 } from "./runtime-checks.js";
-import { prepareOutputFiles } from "./output-files.js";
+import { checkInheritedOutput, checkRemoteOutput, prepareOutputFiles } from "./output-files.js";
 import { installOfflineChecks } from "./offline-checks.js";
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
@@ -42,7 +37,7 @@ app.on("web-contents-created", (_, contents) =>
 const deadline = setTimeout(() => {
   process.stderr.write("Gen UI E2E deadline exceeded\n");
   app.exit(1);
-}, 75_000);
+}, 45_000);
 void app
   .whenReady()
   .then(async () => {
@@ -50,10 +45,7 @@ void app
       rendererDir: root,
       aliasDir: root,
       preloadPath: join(root, "guest.cjs"),
-      logger: {
-        info() {},
-        warn: (...args) => process.stderr.write(JSON.stringify(args) + "\n"),
-      },
+      logger: { info() {}, warn: (...args) => process.stderr.write(JSON.stringify(args) + "\n") },
     });
     const win = new BrowserWindow({
       show: true,
@@ -76,19 +68,19 @@ void app
       else pending.push(result.sandboxId);
     });
     win.webContents.on("did-attach-webview", (_, guest) =>
-      sandbox.attachGuest({
-        guest,
-        hostWebContents: win.webContents,
-        sandboxId: pending.shift()!,
-      }),
+      sandbox.attachGuest({ guest, hostWebContents: win.webContents, sandboxId: pending.shift()! }),
     );
-    await installProjectFixture(root);
     const output = await prepareOutputFiles(root);
     const service = createGenUiService({
       stateRoot: join(root, "state"),
       outputRoot: output.outputRoot,
       registerSandbox: async (input) => sandbox.registerFromHost(input),
     });
+    const remoteService = createGenUiService({
+      stateRoot: join(root, "remote-state"),
+      outputRoot: output.remoteOutputRoot,
+    });
+    ipcMain.handle("fixture-remote-read", (_, input) => remoteService.readDocument(input));
     service.onStateChanged((value) => win.webContents.send("fixture-state", value));
     let latestHandle: any;
     ipcMain.handle("fixture-service", async (_, method: keyof typeof service, input: never) => {
@@ -96,15 +88,17 @@ void app
       if (method === "prepareSandbox") latestHandle = result;
       return result;
     });
-    ipcMain.handle("fixture-config", () => ({
+    ipcMain.handle("fixture-config", (_, remote = false) => ({
       root: output.workspacePath,
-      path: output.paths.fixture,
-      paths: output.paths,
+      path: (remote ? output.remotePaths : output.paths).fixture,
+      paths: remote ? output.remotePaths : output.paths,
     }));
     // No synthetic native gesture: programmatic follow-up must use confirmation.
     ipcMain.handle("fixture-gesture", () => false);
     await win.loadFile(join(root, "host.html"));
     await win.webContents.executeJavaScript("window.harnessReady");
+    const currentGuest = () =>
+      webContents.getAllWebContents().find((contents) => contents.getType() === "webview")!;
     let guest = currentGuest();
     let frame = guest.mainFrame.frames.find((value) => value.url.includes("/instance/"))!;
     assert.ok(frame);
@@ -115,7 +109,8 @@ void app
     await read(
       "new Promise(resolve => globalThis.lucide ? resolve() : document.getElementById('ccbuddy-visualization-lucide').addEventListener('load', resolve, {once:true}))",
     );
-    await checkWidgetGlobals(read);
+    assert.equal(await read("typeof window.openai"), "undefined");
+    assert.equal(await read("typeof window.require"), "undefined");
     await read(
       "window.ccbuddy.setWidgetState({modelContent:{count:7},privateContent:{secret:'local'}})",
     );
@@ -124,15 +119,6 @@ void app
     assert.equal(currentGuest().id, guest.id);
     assert.equal(await read("window.starts"), 1);
     assert.equal(await read("window.ccbuddy.widgetState.modelContent.count"), 7);
-    await checkInputSnapshot(
-      service,
-      {
-        workspacePath: output.workspacePath,
-        workspaceIdentity: "ssh:fixture:/workspace",
-        sessionId: "fixture",
-      },
-      output.paths.fixture!,
-    );
     assert.equal(
       await read("getComputedStyle(document.querySelector('.card')).borderWidth"),
       "1px",
@@ -182,13 +168,24 @@ void app
     );
     const html = await readFile(output.paths.fixture!, "utf8");
     await writeFile(output.paths.fixture!, html.replace("Original heading", "Updated heading"));
+    await writeFile(
+      output.remotePaths.fixture,
+      html.replace("Original heading", "Updated heading"),
+    );
     await win.webContents.executeJavaScript("window.restore()");
     guest = currentGuest();
     frame = guest.mainFrame.frames.find((value) => value.url.includes("/instance/"))!;
     assert.equal(await read("document.querySelector('h1').textContent"), "Updated heading");
     await checkStaleCapture(win, guest);
     await win.loadFile(join(root, "react.html"));
-    const { waitHost, clickHost } = createReactFixtureActions(win);
+    const waitHost = async (predicate: string) =>
+      win.webContents.executeJavaScript(
+        `new Promise((resolve,reject)=>{const end=Date.now()+8000;const tick=()=>{if(${predicate})resolve(true);else if(Date.now()>end)reject(new Error(${JSON.stringify(`React fixture condition timed out: ${predicate}`)}));else requestAnimationFrame(tick)};tick()})`,
+      );
+    const clickHost = async (text: string) =>
+      win.webContents.executeJavaScript(
+        `(() => { const button = [...document.querySelectorAll('button')].find(node => (node.textContent === ${JSON.stringify(text)} || node.getAttribute("aria-label") === ${JSON.stringify(text)})); if(!button) throw new Error('button not found'); button.click(); })()`,
+      );
     await waitHost(`window.showReply`);
     const streaming = await win.webContents.executeJavaScript("window.inspectReact()");
     assert.equal(streaming.reads, 0);
@@ -212,11 +209,22 @@ void app
     guest = currentGuest();
     frame = guest.mainFrame.frames.find((value) => value.url.includes("/instance/"))!;
     const guestId = guest.id;
-    await checkInlineLayout(win, read);
+    await checkExternalLinks(win, guest, read);
+    await checkFileSummary(win, root, waitHost);
+    await checkInlineLayout(win, read, root);
     await checkCopyButton(win);
+    const inlineHeight = await win.webContents.executeJavaScript(
+      "document.querySelector('[data-testid=gen-ui-anchor]').style.height",
+    );
     await clickHost("Expand");
     await waitHost(`document.querySelector('[role="dialog"]')`);
     await checkCopyButton(win, true);
+    assert.equal(
+      await win.webContents.executeJavaScript(
+        "document.querySelector('[data-testid=gen-ui-anchor]').style.height",
+      ),
+      inlineHeight,
+    );
     assert.equal(currentGuest().id, guestId);
     assert.ok(
       await win.webContents.executeJavaScript(
@@ -337,20 +345,11 @@ void app
     );
     assert.equal(currentGuest().id, guestId);
     assert.equal(await read("window.starts"), 1);
-    await read(
-      "document.body.insertAdjacentHTML('beforeend','<div id=height-probe style=height:12000px></div>')",
-    );
-    await waitHost(
-      `document.querySelector('[data-testid="gen-ui-anchor"]').style.height === '10000px'`,
-    );
-    await read("document.querySelector('#height-probe').remove()");
-    await waitHost(
-      `parseFloat(document.querySelector('[data-testid="gen-ui-anchor"]').style.height) < 1000`,
-    );
     await win.webContents.executeJavaScript("window.showTask('second-task')");
     await waitHost(
       `document.querySelector('[data-gen-ui-phase="ready"]') && window.inspectReact().preparations === 2`,
     );
+    await checkInheritedOutput(win);
     assert.equal(
       webContents.getAllWebContents().filter((contents) => contents.getType() === "webview").length,
       2,
@@ -388,15 +387,28 @@ void app
     await waitHost(
       `window.inspectReact().ports === 0 && window.inspectReact().states === 0 && !document.querySelector('webview')`,
     );
-    await checkToolSearchSetting(win, waitHost);
+    await checkRemoteOutput(win, service, remoteService, output, root, waitHost);
+    remoteService.dispose();
     service.dispose();
     win.destroy();
     await checkStandalone(root);
     offline.assertNoNetwork();
     clearTimeout(deadline);
     process.stdout.write(
-      "Gen UI / Projects / ToolSearch Electron E2E passed: isolation, state, anchors, styles, tooltip, tabs, icons, calendar, carousel, Tweak lifecycle, follow-up, theme, replay, reload, standalone and historical remount\n",
+      "Gen UI Electron E2E passed: isolation, state, anchors, external links, styles, tooltip, tabs, icons, calendar, carousel, Tweak lifecycle, follow-up, theme, replay, reload, standalone and historical remount\n",
     );
     app.exit(0);
   })
-  .catch((error) => exitWithFailure(root, error));
+  .catch(async (error) => {
+    process.stderr.write(String(error.stack ?? error));
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      await writeFile(join(root, "failure.png"), (await win.webContents.capturePage()).toPNG());
+      process.stderr.write(
+        await win.webContents.executeJavaScript(
+          `JSON.stringify({scrollY, anchors:[...document.querySelectorAll('[data-testid="gen-ui-anchor"]')].map(node=>node.getBoundingClientRect().toJSON()), views:[...document.querySelectorAll('webview')].map(node=>({rect:node.getBoundingClientRect().toJSON(),style:node.getAttribute('style')}))})`,
+        ),
+      );
+    }
+    app.exit(1);
+  });

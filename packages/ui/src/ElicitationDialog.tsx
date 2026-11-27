@@ -980,7 +980,6 @@ function ElicitationDialogContent({
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1 text-ui-base font-medium leading-5">
-                <InteractionRequestOriginBadge origin={request.origin} className="mr-2" />
                 {titleHeader ? (
                   <Badge
                     variant="outline"
@@ -1001,6 +1000,7 @@ function ElicitationDialogContent({
                 >
                   {titleQuestion}
                 </span>
+                <InteractionRequestOriginBadge origin={request.origin} className="mt-2" />
                 {shouldOfferQuestionCollapse ? (
                   <Button
                     type="button"

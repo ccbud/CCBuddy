@@ -1,0 +1,63 @@
+import { loadBootstrapModule } from "./bootstrap-loader.js";
+import { loadCliDotenv } from "./env.js";
+export async function loginForTui(deps, options) {
+    const env = deps.env ?? process.env;
+    const workingDirectory = (deps.cwd ?? process.cwd)();
+    const dotenvResult = (deps.loadDotenv ?? loadCliDotenv)({
+        cwd: workingDirectory,
+        env,
+    });
+    if (dotenvResult.error) {
+        throw new Error(`Failed to load environment file: ${dotenvResult.path}`, {
+            cause: dotenvResult.error,
+        });
+    }
+    const login = deps.loginCCbuddyCli ?? (await loadBootstrapModule()).loginCCbuddyCli;
+    return await login({
+        abortSignal: options?.abortSignal,
+        env,
+        onAuthorizeUrl: options?.onAuthorizeUrl,
+    });
+}
+export async function loginBigmodelForTui(deps, options) {
+    const env = deps.env ?? process.env;
+    const workingDirectory = (deps.cwd ?? process.cwd)();
+    const dotenvResult = (deps.loadDotenv ?? loadCliDotenv)({
+        cwd: workingDirectory,
+        env,
+    });
+    if (dotenvResult.error) {
+        throw new Error(`Failed to load environment file: ${dotenvResult.path}`, {
+            cause: dotenvResult.error,
+        });
+    }
+    const login = deps.loginBigmodelCodingPlan ?? (await loadBootstrapModule()).loginBigmodelCodingPlan;
+    return await login({
+        abortSignal: options?.abortSignal,
+        env,
+        onAuthorizeUrl: options?.onAuthorizeUrl,
+    });
+}
+export async function configureApiKeyForTui(deps, options) {
+    const configure = deps.configureCodingPlanApiKey ?? (await loadBootstrapModule()).configureCodingPlanApiKey;
+    return await configure({
+        apiKey: options.apiKey,
+        env: deps.env ?? process.env,
+        providerId: options.providerId,
+    });
+}
+export async function logoutForTui(deps) {
+    const env = deps.env ?? process.env;
+    const workingDirectory = (deps.cwd ?? process.cwd)();
+    const dotenvResult = (deps.loadDotenv ?? loadCliDotenv)({
+        cwd: workingDirectory,
+        env,
+    });
+    if (dotenvResult.error) {
+        throw new Error(`Failed to load environment file: ${dotenvResult.path}`, {
+            cause: dotenvResult.error,
+        });
+    }
+    const logout = deps.logoutCCbuddyCli ?? (await loadBootstrapModule()).logoutCCbuddyCli;
+    return await logout({ env });
+}

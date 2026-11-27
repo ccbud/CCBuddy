@@ -1,4 +1,5 @@
 import type { AgentRuntimeInternal } from "../internal.js";
+import { getOffPeakExecution } from "../off-peak/runtime.js";
 
 /**
  * 登记会越过当前同步调用栈的 runtime-owned work。
@@ -11,15 +12,19 @@ export function trackResidencyBlockingWork<T>(
   this: AgentRuntimeInternal,
   work: Promise<T>,
 ): Promise<T> {
-  this.residencyBlockingWorkCount += 1;
+  this.residencyBlockingWork.add(work);
+  this.residencyBlockingWorkCount = this.residencyBlockingWork.size;
   return work.finally(() => {
-    this.residencyBlockingWorkCount = Math.max(0, this.residencyBlockingWorkCount - 1);
+    this.residencyBlockingWork.delete(work);
+    this.residencyBlockingWorkCount = this.residencyBlockingWork.size;
+    for (const notify of this.workChanged) notify();
   });
 }
 
 /** Session 常驻池只消费这一项，新增 sidecar 时不再修改 bootstrap 的猜测列表。 */
 export function hasResidencyBlockingWork(this: AgentRuntimeInternal): boolean {
   return (
+    getOffPeakExecution(this)?.lifecycle.terminal === false ||
     this.hasActiveOrQueuedTurnWork() ||
     this.hasRunningBackgroundTasks() ||
     this.residencyBlockingWorkCount > 0 ||

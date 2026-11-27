@@ -1,16 +1,21 @@
+import { resolve } from "node:path";
+import { resolveWorkspaceHookTrustIdentityForWorkspace } from "@ccbuddy/adapters/config";
+import type { SessionId } from "@ccbuddy/contracts";
 import {
-  sessionLifecycleParamsSchema,
   sessionLifecycleActivationParamsSchema,
-  ccbuddyRuntimeCapabilitiesParamsSchema,
+  sessionLifecycleParamsSchema,
+  sessionLifecycleSnapshotSchema,
+  type CCbuddyWorkspaceRef,
 } from "@ccbuddy/shared";
-import { getSessionLifecycle } from "./session-runtime-lifecycle.js";
 import { querySessionDebug } from "./session-debug.js";
-import { measureSessionData, purgeSessionData } from "./session-data/index.js";
+import { offPeakControlParamsSchema, offPeakControlResultSchema } from "@ccbuddy/shared";
+import { getConversationContextComposition } from "./context-composition/index.js";
 import { createNodeNetworkCapture } from "@ccbuddy/shared/node";
 import { networkCaptureControlSchema, ccbuddyProtocolNotifications } from "@ccbuddy/shared";
 import {
   ccbuddyPluginsCancelOperationParamsSchema,
   ccbuddyProtocolMethods,
+  ccbuddyRuntimeCapabilitiesParamsSchema,
   ccbuddyWorkspaceCancelGenerateTextParamsSchema,
   ccbuddyWorkspaceHookTrustGrantParamsSchema,
 } from "@ccbuddy/shared";
@@ -41,6 +46,7 @@ import type {
 import {
   cancelBackgroundTask,
   closeSession,
+  releaseSessionsUnderDirectory,
   compactSession,
   createSession,
   forkSession,
@@ -64,6 +70,10 @@ import {
 import { listChildProcesses } from "./process-child-processes.js";
 import { ProtocolRuntimeResources } from "./runtime-resources.js";
 import {
+  ConversationInputPredictionHandler,
+  createInputPredictionSessionLoader,
+} from "./input-prediction-handler.js";
+import {
   readWorkspacePresentation,
   testProviderModelConnectivity,
 } from "./workspace-model-runtime.js";
@@ -78,6 +88,7 @@ import {
   resetPluginConfig,
   restoreBuiltinPlugin,
   setPluginEnabled,
+  setPluginWorkspaceTrust,
   uninstallPlugin,
   updatePlugin,
   updatePluginMarketplace,
@@ -88,6 +99,8 @@ import {
   resolveSuggestedPluginReference,
 } from "./plugin-reference-catalog.js";
 import { getSkillReferenceCatalog } from "./skill-reference-catalog.js";
+import { readPluginUserOptions } from "./plugin-user-options.js";
+import { getPluginMentionItems } from "./plugin-mention-items.js";
 import {
   deleteSavedWorkflowOp,
   getSavedWorkflowOp,
@@ -97,7 +110,7 @@ import {
   updateSavedWorkflowMetaOp,
 } from "./saved-workflows.js";
 import { findSavedWorkflowForRunOp, saveSavedWorkflowFromRunOp } from "./saved-workflows-run.js";
-import { listMcpServers } from "./mcp.js";
+import { listMcpServers, setWorkspaceMcpTrust } from "./mcp.js";
 import {
   callMcpUiTool,
   sampleMcpUi,
@@ -117,7 +130,7 @@ import {
 } from "./mcp-ui/index.js";
 import { listPluginUiSurfaces } from "./plugin-ui-surfaces.js";
 import { updateInteractionPreferences } from "./interaction-preferences.js";
-import { updateAccountProviderConfig } from "./account-provider-config.js";
+import { refreshProviderRegistry, updateAccountProviderConfig } from "./account-provider-config.js";
 import { updateModelIoPreferences } from "./model-io-preferences.js";
 import { updateOffPeakToolPolicy } from "./off-peak-tool-policy.js";
 import { updateDynamicWorkflowPolicy } from "./dynamic-workflow-policy.js";
@@ -127,7 +140,18 @@ import {
   resolveV4InteractionRegistryOptionsFromEnv,
 } from "../ccbuddy-protocol-v4/interaction-registry.js";
 import { createConversationV4Gateway } from "./v4-bridge.js";
-import { createSessionResidentPoolHost } from "./session-residency.js";
+import {
+  createSessionResidentPoolHost,
+  getSessionLifecycle,
+  shutdownSessionRuntime,
+} from "./session-residency.js";
+import {
+  measureSessionData,
+  purgeSessionData,
+  previewSessionDeletion,
+  previewSessionDeletions,
+  executeSessionDeletion,
+} from "./session-data/index.js";
 import {
   DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT,
   SessionResidentPool,
@@ -154,6 +178,18 @@ import { createInMemorySessionEventStore } from "@ccbuddy/contracts";
 export type { CCbuddyProtocolAgentDependencies, CCbuddyProtocolSessionRecord };
 
 import { closeMcpUiInstance, openMcpUiInstance, validateMcpUiInstance } from "./mcp-ui/index.js";
+const PLUGIN_PREPARATION_MUTATION_METHODS = new Set<string>([
+  ccbuddyProtocolMethods.pluginsSetEnabled,
+  ccbuddyProtocolMethods.pluginsInstall,
+  ccbuddyProtocolMethods.pluginsUninstall,
+  ccbuddyProtocolMethods.pluginsUpdate,
+  ccbuddyProtocolMethods.pluginsRestoreBuiltin,
+  ccbuddyProtocolMethods.pluginsConfigure,
+  ccbuddyProtocolMethods.pluginsMarketplaceAdd,
+  ccbuddyProtocolMethods.pluginsMarketplaceRemove,
+  ccbuddyProtocolMethods.pluginsMarketplaceUpdate,
+]);
+
 const MAX_CLIENT_REQUEST_REANNOUNCE_INTERVAL_MS = 10_000;
 
 type CCbuddyProtocolOutboundMessage = CCbuddyProtocolNotification | CCbuddyProtocolRequest;
@@ -165,13 +201,25 @@ type CCbuddyProtocolOutboundMessage = CCbuddyProtocolNotification | CCbuddyProto
  * 独立导出为纯调度函数（不触网、不发事件），便于回归测试直接构造 sessions Map。
  */
 export async function notifyWorkspaceHookTrustGrantSessions(input: {
-  grantedWorkspaceKey?: string;
+  grantedWorkspace?: CCbuddyWorkspaceRef;
   sessions: Map<string, CCbuddyProtocolSessionRecord>;
 }): Promise<void> {
-  if (!input.grantedWorkspaceKey) return;
+  if (!input.grantedWorkspace) return;
+  // Trust record 按 Trust identity 共享（D23）：源仓库授予后，同进程内它的受管 worktree
+  // session 也必须重载；按 workspaceKey 过滤会漏掉 worktree。跨进程的通知由 Host 负责。
+  const trustIdentityOf = (workspace: CCbuddyWorkspaceRef) =>
+    resolveWorkspaceHookTrustIdentityForWorkspace({
+      workspacePath: resolve(workspace.workspacePath),
+      ...(workspace.workspaceIdentity?.trim()
+        ? { workspaceIdentity: workspace.workspaceIdentity.trim() }
+        : {}),
+    });
+  const granted = await trustIdentityOf(input.grantedWorkspace);
+  const records = [...input.sessions.values()];
+  const identities = await Promise.all(records.map((record) => trustIdentityOf(record.workspace)));
   await Promise.all(
-    [...input.sessions.values()]
-      .filter((record) => record.workspace.workspaceKey === input.grantedWorkspaceKey)
+    records
+      .filter((_record, index) => identities[index] === granted)
       .map((record) => record.app.reloadWorkspaceHookTrust()),
   );
 }
@@ -275,6 +323,7 @@ export class CCbuddyProtocolAgentServer {
   private readonly pendingClientRequests = new Map<string, PendingClientRequest<unknown>>();
   private readonly pluginOperationControllers = new Map<string, AbortController>();
   private readonly workspaceGenerateTextControllers = new Map<string, AbortController>();
+  private readonly inputPrediction: ConversationInputPredictionHandler;
   /**
    * subscribe initial frame 按 JSON-RPC request id 隔离。connection 必须先 take，
    * 再写 response line，最后按数组顺序写 notification，不能靠 microtask 猜时序。
@@ -286,7 +335,13 @@ export class CCbuddyProtocolAgentServer {
   private nextClientRequestId = 1;
 
   constructor(deps: CCbuddyProtocolAgentDependencies) {
-    this.runtimeResources = new ProtocolRuntimeResources(deps.createCCbuddyApp);
+    this.runtimeResources = new ProtocolRuntimeResources((options) =>
+      deps.createCCbuddyApp({
+        ...options,
+        ...(deps.pluginPreparation ? { pluginPreparation: deps.pluginPreparation } : {}),
+        ...(deps.pluginDiscovery ? { pluginDiscovery: deps.pluginDiscovery } : {}),
+      }),
+    );
     const resolvedDeps = {
       ...deps,
       createCCbuddyApp: this.runtimeResources.create,
@@ -320,6 +375,13 @@ export class CCbuddyProtocolAgentServer {
     };
     // v4 通道：gateway 闭包持有 context 做帧出口与命令副作用，构造完立即挂回。
     this.context.v4Gateway = createConversationV4Gateway(this.context);
+    this.inputPrediction = new ConversationInputPredictionHandler({
+      loadSession: createInputPredictionSessionLoader({
+        sessions: this.context.sessions,
+        sessionStore: resolvedDeps.sessionStore,
+      }),
+      logger: this.logger,
+    });
     this.browserControlPort = createProtocolBrowserControlBroker(this.context);
     const sessionResidentTargetCount =
       deps.sessionResidentPoolOptions?.targetCount ?? deps.sessionResidentTargetCount;
@@ -364,25 +426,24 @@ export class CCbuddyProtocolAgentServer {
   }
 
   /**
-   * 内存诊断计数器，随 60s 资源采样写本地日志。
-   * 只读 Map.size / 数组长度，不触碰 session 状态；持久化 event store 不提供 getStats 时计 0。
+   * 内存诊断计数器；完整事件统计沿用 60s 周期，不触碰 session 状态。
+   * getStats 会扫描历史事件，15s 分配诊断必须跳过，避免长对话因采集增加 CPU 开销。
    */
-  collectMemoryDiagnostics(): Record<string, number> {
-    let eventRows = 0;
-    let eventEvicted = 0;
-    let eventTransientRetained = 0;
-    for (const record of this.context.sessions.values()) {
-      const stats = record.eventStore.getStats?.();
-      eventRows += stats?.events ?? 0;
-      eventEvicted += stats?.evictedEvents ?? 0;
-      eventTransientRetained += stats?.retainedTransient ?? 0;
-    }
+  collectMemoryDiagnostics(options?: { includeEventStats?: boolean }): Record<string, number> {
     const counters: Record<string, number> = {
       sessions: this.context.sessions.size,
-      eventRows,
-      eventEvicted,
-      eventTransientRetained,
     };
+    if (options?.includeEventStats !== false) {
+      counters.eventRows = 0;
+      counters.eventEvicted = 0;
+      counters.eventTransientRetained = 0;
+      for (const record of this.context.sessions.values()) {
+        const stats = record.eventStore.getStats?.();
+        counters.eventRows += stats?.events ?? 0;
+        counters.eventEvicted += stats?.evictedEvents ?? 0;
+        counters.eventTransientRetained += stats?.retainedTransient ?? 0;
+      }
+    }
     const v4 = this.context.v4Gateway?.collectMemoryDiagnostics();
     if (v4) {
       for (const [key, value] of Object.entries(v4)) {
@@ -408,12 +469,42 @@ export class CCbuddyProtocolAgentServer {
       this.cleanupClientRequest(pending);
       pending.reject(error);
     }
+    // Bug 原因：Server Core 被 SIGKILL 后，Agent 的 stdin 虽然收到 EOF，但连接关闭
+    // 只拒绝了反向请求，没有打断已经进入 Bash/工具循环的前台执行。transport 会继续
+    // 等待该请求自然结束，旧 Agent 因而成为 PPID 1 的孤儿并在新 Core generation 之外
+    // 继续写文件。协议 owner 消失就是本进程全部前台执行的终止边界，必须同步取消。
+    for (const record of this.context.sessions.values()) {
+      try {
+        record.app.runtime.stopActiveForegroundExecution?.({
+          reason: "CCbuddy Protocol owner disconnected",
+        });
+      } catch (cause) {
+        this.logger?.warn("Failed to stop foreground execution after protocol disconnect", {
+          errorType: cause instanceof Error ? cause.name : typeof cause,
+          sessionId: record.app.sessionId,
+        });
+      }
+      record.activeAbortController?.abort(error);
+    }
+    for (const controller of this.workspaceGenerateTextControllers.values()) {
+      controller.abort(error);
+    }
+    this.workspaceGenerateTextControllers.clear();
+    this.inputPrediction.dispose(error);
+    for (const controller of this.pluginOperationControllers.values()) {
+      controller.abort(error);
+    }
+    this.pluginOperationControllers.clear();
   }
 
   /** 进程资源关闭，不使用会删除产品会话/发布 session.removed 的 session/close。 */
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
-    this.shutdownPromise = this.runtimeResources.close();
+    // abort listener 可以同步重入；在通知任何 owner 前先占有同一个关闭结果。
+    const shutdown = Promise.withResolvers<void>();
+    this.shutdownPromise = shutdown.promise;
+    const closingResources = this.runtimeResources.close();
+    const closingSessions: Promise<void>[] = [];
     const error = new Error("CCbuddy Protocol runtime stopping");
     this.disconnectClient(error);
     this.messageSink = undefined;
@@ -423,6 +514,10 @@ export class CCbuddyProtocolAgentServer {
       controller.abort(error);
     for (const record of this.context.sessions.values()) {
       record.activeAbortController?.abort(error);
+      if (getSessionLifecycle(this.context).isReady(record.app.sessionId)) {
+        closingSessions.push(shutdownSessionRuntime(this.context, record.app.sessionId));
+        continue;
+      }
       try {
         record.unsubscribe?.();
       } catch {
@@ -431,6 +526,14 @@ export class CCbuddyProtocolAgentServer {
         });
       }
     }
+    void Promise.allSettled([closingResources, ...closingSessions]).then((results) => {
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length)
+        shutdown.reject(new AggregateError(errors, "Protocol runtime shutdown failed"));
+      else shutdown.resolve();
+    });
     return this.shutdownPromise;
   }
 
@@ -448,9 +551,7 @@ export class CCbuddyProtocolAgentServer {
   }
 
   /** production NDJSON 取完整 batch；只有全部 write 成功后才调 commit。 */
-  takePostResponseBatch(
-    requestId: CCbuddyProtocolRequestId,
-  ): CCbuddyProtocolPostResponseBatch | null {
+  takePostResponseBatch(requestId: CCbuddyProtocolRequestId): CCbuddyProtocolPostResponseBatch | null {
     const batch = this.postResponseOutbox.get(requestId) ?? null;
     this.postResponseOutbox.delete(requestId);
     return batch;
@@ -500,19 +601,39 @@ export class CCbuddyProtocolAgentServer {
     // request id 可在前一请求完成后复用；新请求不能继承未消费的旧 outbox。
     this.postResponseOutbox.delete(request.id);
     let releaseResidencyOperation: (() => void) | undefined;
+    const deletionRequest =
+      request.method === V4_METHODS.sessionDeletionPreview ||
+      request.method === V4_METHODS.sessionDeletionPreviewBatch ||
+      request.method === V4_METHODS.sessionDeletionExecute;
+    const requestSessionIds = deletionRequest ? [] : collectResidencySessionIds(request.params);
+    const requestCounts = (this.context.sessionRequestCounts ??= new Map<string, number>());
+    // 运行态还未进入 busy 的异步请求也必须阻止删除，避免确认期间恢复与删除交错。
+    for (const id of requestSessionIds) requestCounts.set(id, (requestCounts.get(id) ?? 0) + 1);
+    const changesPlugins = PLUGIN_PREPARATION_MUTATION_METHODS.has(request.method);
+    // 变更前仍按源元数据校验；只在完成后失效，避免一次写入反复打断并发读。
     try {
       // subscribe hydration、workspace 配置与 resume 都可能跨 await。若只看
       // session 当前状态，sampler 会在 handler 持有旧 record 时把它关闭。进程级 lease
       // 覆盖整个 request；能识别的 sessionIds 额外用于冷恢复闸门与 LRU touch。
       const lifecycleQuery = request.method === ccbuddyProtocolMethods.sessionLifecycleGetState;
       const lifecycleMutation =
+        request.method === ccbuddyProtocolMethods.sessionLifecycleEnsureReady ||
         request.method === ccbuddyProtocolMethods.sessionLifecycleStop ||
-        request.method === ccbuddyProtocolMethods.sessionLifecycleRestart ||
-        request.method === ccbuddyProtocolMethods.sessionLifecycleEnsureReady;
-      if (!lifecycleQuery)
-        releaseResidencyOperation = await this.context.sessionResidentPool?.acquireOperation(
-          lifecycleMutation ? undefined : collectResidencySessionIds(request.params),
-        );
+        request.method === ccbuddyProtocolMethods.sessionLifecycleRestart;
+      // 查询不能续期或触发回收。生命周期变更使用进程 lease，按 session 的互斥由 owner 管理。
+      const sessionIds = lifecycleMutation ? [] : collectResidencySessionIds(request.params);
+      if (!lifecycleQuery) {
+        // 若先一步取得自动重载资格，新请求等新实例就绪才获取租约，不能在旧 Inbox 留下输入。
+        for (const id of sessionIds) {
+          const flight = this.context.sessionLifecycle?.idleRestartInProgress(id);
+          if (flight) await flight;
+        }
+        releaseResidencyOperation =
+          await this.context.sessionResidentPool?.acquireOperation(sessionIds);
+      }
+      if (!deletionRequest)
+        for (const id of collectResidencySessionIds(request.params))
+          await this.context.deps.sessionStore?.assertSessionNotDeleting?.(id as SessionId);
       const result = await this.dispatchRequest(request);
       return this.ok(request.id, result);
     } catch (error) {
@@ -520,7 +641,16 @@ export class CCbuddyProtocolAgentServer {
       const protocolError = toProtocolError(error);
       return this.fail(request.id, protocolError.code, protocolError.message, protocolError.data);
     } finally {
+      if (changesPlugins) {
+        this.context.deps?.pluginPreparation?.invalidate();
+        this.context.deps?.pluginDiscovery?.invalidate?.();
+      }
       releaseResidencyOperation?.();
+      for (const id of requestSessionIds) {
+        const remaining = (requestCounts.get(id) ?? 1) - 1;
+        if (remaining) requestCounts.set(id, remaining);
+        else requestCounts.delete(id);
+      }
     }
   }
 
@@ -579,34 +709,21 @@ export class CCbuddyProtocolAgentServer {
       // ── 行分页 query（独立分支，便于与帧分派改动合并）──
       case V4_METHODS.conversationRowsRange:
         return await this.requireV4Gateway().rowsRange(request.params);
+      // 手机输入预测：只读、无状态；同会话新请求替代旧请求。
+      case V4_METHODS.conversationInputPrediction:
+        return await this.inputPrediction.handle(request.params);
       case V4_METHODS.conversationPlans:
         return await this.requireV4Gateway().plans(request.params);
-      case ccbuddyProtocolMethods.sessionLifecycleGetState: {
-        const { sessionId } = sessionLifecycleParamsSchema.parse(request.params);
-        return getSessionLifecycle(this.context).getState(sessionId);
-      }
-      case ccbuddyProtocolMethods.sessionLifecycleStop: {
-        const { sessionId } = sessionLifecycleParamsSchema.parse(request.params);
-        await getSessionLifecycle(this.context).stop(sessionId);
-        return { completed: true };
-      }
-      case ccbuddyProtocolMethods.sessionLifecycleEnsureReady:
-      case ccbuddyProtocolMethods.sessionLifecycleRestart: {
-        const { sessionId, workspace } = sessionLifecycleActivationParamsSchema.parse(
-          request.params,
-        );
-        const lifecycle = getSessionLifecycle(this.context);
-        if (request.method === ccbuddyProtocolMethods.sessionLifecycleEnsureReady)
-          await lifecycle.ensureReady(sessionId, workspace);
-        else await lifecycle.restart(sessionId, workspace);
-        return { completed: true };
-      }
-      case V4_METHODS.sessionDataMeasure:
-        return await measureSessionData(this.context, request.params);
-      case V4_METHODS.sessionDataPurge:
-        return await purgeSessionData(this.context, request.params);
       case V4_METHODS.backgroundBashOutput:
         return await this.requireV4Gateway().backgroundBashOutput(request.params);
+      case V4_METHODS.offPeakControl: {
+        const params = offPeakControlParamsSchema.parse(request.params);
+        const record = this.context.sessions.get(params.sessionId);
+        // 生命周期只存在于驻留 runtime；换票不能恢复冷会话或重放原始输入。
+        return offPeakControlResultSchema.parse(
+          record ? await record.app.runtime.controlOffPeakExecution(params) : { accepted: false },
+        );
+      }
       case V4_METHODS.conversationFileChanges:
         return await this.requireV4Gateway().fileChanges(request.params);
       case V4_METHODS.conversationFileRewindPreview:
@@ -655,12 +772,50 @@ export class CCbuddyProtocolAgentServer {
         return await getUsageStats(this.context, request.params);
       case V4_METHODS.conversationUsage:
         return await getTaskTokenUsage(this.context, request.params);
+      case V4_METHODS.conversationContextComposition:
+        return await getConversationContextComposition(this.context, request.params);
+      // 项目数据彻底删除：不经 v4Gateway 会话投影，直接操作本进程的 store 与会话注册表。
+      case V4_METHODS.sessionDeletionPreview:
+        return previewSessionDeletion(this.context, request.params);
+      case V4_METHODS.sessionDeletionPreviewBatch:
+        return previewSessionDeletions(this.context, request.params);
+      case V4_METHODS.sessionDeletionExecute:
+        return executeSessionDeletion(this.context, request.params);
+      case V4_METHODS.sessionDataMeasure:
+        return await measureSessionData(this.context, request.params);
+      case V4_METHODS.sessionDataPurge:
+        return await purgeSessionData(this.context, request.params);
       case V4_METHODS.command:
         return this.requireV4Gateway().handleCommand(request.params);
       case V4_METHODS.commandsQuery:
         return this.requireV4Gateway().queryCommands(request.params);
+      case V4_METHODS.sessionsIndexReconcile:
+        return this.requireV4Gateway().reconcileSessions(request.params);
       case ccbuddyProtocolMethods.sessionCreate:
         return await createSession(this.context, request.params, request.trace);
+      case ccbuddyProtocolMethods.sessionLifecycleGetState: {
+        const { sessionId } = parseParams(sessionLifecycleParamsSchema, request.params);
+        return sessionLifecycleSnapshotSchema.parse(
+          await getSessionLifecycle(this.context).getState(sessionId),
+        );
+      }
+      case ccbuddyProtocolMethods.sessionLifecycleStop: {
+        const { sessionId } = parseParams(sessionLifecycleParamsSchema, request.params);
+        await getSessionLifecycle(this.context).stop(sessionId);
+        return { completed: true as const };
+      }
+      case ccbuddyProtocolMethods.sessionLifecycleEnsureReady:
+      case ccbuddyProtocolMethods.sessionLifecycleRestart: {
+        const { sessionId, workspace } = parseParams(
+          sessionLifecycleActivationParamsSchema,
+          request.params,
+        );
+        const lifecycle = getSessionLifecycle(this.context);
+        if (request.method === ccbuddyProtocolMethods.sessionLifecycleEnsureReady)
+          await lifecycle.ensureReady(sessionId, workspace);
+        else await lifecycle.restart(sessionId, workspace);
+        return { completed: true as const };
+      }
       case ccbuddyProtocolMethods.sessionResume:
         return await resumeSession(this.context, request.params);
       case ccbuddyProtocolMethods.sessionList:
@@ -695,6 +850,8 @@ export class CCbuddyProtocolAgentServer {
         return await setMode(this.context, request.params);
       case ccbuddyProtocolMethods.sessionClose:
         return await closeSession(this.context, request.params);
+      case ccbuddyProtocolMethods.sessionReleaseUnderDirectory:
+        return await releaseSessionsUnderDirectory(this.context, request.params);
       case ccbuddyProtocolMethods.workspaceReadPresentation:
         return await readWorkspacePresentation(this.context, request.params);
       case ccbuddyProtocolMethods.workspaceHookTrustGrant: {
@@ -703,15 +860,11 @@ export class CCbuddyProtocolAgentServer {
           policyProvider: this.context.deps.workspaceHookPolicyProvider,
         });
         if (grantResult.accepted) {
+          const grantedParams = ccbuddyWorkspaceHookTrustGrantParamsSchema.safeParse(request.params);
           await notifyWorkspaceHookTrustGrantSessions({
             // dispatch 层的 params 是弱类型；grant 内部已用同一 schema parse 过，这里
-            // safeParse 只为取出 workspaceKey 做匹配，失败即跳过通知（防御，正常必成功）。
-            grantedWorkspaceKey: ccbuddyWorkspaceHookTrustGrantParamsSchema.safeParse(
-              request.params,
-            ).success
-              ? ccbuddyWorkspaceHookTrustGrantParamsSchema.parse(request.params).workspace
-                  .workspaceKey
-              : undefined,
+            // safeParse 只为取出 workspace 做匹配，失败即跳过通知（防御，正常必成功）。
+            grantedWorkspace: grantedParams.success ? grantedParams.data.workspace : undefined,
             sessions: this.context.sessions,
           });
         }
@@ -719,6 +872,8 @@ export class CCbuddyProtocolAgentServer {
       }
       case ccbuddyProtocolMethods.providerUpdateAccountConfig:
         return await updateAccountProviderConfig(this.context, request.params);
+      case ccbuddyProtocolMethods.providerRefreshRegistry:
+        return await refreshProviderRegistry(this.context, request.params);
       case ccbuddyProtocolMethods.workspaceUpdateInteractionPreferences:
         return await updateInteractionPreferences(this.context, request.params);
       case ccbuddyProtocolMethods.workspaceUpdateModelIoPreferences:
@@ -735,6 +890,8 @@ export class CCbuddyProtocolAgentServer {
         return this.cancelWorkspaceGenerateText(request.params);
       case ccbuddyProtocolMethods.providerTestModelConnectivity:
         return await testProviderModelConnectivity(this.context, request.params);
+      case ccbuddyProtocolMethods.workspaceMcpTrust:
+        return await setWorkspaceMcpTrust(this.context, request.params);
       case ccbuddyProtocolMethods.mcpList:
         return await listMcpServers(this.context, request.params);
       case ccbuddyProtocolMethods.mcpReadResource:
@@ -805,15 +962,41 @@ export class CCbuddyProtocolAgentServer {
         return await this.withPluginOperationSignal(request, (signal) =>
           setPluginEnabled(this.context, request.params, signal),
         );
+      case ccbuddyProtocolMethods.pluginsWorkspaceTrust:
+        return await setPluginWorkspaceTrust(this.context, request.params);
       case ccbuddyProtocolMethods.pluginsOverview:
         return await getPluginsOverview(this.context, request.params);
       case ccbuddyProtocolMethods.processChildProcesses:
         return listChildProcesses(this.context.deps.mcpTelemetry?.listProcesses() ?? []);
       case ccbuddyProtocolMethods.runtimeCapabilities: {
         const params = ccbuddyRuntimeCapabilitiesParamsSchema.parse(request.params ?? {});
+        // 旧 Host 的严格 schema 不接收新增字段；先协商，再发布目录来源。
         this.context.sessionDirectorySourceEnabled ||=
           params.hostCapabilities?.sessionDirectorySource === true;
-        return { independentPlanState: true, genUiContext: true, sessionDirectorySource: true };
+        this.context.sessionWorkspaceRoutingEnabled ||=
+          params.hostCapabilities?.sessionWorkspaceRouting === true;
+        return {
+          sessionLifecycleWorkspace: true,
+          sessionWorkspaceRouting: true,
+          independentPlanState: true,
+          highspeedCardOwner: true,
+          historyFirst: true,
+          pluginDiscoveryUi: true,
+          sessionDirectorySource: true,
+          residentRowsRange: true,
+          genUiContext: true,
+          // 会话 cwd 可与 workspace 不同（受管 worktree）：createSession.cwd / worktreeCreation、
+          // forkAssistant.targetCwd、按 Host workspace key 冷恢复。旧 Host 的结果 schema 非 strict。
+          worktreeCwd: true,
+          // 认识 {kind:"extension"} 输入来源（sendText / createSession.firstInput）。旧 CLI 会拒绝或
+          // 静默剥掉它，Host 据此决定能否代扩展发消息（docs/design/v2/conversation-input-source.md §7）。
+          extensionInputSource: true,
+          // 对话引用的 comment / agent 字段会进入模型输入（选区批注）；旧 CLI 会静默剥掉。
+          conversationQuoteComment: true,
+          // plugins/overview 认识 includeExtensionSummary，并按它在商店信息里带扩展摘要
+          // （docs/design/v2/plugin-compat.md「Extension summary」）。
+          pluginExtensionSummary: true,
+        };
       }
       case ccbuddyProtocolMethods.pluginsMarketplaceAdd:
         return await this.withPluginOperationSignal(request, (signal) =>
@@ -845,6 +1028,10 @@ export class CCbuddyProtocolAgentServer {
         return await validatePlugin(this.context, request.params);
       case ccbuddyProtocolMethods.pluginsDescribe:
         return await describePlugin(this.context, request.params);
+      case ccbuddyProtocolMethods.pluginsReadUserOptions:
+        return await readPluginUserOptions(this.context, request.params);
+      case ccbuddyProtocolMethods.pluginsMentionItems:
+        return await getPluginMentionItems(this.context, request.params);
       case ccbuddyProtocolMethods.usageStats:
         return await getUsageStats(this.context, request.params);
       case ccbuddyProtocolMethods.sessionDebug:

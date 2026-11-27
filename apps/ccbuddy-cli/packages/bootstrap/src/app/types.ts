@@ -1,7 +1,13 @@
+import type { McpConfigSourceRegistry } from "@ccbuddy/adapters/mcp";
+import type { SkillCatalogSourceRegistry } from "@ccbuddy/adapters/skills/catalog";
+import type { OfficialPluginPreparation } from "./bundled-plugins.js";
+import type { OfficialCommandSessionObserver } from "../official-command-endpoint/index.js";
 import type { AiSdkModelAdapter } from "@ccbuddy/adapters/model";
+import type { SessionControlBinding } from "@ccbuddy/core/session-control";
 import type {
   AgentTelemetryRuntimeOwner,
   AutomationPort,
+  PluginDiscoveryPort,
   BackgroundTaskCancelResult,
   BrowserControlPort,
   CollaborationMode,
@@ -32,6 +38,7 @@ import type {
   McpReadResourceResult,
   McpServerStatus,
   McpToolCallResult,
+  McpToolCatalogPort,
   MessageWithParts,
   ModelSelection,
   ModelToolCall,
@@ -39,6 +46,7 @@ import type {
   OffPeakPort,
   PdfDocumentPort,
   PermissionBrokerPort,
+  PluginPort,
   PluginLoadOutcome,
   PluginMetadata,
   PluginReferenceCatalog,
@@ -67,18 +75,24 @@ import type {
   WorkflowEvent,
   WorkflowRunListItem,
   WorkspaceHookPolicy,
+  PendingInputEditLock,
 } from "@ccbuddy/contracts";
 import type {
   AgentRuntime,
   AgentRuntimeConfig,
   AmendWorkflowRunSettingsInput,
   AmendWorkflowRunSettingsResult,
+  EditPendingInputOptions,
+  EditPendingInputResult,
   ExecuteTurnOptions,
   ExpertWorkflowCommandResult,
+  LockPendingInputEditResult,
   McpAppProvidedToolDefinition,
   McpAppProvidedToolExecutor,
+  McpStartupPolicy,
   ModelExecutionContext,
   PresentationSurface,
+  AgentRuntimeDeps,
   ProviderRuntimeHeadersPort,
   ResumeSessionResult,
   StartSavedWorkflowRunResult,
@@ -135,6 +149,18 @@ export type RevokeWorkspaceHookTrustInput =
 export type CCbuddyAppRuntimeConfigInput = AgentRuntimeConfig;
 
 export interface CCbuddyAppOptions {
+  /** 独立 CLI 的配置菜单编辑输入默认值；其他装配保留显式 Session 配置语义。 */
+  modelSelectionMode?: "cli-default";
+  /** 仅独立 TUI/headless 入口开启；不得由模型或项目配置指定。 */
+  standaloneSessionControl?: boolean;
+  /** Host 在运行实例创建时传入，运行中不刷新。 */
+  additionalDirectories?: readonly string[];
+  /**
+   * 会话所属 workspace 的对外 key（Hook Trust admission、审核 request 等）。受管 worktree 会话
+   * 属于项目 workspace，key 与工作目录不同（docs/git/worktree.md §7.3）；缺省按远程 identity
+   * 优先、否则工作目录。
+   */
+  workspaceKey?: string;
   sessionId?: SessionId;
   resume?: boolean;
   version?: string;
@@ -169,10 +195,25 @@ export interface CCbuddyAppOptions {
    * runtime 取派生实例。
    */
   providerRuntimeHeadersPort?: ProviderRuntimeHeadersPort;
+  /** 回复语言来源：向 Host 读回复语言设置。只给主 runtime；没有 Host（TUI/headless）时缺省。 */
+  readReplyLanguage?: AgentRuntimeDeps["readReplyLanguage"];
   loggerFactory?: LoggerFactory;
   officialPluginRoots?: string[];
   pluginStorageRoot?: string;
+  /** 借用进程级插件准备状态；App 不负责关闭。 */
+  pluginPreparation?: OfficialPluginPreparation;
+  pluginDiscovery?: PluginPort;
   executionPort?: ExecutionPort;
+  /**
+   * 官方命令端点（技术方案 5.8）：返回本 session 的 Bash/tool 子进程要带的端点地址与 token。
+   * workspace 是本 session 的工作区，端点取身份头时据此让 host 路由；observer 接收端点为本 session 观察到的事实。
+   * 由协议宿主注入；缺省时官方插件的 CLI 拿不到身份。
+   */
+  officialCommandEnv?: (
+    sessionId: string,
+    workspace: { workspacePath: string; workspaceIdentity?: string },
+    observer?: OfficialCommandSessionObserver,
+  ) => Promise<Record<string, string>>;
   /** 资源遥测旁路；由协议宿主注入，主任务和 workflow 的执行适配器共用。 */
   onToolExecResource?: (sample: CCbuddyToolExecResource) => void;
   /** browser-use 控制端口；注入后 node_repl 的 agent.browsers.* 可用。缺省则不可用。 */
@@ -189,10 +230,19 @@ export interface CCbuddyAppOptions {
   includeVisualize?: boolean;
   skillPort?: SkillPort;
   mcpPort?: McpPort;
+  /** protocol host 注入的进程级 catalog；不持有 live MCP client。 */
+  mcpToolCatalogPort?: McpToolCatalogPort;
+  /** protocol host 注入的进程级 MCP 配置源 registry；缺省时每个 app 各建一份私有配置源。 */
+  mcpConfigSourceRegistry?: McpConfigSourceRegistry;
+  /** protocol host 注入的进程级 Skill 实时目录 registry；缺省时每个 app 各建一份私有目录。 */
+  skillCatalogSourceRegistry?: SkillCatalogSourceRegistry;
+  /** MCP 启动策略，入口显式传入；缺省 blocking。交互入口传 background。 */
+  mcpStartupPolicy?: McpStartupPolicy;
   /** 由宿主提供 per-app lease；产出的端口归 app 所有。 */
   mcpPortFactory?: (input: { workingDirectory?: string }) => McpPort;
   permissionBroker?: PermissionBrokerPort;
   eventSink?: SessionEventSink;
+  onOffPeakLifecycleEvent?: (event: import("@ccbuddy/shared").OffPeakLifecycleNotification) => void;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform | string;
   projectConfigPath?: string;
@@ -201,9 +251,12 @@ export interface CCbuddyAppOptions {
   uiDetectedLocale?: string | null;
   uiLocale?: UiLocale;
   onWorkflowEvent?: (event: WorkflowEvent) => void | Promise<void>;
+  /** 可信启动装配，不能从项目配置或模型输入填充。 */
+  sessionControl?: SessionControlBinding;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
   topicResourcePort?: TopicResourcePort;
+  pluginDiscoveryPort?: PluginDiscoveryPort;
   /** 首次真实用户执行或 cold-resume fallback 时解析一次，之后由 app 生命周期缓存。 */
   resolveInitialBashShellSelection?: () => Promise<ExecutionShellSelection | undefined>;
   /** Trusted embedder policy; workspace/project files cannot populate this field. */
@@ -258,8 +311,6 @@ export interface SteerTurnOptions {
 
 export type SendInputOptions = SubmitPromptOptions & {
   inputId?: string;
-  /** 可信消费入口确定的呈现标记；不改变原始用户内容或调度语义。 */
-  inputPresentation?: ExecuteTurnOptions["inputPresentation"];
   delivery?: InputDelivery;
   /** sendText 的产品 guide/queue 意图；是否 busy 仍由 Core admission 判断。 */
   queueDelivery?: "guide" | "queue";
@@ -336,6 +387,8 @@ export interface CCbuddyApp {
    * coordinator 并重发 admission 状态，否则已信任 Hook 继续被拒、banner 不刷新。
    */
   reloadWorkspaceHookTrust(): Promise<void>;
+  /** 设置授权落盘后更新同工作区会话的提示；不自动连接。 */
+  reloadWorkspaceMcpTrust?(): Promise<void>;
   close?(): Promise<void>;
   getMode(): CollaborationMode;
   getModel(): string;
@@ -429,6 +482,11 @@ export interface CCbuddyApp {
   ): Promise<McpReadResourceResult>;
   onMcpAppConnectionInvalidated(serverName: string, listener: () => void): () => void;
   getMcpAppConnectionSnapshot(serverName: string): { identity: string; generation: number } | null;
+  waitForMcpAppConnection(
+    serverName: string,
+  ): Promise<{ identity: string; generation: number } | null>;
+  /** 打开 MCP App 前连接不可用（如 stdio 进程崩溃）时重连一次，在预算内等待；结果由调用方读快照。 */
+  reconnectMcpAppConnection(serverName: string): Promise<void>;
   callMcpToolForUi(
     serverName: string,
     toolName: string,
@@ -540,6 +598,7 @@ export interface CCbuddyApp {
    * {@link listDynamicWorkflowRunEvents}；journal 无枚举窄查询时回空列表（诚实答案——
    * 内存 journal 的 run 本就不会活过进程）。`resumable` 按 resume 门的同一个谓词算好。
    */
+  getWorkflowActivityHistory?(): Promise<import("@ccbuddy/contracts").DynamicWorkflowActivityHistory>;
   listDynamicWorkflowRuns?(input: { limit?: number }): Promise<DynamicWorkflowRunSessionSummary[]>;
   /**
    * workflow run 的冷回放：本会话名下、`excludeRunIds`
@@ -781,10 +840,27 @@ export interface CCbuddyApp {
     reservationId: string,
     options?: { traceContext?: TraceContext },
   ): Promise<boolean>;
-  /** v4 queue 单项编辑：按 pendingInputId 替换排队输入文本（保位）。返回是否命中。 */
+  /**
+   * v4 queue 单项编辑：按 pendingInputId 原地替换排队输入（保位）。携带 editorId 时必须持有
+   * composer 编辑锁，成功后同一调用释放锁（docs/ui/composer-edit-mode.md）。
+   */
   editQueueItem(
     pendingInputId: string,
-    newText: string,
+    /** undefined = 保留原输入，只改配置。 */
+    newText: string | undefined,
+    options?: Omit<EditPendingInputOptions, "pendingInputId" | "newText"> & {
+      traceContext?: TraceContext;
+    },
+  ): Promise<EditPendingInputResult>;
+  /** composer 编辑态冻结排队项；锁与 sendQueuedNow reservation 互斥。 */
+  lockQueueItemEdit(
+    pendingInputId: string,
+    editLock: PendingInputEditLock,
+    options?: { traceContext?: TraceContext },
+  ): Promise<LockPendingInputEditResult>;
+  /** 释放编辑锁；无锁返回 false。 */
+  releaseQueueItemEdit(
+    pendingInputId: string,
     options?: { traceContext?: TraceContext },
   ): Promise<boolean>;
   /** v4 queue 重排：移动 pendingInputId 到 beforePendingInputId 之前（null=队尾）。 */

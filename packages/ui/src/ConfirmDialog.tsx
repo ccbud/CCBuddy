@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CodeBlock, CodeBlockHeader } from "@/components/ai-elements/code-block.js";
+import { useCCbuddyStoreWithDefault } from "@/store/StoreProvider.js";
+import { DEFAULT_CODE_PREVIEW_SETTINGS } from "@/lib/codePreviewSettings.js";
+import { resolveTheme, type Theme } from "@/useTheme.js";
 import { Checkbox } from "@/components/ui/checkbox.js";
-import { XIcon } from "lucide-react";
-import { TID_CONFIRM_DIALOG_CONFIRM } from "@ccbuddy/shared";
+import { XIcon, TriangleAlertIcon, FolderIcon, SquareTerminalIcon, GlobeIcon } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog.js";
+import { TID_CONFIRM_DIALOG_CONFIRM } from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import {
   Dialog,
@@ -19,11 +33,27 @@ import {
   AUTOMATION_CONFIRM_DIALOG_CONTENT_CLASS,
   AUTOMATION_CONFIRM_DIALOG_DESCRIPTION_CLASS,
 } from "@/settings/automationConfirmDialogPresentation.js";
+import { SourceServerBoundaryDialogContent } from "@/remote/SourceServerBoundaryDialogContent.js";
 
 export function ConfirmDialogHost() {
   const { intl } = useCCbuddyIntl();
+  const theme = useCCbuddyStoreWithDefault<Theme>((state) => state.theme, "system");
+  const codeSettings = useCCbuddyStoreWithDefault(
+    (state) => state.codePreviewSettings,
+    DEFAULT_CODE_PREVIEW_SETTINGS,
+  );
   const pendingRequest = useConfirmDialogStore((state) => state.pendingRequest);
   const settleConfirmation = useConfirmDialogStore((state) => state.settleConfirmation);
+  const startPreparation = useConfirmDialogStore((state) => state.startPreparation);
+  const requestIdentity = pendingRequest?.resolve;
+  const prepareMountedContent = useCallback(
+    (content: HTMLDivElement | null) => {
+      // 原来先扫描整批会话才弹框；外层 effect 又早于 Radix Portal 的内容挂载。
+      // 由实际弹窗 DOM 启动检查，确保用户先看到可取消的检查状态。
+      if (content && requestIdentity) startPreparation(requestIdentity);
+    },
+    [requestIdentity, startPreparation],
+  );
 
   const settleChoice = useConfirmDialogStore((state) => state.settleChoice);
 
@@ -39,22 +69,31 @@ export function ConfirmDialogHost() {
     request: typeof displayedRequest;
     checked: boolean;
   }>({ request: undefined, checked: false });
+  // 勾选只属于本次请求，关闭后再次打开不能沿用上次的风险确认。
+  const checkboxChecked =
+    checkboxSelection.request === displayedRequest && checkboxSelection.checked;
   const open = Boolean(pendingRequest);
   const isAutomationConfirmation = displayedRequest?.presentation === "automation-confirmation";
+  const isSourceServerBoundary = displayedRequest?.presentation === "source-server-boundary";
+  const isYoloConfirmation = displayedRequest?.presentation === "yolo-confirmation";
+  const isUpdateConfirmation = displayedRequest?.presentation === "update-confirmation";
   const confirmLabel =
     displayedRequest?.confirmLabel ?? intl.formatMessage({ id: "common.confirm" });
   const cancelLabel = displayedRequest?.cancelLabel ?? intl.formatMessage({ id: "common.cancel" });
   const compact = displayedRequest?.compact === true;
+  const destructive = displayedRequest?.confirmVariant === "destructive";
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const requiredAcknowledgement = displayedRequest?.requiredAcknowledgement === true;
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
-      // Radix 在点击遮罩或按 Esc 时只会回调 onOpenChange(false)。
-      // 如果这里不主动把 Promise 结算为 false，调用侧会一直悬挂，后续删除操作也会被卡住。
-      if (!nextOpen) {
+      // Bugfix: Radix 在点击遮罩或按 Esc 时只会回调 onOpenChange(false)。
+      // 选择对话框保留 dismiss 与取消的区别；required acknowledgement 必须保持打开，避免未确认却被记为已读。
+      if (!nextOpen && !requiredAcknowledgement) {
         settleChoice("dismiss");
       }
     },
-    [settleChoice],
+    [requiredAcknowledgement, settleChoice],
   );
 
   const handleConfirm = useCallback(() => {
@@ -62,7 +101,7 @@ export function ConfirmDialogHost() {
   }, [settleConfirmation]);
 
   useEffect(() => {
-    if (!open) {
+    if (!open || destructive || isYoloConfirmation) {
       return;
     }
 
@@ -71,9 +110,9 @@ export function ConfirmDialogHost() {
         return;
       }
 
-      // 带复选框的选择对话框保留焦点按钮的键盘语义，避免“不了”按 Enter 变成切换。
+      // 复选框及代码操作保留按钮的键盘语义，避免复制 JSON 的 Enter 同时提交信任。
       if (
-        displayedRequest?.checkbox &&
+        (displayedRequest?.checkbox || displayedRequest?.codeBlock) &&
         event.target instanceof HTMLElement &&
         event.target.closest("button,input")
       )
@@ -89,12 +128,127 @@ export function ConfirmDialogHost() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [open, settleConfirmation, displayedRequest]);
+  }, [open, destructive, isYoloConfirmation, settleConfirmation, displayedRequest]);
+
+  if (isYoloConfirmation) {
+    return (
+      <AlertDialog open={open} onOpenChange={handleOpenChange}>
+        <AlertDialogContent
+          ref={prepareMountedContent}
+          data-testid="yolo-confirmation-dialog"
+          className="max-h-[calc(100dvh-2rem)] gap-4 overflow-y-auto bg-popover p-4 shadow-md sm:p-5"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            cancelRef.current?.focus();
+          }}
+        >
+          <AlertDialogHeader className="gap-2">
+            <AlertDialogTitle className="flex items-center gap-3">
+              <TriangleAlertIcon className="size-5 shrink-0" aria-hidden="true" />
+              {displayedRequest?.title}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="leading-relaxed sm:leading-6">
+              {intl.formatMessage({ id: "mode.yoloConfirmation.description" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="divide-y divide-border rounded-xl bg-surface px-3">
+            {(
+              [
+                ["files", FolderIcon, "text-icon-blue"],
+                ["commands", SquareTerminalIcon, "text-foreground-subtle"],
+                ["network", GlobeIcon, "text-icon-blue"],
+              ] as const
+            ).map(([category, Icon, iconColor]) => (
+              <li key={category} className="flex items-center gap-3 py-2">
+                <Icon className={cn("size-5 shrink-0", iconColor)} aria-hidden="true" />
+                <div className="min-w-0 space-y-0.5">
+                  <p className="text-ui-base font-semibold">
+                    {intl.formatMessage({ id: `mode.yoloConfirmation.${category}` })}
+                  </p>
+                  <p className="text-ui-base text-foreground-subtle sm:text-ui-sm">
+                    {intl.formatMessage({ id: `mode.yoloConfirmation.${category}.description` })}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="text-ui-base leading-relaxed text-foreground-subtle sm:text-ui-sm sm:leading-5">
+            {intl.formatMessage({ id: "mode.yoloConfirmation.risk" })}
+          </p>
+          <label className="flex cursor-pointer items-start gap-2 text-ui-base leading-relaxed text-foreground">
+            <Checkbox
+              data-testid="yolo-confirmation-risk"
+              className="mt-1"
+              checked={checkboxChecked}
+              onCheckedChange={(value) =>
+                setCheckboxSelection({ request: displayedRequest, checked: value === true })
+              }
+            />
+            <span>{intl.formatMessage({ id: "mode.yoloConfirmation.acknowledgement" })}</span>
+          </label>
+          {/* 手机沿用切换账号弹窗的等宽触控按钮；桌面保留紧凑、按内容宽度的操作区。 */}
+          <AlertDialogFooter className="grid grid-cols-2 gap-3 sm:flex sm:gap-2">
+            <AlertDialogCancel
+              ref={cancelRef}
+              variant="secondary"
+              size="lg"
+              className="h-auto min-h-11 whitespace-normal px-4 sm:h-9 sm:min-h-0 sm:whitespace-nowrap"
+              data-testid="yolo-confirmation-cancel"
+              onClick={() => settleConfirmation(false)}
+            >
+              {intl.formatMessage({ id: "common.cancel" })}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="lg"
+              className="h-auto min-h-11 whitespace-normal px-4 sm:h-9 sm:min-h-0 sm:whitespace-nowrap"
+              data-testid="yolo-confirmation-confirm"
+              disabled={!checkboxChecked}
+              onClick={handleConfirm}
+            >
+              {intl.formatMessage({ id: "mode.yoloConfirmation.confirm" })}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    );
+  }
+
+  if (isSourceServerBoundary) {
+    return (
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent
+          ref={prepareMountedContent}
+          data-confirm-intent={displayedRequest?.intent}
+          data-testid="source-server-boundary-dialog"
+          showCloseButton={false}
+          // Bug 原因：continuity dialog 曾用 bg-popover/98 组件级拼接 alpha，主题表面 token 因而无法统一维护。
+          // 直接使用完整的 popover surface，保留对话框层级和专用 continuity panel。
+          className="gap-0 overflow-hidden rounded-2xl border-none bg-popover p-0 ring-border shadow-2xl sm:max-w-xl"
+        >
+          <SourceServerBoundaryDialogContent
+            title={displayedRequest?.title}
+            description={displayedRequest?.description}
+            confirmLabel={confirmLabel}
+            onConfirm={handleConfirm}
+          />
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
+        ref={prepareMountedContent}
+        data-confirm-intent={displayedRequest?.intent}
         data-testid={displayedRequest?.testId}
+        onOpenAutoFocus={(event) => {
+          if (destructive) {
+            event.preventDefault();
+            cancelRef.current?.focus();
+          }
+        }}
         showCloseButton={false}
         overlayClassName={
           compact ? "bg-black/20 supports-backdrop-filter:backdrop-blur-[2px]" : undefined
@@ -104,11 +258,19 @@ export function ConfirmDialogHost() {
           // 仅依赖共享弹框的响应式 max-width 时，不同入口所在 viewport 会让
           // 同一删除确认框看起来尺寸不一致。定时任务删除按设计固定同一 presentation。
           isAutomationConfirmation ? AUTOMATION_CONFIRM_DIALOG_CONTENT_CLASS : "sm:max-w-md",
+          isUpdateConfirmation && "w-[calc(100%-2rem)] max-w-md gap-4 bg-popover",
           displayedRequest?.compact && "top-[44%] min-h-[161px] gap-4 sm:max-w-[400px]",
+          displayedRequest?.codeBlock &&
+            "max-h-[calc(100dvh-2rem)] min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] sm:max-w-2xl",
         )}
       >
-        <DialogHeader className="gap-2">
-          <DialogTitle className="text-ui-lg font-semibold text-foreground">
+        <DialogHeader className="min-w-0 gap-2">
+          <DialogTitle
+            className={cn(
+              "text-ui-lg font-semibold text-foreground",
+              isUpdateConfirmation && "text-ui-base font-medium",
+            )}
+          >
             {displayedRequest?.title}
           </DialogTitle>
           {displayedRequest?.description ? (
@@ -116,15 +278,41 @@ export function ConfirmDialogHost() {
               className={cn(
                 "whitespace-pre-line pt-0.5 text-ui-base leading-6 text-foreground-subtle",
                 isAutomationConfirmation && AUTOMATION_CONFIRM_DIALOG_DESCRIPTION_CLASS,
+                isUpdateConfirmation && "pt-0 text-ui-sm leading-relaxed",
+                displayedRequest.scrollableDescription &&
+                  "max-h-96 overflow-y-auto overscroll-contain break-words",
+                displayedRequest.codeBlock && "max-h-32",
               )}
             >
               {displayedRequest.description}
             </DialogDescription>
           ) : null}
         </DialogHeader>
+        {displayedRequest?.codeBlock ? (
+          <CodeBlock
+            {...displayedRequest.codeBlock}
+            data-testid="confirm-dialog-code"
+            theme={
+              resolveTheme(theme) === "dark" ? codeSettings.darkTheme : codeSettings.lightTheme
+            }
+            fontSizePx={codeSettings.fontSizePx}
+            showLineNumbers
+            wrapLongLines
+            className="flex min-h-0 min-w-0 flex-col border border-border bg-card"
+            contentClassName="min-h-0 overflow-auto overscroll-contain"
+          >
+            <CodeBlockHeader
+              language={displayedRequest.codeBlock.language}
+              showWrapButton={false}
+              className="shrink-0 px-3 pt-2"
+            />
+          </CodeBlock>
+        ) : null}
         <DialogFooter
           className={cn(
             "gap-2 sm:justify-end",
+            // 更新窗口只有 512px，viewport 的 sm 断点会误用全宽纵排；只覆盖更新确认的布局。
+            isUpdateConfirmation && "flex-row flex-wrap justify-end",
             displayedRequest?.checkbox && "flex-row flex-wrap items-center",
             // Automation 弹窗的最小高度会拉伸 Grid footer 行，按钮停在行顶导致视觉底距超过 20px。
             isAutomationConfirmation && "mt-auto",
@@ -133,9 +321,7 @@ export function ConfirmDialogHost() {
           {displayedRequest?.checkbox ? (
             <label className="mr-auto flex min-w-0 items-center gap-2 text-ui-base text-foreground-subtle">
               <Checkbox
-                checked={
-                  checkboxSelection.request === displayedRequest && checkboxSelection.checked
-                }
+                checked={checkboxChecked}
                 onCheckedChange={(value) => {
                   setCheckboxSelection({ request: displayedRequest, checked: value === true });
                   displayedRequest.checkbox?.onCheckedChange(value === true);
@@ -147,36 +333,40 @@ export function ConfirmDialogHost() {
           <div
             className={displayedRequest?.checkbox ? "ml-auto flex items-center gap-2" : "contents"}
           >
+            {requiredAcknowledgement ? null : (
+              <Button
+                type="button"
+                ref={cancelRef}
+                variant={compact ? "outline" : "secondary"}
+                size={"lg"}
+                onClick={() => settleConfirmation(false)}
+                className={cn(
+                  isUpdateConfirmation ? "gap-1 px-2.5" : "h-9 gap-3 px-4",
+                  displayedRequest?.showKeyboardHints !== false && "justify-between sm:min-w-28",
+                )}
+              >
+                <span>{cancelLabel}</span>
+                {displayedRequest?.showKeyboardHints !== false ? (
+                  <span className="font-mono text-ui-base text-foreground-subtle">esc</span>
+                ) : null}
+              </Button>
+            )}
             <Button
               type="button"
-              variant={compact ? "outline" : "secondary"}
-              size={"lg"}
-              onClick={() => settleConfirmation(false)}
-              className={cn(
-                "h-9 gap-3 px-4",
-                displayedRequest?.showKeyboardHints !== false && "justify-between sm:min-w-28",
-              )}
-            >
-              <span>{cancelLabel}</span>
-              {displayedRequest?.showKeyboardHints !== false ? (
-                <span className="font-mono text-ui-base text-foreground-subtle">esc</span>
-              ) : null}
-            </Button>
-            <Button
-              type="button"
-              autoFocus
+              autoFocus={!destructive}
               // 普通确认沿用主按钮；仅显式声明 destructive 的不可恢复动作使用危险色。
               variant={displayedRequest?.confirmVariant ?? "default"}
               size={"lg"}
+              disabled={displayedRequest?.confirmDisabled}
               data-testid={TID_CONFIRM_DIALOG_CONFIRM}
               onClick={handleConfirm}
               className={cn(
-                "h-9 gap-3 px-4",
+                isUpdateConfirmation ? "gap-1 px-2.5" : "h-9 gap-3 px-4",
                 displayedRequest?.showKeyboardHints !== false && "justify-between sm:min-w-32",
               )}
             >
               <span>{confirmLabel}</span>
-              {displayedRequest?.showKeyboardHints !== false ? (
+              {!destructive && displayedRequest?.showKeyboardHints !== false ? (
                 <span
                   className={
                     displayedRequest?.confirmVariant === "destructive"
@@ -190,7 +380,7 @@ export function ConfirmDialogHost() {
             </Button>
           </div>
         </DialogFooter>
-        {displayedRequest?.showCloseButton ? (
+        {displayedRequest?.showCloseButton && !requiredAcknowledgement ? (
           <DialogClose asChild>
             <Button
               type="button"

@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-turn-error-queue-preserved",
+  "spec": "./test/e2e/conversation-session/queue/conversation-session-turn-error-queue-preserved.test.ts",
+  "fixtures": [
+    {
+      "id": "turn-error-queue-preserved-title-sidecar",
+      "description": "本例标题旁路响应，防止 strict replay 依赖 legacy fixture。",
+      "metadata": {
+        "kind": "common",
+        "source": "synthetic",
+        "timingPolicy": "fast-text",
+        "syntheticReason": "运行时证据显示 session_title 旁路缺少 fixture；固定标题响应隔离标题生成，主用例不验证标题内容。"
+      },
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["Generate a concise title", "E2E_"]
+      },
+      "response": {
+        "statusCode": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{\"id\":\"msg_turn-error-queue-preserved-title-sidecar\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-flash\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"title\\\":\\\"E2E regression task\\\"}\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":64,\"output_tokens\":8}}"
+      }
+    },
+    {
+      "id": "turn-error-queue-preserved-source-500",
+      "description": "N05：主 turn 在 queue 入队窗口后返回 500 JSON error。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fault-stream",
+        "source": "synthetic",
+        "syntheticReason": "真实 provider 500 的响应时间不可控；delayMs 只用于稳定制造 running admission 窗口，验证错误终态的 queue 保留契约。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_TURN_ERROR_QUEUE_SOURCE"],
+        "bodyIncludes": ["E2E_TURN_ERROR_QUEUE_SOURCE"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "delayMs": 3000,
+        "statusCode": 500,
+        "statusMessage": "Internal Server Error",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{\"error\":{\"message\":\"synthetic provider failure\",\"type\":\"provider_error\",\"code\":\"e2e_turn_error\"}}"
+      }
+    },
+    {
+      "id": "turn-error-queue-preserved-followup",
+      "description": "NQ：错误后的队首输入显式继续消费成功。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "恢复路径需要固定 assistant 哨兵，证明 queue 未丢失且只在显式继续后发送。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_TURN_ERROR_QUEUE_FOLLOWUP"],
+        "bodyIncludes": ["E2E_TURN_ERROR_QUEUE_FOLLOWUP"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "turn-error-queue-preserved-followup",
+          "inputTokens": 96,
+          "outputTokens": 8,
+          "text": "TURN_ERROR_QUEUE_RECOVERED"
+        }
+      }
+    }
+  ]
+}

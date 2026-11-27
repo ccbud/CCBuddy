@@ -7,11 +7,21 @@
  * 2. 面板通过 portal 渲染到输入区上方的独立挂载层，展开时直接覆盖消息区
  * 3. 支持 Esc 关闭、上下键切换、Enter / Tab 选中，以及跟随输入做模糊搜索
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import type { CCbuddyProvider } from "@ccbuddy/shared";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { createPortal } from "react-dom";
 import {
+  type LexicalEditor,
   $createTextNode,
   BLUR_COMMAND,
   COMMAND_PRIORITY_CRITICAL,
@@ -58,6 +68,87 @@ import {
 } from "./mentions/activePromptInputToken.js";
 import { shouldSlashPanelProcessUpdate } from "./lib/slashPanelUpdateFilter.js";
 
+// Bug 原因：常驻 Lexical listener 与 applySuggestion 共享组件作用域，连带保留旧 appCommands。
+// 触发器监听只接收编辑器与本地 trigger 状态，不持有会话命令回调。
+function useSlashTriggerListener(
+  editor: LexicalEditor,
+  disabled: boolean,
+  activeTokenRef: RefObject<ActivePromptInputTokenSnapshot | null>,
+  dismissedSignatureRef: RefObject<string | null>,
+  setActiveTrigger: Dispatch<SetStateAction<ActivePromptInputTrigger | null>>,
+) {
+  useEffect(() => {
+    return editor.registerUpdateListener(({ dirtyElements, dirtyLeaves, editorState, tags }) => {
+      editorState.read(() => {
+        // 历史导航回填含 / 的历史条目时，不应重新打开 slash 面板，
+        // 否则面板以 COMMAND_PRIORITY_CRITICAL 注册方向键处理器，吞掉后续历史翻阅按键。
+        if (!shouldSlashPanelProcessUpdate(tags)) {
+          activeTokenRef.current = null;
+          setActiveTrigger(null);
+          return;
+        }
+
+        if (disabled) {
+          activeTokenRef.current = null;
+          setActiveTrigger(null);
+          return;
+        }
+
+        const selectionState = getCurrentTextNodeSelection();
+        const cursorText = selectionState ?? getTextAroundCursor();
+        if (!cursorText) {
+          activeTokenRef.current = null;
+          dismissedSignatureRef.current = null;
+          setActiveTrigger(null);
+          return;
+        }
+
+        const nextActiveToken = selectionState
+          ? reconcileActivePromptInputTokenSnapshot(
+              activeTokenRef.current,
+              selectionState,
+              dirtyElements.size === 0 && dirtyLeaves.size === 0,
+            )
+          : null;
+        const nextActiveTrigger = selectionState
+          ? nextActiveToken
+          : extractActivePromptInputTrigger(cursorText.textBeforeCursor);
+        if (!nextActiveTrigger || nextActiveTrigger.trigger !== "/") {
+          activeTokenRef.current = null;
+          dismissedSignatureRef.current = null;
+          setActiveTrigger(null);
+          return;
+        }
+        activeTokenRef.current = nextActiveToken;
+
+        const nextSignature = getPromptInputTriggerSignature(nextActiveTrigger);
+        if (
+          dismissedSignatureRef.current !== null &&
+          dismissedSignatureRef.current !== nextSignature
+        ) {
+          dismissedSignatureRef.current = null;
+        }
+
+        if (dismissedSignatureRef.current === nextSignature) {
+          setActiveTrigger(null);
+          return;
+        }
+
+        setActiveTrigger((current) => {
+          if (
+            current?.trigger === nextActiveTrigger.trigger &&
+            current.query === nextActiveTrigger.query
+          ) {
+            return current;
+          }
+
+          return nextActiveTrigger;
+        });
+      });
+    });
+  }, [activeTokenRef, disabled, dismissedSignatureRef, editor, setActiveTrigger]);
+}
+
 export function SlashCommandPlugin({
   workspacePath,
   workspaceIdentity,
@@ -95,8 +186,11 @@ export function SlashCommandPlugin({
   const activeTokenRef = useRef<ActivePromptInputTokenSnapshot | null>(null);
   const commandSuggestions = useMemo(() => {
     const excluded = new Set((excludedCommandNames ?? []).map(normalizeSlashCommandValue));
+    const recoveryNames = new Set(
+      appCommands?.filter((command) => command.recovery).map((command) => command.value),
+    );
     const cliSuggestions = buildSlashSuggestions(commands).filter(
-      (item) => !excluded.has(item.value),
+      (item) => !excluded.has(item.value) && !recoveryNames.has(item.value),
     );
     // App 层命令追加在 CLI catalog 之后展示；CLI 已提供同名命令时以 CLI 为准，避免遮蔽。
     const cliValues = new Set(cliSuggestions.map((item) => item.value));
@@ -172,76 +266,13 @@ export function SlashCommandPlugin({
     activeTokenRef.current = null;
   }, [disabled]);
 
-  useEffect(() => {
-    return editor.registerUpdateListener(({ dirtyElements, dirtyLeaves, editorState, tags }) => {
-      editorState.read(() => {
-        // 历史导航回填含 / 的历史条目时，不应重新打开 slash 面板，
-        // 否则面板以 COMMAND_PRIORITY_CRITICAL 注册方向键处理器，吞掉后续历史翻阅按键。
-        if (!shouldSlashPanelProcessUpdate(tags)) {
-          activeTokenRef.current = null;
-          setActiveTrigger(null);
-          return;
-        }
-
-        if (disabled) {
-          activeTokenRef.current = null;
-          setActiveTrigger(null);
-          return;
-        }
-
-        const selectionState = getCurrentTextNodeSelection();
-        const cursorText = selectionState ?? getTextAroundCursor();
-        if (!cursorText) {
-          activeTokenRef.current = null;
-          dismissedSignatureRef.current = null;
-          setActiveTrigger(null);
-          return;
-        }
-
-        const nextActiveToken = selectionState
-          ? reconcileActivePromptInputTokenSnapshot(
-              activeTokenRef.current,
-              selectionState,
-              dirtyElements.size === 0 && dirtyLeaves.size === 0,
-            )
-          : null;
-        const nextActiveTrigger = selectionState
-          ? nextActiveToken
-          : extractActivePromptInputTrigger(cursorText.textBeforeCursor);
-        if (!nextActiveTrigger || nextActiveTrigger.trigger !== "/") {
-          activeTokenRef.current = null;
-          dismissedSignatureRef.current = null;
-          setActiveTrigger(null);
-          return;
-        }
-        activeTokenRef.current = nextActiveToken;
-
-        const nextSignature = getPromptInputTriggerSignature(nextActiveTrigger);
-        if (
-          dismissedSignatureRef.current !== null &&
-          dismissedSignatureRef.current !== nextSignature
-        ) {
-          dismissedSignatureRef.current = null;
-        }
-
-        if (dismissedSignatureRef.current === nextSignature) {
-          setActiveTrigger(null);
-          return;
-        }
-
-        setActiveTrigger((current) => {
-          if (
-            current?.trigger === nextActiveTrigger.trigger &&
-            current.query === nextActiveTrigger.query
-          ) {
-            return current;
-          }
-
-          return nextActiveTrigger;
-        });
-      });
-    });
-  }, [disabled, editor]);
+  useSlashTriggerListener(
+    editor,
+    disabled,
+    activeTokenRef,
+    dismissedSignatureRef,
+    setActiveTrigger,
+  );
 
   const applySuggestion = useCallback(
     (suggestion: PromptInputSuggestionItem) => {
@@ -297,6 +328,8 @@ export function SlashCommandPlugin({
       setActiveTrigger(null);
       setSelectedIndex(0);
       if (isAppCommand) {
+        // 本地操作也要保留输入焦点；在执行回调前恢复，避免抢走回调新开的辅助对话焦点。
+        editor.focus();
         appCommands
           ?.find((command) => normalizeSlashCommandValue(command.value) === suggestion.value)
           ?.run();
@@ -453,6 +486,7 @@ export function SlashCommandPlugin({
       sections={panelSections}
       emptyText=""
       selectedIndex={selectedIndex}
+      selectionScope={activeSignature}
       hasActiveQuery={hasActiveQuery}
       onSelect={selectSuggestion}
     />,

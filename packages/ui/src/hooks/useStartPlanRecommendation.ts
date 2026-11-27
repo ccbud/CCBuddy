@@ -2,11 +2,8 @@ import { useProviderSettingsView } from "@/hooks/useProviderSettingsView.js";
 import { buildStartPlanEntitlementOptions } from "@/lib/startPlanEntitlementOptions.js";
 import { useCallback } from "react";
 import type { ModelSelectionView } from "@ccbuddy/provider";
-import {
-  TID_START_PLAN_RECOMMENDATION_DIALOG,
-  isStartPlanModelProviderId,
-  type ModelSelection,
-} from "@ccbuddy/shared";
+import { isStartPlanModelProviderId, type ModelSelection } from "@ccbuddy/shared";
+import { TID_START_PLAN_RECOMMENDATION_DIALOG } from "@ccbuddy/shared/test-ids";
 import { useOptionalBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { useUsageEntitlementWithService } from "@/hooks/useUsageEntitlement.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";

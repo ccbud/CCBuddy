@@ -60,7 +60,6 @@ export class ProviderEntryOrigins {
 function isCanonicalRealUser(entry: RuntimeMessageEntry): boolean {
   return (
     !isRuntimeAttachmentEntry(entry) &&
-    entry.queryScope !== "output_token_continuation" &&
     entry.message.role === "user" &&
     !entry.message.toolCallId &&
     !entry.message.toolName &&
@@ -95,6 +94,11 @@ export function isUserInputMessage(entry: RuntimeMessageEntry): boolean {
 
 export function isMidTurnInput(entry: RuntimeMessageEntry): boolean {
   return inputRoleOf(entry) === "mid_turn";
+}
+
+/** 用户真实输入的 prompt：不含中途消息、child 任务、新轮通知、goal 续跑、中断标记和 compact summary。 */
+export function isRealUserPrompt(entry: RuntimeMessageEntry): boolean {
+  return isCanonicalRealUser(entry) && !isPresentedInput(entry);
 }
 
 /**

@@ -9,16 +9,9 @@ import {
   runWithContextAsync,
   traceContextToLogContext,
   estimateMessageTokens,
-  hasEnoughMessagesToCompact,
   shouldAutoCompact,
 } from "../deps.js";
-import type {
-  AutoCompactPolicyConfig,
-  AutoCompactTokenOverride,
-  SessionEvent,
-  TraceContext,
-  TurnId,
-} from "../deps.js";
+import type { AutoCompactTokenOverride, SessionEvent, TraceContext, TurnId } from "../deps.js";
 import type { RuntimeMessageEntry } from "../../agent/message-history.js";
 import {
   throwIfTurnAborted,
@@ -26,12 +19,14 @@ import {
   isTurnCancellationError,
   appendTurnOutcomeEvent,
   buildRuntimeProviderRequestMessages,
+  hasEnoughRuntimeEntriesToCompact,
 } from "../helpers/index.js";
 import type { TurnResult, RunModelTextRequestOptions } from "../types.js";
 import type { Model } from "../deps.js";
+import type { ProviderContextUsageSnapshot } from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { autoCompactDecisionLogContext } from "./compact-log-context.js";
-import { resolveNormalRequestMaxOutputTokens } from "./model-token-limits.js";
+import { resolveAutoCompactPolicyConfig } from "./model-token-limits.js";
 import type {
   AutoCompactLoopContext,
   AutoCompactOutcome,
@@ -39,7 +34,8 @@ import type {
   ReactiveCompactLoopContext,
 } from "./turn-loop-state.js";
 import { recordTurnUsageFact } from "./usage-observability.js";
-import { findLatestCommittedAssistantUsage } from "./turn-model-step-usage.js";
+import { findLatestCommittedAssistantUsage, latestContextTokens } from "./turn-model-step-usage.js";
+import { rollOverTotalTokensBudget } from "../helpers/total-tokens-budget.js";
 import { discardSpeculativeCompaction } from "./speculative-compaction.js";
 import { startAutoCompactPrepass } from "./speculative-compact-prepass.js";
 
@@ -191,14 +187,7 @@ export async function autoCompactIfNeeded(
 ): Promise<AutoCompactOutcome> {
   throwIfTurnAborted(abortSignal);
 
-  const config: AutoCompactPolicyConfig = {
-    contextWindow: context.model.properties.contextWindow,
-    ...this.config.compact,
-    maxOutputTokens: resolveNormalRequestMaxOutputTokens({
-      modelMaxOutputTokens: context.model.optionSpecs.maxOutputTokens.max,
-    }),
-    modelContextBudgetStrategy: this.config.modelContextBudgetStrategy,
-  };
+  const config = resolveAutoCompactPolicyConfig(this, context.model);
   const activeEntries = context.turnRequestState.entries;
   const activeProjection = buildRuntimeProviderRequestMessages(this, {
     entries: activeEntries,
@@ -212,6 +201,8 @@ export async function autoCompactIfNeeded(
     config,
     consecutiveFailures: this.autoCompactConsecutiveFailures,
     tokenOverride,
+    // 修复原因同 reactive compact：按投影后的消息判断时，被删的回复不算历史，可总结的部分没有 assistant 就不压缩。
+    hasEnoughHistory: hasEnoughRuntimeEntriesToCompact(activeEntries),
   });
 
   if (!decision.shouldCompact) {
@@ -287,6 +278,7 @@ export async function autoCompactIfNeeded(
         trigger: CompactTrigger.Auto,
         agentListingTools,
         activeEntries,
+        getContinuationTools: context.getContinuationTools,
         ...(context.model ? { model: context.model } : {}),
       },
     );
@@ -294,6 +286,7 @@ export async function autoCompactIfNeeded(
       return "skipped";
     }
     context.turnRequestState.entries = compactResult.entries;
+    rollOverTotalTokensBudgetAfterCompact(this, activeEntries);
     this.autoCompactConsecutiveFailures = 0;
     this.logger?.info("Auto compact completed", {
       ...traceContextToLogContext(turnTraceContext),
@@ -323,6 +316,20 @@ export async function autoCompactIfNeeded(
     });
     return "failed";
   }
+}
+
+/**
+ * 主循环里的 auto / reactive compaction 提交后，把 compact 前的上下文加进预算计数，数值不会跳回；
+ * 手动 compact 不调用，下一条真实用户消息会重新起算。
+ */
+function rollOverTotalTokensBudgetAfterCompact(
+  runtime: AgentRuntimeInternal,
+  compactedEntries: readonly RuntimeMessageEntry[],
+): void {
+  runtime.totalTokensBudget = rollOverTotalTokensBudget(
+    runtime.totalTokensBudget,
+    latestContextTokens(compactedEntries),
+  );
 }
 
 function buildProviderUsageTokenOverride(
@@ -394,7 +401,10 @@ export async function reactiveCompactAfterContextExceeded(
     model: context.model,
   });
   const { messages: activeMessages, sourceEntries } = activeProjection;
-  if (!hasEnoughMessagesToCompact(activeMessages)) {
+  // 入口按全部存储条目判断；compactActiveConversation 保留最后一轮后对其余部分再判断一次。
+  // 修复原因：原来按投影后的消息判断；只有思考或空白的回复在投影第一步被删，可总结的部分没有 assistant
+  // 时这里先跳过，用户直接看到超窗错误，而这些用户消息其实可以压缩。
+  if (!hasEnoughRuntimeEntriesToCompact(activeEntries)) {
     this.logger?.warn("Reactive compact skipped because there is not enough history", {
       ...traceContextToLogContext(turnTraceContext),
       errorMessage: originalError instanceof Error ? originalError.message : String(originalError),
@@ -443,6 +453,7 @@ export async function reactiveCompactAfterContextExceeded(
         trigger: CompactTrigger.Reactive,
         agentListingTools: context.agentListingTools,
         activeEntries,
+        getContinuationTools: context.getContinuationTools,
         model: context.model,
       },
     );
@@ -450,6 +461,7 @@ export async function reactiveCompactAfterContextExceeded(
       return "skipped";
     }
     context.turnRequestState.entries = compactResult.entries;
+    rollOverTotalTokensBudgetAfterCompact(this, activeEntries);
     this.autoCompactConsecutiveFailures = 0;
     this.logger?.info("Reactive compact completed; retrying model request", {
       ...traceContextToLogContext(turnTraceContext),

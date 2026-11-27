@@ -1,9 +1,4 @@
-import type {
-  InteractionRequestOrigin,
-  SessionId,
-  ToolCallId,
-  TurnId,
-} from "@ccbuddy/contracts";
+import type { InteractionRequestOrigin, SessionId, ToolCallId, TurnId } from "@ccbuddy/contracts";
 
 export interface SubagentInteractionOriginContext {
   agentId: string;

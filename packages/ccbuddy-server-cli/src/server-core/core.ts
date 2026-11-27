@@ -1,21 +1,40 @@
+import { hostname } from "node:os";
 import {
-  createLocalServices,
+  createLegacyServerCredentialCipher,
+  resolveServerCredentialFile,
+  CCBUDDY_CREDENTIALS_FILE_ENV,
+} from "@ccbuddy/shared/credential-security";
+import {
+  createServerHostServices,
   disposeServiceResourcesAndWait,
   materializeCCbuddyBuiltinProviderConfig,
   getAppConfigDir,
+  getCredentialsFilePath,
   CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV,
   createTopicResourcePeers,
 } from "@ccbuddy/services/node";
 import { ICCbuddyAgentService } from "@ccbuddy/services";
-import { CCBUDDY_VERSION } from "@ccbuddy/shared";
+import { CCBUDDY_APP_VERSION_ENV, CCBUDDY_VERSION } from "@ccbuddy/shared";
 import { createCoreHttpServer } from "./http.js";
+import { createIngressToken } from "./ingressToken.js";
 import { installParentDisconnectHandler } from "./parentDisconnect.js";
 import { resolveCoreServerId } from "./serverIdentity.js";
 import { createTaskActivityTracker } from "./taskActivityTracker.js";
+import {
+  CORE_HEARTBEAT_INTERVAL_MS,
+  SERVER_CREDENTIAL_FORMAT,
+  SERVER_CREDENTIAL_FORMAT_ENV,
+} from "../contracts.js";
+import { resolveServerLayout } from "../runtime/paths.js";
 
 declare const __CCBUDDY_BUILTIN_PROVIDER_CONFIG_JSON__: string | undefined;
 
 export async function runServerCore(generation: number): Promise<void> {
+  // Bug 原因：Agent 的模型请求头从 CCBUDDY_APP_VERSION 读 App 版本，缺失时回退到 CLI 包版本
+  // （0.17.0）。本地由 Desktop main 注入；远端 Core 由 SSH/WSL/Docker exec → Supervisor fork 拉起，
+  // 整条链都没有这个 env，远端请求于是报 0.17.0（按客户端版本拦截的网关会拒绝）。升级时旧 Supervisor
+  // 会拉起新 release 的 Core，所以只能由 Core 用自身编译期版本写入，Agent spawn 时继承。
+  process.env[CCBUDDY_APP_VERSION_ENV] = CCBUDDY_VERSION;
   let shutdown: ((reason: string) => Promise<void>) | undefined;
   let parentDisconnected = false;
   let disposeParentDisconnectHandler = (): void => undefined;
@@ -23,9 +42,25 @@ export async function runServerCore(generation: number): Promise<void> {
     if (shutdown) void shutdown("parent-disconnected");
     else parentDisconnected = true;
   });
+  const layout = resolveServerLayout(process.env.CCBUDDY_SERVER_ROOT?.trim());
+  // Bug 原因（ZCT-2120452663971209216）：共享库被同机 Desktop 固定为系统库后，Core 读不到其密钥。
+  // 准备命令此时已创建 Server 自有库；Core 只读该事实，并在任何凭据读写方创建前写入或清除
+  // 进程环境，Core 内的凭据服务、兼容 cipher 和拉起的 Agent 由此指向同一文件。
+  const credentialsFile = await resolveServerCredentialFile({
+    sharedFilePath: layout.sharedCredentialsFile,
+    serverFilePath: layout.serverCredentialsFile,
+  });
+  if (credentialsFile === layout.serverCredentialsFile) {
+    process.env[CCBUDDY_CREDENTIALS_FILE_ENV] = credentialsFile;
+  } else {
+    delete process.env[CCBUDDY_CREDENTIALS_FILE_ENV];
+  }
   const topicResourcePeers = createTopicResourcePeers();
   const explicitCCbuddyBuiltinProviderConfigFilePath =
     process.env[CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV]?.trim();
+  // Built-in Config 物化到所属 Environment 配置根（~/.ccbuddy/v2）而不是 release 自带的 runtime 目录：
+  // release 目录是不可变的，同一 releaseId 重装时 assertExistingReleaseMatches 会重算整棵树的
+  // 内容哈希，多出的物化文件会让校验失败。
   const ccbuddyBuiltinProviderConfigFilePath = explicitCCbuddyBuiltinProviderConfigFilePath
     ? explicitCCbuddyBuiltinProviderConfigFilePath
     : typeof __CCBUDDY_BUILTIN_PROVIDER_CONFIG_JSON__ === "string"
@@ -39,14 +74,28 @@ export async function runServerCore(generation: number): Promise<void> {
       `当前构建未嵌入 CCbuddy Built-in Provider Config，且未设置 ${CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV}`,
     );
   }
-  const services = createLocalServices({
-    ccbuddyBuiltinProviderConfigFilePath,
-    serviceAuthorityMode: "standalone-server",
-    topicResourceRelayChannel: (request) => topicResourcePeers.getChannel(request),
-  });
+  const sourceServerId = (await resolveCoreServerId()) ?? hostname() ?? "ccbuddy-server";
+  // 旧 Supervisor 会自行回滚，候选 Core 在 owner 换代前必须保持旧格式可读。
+  const legacyUpdateOwner =
+    process.env[SERVER_CREDENTIAL_FORMAT_ENV] !== String(SERVER_CREDENTIAL_FORMAT);
+  const credentialCipherProvider = legacyUpdateOwner
+    ? await createLegacyServerCredentialCipher({ filePath: getCredentialsFilePath() })
+    : undefined;
+  const { services, workspaceIdentityMapper, migrationFailedPathCount } =
+    await createServerHostServices({
+      sourceServerId,
+      ccbuddyBuiltinProviderConfigFilePath,
+      providerProvisioningTargetEnabled: true,
+      credentialCipherProvider,
+      topicResourceRelayChannel: (request) => topicResourcePeers.getChannel(request),
+    });
   const taskActivityTracker = createTaskActivityTracker(services.getOptional(ICCbuddyAgentService));
+  const ingressToken = await createIngressToken(layout);
   const http = await createCoreHttpServer(services, {
-    serverId: await resolveCoreServerId(),
+    serverId: sourceServerId,
+    ingressToken,
+    migrationFailedPathCount,
+    workspaceIdentityMapper,
     topicResourcePeers,
   });
   const send = (message: unknown): Promise<void> => {
@@ -67,6 +116,9 @@ export async function runServerCore(generation: number): Promise<void> {
     host: http.host,
     port: http.port,
     version: CCBUDDY_VERSION,
+    ...(process.env.CCBUDDY_SERVER_RELEASE_ID?.trim()
+      ? { releaseId: process.env.CCBUDDY_SERVER_RELEASE_ID.trim() }
+      : {}),
     generation,
   });
   let shutdownStarted = false;
@@ -74,7 +126,11 @@ export async function runServerCore(generation: number): Promise<void> {
   const activitySubscription = taskActivityTracker.onDidChangeRunningTaskCount(
     (runningTaskCount) => {
       lastRunningTaskCount = runningTaskCount;
-      void send({ type: "task-activity", runningTaskCount });
+      void send({
+        type: "task-activity",
+        runningTasks: taskActivityTracker.readRunningTasks(),
+        runningTaskCount,
+      });
     },
   );
   let heartbeatInFlight: Promise<void> | undefined;
@@ -84,17 +140,31 @@ export async function runServerCore(generation: number): Promise<void> {
       .then((runningTaskCount) => {
         if (runningTaskCount !== lastRunningTaskCount) {
           lastRunningTaskCount = runningTaskCount;
-          void send({ type: "task-activity", runningTaskCount });
+          void send({
+            type: "task-activity",
+            runningTasks: taskActivityTracker.readRunningTasks(),
+            runningTaskCount,
+          });
         }
-        void send({ type: "heartbeat", at: Date.now(), runningTaskCount });
+        void send({
+          type: "heartbeat",
+          runningTasks: taskActivityTracker.readRunningTasks(),
+          at: Date.now(),
+          runningTaskCount,
+        });
       })
       .catch(() => {
-        void send({ type: "heartbeat", at: Date.now(), runningTaskCount: lastRunningTaskCount });
+        void send({
+          type: "heartbeat",
+          runningTasks: taskActivityTracker.readRunningTasks(),
+          at: Date.now(),
+          runningTaskCount: lastRunningTaskCount,
+        });
       })
       .finally(() => {
         heartbeatInFlight = undefined;
       });
-  }, 10_000);
+  }, CORE_HEARTBEAT_INTERVAL_MS);
   shutdown = async (reason: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;

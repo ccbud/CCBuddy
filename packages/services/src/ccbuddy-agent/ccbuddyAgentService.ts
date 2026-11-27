@@ -1,5 +1,62 @@
 import {
+  V4_SESSION_DELETION_PREVIEW_BATCH_MAX,
+  v4SessionDeletionPreviewSchema,
+  v4SessionDeletionPreviewBatchResultSchema,
+  v4SessionDeletionResultSchema,
+  type V4SessionDeletionPreviewBatchItem,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import { sessionLifecycleSnapshotSchema, type SessionLifecycleSnapshot } from "@ccbuddy/shared";
+import { credentialCipherRequestSchema } from "@ccbuddy/shared";
+import {
+  executeCredentialCipherRequest,
+  type CredentialCipher,
+} from "@ccbuddy/shared/credential-security";
+import {
+  getNetworkErrorCodes,
+  isNetworkFailure,
+} from "#src/providers/api/networkErrorClassifier.js";
+import {
+  isProjectTokenTransportFailureCode,
+  CCBUDDY_PROVIDER_CONFIG_NETWORK_ERROR,
+  CCBUDDY_PROVIDER_PROJECT_TOKEN_NETWORK_ERROR,
+  ccbuddyProviderRuntimeHeadersErrorCode,
+} from "@ccbuddy/shared";
+import { RemoteConversationTelemetry } from "#src/conversation-telemetry/remoteConversationTelemetry.js";
+import { toAgentPluginDiscoveryTelemetry } from "#src/plugins/pluginManagementService.js";
+import {
+  remoteConversationTelemetryEventSchema,
+  type RemoteConversationTelemetryEvent,
+} from "@ccbuddy/shared/conversation-telemetry";
+import {
+  resolveWorkspaceTelemetryDetail,
+  type RendererTelemetryEventPayload,
+} from "@ccbuddy/shared";
+import { isAuxiliarySessionKind } from "@ccbuddy/shared";
+import { createAppControlReverseRpc } from "#src/app-control/index.js";
+import type { AppControlService } from "#src/app-control/contract.js";
+import { SessionControlError } from "@ccbuddy/session-control/contracts";
+import {
+  pluginUiToolResultNotificationSchema,
+  type PluginUiToolResultNotification,
+} from "@ccbuddy/shared/mcp-apps";
+import {
+  supportsHistoryFirst,
+  supportsPluginDiscoveryUi,
+  supportsPluginExtensionSummary,
+  ensureGenUiContextSupport,
+  supportsHighspeedCardOwner,
+} from "./independentPlanSupport.js";
+import { supportsResidentRowsRange } from "./resident-rows-range/contract.js";
+import {
+  offPeakControlParamsSchema,
+  offPeakControlResultSchema,
+  offPeakLifecycleNotificationSchema,
+  type OffPeakLifecycleNotification,
+  type OffPeakControlParams,
+} from "@ccbuddy/shared";
+import {
   requiresRequestVerification,
+  type RequestVerificationConfig,
   allowRequestVerificationHeaders,
   requestVerificationInteractionAvailable,
 } from "@ccbuddy/shared";
@@ -10,11 +67,6 @@ import {
   type ChannelReplyHostRequest,
   type ChannelReplyResult,
 } from "@ccbuddy/shared";
-import {
-  v4SessionDataMeasureResultSchema,
-  v4SessionDataPurgeResultSchema,
-} from "@ccbuddy/shared/ccbuddy-protocol-v4";
-import { sessionLifecycleSnapshotSchema, sessionLifecycleResultSchema } from "@ccbuddy/shared";
 import { requestPluginReferenceCatalog } from "#src/ccbuddy-agent/pluginReferenceCatalogRequest.js";
 import {
   localTtftFactsSchema,
@@ -22,12 +74,9 @@ import {
   type LocalTtftFacts,
 } from "@ccbuddy/shared";
 /* oxlint-disable eslint(max-lines) -- CCbuddy Protocol transport、通知 wiring 和 app-facing session 方法必须共享同一个 client/emitter 上下文。 */
-import {
-  ensureIndependentPlanSupport,
-  ensureGenUiContextSupport,
-} from "./independentPlanSupport.js";
-import { createHash, randomUUID } from "node:crypto";
-import { negotiateSessionDirectorySource } from "./sessionDirectorySupport.js";
+import { ensureIndependentPlanSupport } from "./independentPlanSupport.js";
+import { isRemoteInputPredictionEnabled } from "./inputPredictionSwitch.js";
+import { randomUUID } from "node:crypto";
 import { createTopicResourceBridge } from "./topicResourceBridge.js";
 import { uploadTopicResourceToClient } from "./topicResourceUpload.js";
 import {
@@ -50,6 +99,7 @@ import type { OffPeakClientConfig } from "#src/coding-plan-subscription/codingPl
 import {
   subagentRuntimeConfigSchema,
   ccbuddySubagentsReadRuntimeConfigParamsSchema,
+  ccbuddySessionReadReplyLanguageParamsSchema,
   type SubagentRuntimeConfig,
   CCBUDDY_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS,
   formatLogPrefix,
@@ -63,6 +113,7 @@ import {
   CCBUDDY_PROTOCOL_NAME,
   CCBUDDY_PROTOCOL_VERSION,
   ccbuddyMcpListResultSchema,
+  ccbuddyWorkspaceMcpTrustResultSchema,
   ccbuddyPermissionRequestParamsSchema,
   ccbuddyBrowserListParamsSchema,
   ccbuddyBrowserExecuteParamsSchema,
@@ -97,6 +148,7 @@ import {
   ccbuddyPluginOperationProgressNotificationSchema,
   ccbuddyPluginsRestoreBuiltinResultSchema,
   ccbuddyPluginsSetEnabledResultSchema,
+  ccbuddyPluginsWorkspaceTrustResultSchema,
   ccbuddyPluginsCancelOperationResultSchema,
   ccbuddyPluginsUninstallResultSchema,
   ccbuddyPluginsValidateResultSchema,
@@ -104,6 +156,7 @@ import {
   ccbuddyAutomationCheckTaskBindingParamsSchema,
   ccbuddyAutomationCreateParamsSchema,
   ccbuddyAutomationDeleteParamsSchema,
+  ccbuddyAutomationPauseParamsSchema,
   ccbuddyAutomationListParamsSchema,
   ccbuddyAutomationUpdateParamsSchema,
   ccbuddyOffPeakCreateParamsSchema,
@@ -112,8 +165,10 @@ import {
   ccbuddyComputerUseOperationEventSchema,
   ccbuddyProviderRuntimeHeadersCancelledSchema,
   ccbuddyProviderRuntimeHeadersRequestParamsSchema,
+  ccbuddyProviderRefreshRegistryResultSchema,
   ccbuddyProviderTestModelConnectivityResultSchema,
   ccbuddyOfficialMcpAuthHeadersRequestParamsSchema,
+  type OfficialAuthConsumerKind,
   summarizeOfficialMcpIdentityHeaders,
   ccbuddyProtocolEmptyResultSchema,
   ccbuddyProtocolMethods,
@@ -123,6 +178,7 @@ import {
   ccbuddyToolExecResourceSchema,
   ccbuddyProcessResourceSampleSchema,
   ccbuddySessionCloseResultSchema,
+  ccbuddySessionReleaseUnderDirectoryResultSchema,
   ccbuddySessionCompactResultSchema,
   ccbuddySessionEventsResultSchema,
   ccbuddySessionGoalResultSchema,
@@ -132,6 +188,7 @@ import {
   ccbuddySessionEventSchema,
   ccbuddySessionSendResultSchema,
   ccbuddySessionRequestRuntimePreferencesParamsSchema,
+  ccbuddyRuntimeCapabilitiesSchema,
   ccbuddySessionRuntimePreferencesResultSchema,
   ccbuddySessionStateSnapshotSchema,
   ccbuddySessionSubscribeResultSchema,
@@ -152,6 +209,9 @@ import {
   type DynamicWorkflowClientConfig,
   type DynamicWorkflowMode,
   applyDynamicWorkflowUserMode,
+  createDynamicWorkflowClientConfig,
+  DEFAULT_DYNAMIC_WORKFLOW_MODE,
+  DYNAMIC_WORKFLOW_MODE_ON_FETCH_FAILURE,
   isDynamicWorkflowModeEnabled,
   normalizeDynamicWorkflowMode,
   type AgentLaneResourceSample,
@@ -173,6 +233,11 @@ import {
   mergeOffPeakMutationToolDenylist,
 } from "#src/ccbuddy-agent/automationToolPolicy.js";
 import { CCBUDDY_AGENT_RUNTIME_UNAVAILABLE_CODE } from "./ccbuddyAgent.js";
+import { createContextCompositionClient } from "#src/ccbuddy-agent/contextCompositionClient.js";
+import {
+  createPluginHostQueriesClient,
+  type PluginUserOptionsReader,
+} from "#src/ccbuddy-agent/pluginHostQueriesClient.js";
 import type {
   CCbuddyProtocolRequestId,
   ModelSelection,
@@ -190,6 +255,7 @@ import type {
   ICCbuddyAgentService,
   CCbuddyAgentBackgroundBashOutputParams,
   CCbuddyAgentAppRuntimePreferences,
+  CCbuddyAgentRuntimeExitedEvent,
   CCbuddyAgentRuntimeLifecycleEvent,
   CCbuddyAgentAddPluginMarketplaceParams,
   CCbuddyAgentAppUsageParams,
@@ -216,6 +282,7 @@ import type {
   CCbuddyAgentResumeSessionParams,
   CCbuddyAgentSendPromptParams,
   CCbuddyAgentServiceEvent,
+  CCbuddyAgentProviderRuntimeHeadersRequest,
   CCbuddyAgentSessionSubscribeParams,
   CCbuddyAgentSessionTarget,
   CCbuddyAgentSessionRuntimePreferencesRequest,
@@ -223,6 +290,7 @@ import type {
   CCbuddyAgentSetModeParams,
   CCbuddyAgentSetModelParams,
   CCbuddyAgentSetPluginEnabledParams,
+  CCbuddyAgentSetWorkspacePluginTrustParams,
   CCbuddyAgentSetThoughtLevelParams,
   CCbuddyAgentPluginReferenceCatalogParams,
   CCbuddyAgentSkillReferenceCatalogParams,
@@ -274,6 +342,7 @@ import type {
   CCbuddyAgentConversationFileRewindPreviewParams,
   CCbuddyAgentConversationRowsRangeParams,
   CCbuddyAgentConversationPlansParams,
+  CCbuddyAgentConversationInputPredictionParams,
   CCbuddyAgentConversationWorkflowRunEventsParams,
   CCbuddyAgentConversationWorkflowRunArtifactDataParams,
   CCbuddyAgentConversationWorkflowRunArtifactReadParams,
@@ -288,6 +357,7 @@ import type {
   CCbuddyAgentSessionsIndexSubscribeParams,
   CCbuddyAgentWorkspaceConfigSubscribeParams,
 } from "./ccbuddyAgent.js";
+import { HOST_WORKTREE_COMMAND } from "./ccbuddyAgent.js";
 import {
   backgroundBashOutputResultSchema,
   v4BackgroundBashOutputParamsSchema,
@@ -299,10 +369,15 @@ import {
   commandsQueryParamsSchema,
   commandsQueryResultSchema,
   conversationTopic,
+  parseConversationTopic,
+  parseSessionsIndexTopic,
+  parseWorkspaceConfigTopic,
   conversationTopicWireCandidateSchema,
   conversationTelemetryFactSchema,
+  turnAdmissionTelemetrySchema,
   cuaPermissionObservationSchema,
   sessionsIndexTopic,
+  sessionsIndexReconcileResultSchema,
   sessionsIndexTopicWireCandidateSchema,
   MAX_LEGACY_TASK_IDS_PER_SUBSCRIBE,
   V4_METHODS,
@@ -324,6 +399,8 @@ import {
   v4ConversationFileRewindPreviewResultSchema,
   v4ConversationRowsRangeResultSchema,
   v4ConversationPlansResultSchema,
+  v4ConversationInputPredictionResultSchema,
+  emptyInputPredictionResult,
   v4ConversationWorkflowRunEventsResultSchema,
   v4ConversationWorkflowRunArtifactDataResultSchema,
   v4ConversationWorkflowRunArtifactReadResultSchema,
@@ -336,6 +413,8 @@ import {
   v4ConversationUsageResultSchema,
   v4SessionsIndexSubscribeResultSchema,
   v4UsageStatsResultSchema,
+  v4SessionDataMeasureResultSchema,
+  v4SessionDataPurgeResultSchema,
   v4WorkspaceConfigSubscribeResultSchema,
   workspaceConfigTopic,
   workspaceConfigTopicWireCandidateSchema,
@@ -344,7 +423,7 @@ import {
   CCbuddyAttachmentFaultError,
   type CommandAck,
   type ConversationTopicWireCandidate,
-  type ConversationTelemetryFact,
+  type ConversationTelemetryInput,
   type SessionsIndexTopicWireCandidate,
   type WorkspaceConfigTopicWireCandidate,
   type CommandEnvelope,
@@ -358,7 +437,10 @@ import { createBackgroundSessionEventCoalescer } from "#src/ccbuddy-agent/ccbudd
 import { AutomationService } from "#src/session/automationService.js";
 import { AutomationRepo } from "#src/session/automationRepo.js";
 import { TaskIndexRepo } from "#src/session/taskIndexRepo.js";
-import { CCbuddyAgentMcpStatusModeUnsupportedError } from "#src/ccbuddy-agent/ccbuddyAgentErrors.js";
+import {
+  CCbuddyAgentModelSelectionBasisUnsupportedError,
+  CCbuddyAgentMcpStatusModeUnsupportedError,
+} from "#src/ccbuddy-agent/ccbuddyAgentErrors.js";
 import { CCbuddyAgentProcessManager } from "./ccbuddyAgentProcessManager.js";
 import type { CCbuddyAgentProcessManagerOptions } from "./ccbuddyAgentProcessManager.js";
 import type { IOffPeakTaskService } from "#src/session/offPeakTask.js";
@@ -403,7 +485,8 @@ interface PendingPermissionRequest {
 }
 
 interface PendingProviderRuntimeHeadersRequest extends PendingPermissionRequest {
-  request: CCbuddyProviderRuntimeHeadersRequestParams;
+  request: CCbuddyAgentProviderRuntimeHeadersRequest;
+  interactionRequired?: boolean;
   responding?: boolean;
 }
 
@@ -522,14 +605,27 @@ function buildWorkspaceRef(params: CCbuddyAgentWorkspaceTarget): CCbuddyWorkspac
   };
 }
 
+/**
+ * 会触发冷恢复的 V4 查询与命令信封带上当前 attachment 的 workspace（docs/git/worktree.md §9.3）。
+ * 修复原因：只有 subscribe 带它；runtime 卸载后先到的计划目录、行分页、附件等查询让 CLI 按存储的
+ * cwd 重建身份，受管 worktree 会话的 key 变成 worktree 路径，之后的反向请求被判为"不属于本 CLI"，
+ * 任务打不开也不能发送。只对本地 workspace 注入：远程 Source Server 可能是不认识该字段的旧版本
+ * （部分 schema 是 strict），worktree 也只支持本地。
+ */
+function coldResumeWorkspace(params: CCbuddyAgentWorkspaceTarget): {
+  workspace?: CCbuddyWorkspaceRef;
+} {
+  return params.workspaceIdentity?.trim() || params.remoteSessionId
+    ? {}
+    : { workspace: buildWorkspaceRef(params) };
+}
+
 // 已保存工作流的 target 是否带 workspace：项目档、以及
 // GUI 项目组里明说 `scope:"global"` 的动作都带 workspacePath；只给 `{ scope: "global" }` 的
 // 全局组动作不带，交给 services 自选载体。
 function savedWorkflowTargetHasWorkspace(
   params: CCbuddyAgentSavedWorkflowTarget,
-): params is CCbuddyAgentWorkspaceTarget & {
-  scope?: CCbuddySavedWorkflowScope;
-} {
+): params is CCbuddyAgentWorkspaceTarget & { scope?: CCbuddySavedWorkflowScope } {
   return typeof (params as Partial<CCbuddyAgentWorkspaceTarget>).workspacePath === "string";
 }
 
@@ -695,13 +791,18 @@ function buildSessionCreateParams(
   },
   omittedFields: ReadonlySet<SessionCreateCompatField> = new Set(),
 ) {
+  // 工作区来源是权限边界，旧 Agent 不支持时不能省略后自动执行本地配置。
+  if (
+    omittedFields.has("mcpServers") &&
+    params.mcpServers?.some((server) => server.scope === "workspace")
+  ) {
+    throw new Error("workspace_mcp_trust_unavailable");
+  }
   return {
     sessionId: params.sessionId,
+    additionalDirectories: params.additionalDirectories,
     workspace: buildWorkspaceRef(params),
     parentSessionId: params.parentSessionId,
-    ...(params.additionalDirectories !== undefined
-      ? { additionalDirectories: params.additionalDirectories }
-      : {}),
     mode: params.mode,
     model: params.model,
     ...(params.persistence !== undefined && !omittedFields.has("persistence")
@@ -748,10 +849,7 @@ function buildSessionCreateParams(
  * 写——mode 单独出现对 CLI 没有意义。旧 CLI strict schema 不认时经 compat 省略，按 alwaysOn 行事。
  */
 function buildDynamicWorkflowModeField(
-  params: {
-    dynamicWorkflowEnabled?: boolean;
-    dynamicWorkflowMode?: DynamicWorkflowMode;
-  },
+  params: { dynamicWorkflowEnabled?: boolean; dynamicWorkflowMode?: DynamicWorkflowMode },
   omittedFields: ReadonlySet<SessionCreateCompatField | SessionResumeCompatField>,
 ): { dynamicWorkflowMode?: DynamicWorkflowMode } {
   return params.dynamicWorkflowEnabled === true &&
@@ -770,12 +868,17 @@ function buildSessionResumeParams(
   },
   omittedFields: ReadonlySet<SessionResumeCompatField> = new Set(),
 ) {
+  // 工作区来源是权限边界，旧 Agent 不支持时不能省略后自动执行本地配置。
+  if (
+    omittedFields.has("mcpServers") &&
+    params.mcpServers?.some((server) => server.scope === "workspace")
+  ) {
+    throw new Error("workspace_mcp_trust_unavailable");
+  }
   return {
     sessionId: params.sessionId,
+    additionalDirectories: params.additionalDirectories,
     workspace: buildWorkspaceRef(params),
-    ...(params.additionalDirectories !== undefined
-      ? { additionalDirectories: params.additionalDirectories }
-      : {}),
     ...(params.thoughtLevel !== undefined && !omittedFields.has("thoughtLevel")
       ? { thoughtLevel: params.thoughtLevel }
       : {}),
@@ -811,6 +914,7 @@ function buildSessionSendParams(
     sessionId: params.sessionId,
     // 执行身份/约束不是可忽略的兼容字段；旧 Worker 不支持时必须失败，不能静默剥掉。
     ...(params.modelSelection ? { modelSelection: params.modelSelection } : {}),
+    ...(params.modelSelectionBasis ? { modelSelectionBasis: params.modelSelectionBasis } : {}),
     ...(params.modelExecution ? { modelExecution: params.modelExecution } : {}),
     inputId: params.inputId,
     queryId: params.queryId,
@@ -958,6 +1062,31 @@ interface ActiveWorkspaceClient {
   dynamicWorkflowPolicyMode: DynamicWorkflowMode;
 }
 
+function requiresProviderRegistryRefresh(commandType: string): boolean {
+  // Bug 原因：模型切换遗漏刷新屏障，会用存量 Worker 的旧 Registry 校验新下发的 Provider。
+  // 复用同一刷新队列，成功后才下发切换命令，失败则直接拒绝本次切换。
+  switch (commandType) {
+    case "createSession":
+    case "createSelectionSideSession":
+    case "sendText":
+    case "sendGoalCommand":
+    case "compact":
+    case "forkAssistant":
+    case "editUserQuery":
+    case "retryTurn":
+    case "sendQueuedNow":
+    case "switchModelConfig":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** 与 CLI V4SessionNotResidentError 同一 reasonCode 文本，手机按它识别「不在内存，跳过」。 */
+function sessionNotResidentError(sessionId: string): Error {
+  return new Error(`session is not resident: ${sessionId} (proto.sessionNotResident)`);
+}
+
 function createRuntimeUnavailableError(params: CCbuddyAgentWorkspaceTarget): Error & {
   code: typeof CCBUDDY_AGENT_RUNTIME_UNAVAILABLE_CODE;
   workspaceKey: string;
@@ -971,34 +1100,105 @@ function createRuntimeUnavailableError(params: CCbuddyAgentWorkspaceTarget): Err
   return error;
 }
 
-interface CreateCCbuddyAgentServiceOptions extends Omit<
+// 配置 GET 尚未发送模型请求；只恢复可证实的网络/服务暂时不可用，不能把认证或坏配置当成断网。
+function isTemporaryVerificationConfigFailure(error: unknown): boolean {
+  const failure = error as { status?: number; cause?: unknown } | null;
+  // 200 只说明响应头成功；读取正文仍可能断流，必须继续检查结构化传输错误。
+  if (typeof failure?.status === "number" && failure.status >= 400) {
+    return failure.status === 408 || failure.status === 429 || failure.status >= 500;
+  }
+  if (isNetworkFailure(error)) return true;
+  if (
+    getNetworkErrorCodes(error).some((code) =>
+      ["UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "EAI_AGAIN"].includes(
+        code,
+      ),
+    )
+  )
+    return true;
+  // 配置读取端口不接收用户 AbortSignal，这里的 AbortError 来自该 GET 的传输超时。
+  return (
+    failure?.cause instanceof Error && ["AbortError", "TimeoutError"].includes(failure.cause.name)
+  );
+}
+
+/**
+ * 配置读取失败要能在日志里定位，又不能写入异常原文：底层 ApiError 的 message 会夹带
+ * 完整 URL、query 和远端响应正文。这里只保留类型、HTTP 状态和长度供排障归类。
+ */
+function describeVerificationConfigError(cause: unknown): {
+  name: string;
+  status?: number;
+  messageLength?: number;
+} {
+  const error = cause instanceof Error ? cause : undefined;
+  const status = (error as { status?: unknown } | undefined)?.status;
+  return {
+    name: error?.name ?? typeof cause,
+    ...(typeof status === "number" ? { status } : {}),
+    ...(error ? { messageLength: error.message.length } : {}),
+  };
+}
+
+// 账号鉴权先用配置快照判定 Start Plan 是否需要界面验证；只注入服务会让每个
+// Start Plan 请求都在运行时失败且没有装配期提示，因此两者必须成对注入。
+type AccountRequestAuthOptions =
+  | { accountRequestAuthService?: undefined; readRequestVerificationConfig?: undefined }
+  | {
+      accountRequestAuthService: IAccountRequestAuthService;
+      readRequestVerificationConfig: () => Promise<RequestVerificationConfig | null>;
+    };
+
+type CreateCCbuddyAgentServiceOptions = CreateCCbuddyAgentServiceBaseOptions &
+  AccountRequestAuthOptions;
+
+interface CreateCCbuddyAgentServiceBaseOptions extends Omit<
   CCbuddyAgentProcessManagerOptions,
   "idleTimeoutMs"
 > {
   /** 仅供 MCP 状态探测进程使用，不能把空闲回收传给 chat。 */
   mcpStatusIdleTimeoutMs?: number;
+  /** Desktop Host 注入：Agent 插件推荐事实在此单点转成插件业务埋点。 */
+  reportPluginTelemetryEvent?: (event: RendererTelemetryEventPayload) => void;
   accountProviderConfigSource?: ProviderSource<AccountProviderConfigSnapshot>;
-  accountRequestAuthService?: IAccountRequestAuthService;
   /** Desktop Host 请求 Main 登记 Agent 已授权的精确本地视频路径。 */
   authorizeLocalMediaPreviewPath?: (path: string) => Promise<string>;
   modelSelectionReadinessSource?: ModelSelectionReadinessSource;
+  prepareRuntimeWorkspace?: (workspace: CCbuddyAgentWorkspaceTarget) => Promise<void>;
   readSubagentRuntimeConfig?: (workspace: {
     workspacePath: string;
     workspaceIdentity?: string;
   }) => Promise<SubagentRuntimeConfig>;
+  /**
+   * Agent 回复语言（同步、只读内存，null 为未设置），应答 CLI 的 session/readReplyLanguage。
+   * 只有 Desktop Host 注入（值由 Main 持有并推送）；未注入的 Host（远端、Web）回答 null。
+   */
+  resolveReplyLanguage?: () => string | null;
   sessionRuntimePreferencesAuthority?: "local" | "external";
+  prepareProjectExecution?: (
+    projectId: string,
+  ) => Promise<import("@ccbuddy/shared").ProjectExecutionSnapshot>;
   prepareSessionCreation?: (
-    target: CCbuddyAgentWorkspaceTarget & {
+    target: Omit<CCbuddyAgentSessionTarget, "sessionId"> & {
       sessionId?: string;
       projectId: string | null;
       creationCommand?: { clientId: string; commandId: string };
       additionalDirectories?: string[];
     },
   ) => Promise<{ sessionId: string; additionalDirectories: string[] }>;
+  /** fork 提交后、ACK 返回前完成 Host 归属交接；duplicate 重放须幂等。 */
   prepareForkCreation?: (
     target: CCbuddyAgentSessionTarget & { parentSessionId: string },
   ) => Promise<void>;
   resolveSessionDirectories?: (target: CCbuddyAgentSessionTarget) => Promise<string[]>;
+  /**
+   * 会话操作闸门（受管 worktree 删除租约，docs/git/worktree.md §8.3）：会话命令与冷订阅经它执行，
+   * 会话 cwd 位于删除中的 worktree 时被拒绝。由受管 worktree 服务提供。
+   */
+  runSessionOperation?: <T>(
+    target: CCbuddyAgentSessionTarget,
+    operation: () => Promise<T>,
+  ) => Promise<T>;
   resolveSessionRuntimePreferences?: (
     scope: CCbuddySessionRuntimePreferencesScope,
   ) => Promise<CCbuddySessionRuntimePreferencesResult>;
@@ -1036,6 +1236,9 @@ interface CreateCCbuddyAgentServiceOptions extends Omit<
    * browser 命令返回 backend_unavailable，不影响其它功能。
    */
   browserControlExecutor?: BrowserAmbientContextExecutor;
+  /** App 工具只在受信 Host 装配；handler 不接受模型自报权限。 */
+  resolveAppControlService?: () => AppControlService | undefined;
+  appControlSourceServerId?: string;
   channelReplyExecutor?: (request: ChannelReplyHostRequest) => Promise<ChannelReplyResult>;
   topicResourceExecutor?: (
     request: CCbuddyTopicResourceReadParams &
@@ -1056,20 +1259,15 @@ interface CreateCCbuddyAgentServiceOptions extends Omit<
    */
   officialMcpAuthHeadersResolver?: {
     resolveHeaders(request: {
+      /** plugin-command 按「套餐可选」解析：没有套餐时只返回 CCbuddy 登录身份。 */
+      consumer: OfficialAuthConsumerKind;
       mcpKey: string;
       pluginId: string;
       targetOrigin: string;
-      workspace: {
-        workspaceIdentity?: string;
-        workspaceKey: string;
-        workspacePath: string;
-      };
+      workspace: { workspaceIdentity?: string; workspaceKey: string; workspacePath: string };
     }): Promise<
       | { ok: true; headers: Record<string, string> }
-      | {
-          ok: false;
-          reason: "official_auth_unavailable" | "official_auth_plan_required";
-        }
+      | { ok: false; reason: "official_auth_unavailable" | "official_auth_plan_required" }
     >;
   };
   /**
@@ -1089,6 +1287,8 @@ interface CreateCCbuddyAgentServiceOptions extends Omit<
       trusted: boolean;
     }>;
   };
+  /** 已连接的内置 CLI 复用宿主加解密，不直接访问桌面系统钥匙串。 */
+  credentialCipherProvider?: CredentialCipher;
   /** desktop-local Host 注入；只消费已校验、已去重的 live session event。 */
   cuaOperationStateReporter?: CuaOperationStateReporter;
   onCuaPipSessionLifecycle?: (
@@ -1208,6 +1408,19 @@ export function resolveOffPeakToolSelection(
     ? selection
     : { ...selection, options: { reasoningLevel: thoughtLevel } };
 }
+function isHostWorktreeCommand(params: CCbuddyAgentConversationCommandParams): boolean {
+  return (params as { [HOST_WORKTREE_COMMAND]?: unknown })[HOST_WORKTREE_COMMAND] === true;
+}
+
+function assertNoHostOnlyWorktreeFields(envelope: CommandEnvelope): void {
+  const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const forbidden =
+    envelope.type === "createSession"
+      ? payload.cwd !== undefined || payload.worktreeCreation !== undefined
+      : envelope.type === "forkAssistant" && payload.targetCwd !== undefined;
+  if (forbidden) throw new Error("worktree.host-only-field");
+}
+
 export function createCCbuddyAgentService(
   options?: CreateCCbuddyAgentServiceOptions,
 ): ICCbuddyAgentService & { disposeAllAndWait(): Promise<void> } {
@@ -1231,7 +1444,7 @@ export function createCCbuddyAgentService(
       : undefined;
   // AutomationRepo 也持有 tasks-index.sqlite 连接，disposeAll 需一并收口（见下方 disposeAll 注释）
   const automationRepo = new AutomationRepo();
-  const automationService = new AutomationService(automationRepo);
+  const automationService = new AutomationService(automationRepo, options?.prepareProjectExecution);
   const automationTaskIndexRepo = new TaskIndexRepo();
   const pluginProcessManager = new CCbuddyAgentProcessManager({
     commandResolver: options?.commandResolver,
@@ -1264,7 +1477,7 @@ export function createCCbuddyAgentService(
   const officialMcpIssuanceAudit = createOfficialMcpIssuanceAudit();
   const providerRuntimeHeadersWorkspaceEmitters = new Map<
     string,
-    Emitter<CCbuddyProviderRuntimeHeadersRequestParams>
+    Emitter<CCbuddyAgentProviderRuntimeHeadersRequest>
   >();
   const providerRuntimeHeadersCancelledEmitters = new Map<
     string,
@@ -1289,6 +1502,10 @@ export function createCCbuddyAgentService(
   const sessionRuntimePreferencesRequestEmitter =
     new Emitter<CCbuddyAgentSessionRuntimePreferencesRequest>();
   const processResourceSampleEmitter = new Emitter<AgentLaneResourceSample>();
+  const pluginStartupDegradedEmitter = new Emitter<{
+    workspaceKey: string;
+    client: CCbuddyProtocolClient;
+  }>();
   const toolExecResourceEmitter = new Emitter<CCbuddyToolExecResource>();
   const mcpResourceSamplesEmitter = new Emitter<CCbuddyMcpResourceSample[]>();
   const mcpTelemetryEmitter = new Emitter<CCbuddyMcpTelemetryEvent>();
@@ -1297,20 +1514,61 @@ export function createCCbuddyAgentService(
     Emitter<CCbuddyPluginOperationProgressNotification>
   >();
   // v4 conversation 帧 fan-out：workspace 级 emitter，renderer 侧按 topic 自行路由。
-  const conversationFrameEmitters = new Map<string, Emitter<ConversationTopicWireCandidate>>();
-  const localTtftFactsEmitter = new Emitter<{
+  const sessionLifecycleEmitter = new Emitter<{
     workspaceKey: string;
-    facts: LocalTtftFacts;
+    snapshot: SessionLifecycleSnapshot;
   }>();
-  const conversationTelemetryFactEmitters = new Map<string, Emitter<ConversationTelemetryFact>>();
+  const conversationFrameEmitters = new Map<string, Emitter<ConversationTopicWireCandidate>>();
+  const localTtftFactsEmitter = new Emitter<{ workspaceKey: string; facts: LocalTtftFacts }>();
+  const conversationTelemetryFactEmitters = new Map<string, Emitter<ConversationTelemetryInput>>();
+  const contextComposition = createContextCompositionClient({
+    onModelRequestMetrics: (workspace, fact) => {
+      if (!collectRemoteConversationFact(workspace, fact))
+        getConversationTelemetryFactEmitter(workspace).fire(fact);
+    },
+    getExistingClient: (target) => getReadOnlyClient(target, "existing-only"),
+    isRuntimeUnavailableError: (error) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === CCBUDDY_AGENT_RUNTIME_UNAVAILABLE_CODE,
+    resolveWorkspaceKey,
+    logger,
+  });
+  // 插件宿主查询：user 层设置走插件管理面进程；`@` 候选项走持有会话的工作区 CLI（existing-only）。
+  const pluginHostQueries = createPluginHostQueriesClient({
+    getPluginManagementClient: () => getPluginManagementClient(),
+    getExistingClient: (target) => getReadOnlyClient(target, "existing-only"),
+  });
+  const remoteConversationTelemetryEmitter = new Emitter<RemoteConversationTelemetryEvent>();
+  const remoteConversationTelemetry = new Map<string, RemoteConversationTelemetry>();
+  function collectRemoteConversationFact(
+    workspace: CCbuddyAgentWorkspaceTarget,
+    fact: ConversationTelemetryInput,
+  ): boolean {
+    const key = resolveWorkspaceKey(workspace);
+    let collector = remoteConversationTelemetry.get(key);
+    if (!collector) {
+      collector = new RemoteConversationTelemetry({
+        workspaceScopeKey: `${v4ConnectionId}\0${key}`,
+        workspaceTelemetryDetail: resolveWorkspaceTelemetryDetail(workspace),
+        report: async (event) =>
+          remoteConversationTelemetryEmitter.fire(
+            remoteConversationTelemetryEventSchema.parse(event),
+          ),
+      });
+      remoteConversationTelemetry.set(key, collector);
+    }
+    return collector.acceptFact(fact);
+  }
+
+  const offPeakLifecycleEmitters = new Map<string, Emitter<OffPeakLifecycleNotification>>();
+  const pluginUiToolResultEmitter = new Emitter<
+    PluginUiToolResultNotification & CCbuddyAgentWorkspaceTarget
+  >();
   const cuaPermissionObservationEmitter = new Emitter<CCbuddyAgentCuaPermissionObservation>();
   // sessions-index 帧 fan-out：与 conversation 同一 conversationFrame 通知，按 topic 前缀分流到此 emitter。
   const sessionsIndexFrameEmitters = new Map<string, Emitter<SessionsIndexTopicWireCandidate>>();
   // workspace-config 帧 fan-out：配置目录活性（task-index syncer 消费），同一通知按前缀分流。
-  const sessionLifecycleEmitter = new Emitter<{
-    workspaceKey: string;
-    snapshot: import("@ccbuddy/shared").SessionLifecycleSnapshot;
-  }>();
   const workspaceConfigFrameEmitters = new Map<
     string,
     Emitter<WorkspaceConfigTopicWireCandidate>
@@ -1332,6 +1590,100 @@ export function createCCbuddyAgentService(
   });
   const sessionEventSequenceStates = new Map<string, SessionEventSequenceState>();
   const wiredClients = new WeakSet<CCbuddyProtocolClient>();
+  const clientWorkspaces = new WeakMap<
+    CCbuddyProtocolClient,
+    Map<string, CCbuddyAgentWorkspaceTarget>
+  >();
+  const clientSessions = new WeakMap<CCbuddyProtocolClient, Map<string, string>>();
+
+  function rememberClientTarget(
+    client: CCbuddyProtocolClient,
+    target: CCbuddyAgentWorkspaceTarget,
+    sessionId?: string,
+  ): void {
+    let workspaces = clientWorkspaces.get(client);
+    if (!workspaces) clientWorkspaces.set(client, (workspaces = new Map()));
+    const key = resolveWorkspaceKey(target);
+    // 运行归属只保存地址，避免长寿命共享连接保留首发 envelope 与完整消息内容。
+    workspaces.set(key, {
+      workspacePath: target.workspacePath,
+      ...(target.workspaceIdentity ? { workspaceIdentity: target.workspaceIdentity } : {}),
+      ...(target.remoteSessionId ? { remoteSessionId: target.remoteSessionId } : {}),
+    });
+    const request = target as CCbuddyAgentWorkspaceTarget & {
+      sessionId?: string;
+      envelope?: { sessionId?: string | null };
+    };
+    const id = sessionId ?? request.sessionId ?? request.envelope?.sessionId;
+    if (!id) return;
+    let sessions = clientSessions.get(client);
+    if (!sessions) clientSessions.set(client, (sessions = new Map()));
+    const previous = sessions.get(id);
+    if (previous && previous !== key)
+      throw new Error("Session workspace does not match its runtime owner");
+    sessions.set(id, key);
+  }
+
+  function routeClientMessage(
+    client: CCbuddyProtocolClient,
+    value: unknown,
+  ): CCbuddyAgentWorkspaceTarget | undefined {
+    const workspaces = clientWorkspaces.get(client);
+    if (!workspaces) return undefined;
+    const data = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    let key: string | undefined;
+    if (data.workspace && typeof data.workspace === "object") {
+      const ref = data.workspace as {
+        workspaceKey?: unknown;
+        workspacePath?: unknown;
+        workspaceIdentity?: unknown;
+      };
+      // Bug 根因：worktree 任务的 ref 中 workspacePath 是会话 cwd（worktree），workspaceKey 才是
+      // 所属 workspace（项目，docs/git/worktree.md §1.1）。按 identity || path 重新计算会得到
+      // worktree 路径，把项目 CLI 的反向请求误拒为"不属于本 CLI"。ref 自带的 workspaceKey 是唯一身份。
+      if (typeof ref.workspaceKey === "string" && ref.workspaceKey.trim()) key = ref.workspaceKey;
+      else if (typeof ref.workspacePath === "string")
+        key =
+          (typeof ref.workspaceIdentity === "string" && ref.workspaceIdentity.trim()) ||
+          ref.workspacePath;
+    }
+    if (!key && typeof data.workspacePath === "string") {
+      key =
+        (typeof data.workspaceIdentity === "string" && data.workspaceIdentity.trim()) ||
+        data.workspacePath;
+    }
+    if (typeof data.topic === "string")
+      key ??=
+        parseSessionsIndexTopic(data.topic) ?? parseWorkspaceConfigTopic(data.topic) ?? undefined;
+    const sessionId =
+      typeof data.sessionId === "string"
+        ? data.sessionId
+        : typeof data.taskId === "string"
+          ? data.taskId
+          : typeof data.targetTaskId === "string"
+            ? data.targetTaskId
+            : typeof data.boundSessionId === "string"
+              ? data.boundSessionId
+              : typeof data.topic === "string"
+                ? (parseConversationTopic(data.topic) ?? undefined)
+                : undefined;
+    const sessionWorkspaceKey = sessionId ? clientSessions.get(client)?.get(sessionId) : undefined;
+    if (key && sessionWorkspaceKey && key !== sessionWorkspaceKey) return undefined;
+    key ??= sessionWorkspaceKey;
+    if (!key && typeof data.directorySessionId === "string")
+      key = clientSessions.get(client)?.get(data.directorySessionId);
+    // 单工作区兼容旧 CLI；共享连接有明确归属却无法解析时，禁止借用首次连接目录。
+    if (!key && workspaces.size === 1) key = workspaces.keys().next().value;
+    if (!key) return undefined;
+    const target = workspaces.get(key);
+    if (!target) return undefined;
+    const current = activeClientsByWorkspaceKey.get(key);
+    if (current && current.client !== client) return undefined;
+    const workspace = current?.workspace ?? target;
+    if (sessionId) rememberClientTarget(client, workspace, sessionId);
+    return workspace;
+  }
+
   const clientDisposables = new WeakMap<CCbuddyProtocolClient, IDisposable[]>();
   const pendingPermissions = new Map<string, PendingPermissionRequest>();
   const pendingUserInputs = new Map<string, PendingPermissionRequest>();
@@ -1348,15 +1700,24 @@ export function createCCbuddyAgentService(
     PendingSessionRuntimePreferencesRequest
   >();
   const activeClientsByWorkspaceKey = new Map<string, ActiveWorkspaceClient>();
-  const interactionPreferenceSyncByWorkspaceKey = new Map<string, Promise<void>>();
+  const interactionPreferenceSyncByClient = new WeakMap<CCbuddyProtocolClient, Promise<void>>();
   let latestAppRuntimePreferences: CCbuddyAgentAppRuntimePreferences | undefined;
   /** 服务端「提供」的进程内单次读取；见 resolveDynamicWorkflowGate 的注释。 */
   let dynamicWorkflowOffer: Promise<DynamicWorkflowClientConfig | undefined> | undefined;
   /** desktop 推来的用户选择；只在没有本机设置权威（未注入 resolveDynamicWorkflowUserMode）时使用。 */
   let pushedDynamicWorkflowUserMode: DynamicWorkflowMode | undefined;
-  /** 每个 workspace 的策略同步链：后入队的步骤在前一步落地后才读取生效模式并发送。 */
-  const dynamicWorkflowPolicySyncByWorkspaceKey = new Map<string, Promise<void>>();
+  /** 每个物理 CLI 的策略同步链：后入队的步骤在前一步落地后才读取生效模式并发送。 */
+  const dynamicWorkflowPolicySyncByClient = new WeakMap<CCbuddyProtocolClient, Promise<void>>();
   const waitingWorkspaceStartups = new Map<string, WaitingWorkspaceStartup>();
+  /** 在 runtime/capabilities 中声明 worktreeCwd 的 CLI 连接（docs/git/worktree.md §9.3）。 */
+  const worktreeCwdClients = new WeakSet<CCbuddyProtocolClient>();
+  /**
+   * 在 runtime/capabilities 中声明 extensionInputSource 的 CLI 连接
+   * （apps/ccbuddy-cli/docs/design/v2/conversation-input-source.md §7）。
+   */
+  const extensionInputSourceClients = new WeakSet<CCbuddyProtocolClient>();
+  /** 在 runtime/capabilities 中声明 conversationQuoteComment 的 CLI 连接（选区批注）。 */
+  const conversationQuoteCommentClients = new WeakSet<CCbuddyProtocolClient>();
   function cancelWaitingWorkspaceStartup(workspaceKey: string): void {
     const waiting = waitingWorkspaceStartups.get(workspaceKey);
     if (waiting) {
@@ -1416,7 +1777,6 @@ export function createCCbuddyAgentService(
     activeClientsByWorkspaceKey.delete(workspaceKey);
     // Interaction preference 是 CLI 进程内存态；runtime 换代后即使 app revision
     // 未变化也必须重新同步，不能沿用旧 client 的完成 Promise。
-    interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
   }
 
   const runtimeLifecycleDisposable = processManager.onRuntimeLifecycle((event) => {
@@ -1473,22 +1833,122 @@ export function createCCbuddyAgentService(
       });
     } catch (error) {
       if (pendingProviderRuntimeHeaders.get(params.key) !== params.pending) return;
+      const errorMessage = error instanceof Error ? error.message : String(error);
       logger.warn(undefined, "CCbuddy provider runtime headers 应用失败", {
         modelId: params.pending.request.modelSelection.modelId,
         providerId: params.pending.request.providerId,
         requestId: params.pending.request.requestId,
         sessionId: params.pending.request.sessionId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
         workspaceKey: resolveWorkspaceKey(params.pending.request.workspace),
       });
+      // Bug 原因（ZCT-2122890271808978944 等）：冷缓存换证遇到断网/超时，原先与其它失败一样回
+      // headersApplied:false，Agent 视为不可重试，整轮在首次模型尝试前结束。换证客户端只抛固定码
+      // （见 ProjectAccessTokenClient），这里仅把这两个传输故障码改用结构化 RPC 错误码，
+      // 交给 Agent 的 network_error 预算；其它失败码和应答形态保持不变。
+      if (isProjectTokenTransportFailureCode(errorMessage)) {
+        await params.pending.client.respondError(params.pending.protocolRequestId, {
+          code: CCBUDDY_PROVIDER_PROJECT_TOKEN_NETWORK_ERROR,
+          message: errorMessage,
+        });
+        return;
+      }
       await params.pending.client.respond(params.pending.protocolRequestId, {
         headersApplied: false,
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage,
       });
     } finally {
       if (pendingProviderRuntimeHeaders.get(params.key) === params.pending) {
         pendingProviderRuntimeHeaders.delete(params.key);
       }
+    }
+  }
+
+  async function routeProviderRuntimeHeadersRequest(
+    key: string,
+    pending: PendingProviderRuntimeHeadersRequest,
+    workspace: CCbuddyAgentWorkspaceTarget,
+  ): Promise<void> {
+    let configFailureCode:
+      | (typeof ccbuddyProviderRuntimeHeadersErrorCode)[keyof typeof ccbuddyProviderRuntimeHeadersErrorCode]
+      | undefined;
+    try {
+      const access = pending.request.accountAccess;
+      if (requiresRequestVerification(access)) {
+        let config: RequestVerificationConfig | null;
+        try {
+          config = (await options?.readRequestVerificationConfig?.()) ?? null;
+        } catch (error) {
+          // 根因：底层 fetch/远端错误正文不能进入 Agent 与界面可见的 errorMessage。
+          // 稳定文案让 Agent 仍能区分“读取失败”和“凭据缺失”，原始异常只随 cause 进 Host 日志。
+          configFailureCode = isTemporaryVerificationConfigFailure(error)
+            ? ccbuddyProviderRuntimeHeadersErrorCode.configNetwork
+            : ccbuddyProviderRuntimeHeadersErrorCode.configInvalid;
+          throw new Error(
+            configFailureCode === ccbuddyProviderRuntimeHeadersErrorCode.configNetwork
+              ? "Request verification configuration read failed"
+              : "Request verification configuration is invalid",
+            { cause: error },
+          );
+        }
+        if (pendingProviderRuntimeHeaders.get(key) !== pending) return;
+        if (!config) {
+          configFailureCode = ccbuddyProviderRuntimeHeadersErrorCode.configInvalid;
+          throw new Error("Request verification configuration is invalid");
+        }
+        // 根因：关闭开关原来由 Renderer 判定，后台界面延迟也会耗尽鉴权 RPC 时限。
+        // Host 绑定同一快照后再决定是否投递；跳过时直接复用账号鉴权，不等待界面。
+        pending.request = { ...pending.request, requestVerificationConfig: config };
+      }
+      if (
+        accountRequestAuthService &&
+        access &&
+        !requiresRequestVerification(access, pending.request.requestVerificationConfig)
+      ) {
+        await respondAccountRequestAuthWithoutInteraction({ key, pending });
+        return;
+      }
+      if (!requestVerificationInteractionAvailable)
+        throw new Error("Provider request auth is unavailable");
+      // 只在决策完成后开放补投；配置 IO 期间的晚订阅不能抢先启动界面验证。
+      pending.interactionRequired = true;
+      emitSessionEvent(workspace, pending.request.sessionId, {
+        type: "providerRuntimeHeaders.request",
+        request: pending.request,
+      });
+      // session listener 可能同步应答或取消，不能再向 workspace 投递已撤销的请求。
+      if (pendingProviderRuntimeHeaders.get(key) !== pending || pending.responding) return;
+      providerRuntimeHeadersWorkspaceEmitters
+        .get(resolveWorkspaceKey(workspace))
+        ?.fire(pending.request);
+    } catch (error) {
+      if (pendingProviderRuntimeHeaders.get(key) !== pending) return;
+      pendingProviderRuntimeHeaders.delete(key);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      // 配置读取异常的原文来自底层 HTTP 层，可能带 URL、query、token 或响应正文；
+      // 日志落盘且会被采集，只保留可安全归类的字段，用户可见 errorMessage 用稳定文案。
+      const cause = error instanceof Error ? error.cause : undefined;
+      const loggedError =
+        cause === undefined ? errorMessage : describeVerificationConfigError(cause);
+      logger.warn(undefined, "CCbuddy provider runtime headers 应用失败", {
+        modelId: pending.request.modelSelection.modelId,
+        providerId: pending.request.providerId,
+        requestId: pending.request.requestId,
+        sessionId: pending.request.sessionId,
+        error: loggedError,
+        workspaceKey: resolveWorkspaceKey(pending.request.workspace),
+      });
+      if (configFailureCode === ccbuddyProviderRuntimeHeadersErrorCode.configNetwork) {
+        await pending.client.respondError(pending.protocolRequestId, {
+          code: CCBUDDY_PROVIDER_CONFIG_NETWORK_ERROR,
+          message: errorMessage,
+        });
+        return;
+      }
+      await pending.client.respond(pending.protocolRequestId, {
+        headersApplied: false,
+        errorMessage,
+      });
     }
   }
 
@@ -1560,6 +2020,7 @@ export function createCCbuddyAgentService(
   async function syncAccountProviderConfigToClient(params: {
     client: CCbuddyProtocolClient;
     reason: string;
+    refreshRegistry?: boolean;
   }): Promise<void> {
     if (!accountProviderConfigSource) return;
     const previous = accountConfigSyncByClient.get(params.client) ?? Promise.resolve();
@@ -1571,33 +2032,41 @@ export function createCCbuddyAgentService(
         // 排队前异步读取可能晚返回，把旧结果排在新结果之后。读取与交付
         // 共用现有 Client 串行队列；不新增发送屏障，也不按内容 revision 猜测时间先后。
         const snapshot = await accountProviderConfigSource.read();
-        if (accountConfigReceivedRevisionByClient.get(params.client) === snapshot.revision) return;
-        const result = await params.client.request(
-          ccbuddyProtocolMethods.providerUpdateAccountConfig,
-          {
-            revision: snapshot.revision,
-            basedOnCCbuddyBuiltinRevision: snapshot.basedOnCCbuddyBuiltinRevision,
-            // Account 是运行时事实信封，不是磁盘 Provider 规则集合；保持原有协议字典。
-            providers: Object.fromEntries(
-              [...snapshot.providers.entries()].map(([providerId, config]) => [
-                providerId,
-                config.toJSON(),
-              ]),
-            ),
-            states: snapshot.states ?? {},
-          },
-          ccbuddyProviderUpdateAccountConfigResultSchema,
-        );
-        if (result.receivedRevision !== snapshot.revision) {
-          throw new Error("Account Config 接收回执版本与交付版本不一致");
+        if (accountConfigReceivedRevisionByClient.get(params.client) !== snapshot.revision) {
+          const result = await params.client.request(
+            ccbuddyProtocolMethods.providerUpdateAccountConfig,
+            {
+              revision: snapshot.revision,
+              basedOnCCbuddyBuiltinRevision: snapshot.basedOnCCbuddyBuiltinRevision,
+              // Account 是运行时事实信封，不是磁盘 Provider 规则集合；保持原有协议字典。
+              providers: Object.fromEntries(
+                [...snapshot.providers.entries()].map(([providerId, config]) => [
+                  providerId,
+                  config.toJSON(),
+                ]),
+              ),
+              states: snapshot.states ?? {},
+            },
+            ccbuddyProviderUpdateAccountConfigResultSchema,
+          );
+          if (result.receivedRevision !== snapshot.revision) {
+            throw new Error("Account Config 接收回执版本与交付版本不一致");
+          }
+          accountConfigReceivedRevisionByClient.set(params.client, result.receivedRevision);
+          logger.info(undefined, "account provider config 已交付到 CCbuddy agent", {
+            providerCount: result.providerCount,
+            reason: params.reason,
+            receivedRevision: result.receivedRevision,
+            status: result.status,
+          });
         }
-        accountConfigReceivedRevisionByClient.set(params.client, result.receivedRevision);
-        logger.info(undefined, "account provider config 已交付到 CCbuddy agent", {
-          providerCount: result.providerCount,
-          reason: params.reason,
-          receivedRevision: result.receivedRevision,
-          status: result.status,
-        });
+        if (params.refreshRegistry) {
+          await params.client.request(
+            ccbuddyProtocolMethods.providerRefreshRegistry,
+            { reason: params.reason },
+            ccbuddyProviderRefreshRegistryResultSchema,
+          );
+        }
       });
     accountConfigSyncByClient.set(params.client, current);
     try {
@@ -1613,10 +2082,12 @@ export function createCCbuddyAgentService(
     client: CCbuddyProtocolClient;
     reason: string;
     workspace: CCbuddyAgentWorkspaceTarget;
+    refreshRegistry?: boolean;
   }): Promise<void> {
     await syncAccountProviderConfigToClient({
       client: params.client,
       reason: params.reason,
+      refreshRegistry: params.refreshRegistry,
     });
   }
 
@@ -1636,8 +2107,8 @@ export function createCCbuddyAgentService(
     preferences: CCbuddyAgentAppRuntimePreferences;
     workspace: CCbuddyAgentWorkspaceTarget;
   }): Promise<void> {
-    const workspaceKey = resolveWorkspaceKey(params.workspace);
-    const previous = interactionPreferenceSyncByWorkspaceKey.get(workspaceKey) ?? Promise.resolve();
+    // 同一物理连接上的全局偏好必须串行，防止旧工作区快照覆盖新设置。
+    const previous = interactionPreferenceSyncByClient.get(params.client) ?? Promise.resolve();
     const current = previous
       .catch(() => {
         // 前一次失败不能打乱之后开关提交的顺序；当前快照仍需继续尝试。
@@ -1670,16 +2141,16 @@ export function createCCbuddyAgentService(
           if (!isProtocolMethodNotFoundError(error)) throw error;
         }
       });
-    interactionPreferenceSyncByWorkspaceKey.set(workspaceKey, current);
+    interactionPreferenceSyncByClient.set(params.client, current);
     void current.then(
       () => {
-        if (interactionPreferenceSyncByWorkspaceKey.get(workspaceKey) === current) {
-          interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
+        if (interactionPreferenceSyncByClient.get(params.client) === current) {
+          interactionPreferenceSyncByClient.delete(params.client);
         }
       },
       () => {
-        if (interactionPreferenceSyncByWorkspaceKey.get(workspaceKey) === current) {
-          interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
+        if (interactionPreferenceSyncByClient.get(params.client) === current) {
+          interactionPreferenceSyncByClient.delete(params.client);
         }
       },
     );
@@ -1712,6 +2183,7 @@ export function createCCbuddyAgentService(
             client,
             reason: `startup_ready:${event.reason}`,
             workspace,
+            refreshRegistry: true,
           });
           logger.info(undefined, "provider/model 就绪后已启动等待中的 CCbuddy agent", {
             providerCount: event.snapshot.providerCount,
@@ -1768,7 +2240,7 @@ export function createCCbuddyAgentService(
     if (existing) {
       return existing;
     }
-    const created = new Emitter<CCbuddyProviderRuntimeHeadersRequestParams>();
+    const created = new Emitter<CCbuddyAgentProviderRuntimeHeadersRequest>();
     providerRuntimeHeadersWorkspaceEmitters.set(key, created);
     return created;
   }
@@ -1777,9 +2249,19 @@ export function createCCbuddyAgentService(
     const key = resolveWorkspaceKey(workspace);
     const existing = conversationTelemetryFactEmitters.get(key);
     if (existing) return existing;
-    const created = new Emitter<ConversationTelemetryFact>();
+    const created = new Emitter<ConversationTelemetryInput>();
     conversationTelemetryFactEmitters.set(key, created);
     return created;
+  }
+
+  function getOffPeakLifecycleEmitter(workspace: CCbuddyAgentWorkspaceTarget) {
+    const key = resolveWorkspaceKey(workspace);
+    let emitter = offPeakLifecycleEmitters.get(key);
+    if (!emitter) {
+      emitter = new Emitter<OffPeakLifecycleNotification>();
+      offPeakLifecycleEmitters.set(key, emitter);
+    }
+    return emitter;
   }
 
   function getSessionsIndexFrameEmitter(workspace: CCbuddyAgentWorkspaceTarget) {
@@ -2057,51 +2539,135 @@ export function createCCbuddyAgentService(
 
   function wireClient(
     client: CCbuddyProtocolClient,
-    workspace: CCbuddyAgentWorkspaceTarget,
+    initialWorkspace: CCbuddyAgentWorkspaceTarget,
     /**
      * 该 client 所属的进程泳道。CLI 进程不知道自己被哪个进程管理器拉起，
      * 因此资源样本的 lane 只能在这里按调用方补齐。
      */
     lane: ProcessResourceCliLane,
   ): void {
+    rememberClientTarget(client, initialWorkspace);
     if (wiredClients.has(client)) {
       return;
     }
     wiredClients.add(client);
-    const topicResources = createTopicResourceBridge(() => {
-      // 预热可能没有 remoteSessionId；不能永久捕获 wireClient 首次参数。
-      // 从同一个实际 CLI 的当前可信入口取路由，并在一次资源操作内保持不变。
-      const active = activeClientsByWorkspaceKey.get(resolveWorkspaceKey(workspace));
-      const resourceWorkspace =
-        active?.client === client ? { ...active.workspace } : { ...workspace };
-      return {
-        validate: (request, signal, trace) => {
-          if (!options?.topicResourceValidator)
-            throw new Error("Topic resource authorization is unavailable");
-          return options.topicResourceValidator(
-            { ...request, ...resourceWorkspace, trace },
-            signal,
+    const topicResources = new Map<string, ReturnType<typeof createTopicResourceBridge>>();
+    const getTopicResources = (workspace: CCbuddyAgentWorkspaceTarget) => {
+      const key = resolveWorkspaceKey(workspace);
+      const existing = topicResources.get(key);
+      if (existing) return existing;
+      // 每个逻辑工作区独立取消域；物理连接只安装一组监听。
+      const bridge = createTopicResourceBridge(() => {
+        const active = activeClientsByWorkspaceKey.get(key);
+        const resourceWorkspace = active?.client === client ? active.workspace : workspace;
+        return {
+          validate: (request, signal, trace) => {
+            if (!options?.topicResourceValidator)
+              throw new Error("Topic resource authorization is unavailable");
+            return options.topicResourceValidator(
+              { ...request, ...resourceWorkspace, trace },
+              signal,
+            );
+          },
+          read: (request, signal, trace) => {
+            if (!options?.topicResourceExecutor)
+              throw new Error("Topic attachment retrieval is unavailable on this host");
+            return options.topicResourceExecutor(
+              { ...request, ...resourceWorkspace, trace },
+              signal,
+            );
+          },
+          upload: (request, attachment, signal, trace) =>
+            uploadTopicResourceToClient(
+              client,
+              v4ConnectionId,
+              { ...resourceWorkspace, sessionId: request.taskId },
+              attachment,
+              signal,
+              trace,
+            ),
+        };
+      });
+      topicResources.set(key, bridge);
+      return bridge;
+    };
+    const appControlConnectionId = `app-control:${randomUUID()}`;
+    const appControl = createAppControlReverseRpc({
+      client,
+      service: () => options?.resolveAppControlService?.(),
+      onResponseError: (error) =>
+        // 这条是唯一记录包装前原因的地方；debug 在生产构建里是 no-op，排查冷会话读取失败时
+        // 完全看不到原因（2026-11-03 现场）。失败是可恢复的单次调用，用 warn 保留原因。
+        logger.warn(undefined, "App control response failed", { error: String(error) }),
+      bind: async ({ callerSessionId, callId, turnId, trace, signal }) => {
+        // 共享 CLI 会承载多个 workspace，首次连接目录不再代表调用者。
+        // 只按 Host 已登记的 session→workspace 归属路由，随后仍用持久会话事实复核。
+        const callerWorkspace = routeClientMessage(client, { sessionId: callerSessionId });
+        if (!callerWorkspace)
+          throw new SessionControlError(
+            "forbidden",
+            "App caller workspace is not owned by this CLI",
           );
-        },
-        read: (request, signal, trace) => {
-          if (!options?.topicResourceExecutor)
-            throw new Error("Topic attachment retrieval is unavailable on this host");
-          return options.topicResourceExecutor({ ...request, ...resourceWorkspace, trace }, signal);
-        },
-        upload: (request, attachment, signal, trace) =>
-          uploadTopicResourceToClient(
-            client,
-            v4ConnectionId,
-            { ...resourceWorkspace, sessionId: request.taskId },
-            attachment,
-            signal,
-            trace,
-          ),
-      };
+        const callerWorkspaceKey = resolveWorkspaceKey(callerWorkspace);
+        const assertCurrent = () => {
+          const active = activeClientsByWorkspaceKey.get(callerWorkspaceKey);
+          if (active?.client !== client || client.isDisposed || signal.aborted)
+            throw new SessionControlError("forbidden", "App caller connection is no longer active");
+        };
+        assertCurrent();
+        const currentWorkspace = activeClientsByWorkspaceKey.get(callerWorkspaceKey)!.workspace;
+        // callerSessionId 来自 CLI 工具运行上下文，但仍须由同一个实际连接的持久事实核对。
+        // 不能信任模型参数或把未知 root 降级为当前路径中的任意会话。
+        const { sessions } = await client.request(
+          ccbuddyProtocolMethods.sessionList,
+          { workspace: buildWorkspaceRef(currentWorkspace), sessionIds: [callerSessionId] },
+          ccbuddySessionListResultSchema,
+        );
+        const session = sessions.find((item) => item.sessionId === callerSessionId);
+        if (
+          !session ||
+          isAuxiliarySessionKind(session.sessionKind) ||
+          session.workspace.workspacePath !== currentWorkspace.workspacePath ||
+          resolveWorkspaceKey(session.workspace) !== resolveWorkspaceKey(currentWorkspace)
+        )
+          throw new SessionControlError(
+            "forbidden",
+            "App caller is not a bound product root session",
+          );
+        assertCurrent();
+        return {
+          workspacePath: currentWorkspace.workspacePath,
+          workspaceIdentity: currentWorkspace.workspaceIdentity,
+          remoteSessionId: currentWorkspace.remoteSessionId,
+          callerSessionId,
+          callId,
+          turnId,
+          trace,
+          signal,
+          assertCurrent,
+          sourceServerId: options?.appControlSourceServerId ?? "local",
+          connectionId: appControlConnectionId,
+        };
+      },
     });
     const disposables = [
-      topicResources,
+      {
+        dispose() {
+          for (const bridge of topicResources.values()) bridge.dispose();
+          topicResources.clear();
+        },
+      },
+      appControl,
       client.onNotification((message) => {
+        const routed = routeClientMessage(client, message.params);
+        const data = message.params as {
+          sessionId?: unknown;
+          taskId?: unknown;
+          topic?: unknown;
+          workspace?: unknown;
+        } | null;
+        if (!routed && (data?.sessionId || data?.taskId || data?.topic || data?.workspace)) return;
+        const workspace = routed ?? initialWorkspace;
         if (message.method === ccbuddyProtocolMethods.sessionLifecycleChanged) {
           if (activeClientsByWorkspaceKey.get(resolveWorkspaceKey(workspace))?.client !== client)
             return;
@@ -2110,6 +2676,14 @@ export function createCCbuddyAgentService(
             sessionLifecycleEmitter.fire({
               workspaceKey: resolveWorkspaceKey(workspace),
               snapshot: parsed.data,
+            });
+          return;
+        }
+        if (message.method === ccbuddyProtocolNotifications.pluginStartupDegraded) {
+          if (client.pluginStartupDegraded && !client.isDisposed)
+            pluginStartupDegradedEmitter.fire({
+              workspaceKey: resolveWorkspaceKey(workspace),
+              client,
             });
           return;
         }
@@ -2251,10 +2825,30 @@ export function createCCbuddyAgentService(
             });
           return;
         }
+        if (message.method === V4_NOTIFICATIONS.turnAdmissionTelemetry) {
+          const parsed = turnAdmissionTelemetrySchema.safeParse(message.params);
+          if (parsed.success) {
+            if (!collectRemoteConversationFact(workspace, parsed.data))
+              getConversationTelemetryFactEmitter(workspace).fire(parsed.data);
+          } else logger.debug(undefined, "丢弃无效会话接纳遥测通知");
+          return;
+        }
+        if (contextComposition.handleNotification(workspace, message)) return;
         if (message.method === V4_NOTIFICATIONS.conversationTelemetryFact) {
           const parsed = conversationTelemetryFactSchema.safeParse(message.params);
-          if (parsed.success) {
-            getConversationTelemetryFactEmitter(workspace).fire(parsed.data);
+          if (parsed.success && parsed.data.kind === "plugin.discovery") {
+            // 插件推荐事实只在 Host 上报一次，不进 renderer / 远控引擎，避免多窗口或手机重复计数。
+            try {
+              options?.reportPluginTelemetryEvent?.(
+                toAgentPluginDiscoveryTelemetry(parsed.data, workspace),
+              );
+            } catch {
+              /* 观测端故障与会话主链路隔离。 */
+            }
+          } else if (parsed.success) {
+            // 远控事实由执行服务独占，避免桌面同时打开该会话时重复计 step。
+            if (!collectRemoteConversationFact(workspace, parsed.data))
+              getConversationTelemetryFactEmitter(workspace).fire(parsed.data);
           } else {
             // 严格丢弃未知字段，避免 CLI runtime 新字段未经审计穿透到 renderer reporter。
             logger.warn(undefined, "丢弃无效 v4 conversation telemetry fact", {
@@ -2268,7 +2862,35 @@ export function createCCbuddyAgentService(
           }
           return;
         }
+        if (message.method === V4_NOTIFICATIONS.offPeakLifecycle) {
+          const parsed = offPeakLifecycleNotificationSchema.safeParse(message.params);
+          if (parsed.success) getOffPeakLifecycleEmitter(workspace).fire(parsed.data);
+          else
+            logger.warn(undefined, "丢弃无效闲时生命周期通知", {
+              workspaceKey: resolveWorkspaceKey(workspace),
+            });
+          return;
+        }
 
+        if (message.method === V4_NOTIFICATIONS.pluginUiToolResult) {
+          const parsed = pluginUiToolResultNotificationSchema.safeParse(message.params);
+          // 只接受当前本地 runtime；旧进程迟到结果和远程客户端不能在本窗口创建 UI。
+          if (
+            parsed.success &&
+            !workspace.remoteSessionId &&
+            !isRemoteWorkspaceIdentity(workspace.workspaceIdentity ?? "") &&
+            activeClientsByWorkspaceKey.get(resolveWorkspaceKey(workspace))?.client === client
+          ) {
+            pluginUiToolResultEmitter.fire({
+              ...parsed.data,
+              workspacePath: workspace.workspacePath,
+              ...(workspace.workspaceIdentity
+                ? { workspaceIdentity: workspace.workspaceIdentity }
+                : {}),
+            });
+          }
+          return;
+        }
         if (message.method === V4_NOTIFICATIONS.cuaPermissionObservation) {
           const parsed = cuaPermissionObservationSchema.safeParse(message.params);
           if (
@@ -2350,6 +2972,85 @@ export function createCCbuddyAgentService(
         }
       }),
       client.onRequest((request) => {
+        if (request.method === ccbuddyProtocolMethods.interactionRequestCredentialCipher) {
+          const parsed = credentialCipherRequestSchema.safeParse(request.params);
+          if (!parsed.success || !options?.credentialCipherProvider) {
+            void client
+              .respondError(request.id, {
+                code: -32602,
+                message: "Credential cipher is unavailable",
+              })
+              .catch(() => {});
+            return;
+          }
+          // 该私有能力属于已建立的 stdio 进程连接，不转发至 UI，也不记录载荷。
+          void executeCredentialCipherRequest(options.credentialCipherProvider, parsed.data)
+            .then((reply) => client.respond(request.id, reply))
+            .catch(() => {});
+          return;
+        }
+        // 回复语言是 Host 级的值，不按 workspace 路由；放在守卫之后，服务多个 workspace 的
+        // CLI 会被误拒。从内存同步应答，不做 IO（docs/i18n/agent-reply-language.md）。
+        if (request.method === ccbuddyProtocolMethods.sessionReadReplyLanguage) {
+          if (!ccbuddySessionReadReplyLanguageParamsSchema.safeParse(request.params).success) {
+            void client
+              .respondError(request.id, {
+                code: -32602,
+                message: "Invalid reply language request",
+              })
+              .catch(() => {});
+            return;
+          }
+          // 注入的值已在 Host 收消息时按 replyLanguageSchema 校验，这里不再重复。
+          void client
+            .respond(request.id, { language: options?.resolveReplyLanguage?.() ?? null })
+            .catch(() => {});
+          return;
+        }
+        // App 控制反向请求不带 sessionId/workspace 顶层字段；共享 CLI 的路由守卫会误拒它。
+        // 它在 bind 中按调用者 session 单独路由，因此必须先于守卫处理。
+        if (appControl.handle(request)) return;
+        const mcpStatusAuth =
+          lane === "mcp-status" &&
+          request.method === ccbuddyProtocolMethods.interactionRequestOfficialMcpAuthHeaders
+            ? ccbuddyOfficialMcpAuthHeadersRequestParamsSchema.safeParse(request.params)
+            : undefined;
+        // 设置探测有独立 CLI，不是项目的聊天 owner。只允许合法 MCP 授权回调使用
+        // Host 出站前登记的目标；不能因存在聊天 runtime 而拒绝，也不能由回调自建归属。
+        const routed = mcpStatusAuth
+          ? mcpStatusAuth.success && (mcpStatusAuth.data.consumer ?? "mcp-server") === "mcp-server"
+            ? clientWorkspaces.get(client)?.get(resolveWorkspaceKey(mcpStatusAuth.data.workspace))
+            : undefined
+          : routeClientMessage(client, request.params);
+        const data = request.params as {
+          sessionId?: unknown;
+          taskId?: unknown;
+          workspace?: unknown;
+        } | null;
+        if (
+          !routed &&
+          (mcpStatusAuth ||
+            (clientWorkspaces.get(client)?.size ?? 0) > 1 ||
+            data?.sessionId ||
+            data?.taskId ||
+            data?.workspace)
+        ) {
+          if (request.method === ccbuddyProtocolMethods.interactionRequestOfficialMcpAuthHeaders) {
+            logger.warn(request.trace?.traceId, "官方 MCP 身份头请求未通过工作区路由", {
+              lane,
+              stage: "workspace-routing",
+              code: -32602,
+              protocolRequestId: request.id,
+              registeredWorkspaceCount: clientWorkspaces.get(client)?.size ?? 0,
+            });
+          }
+          void client.respondError(request.id, {
+            code: -32602,
+            message: "Request workspace is not owned by this CLI",
+          });
+          return;
+        }
+        const workspace = routed ?? initialWorkspace;
         if (request.method === ccbuddyProtocolMethods.subagentsReadRuntimeConfig) {
           void (async () => {
             const parsed = ccbuddySubagentsReadRuntimeConfigParamsSchema.safeParse(request.params);
@@ -2376,9 +3077,7 @@ export function createCCbuddyAgentService(
             }
             await client.respond(request.id, configuration);
           })().catch((error) =>
-            logger.debug(undefined, "Subagent 配置响应发送失败", {
-              error: String(error),
-            }),
+            logger.debug(undefined, "Subagent 配置响应发送失败", { error: String(error) }),
           );
           return;
         }
@@ -2408,7 +3107,7 @@ export function createCCbuddyAgentService(
           return;
         }
         if (request.method === ccbuddyProtocolMethods.topicResourceRead) {
-          void topicResources
+          void getTopicResources(workspace)
             .read(request.params, request.trace)
             .then((result) => client.respond(request.id, result))
             .catch((error: unknown) =>
@@ -2422,7 +3121,9 @@ export function createCCbuddyAgentService(
         if (request.method === ccbuddyProtocolMethods.topicResourceCancel) {
           const parsed = ccbuddyTopicResourceCancelParamsSchema.safeParse(request.params);
           void client.respond(request.id, {
-            cancelled: parsed.success && topicResources.cancel(parsed.data),
+            cancelled:
+              parsed.success &&
+              (topicResources.get(resolveWorkspaceKey(workspace))?.cancel(parsed.data) ?? false),
           });
           return;
         }
@@ -2456,25 +3157,25 @@ export function createCCbuddyAgentService(
                   (await resolveSessionRuntimePreferences?.(parsed.data.scope)) ?? {
                     askUserQuestionAutoResolutionEnabled: true,
                     nativeSearchEnhancementsEnabled: true,
-                    toolSearchMode: "off",
                     memoryEnabled: false,
                   },
                 );
-                preferences.additionalDirectories = parsed.data.directorySessionId
-                  ? await options?.resolveSessionDirectories?.({
-                      ...workspace,
-                      sessionId: parsed.data.directorySessionId,
-                    })
-                  : await readSessionDirectories(client, {
-                      ...workspace,
-                      sessionId: parsed.data.sessionId,
-                    });
-                preferences.subagentRuntimeConfigEnabled =
-                  Boolean(options?.readSubagentRuntimeConfig) &&
-                  !(
-                    workspace.workspaceIdentity &&
-                    isRemoteWorkspaceIdentity(workspace.workspaceIdentity)
+                if (
+                  parsed.data.scope === "runtime-materialization" &&
+                  options?.resolveSessionDirectories
+                ) {
+                  preferences.additionalDirectories = await resolveSessionDirectories(
+                    { ...workspace, sessionId: parsed.data.sessionId },
+                    parsed.data.directorySessionId,
                   );
+                }
+                // 修复：这里曾按 workspace 身份排除远程。R3 远端 Core 也走本分支，它的 workspace 都是远端身份，
+                // 子智能体快照因此从不交给 CLI，推送或远端设置页新建的子智能体要新建 task 才能用。
+                // CLI 由本 Host 在本机启动、读本机文件，是否提供只看本 Host 是否持有快照。
+                preferences.subagentRuntimeConfigEnabled = Boolean(
+                  options?.readSubagentRuntimeConfig,
+                );
+                preferences.appControlEnabled = Boolean(options?.resolveAppControlService?.());
               } catch (error) {
                 await client.respondError(request.id, {
                   code: -32603,
@@ -2496,9 +3197,9 @@ export function createCCbuddyAgentService(
           };
           pendingSessionRuntimePreferences.set(requestId, {
             client,
-            workspace,
             protocolRequestId: request.id,
             request: dynamicRequest,
+            workspace,
             timeout: setTimeout(
               () => expireSessionRuntimePreferencesRequest(requestId),
               CCBUDDY_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS,
@@ -2605,44 +3306,30 @@ export function createCCbuddyAgentService(
             workspaceKey: resolveWorkspaceKey(workspace),
             workspacePath: workspace.workspacePath,
           });
-          const accountAccess = parsed.data.accountAccess;
-          if (
-            accountRequestAuthService &&
-            accountAccess &&
-            !requiresRequestVerification(accountAccess)
-          ) {
-            // Account API Key / Team Runtime Key 不需要 Renderer 交互。Host 按 Model
-            // 固定的 Account Access 自动应答，避免后台任务和无 pane 会话依赖 UI 订阅者。
-            void respondAccountRequestAuthWithoutInteraction({
-              key: pendingKey,
-              pending,
-            });
-            return;
-          }
-          if (!requestVerificationInteractionAvailable) {
-            pendingProviderRuntimeHeaders.delete(pendingKey);
-            void pending.client.respond(pending.protocolRequestId, {
-              headersApplied: false,
-              errorMessage: "Provider request auth is unavailable",
-            });
-            return;
-          }
-          emitSessionEvent(workspace, parsed.data.sessionId, {
-            type: "providerRuntimeHeaders.request",
-            request: parsed.data,
-          });
-          // workspace 级镜像投递：桌面窗口常驻应答方（每个打开的 workspace tab 一个）
-          // 不感知 sessionId，必须在这里按 workspaceKey 收到同一请求。
-          providerRuntimeHeadersWorkspaceEmitters
-            .get(resolveWorkspaceKey(workspace))
-            ?.fire(parsed.data);
+          // 根因：路由失败时 catch 要 await 失败响应，transport 已关闭或写入失败会让
+          // respond 拒绝，void 调用把它变成未处理拒绝。拒绝前 pending 已删除，这里只
+          // 记录，不能再补发第二个响应。
+          void routeProviderRuntimeHeadersRequest(pendingKey, pending, workspace).catch(
+            (error: unknown) => {
+              logger.warn(undefined, "CCbuddy provider runtime headers 响应发送失败", {
+                modelId: parsed.data.modelSelection.modelId,
+                providerId: parsed.data.providerId,
+                requestId: parsed.data.requestId,
+                sessionId: parsed.data.sessionId,
+                error: error instanceof Error ? error.message : String(error),
+                workspaceKey: resolveWorkspaceKey(workspace),
+              });
+            },
+          );
           return;
         }
 
         // 官方 Server MCP 身份头：纯 RPC 中继，host 自动解析并响应。
         // 不 emitSessionEvent、不进 pending map——该请求没有 UI 语义，renderer 不参与。
         if (request.method === ccbuddyProtocolMethods.interactionRequestOfficialMcpAuthHeaders) {
-          const parsed = ccbuddyOfficialMcpAuthHeadersRequestParamsSchema.safeParse(request.params);
+          const parsed =
+            mcpStatusAuth ??
+            ccbuddyOfficialMcpAuthHeadersRequestParamsSchema.safeParse(request.params);
           if (!parsed.success) {
             void client.respondError(request.id, {
               code: -32602,
@@ -2651,6 +3338,13 @@ export function createCCbuddyAgentService(
             });
             return;
           }
+          const authWorkspace = mcpStatusAuth
+            ? buildWorkspaceRef(workspace)
+            : parsed.data.workspace;
+          // 命令进程（plugin-command）没有 MCP：mcpKey 留空，只用 pluginId 归属；
+          // 可信判定不看这两个字段，只看 targetOrigin。
+          const consumer = parsed.data.consumer ?? "mcp-server";
+          const mcpKey = parsed.data.mcpKey ?? "";
           // host 侧二次校验必须发生在**读取凭据之前**：未命中即返回，resolveHeaders 不被调用，
           // 因此不会有任何凭据被读入内存。
           void (async () => {
@@ -2658,7 +3352,7 @@ export function createCCbuddyAgentService(
             const trust = trustedOrigins
               ? await trustedOrigins
                   .isTrusted({
-                    mcpKey: parsed.data.mcpKey,
+                    mcpKey,
                     origin: parsed.data.targetOrigin,
                     pluginId: parsed.data.pluginId,
                   })
@@ -2669,11 +3363,12 @@ export function createCCbuddyAgentService(
               // 只记录非敏感的请求上下文；凭据未被读取，自然也无从泄露。
               logger.warn(request.trace?.traceId, "官方 MCP 身份头请求未通过 host 侧可信校验", {
                 detail: trust.detail ?? "unknown",
-                mcpKey: parsed.data.mcpKey,
+                mcpKey,
+                consumer,
                 pluginId: parsed.data.pluginId,
                 requestId: parsed.data.requestId,
                 targetOrigin: parsed.data.targetOrigin,
-                workspaceKey: parsed.data.workspace.workspaceKey,
+                workspaceKey: authWorkspace.workspaceKey,
               });
               void client.respond(request.id, {
                 ok: false,
@@ -2692,24 +3387,27 @@ export function createCCbuddyAgentService(
             try {
               const resolveStartedAt = Date.now();
               const result = await resolver.resolveHeaders({
-                mcpKey: parsed.data.mcpKey,
+                mcpKey,
+                consumer,
                 pluginId: parsed.data.pluginId,
                 targetOrigin: parsed.data.targetOrigin,
-                workspace: parsed.data.workspace,
+                workspace: authWorkspace,
               });
               // host 侧不能只在失败时留日志，成功路径完全静默会无法回答"到底发了哪几个头"。
               // 只记 header 名与套餐维度：凭证值绝不入日志（日志留存周期不受控）。
               if (result.ok) {
                 const firstIssuance = officialMcpIssuanceAudit.markFirst(
                   parsed.data.pluginId,
-                  parsed.data.mcpKey,
-                  parsed.data.workspace.workspaceKey,
+                  mcpKey,
+                  authWorkspace.workspaceKey,
                 );
                 const logIssuance = firstIssuance ? logger.info : logger.debug;
                 logIssuance(request.trace?.traceId, "官方 MCP 身份头已解析", {
+                  lane,
                   firstIssuance,
                   ...summarizeOfficialMcpIdentityHeaders(result.headers),
-                  mcpKey: parsed.data.mcpKey,
+                  mcpKey,
+                  consumer,
                   pluginId: parsed.data.pluginId,
                   requestId: parsed.data.requestId,
                   resolveDurationMs: Date.now() - resolveStartedAt,
@@ -2717,7 +3415,8 @@ export function createCCbuddyAgentService(
                 });
               } else {
                 logger.info(request.trace?.traceId, "官方 MCP 身份头不可用", {
-                  mcpKey: parsed.data.mcpKey,
+                  mcpKey,
+                  consumer,
                   pluginId: parsed.data.pluginId,
                   reason: result.reason,
                   requestId: parsed.data.requestId,
@@ -2731,7 +3430,8 @@ export function createCCbuddyAgentService(
               // 且此处绝不能让 MCP 退化成匿名请求。凭证原文不进日志。
               logger.warn(request.trace?.traceId, "官方 MCP 身份头解析失败", {
                 error: error instanceof Error ? error.message : String(error),
-                mcpKey: parsed.data.mcpKey,
+                mcpKey,
+                consumer,
                 pluginId: parsed.data.pluginId,
                 requestId: parsed.data.requestId,
                 targetOrigin: parsed.data.targetOrigin,
@@ -2790,6 +3490,9 @@ export function createCCbuddyAgentService(
           const executor = options?.browserControlExecutor;
           if (!executor) {
             void client.respond(request.id, {
+              ...(parsed.data.command.method === "openScope" && parsed.data.controlScopeId
+                ? { scope: { id: parsed.data.controlScopeId, state: "rejected" } }
+                : {}),
               ok: false,
               error: {
                 code: "backend_unavailable",
@@ -2802,6 +3505,7 @@ export function createCCbuddyAgentService(
           void executor
             .execute({
               requestId: parsed.data.requestId,
+              controlScopeId: parsed.data.controlScopeId,
               ...(parsed.data.browserId ? { browserId: parsed.data.browserId } : {}),
               ...(parsed.data.browserGeneration !== undefined
                 ? { browserGeneration: parsed.data.browserGeneration }
@@ -2874,12 +3578,11 @@ export function createCCbuddyAgentService(
                   })
                   .catch(() => null);
                 if (taskMeta) {
-                  await automationTaskIndexRepo.syncTaskMeta({
-                    meta: {
-                      ...taskMeta,
+                  await automationTaskIndexRepo.updateTaskPresentation({
+                    ...taskMeta,
+                    presentation: {
                       // 会话内创建的 automation 复用当前 session；显式写入标记供 V4 侧栏展示。
                       cronAutomationId: automation.automationId,
-                      updatedAt: Math.max(taskMeta.updatedAt, Date.now()),
                     },
                   });
                 }
@@ -3164,13 +3867,42 @@ export function createCCbuddyAgentService(
           return;
         }
 
+        if (request.method === ccbuddyProtocolMethods.automationPause) {
+          const parsed = ccbuddyAutomationPauseParamsSchema.safeParse(request.params);
+          if (!parsed.success) {
+            void client.respondError(request.id, {
+              code: -32602,
+              message: "Invalid automation pause params",
+              data: parsed.error.flatten(),
+            });
+            return;
+          }
+          void (async () => {
+            try {
+              // CronPauseSelf 的目标来自 CLI loop 的本轮 automationId；Host 只做当前 workspace
+              // 内的条件暂停，不存在的 / 非 active 的任务返回 paused=false 而不是错误。
+              const paused = await automationService.pause(parsed.data.automationId, workspace);
+              await client.respond(request.id, { paused });
+            } catch (error) {
+              await client.respondError(request.id, {
+                code: -32603,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          })();
+          return;
+        }
+
         void client.respondError(request.id, {
           code: -32601,
           message: `Unsupported CCbuddy Protocol request: ${request.method}`,
         });
       }),
       client.onClose(() => {
-        invalidateWorkspaceClient(resolveWorkspaceKey(workspace), client);
+        for (const key of clientWorkspaces.get(client)?.keys() ?? [])
+          invalidateWorkspaceClient(key, client);
+        clientWorkspaces.delete(client);
+        clientSessions.delete(client);
       }),
     ];
     clientDisposables.set(client, disposables);
@@ -3264,7 +3996,6 @@ export function createCCbuddyAgentService(
     }
     const workspaceKey = resolveWorkspaceKey(params);
     activeClientsByWorkspaceKey.delete(workspaceKey);
-    interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
     logger.warn(undefined, "复用的 CCbuddy Protocol client 已 disposed，清理 stale entry", {
       workspaceKey,
       workspacePath: params.workspacePath,
@@ -3272,19 +4003,67 @@ export function createCCbuddyAgentService(
     return false;
   }
 
+  async function resolveSessionDirectories(
+    target: CCbuddyAgentSessionTarget,
+    directorySessionId = target.sessionId,
+  ): Promise<string[] | undefined> {
+    return options?.resolveSessionDirectories?.({ ...target, sessionId: directorySessionId });
+  }
+
+  async function readSessionDirectories(
+    client: CCbuddyProtocolClient,
+    params: CCbuddyAgentSessionTarget,
+  ): Promise<string[] | undefined> {
+    let directorySessionId = params.sessionId;
+    if (options?.resolveSessionDirectories) {
+      // 子会话按设计不进主任务索引；直接查 child 的项目会被远端必选项目校验拒绝。
+      // 旧 child 索引也不能证明主任务身份；只信 Agent 持久化父链，再执行原项目校验。
+      const visited = new Set<string>();
+      while (true) {
+        if (visited.has(directorySessionId)) throw new Error("project.session-lineage-invalid");
+        visited.add(directorySessionId);
+        const { sessions } = await client.request(
+          ccbuddyProtocolMethods.sessionList,
+          { workspace: buildWorkspaceRef(params), sessionIds: [directorySessionId] },
+          ccbuddySessionListResultSchema,
+        );
+        const session = sessions.find((entry) => entry.sessionId === directorySessionId);
+        if (!session) {
+          if (directorySessionId !== params.sessionId)
+            throw new Error("project.session-lineage-invalid");
+          break;
+        }
+        if (
+          resolveWorkspaceKey(session.workspace) !== resolveWorkspaceKey(params) ||
+          session.workspace.workspacePath !== params.workspacePath
+        )
+          throw new Error("project.session-lineage-invalid");
+        if (session.directorySessionId) {
+          directorySessionId = session.directorySessionId;
+          break;
+        }
+        // 旧 CLI 未协商目录来源时保留原查询合同；新版只信 CLI 的持久化父链结果。
+        if (!isAuxiliarySessionKind(session.sessionKind)) break;
+        if (!session.parentSessionId) throw new Error("project.session-lineage-invalid");
+        directorySessionId = session.parentSessionId;
+      }
+    }
+    return resolveSessionDirectories(params, directorySessionId);
+  }
+
   async function getOrStartReadOnlyClient(
     params: CCbuddyAgentWorkspaceTarget,
+    existingClient?: CCbuddyProtocolClient,
   ): Promise<ActiveWorkspaceClient> {
     const workspaceKey = resolveWorkspaceKey(params);
     const active = activeClientsByWorkspaceKey.get(workspaceKey);
     if (active && isReusableActiveClientEntry(params, active)) {
       active.workspace = params;
       await active.interactionPreferencesReady;
-      if (options?.resolveSessionDirectories) await negotiateSessionDirectorySource(active.client);
       return active;
     }
 
-    const client = await processManager.getClient(params);
+    const client = existingClient ?? (await processManager.getClient(params));
     wireClient(client, params, "chat");
 
     // processManager 会按 workspaceKey 对并发启动 single-flight。await 期间若另一条
@@ -3317,7 +4096,7 @@ export function createCCbuddyAgentService(
     })();
     // Off-Peak 本地支持能力是 workspace 级事实，在允许任何 session 工作前同步到 CLI，
     // 让 v4 冷恢复（没有 per-request flag 通道）也能拿到工具面。旧 CLI method-not-found 降级忽略。
-    // CLI 缺省即 false，且每个 agent 进程只服务一个 workspace，门禁关闭时不发请求（对未实现该
+    // CLI 缺省即 false；共享池仅包含本地工作区，支持条件一致。门禁关闭时不发请求（对未实现该
     // 方法的旧 CLI/测试假客户端零打扰）。
     const offPeakToolPolicyReady = (async () => {
       if (!isOffPeakToolSupported(params)) return;
@@ -3343,11 +4122,49 @@ export function createCCbuddyAgentService(
     // 生效模式为关闭时不发请求（CLI 缺省即关闭，对旧 CLI/测试假客户端零打扰）；之后用户改选择时
     // 经同一条 workspace 串行链重发（launch.md「The user's choice」）。
     const dynamicWorkflowPolicyReady = enqueueDynamicWorkflowPolicySync(entry);
+    // 复用启动屏障：回调与元数据只在双方确认能力后携带目录来源，旧 Host 不收新字段。
+    const directorySourceReady = (async () => {
+      try {
+        const capabilities = await client.request(
+          ccbuddyProtocolMethods.runtimeCapabilities,
+          {
+            hostCapabilities: {
+              sessionDirectorySource: Boolean(options?.resolveSessionDirectories),
+            },
+          },
+          ccbuddyRuntimeCapabilitiesSchema,
+        );
+        // worktree 任务只在 CLI 声明该能力时启用：旧 CLI 会静默丢弃 cwd / targetCwd，
+        // 把会话建在 workspace 目录（docs/git/worktree.md §9.3），所以 Host 不能盲发。
+        if (capabilities.worktreeCwd === true) worktreeCwdClients.add(client);
+        // 扩展来源只发给声明该能力的 CLI：旧 CLI 对 sendText 整条拒绝，对 createSession.firstInput
+        // 静默剥掉来源，消息会被当成用户亲自输入。
+        if (capabilities.extensionInputSource === true) extensionInputSourceClients.add(client);
+        // 旧 CLI 会静默剥掉引用上的 comment / agent：用户看到批注而模型收不到，入口只对声明者开放。
+        if (capabilities.conversationQuoteComment === true) {
+          conversationQuoteCommentClients.add(client);
+        }
+        if (capabilities.sessionWorkspaceRouting) {
+          await client.request(
+            ccbuddyProtocolMethods.runtimeCapabilities,
+            { hostCapabilities: { sessionWorkspaceRouting: true } },
+            ccbuddyRuntimeCapabilitiesSchema,
+          );
+        } else if (processManager.isSharedRuntime(params)) {
+          throw new Error("This Agent version does not support shared task workspace routing");
+        }
+      } catch (error) {
+        if (processManager.isSharedRuntime(params) || !isProtocolMethodNotFoundError(error))
+          throw error;
+      }
+    })();
     entry.interactionPreferencesReady = Promise.all([
+      // 共享 CLI 的进程 cwd 不代表任务目录；每个逻辑工作区都必须先准备自己的配置快照。
+      options?.prepareRuntimeWorkspace?.(params),
+      directorySourceReady,
       interactionPreferencesReady,
       offPeakToolPolicyReady,
       dynamicWorkflowPolicyReady,
-      ...(options?.resolveSessionDirectories ? [negotiateSessionDirectorySource(client)] : []),
     ]).then(() => undefined);
     try {
       // 新建或重启 runtime 在允许任何 session 工作前追平缓存；同步期间的新开关
@@ -3369,11 +4186,16 @@ export function createCCbuddyAgentService(
   }
 
   async function getClient(params: CCbuddyAgentWorkspaceTarget) {
+    const client = await getExecutionClient(params);
+    rememberClientTarget(client, params);
+    return client;
+  }
+
+  async function getExecutionClient(params: CCbuddyAgentWorkspaceTarget) {
     const workspaceKey = resolveWorkspaceKey(params);
     const active = activeClientsByWorkspaceKey.get(workspaceKey);
     if (active?.modelExecutionEnabled && isReusableActiveClientEntry(params, active)) {
       active.workspace = params;
-      if (options?.resolveSessionDirectories) await negotiateSessionDirectorySource(active.client);
       return active.client;
     }
 
@@ -3425,10 +4247,7 @@ export function createCCbuddyAgentService(
           },
         );
       }
-      throw createProviderNotReadyError({
-        snapshot: readinessSnapshot,
-        workspace: params,
-      });
+      throw createProviderNotReadyError({ snapshot: readinessSnapshot, workspace: params });
     }
 
     const entry = await getOrStartReadOnlyClient(params);
@@ -3449,7 +4268,31 @@ export function createCCbuddyAgentService(
     return entry.client;
   }
 
+  /**
+   * 只读热会话的 rowsRange：只复用已运行的工作区 CLI（existing-only），执行端还要认识 residency；
+   * 任一不满足都报 proto.sessionNotResident，调用方（手机预加载）跳过，绝不为预加载拉起进程。
+   */
+  async function getResidentRowsClient(params: CCbuddyAgentConversationRowsRangeParams) {
+    let client: CCbuddyProtocolClient;
+    try {
+      client = await getReadOnlyClient(params, "existing-only");
+    } catch {
+      throw sessionNotResidentError(params.sessionId);
+    }
+    if (!(await supportsResidentRowsRange(client))) throw sessionNotResidentError(params.sessionId);
+    return client;
+  }
+
   async function getReadOnlyClient(
+    params: CCbuddyAgentWorkspaceTarget,
+    runtimePolicy: "start-if-needed" | "existing-only" = "start-if-needed",
+  ) {
+    const client = await getReadOnlyRuntimeClient(params, runtimePolicy);
+    rememberClientTarget(client, params);
+    return client;
+  }
+
+  async function getReadOnlyRuntimeClient(
     params: CCbuddyAgentWorkspaceTarget,
     runtimePolicy: "start-if-needed" | "existing-only" = "start-if-needed",
   ) {
@@ -3460,8 +4303,6 @@ export function createCCbuddyAgentService(
       // 绝不为观察者拉起新进程（保持 existing-only 语义）。
       if (active && isReusableActiveClientEntry(params, active)) {
         active.workspace = params;
-        if (options?.resolveSessionDirectories)
-          await negotiateSessionDirectorySource(active.client);
         return active.client;
       }
       // runtime available 可能先于原启动调用的 await continuation 到达。这里允许把
@@ -3470,16 +4311,8 @@ export function createCCbuddyAgentService(
       if (!existingClient) {
         throw createRuntimeUnavailableError(params);
       }
-      wireClient(existingClient, params, "chat");
-      activeClientsByWorkspaceKey.set(workspaceKey, {
-        client: existingClient,
-        modelExecutionEnabled: false,
-        workspace: params,
-        // 只提升已有 client，不重放就绪阶段的策略同步；按 CLI 缺省记为关闭，用户改选择时再补发。
-        dynamicWorkflowPolicyMode: "disabled",
-      });
-      if (options?.resolveSessionDirectories) await negotiateSessionDirectorySource(existingClient);
-      return existingClient;
+      // 共享进程 available 事件可能抢先触发订阅；复用同一准备屏障，不能登记一个未初始化的工作区。
+      return (await getOrStartReadOnlyClient(params, existingClient)).client;
     }
     return (await getOrStartReadOnlyClient(params)).client;
   }
@@ -3508,6 +4341,15 @@ export function createCCbuddyAgentService(
     );
   }
 
+  /** 归档永久删除的 CLI 载体：本机优先已有 runtime，没有就用管理面进程；远端只用已有连接。 */
+  async function sessionDeletionClient(
+    workspace: CCbuddyAgentWorkspaceTarget,
+  ): Promise<CCbuddyProtocolClient> {
+    return isLocalActiveWorkspaceClient(workspace)
+      ? await getReadOnlyClient(workspace, "existing-only").catch(() => getPluginManagementClient())
+      : await getReadOnlyClient(workspace, "existing-only");
+  }
+
   async function resolveGlobalSavedWorkflowCarrier(): Promise<{
     client: CCbuddyProtocolClient;
     workspace: CCbuddyWorkspaceRef;
@@ -3521,29 +4363,20 @@ export function createCCbuddyAgentService(
       if (!isReusableActiveClientEntry(active.workspace, active)) {
         continue;
       }
-      return {
-        client: active.client,
-        workspace: buildWorkspaceRef(active.workspace),
-      };
+      return { client: active.client, workspace: buildWorkspaceRef(active.workspace) };
     }
-    const managementWorkspace = {
-      workspacePath: ensurePluginManagementWorkspacePath(),
-    };
+    const managementWorkspace = { workspacePath: ensurePluginManagementWorkspacePath() };
     const client = await getPluginManagementClient();
     return { client, workspace: buildWorkspaceRef(managementWorkspace) };
   }
 
   // 五个 workflows/* 方法的载体：带 workspace 就直通（项目档，或 GUI 项目组里明说 scope 的动作），
   // 只给 `scope:"global"` 时交给 services 自选本机载体。
-  async function resolveSavedWorkflowCarrier(params: CCbuddyAgentSavedWorkflowTarget): Promise<{
-    client: CCbuddyProtocolClient;
-    workspace: CCbuddyWorkspaceRef;
-  }> {
+  async function resolveSavedWorkflowCarrier(
+    params: CCbuddyAgentSavedWorkflowTarget,
+  ): Promise<{ client: CCbuddyProtocolClient; workspace: CCbuddyWorkspaceRef }> {
     if (savedWorkflowTargetHasWorkspace(params)) {
-      return {
-        client: await getReadOnlyClient(params),
-        workspace: buildWorkspaceRef(params),
-      };
+      return { client: await getReadOnlyClient(params), workspace: buildWorkspaceRef(params) };
     }
     return resolveGlobalSavedWorkflowCarrier();
   }
@@ -3573,11 +4406,11 @@ export function createCCbuddyAgentService(
     for (const emitter of providerRuntimeHeadersCancelledEmitters.values()) emitter.dispose();
     providerRuntimeHeadersCancelledEmitters.clear();
     sessionRuntimePreferencesRequestEmitter.dispose();
-    sessionLifecycleEmitter.dispose();
     processResourceSampleEmitter.dispose();
     mcpTelemetryEmitter.dispose();
     toolExecResourceEmitter.dispose();
     mcpResourceSamplesEmitter.dispose();
+    pluginStartupDegradedEmitter.dispose();
     for (const emitter of pluginOperationProgressEmitters.values()) {
       emitter.dispose();
     }
@@ -3586,12 +4419,20 @@ export function createCCbuddyAgentService(
       emitter.dispose();
     }
     conversationFrameEmitters.clear();
+    sessionLifecycleEmitter.dispose();
     for (const emitter of conversationTelemetryFactEmitters.values()) {
       emitter.dispose();
     }
     conversationTelemetryFactEmitters.clear();
+    contextComposition.dispose();
+    for (const collector of remoteConversationTelemetry.values()) collector.dispose();
+    remoteConversationTelemetry.clear();
+    remoteConversationTelemetryEmitter.dispose();
+    for (const emitter of offPeakLifecycleEmitters.values()) emitter.dispose();
+    offPeakLifecycleEmitters.clear();
     localTtftFactsEmitter.dispose();
     cuaPermissionObservationEmitter.dispose();
+    pluginUiToolResultEmitter.dispose();
     for (const emitter of workspaceConfigFrameEmitters.values()) {
       emitter.dispose();
     }
@@ -3610,7 +4451,6 @@ export function createCCbuddyAgentService(
     pendingSessionRuntimePreferences.clear();
     activeClientsByWorkspaceKey.clear();
     cancelAllWaitingWorkspaceStartups();
-    interactionPreferenceSyncByWorkspaceKey.clear();
     cuaOperationTurnTracker?.clearAll();
     clearV4SubscriptionRoutes();
     v4RouteRuntimeRestartDisposable.dispose();
@@ -3632,7 +4472,8 @@ export function createCCbuddyAgentService(
    * 服务端「提供」（docs/dynamic-workflow/launch.md「Gray release」）：Host 读取一次并在本进程内固定。
    * 三点理由：
    *   1. 判定落在 client 就绪路径上，不能每次建会话都等远端——3.12.2 已因此回归过一次；
-   *   2. 读取失败 fail-closed 且不再重试，避免离线时每条 create 都赔上一次请求超时；
+   *   2. 读取失败按需加载（DYNAMIC_WORKFLOW_MODE_ON_FETCH_FAILURE = onDemand）闩住且不再重试，
+   *      避免离线时每条 create 都赔上一次请求超时；代价是离线启动的 Host 到重启前都是 onDemand；
    *   3. 服务端翻转灰度按设计在下一个 Host 进程生效（provider 侧另有 1h 快照与 forceRefresh）。
    * 与 Off-Peak 不同：远程 workspace 同样可用，所以这里不看 workspaceIdentity / remoteSessionId。
    */
@@ -3643,10 +4484,13 @@ export function createCCbuddyAgentService(
       try {
         return await resolve();
       } catch (error) {
-        logger.warn(undefined, "动态工作流灰度读取失败，按关闭处理", {
+        // 读取抛错说明不了服务端意图，与 provider 的请求失败同一裁决：按需加载提供。
+        // 过去返回 undefined 再在 gate 回落 disabled，离线启动的 Host 会关掉工作流入口和工具；
+        // 不用 alwaysOn 是因为它让每个新会话首轮就注册十个工作流工具，太占上下文。
+        logger.warn(undefined, "动态工作流灰度读取失败，按需加载处理", {
           errorMessage: error instanceof Error ? error.message : String(error),
         });
-        return undefined;
+        return createDynamicWorkflowClientConfig(DYNAMIC_WORKFLOW_MODE_ON_FETCH_FAILURE, "default");
       }
     })();
     return dynamicWorkflowOffer;
@@ -3671,21 +4515,27 @@ export function createCCbuddyAgentService(
    * 生效模式 = 闩住的「提供」+ 此刻的用户选择。策略同步与三条创建路径同源调用，所以不会出现
    * "策略说开、create 说关"的裂口；选择不闩，改设置后下一次建会话立刻拿到新值。
    * `onDemand` 原样送到 CLI：它决定十个工具是首请求就注册还是等首次 `/workflow`。
+   *
+   * 用户选择永远生效（launch.md「The user's choice」）：提供读取失败时按 onDemand（见
+   * resolveDynamicWorkflowOffer），resolver 没给值时按缺省 disabled，再套用户选择。
+   * 没装配 resolver 的 Host 不接这个功能，选择不生效。
    */
   async function resolveDynamicWorkflowGate(): Promise<DynamicWorkflowMode> {
-    const offer = await resolveDynamicWorkflowOffer();
-    if (!offer) return "disabled";
+    if (!options?.resolveDynamicWorkflowClientConfig) return "disabled";
+    const offer =
+      (await resolveDynamicWorkflowOffer()) ??
+      createDynamicWorkflowClientConfig(DEFAULT_DYNAMIC_WORKFLOW_MODE, "default");
     return applyDynamicWorkflowUserMode(offer, await resolveDynamicWorkflowUserMode()).mode;
   }
 
   /**
-   * 把生效模式同步给一个 workspace 的 CLI（launch.md「The user's choice」）。同一 workspace 串行：
+   * 把生效模式同步给一个 workspace 的 CLI（launch.md「The user's choice」）。同一 CLI 串行：
    * 每一步在执行时才读生效模式，后入队的步骤必然读到更新的选择，慢请求不会在新结论之后落地。
    * 与 CLI 已持有的策略相同就不发；关闭时发 enabled:false，让在线 CLI 的斜杠目录去掉 workflow。
    */
   function enqueueDynamicWorkflowPolicySync(entry: ActiveWorkspaceClient): Promise<void> {
     const workspaceKey = resolveWorkspaceKey(entry.workspace);
-    const previous = dynamicWorkflowPolicySyncByWorkspaceKey.get(workspaceKey) ?? Promise.resolve();
+    const previous = dynamicWorkflowPolicySyncByClient.get(entry.client) ?? Promise.resolve();
     const current = previous.then(async () => {
       const mode = await resolveDynamicWorkflowGate();
       if (mode === entry.dynamicWorkflowPolicyMode) return;
@@ -3695,11 +4545,7 @@ export function createCCbuddyAgentService(
           ccbuddyProtocolMethods.workspaceUpdateDynamicWorkflowPolicy,
           // mode 与布尔同行（launch.md「On demand: activation」）；只认布尔的旧 CLI 的 strict
           // schema 会拒绝 mode，走下面的 warn 分支保持缺省关闭——与其它非 -32601 错误同判。
-          {
-            workspace: buildWorkspaceRef(entry.workspace),
-            enabled,
-            ...(enabled ? { mode } : {}),
-          },
+          { workspace: buildWorkspaceRef(entry.workspace), enabled, ...(enabled ? { mode } : {}) },
           ccbuddyWorkspaceUpdateDynamicWorkflowPolicyResultSchema,
         );
         entry.dynamicWorkflowPolicyMode = mode;
@@ -3714,7 +4560,7 @@ export function createCCbuddyAgentService(
         }
       }
     });
-    dynamicWorkflowPolicySyncByWorkspaceKey.set(workspaceKey, current);
+    dynamicWorkflowPolicySyncByClient.set(entry.client, current);
     return current;
   }
 
@@ -3729,84 +4575,39 @@ export function createCCbuddyAgentService(
       : { dynamicWorkflowEnabled: false };
   }
 
-  async function readSessionDirectories(
-    client: CCbuddyProtocolClient,
-    params: CCbuddyAgentSessionTarget,
-  ): Promise<string[] | undefined> {
-    if (!options?.resolveSessionDirectories) return undefined;
-    const visited = new Set<string>();
-    let sessionId = params.sessionId;
-    while (true) {
-      if (visited.has(sessionId)) throw new Error("project.session-lineage-invalid");
-      visited.add(sessionId);
-      const { sessions } = await client.request(
-        ccbuddyProtocolMethods.sessionList,
-        { workspace: buildWorkspaceRef(params), sessionIds: [sessionId] },
-        ccbuddySessionListResultSchema,
-      );
-      const session = sessions.find((entry) => entry.sessionId === sessionId);
-      if (!session) {
-        if (sessionId !== params.sessionId) throw new Error("project.session-lineage-invalid");
-        break;
-      }
-      if (
-        resolveWorkspaceKey(session.workspace) !== resolveWorkspaceKey(params) ||
-        session.workspace.workspacePath !== params.workspacePath
-      )
-        throw new Error("project.session-lineage-invalid");
-      if (session.directorySessionId) {
-        sessionId = session.directorySessionId;
-        break;
-      }
-      if (
-        !session.parentSessionId ||
-        session.sessionKind === "interactive" ||
-        session.sessionKind === "fork" ||
-        session.sessionKind === "workflow_parent"
-      )
-        break;
-      sessionId = session.parentSessionId;
-    }
-    return options.resolveSessionDirectories({ ...params, sessionId });
-  }
-
   async function buildConversationCommandEnvelope(
     params: CCbuddyAgentConversationCommandParams,
   ): Promise<CommandEnvelope> {
     const envelope = params.envelope;
+    // cwd / worktreeCreation / targetCwd 只允许 Host 的 worktree 服务设置（docs/git/worktree.md §5.1）：
+    // 渲染进程与手机经 RPC 传来的 JSON 无法携带 Symbol 键，因此不能伪造。
+    if (!isHostWorktreeCommand(params)) assertNoHostOnlyWorktreeFields(envelope);
     if (envelope.type === "createSession") {
-      // V4 createSession 绕过 legacy session/create 的参数构造，工具面 flag 必须在
-      // 信封处同源注入；门禁 false 时不写字段（缺省即 fail-closed，与 legacy 一致）。
       const { dynamicWorkflowEnabled, dynamicWorkflowMode } =
         await resolveDynamicWorkflowSessionFlags();
-      const offPeakToolEnabled = isOffPeakToolSupported(params);
       const payload = commandPayloadSchemas.createSession.parse(envelope.payload);
       if (params.projectId !== undefined && !options?.prepareSessionCreation)
         throw new Error("project.creation-unavailable");
+      // 旧请求缺少 ID，必须由持库 Host 原子分配并记住；CLI 去重发生在预留之后。
       const prepared = await options?.prepareSessionCreation?.({
         ...params,
         sessionId: payload.sessionId,
-        projectId: params.projectId ?? payload.projectId ?? null,
+        projectId: params.projectId ?? null,
         creationCommand: { clientId: envelope.clientId, commandId: envelope.commandId },
         additionalDirectories: payload.additionalDirectories,
       });
+      const sessionId = prepared?.sessionId ?? payload.sessionId;
+      const additionalDirectories =
+        prepared?.additionalDirectories ?? payload.additionalDirectories;
+      const offPeakToolEnabled = isOffPeakToolSupported(params);
       return {
         ...envelope,
         payload: {
           ...payload,
-          ...(prepared
-            ? {
-                sessionId: prepared.sessionId,
-                additionalDirectories: prepared.additionalDirectories,
-              }
-            : {}),
+          ...(dynamicWorkflowEnabled ? { dynamicWorkflowEnabled: true, dynamicWorkflowMode } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(additionalDirectories !== undefined ? { additionalDirectories } : {}),
           ...(offPeakToolEnabled ? { offPeakToolEnabled: true } : {}),
-          // 动态工作流灰度：V4 createSession 是桌面新会话的实际创建路径，不透传则九个工具
-          // 永不注册。
-          ...(dynamicWorkflowEnabled ? { dynamicWorkflowEnabled: true } : {}),
-          ...(dynamicWorkflowEnabled && dynamicWorkflowMode !== undefined
-            ? { dynamicWorkflowMode }
-            : {}),
         },
       };
     }
@@ -3814,8 +4615,8 @@ export function createCCbuddyAgentService(
 
     const payload = commandPayloadSchemas.sendText.parse(envelope.payload);
     // 读取持久化 cronAutomationId 后不能把整个绑定会话永久视为 automation
-    // 执行上下文。用户后续主动输入也因此丢失 CronUpdate/CronDelete。这里只认本轮 payload；
-    // automation runId 漏传 payload 的兼容识别由 CLI 的 resolveTurnAutomationId 兜底。
+    // 执行上下文。用户后续主动输入也因此丢失 CronUpdate/CronDelete。这里只认 Host 调度器在
+    // 本轮 payload 显式注入的身份；runId/inputId 是追踪字段，CLI 不得用它恢复授权身份。
     if (payload.automationId) {
       // desktop continuous 的 automation 派发不一定经过 task adapter；在协议信封处合并本轮
       // denylist，且不覆盖调用方已有策略。
@@ -3840,7 +4641,7 @@ export function createCCbuddyAgentService(
     return envelope;
   }
 
-  return {
+  const service: ICCbuddyAgentService & { disposeAllAndWait(): Promise<void> } = {
     async prepareStorage(params) {
       const client = await processManager.getClient(params);
       wireClient(client, params, "chat");
@@ -3911,17 +4712,25 @@ export function createCCbuddyAgentService(
       // desktop-attached remote Host 没有本机设置，推来的值就是选择。
       pushedDynamicWorkflowUserMode = normalizeDynamicWorkflowMode(params.mode);
       options?.forwardDynamicWorkflowUserMode?.(await resolveDynamicWorkflowUserMode());
-      await Promise.all(
-        [...activeClientsByWorkspaceKey.values()].map((entry) =>
-          enqueueDynamicWorkflowPolicySync(entry),
-        ),
-      );
+      // 修复原因：这里原先 await 每个在线 CLI 的策略应答。CLI 正忙（如在途的 readPresentation）
+      // 或还在启动时，调用迟迟不返回，renderer 的可用性快照就一直停在旧模式——用户选「关闭」后
+      // 自动化页仍显示「工作流」标签（DWG-23）。快照只由 Host 的服务端提供与用户选择算出，与 CLI
+      // 无关，所以选择记下即返回；CLI 重发仍走各自的串行链，不等它。
+      for (const entry of activeClientsByWorkspaceKey.values()) {
+        enqueueDynamicWorkflowPolicySync(entry).catch((error: unknown) => {
+          logger.warn(undefined, "动态工作流策略重发失败", {
+            workspaceKey: resolveWorkspaceKey(entry.workspace),
+            errorMessage: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     },
 
     async syncAppRuntimePreferences(preferences: CCbuddyAgentAppRuntimePreferences): Promise<void> {
       const normalizedPreferences: CCbuddyAgentAppRuntimePreferences = {
         ...preferences,
         modelIoFullRetentionEnabled: preferences.modelIoFullRetentionEnabled === true,
+        pluginAutoRecommendationEnabled: preferences.pluginAutoRecommendationEnabled === true,
       };
       latestAppRuntimePreferences = normalizedPreferences;
       const activeClients = [...activeClientsByWorkspaceKey.values()];
@@ -3951,7 +4760,7 @@ export function createCCbuddyAgentService(
         params = {
           ...params,
           sessionId: prepared.sessionId,
-          additionalDirectories: prepared.additionalDirectories,
+          additionalDirectories: params.additionalDirectories ?? prepared.additionalDirectories,
         };
       } else if (params.projectId !== undefined) {
         throw new Error("project.creation-unavailable");
@@ -3962,6 +4771,7 @@ export function createCCbuddyAgentService(
         client,
         reason: "session_create",
         workspace: params,
+        refreshRegistry: true,
       });
       const sessionTraceId = params.sessionTraceId;
       logger.info(sessionTraceId, "开始请求 CCbuddy Protocol session/create", {
@@ -3980,11 +4790,7 @@ export function createCCbuddyAgentService(
       try {
         const snapshot = await client.request(
           ccbuddyProtocolMethods.sessionCreate,
-          buildSessionCreateParams({
-            ...params,
-            offPeakToolEnabled,
-            ...dynamicWorkflowFlags,
-          }),
+          buildSessionCreateParams({ ...params, offPeakToolEnabled, ...dynamicWorkflowFlags }),
           ccbuddySessionStateSnapshotSchema,
           sessionTraceId ? { trace: { traceId: sessionTraceId } } : undefined,
         );
@@ -4074,18 +4880,18 @@ export function createCCbuddyAgentService(
     },
 
     async resumeSession(params: CCbuddyAgentResumeSessionParams) {
-      const startedAt = Date.now();
       const client = await getClient(params);
       params = {
         ...params,
-        additionalDirectories: options?.resolveSessionDirectories
-          ? await readSessionDirectories(client, params)
-          : params.additionalDirectories,
+        additionalDirectories:
+          params.additionalDirectories ?? (await readSessionDirectories(client, params)),
       };
+      const startedAt = Date.now();
       await ensureAccountProviderConfigSynced({
         client,
         reason: "session_resume",
         workspace: params,
+        refreshRegistry: true,
       });
       const cachedTraceId = getSessionTraceId(params);
       const offPeakToolEnabled = isOffPeakToolSupported(params);
@@ -4102,11 +4908,7 @@ export function createCCbuddyAgentService(
       try {
         const snapshot = await client.request(
           ccbuddyProtocolMethods.sessionResume,
-          buildSessionResumeParams({
-            ...params,
-            offPeakToolEnabled,
-            ...dynamicWorkflowFlags,
-          }),
+          buildSessionResumeParams({ ...params, offPeakToolEnabled, ...dynamicWorkflowFlags }),
           ccbuddySessionStateSnapshotSchema,
         );
         const sessionTraceId = rememberSessionTrace(params, snapshot) ?? cachedTraceId;
@@ -4166,7 +4968,6 @@ export function createCCbuddyAgentService(
         ccbuddyProtocolMethods.sessionList,
         {
           workspace: buildWorkspaceRef(params),
-          includeArchived: params.includeArchived ?? false,
           limit: params.limit,
           ...(params.sessionIds ? { sessionIds: params.sessionIds } : {}),
         },
@@ -4209,6 +5010,111 @@ export function createCCbuddyAgentService(
         { range: params.range, timeZone: params.timeZone },
         v4UsageStatsResultSchema,
       );
+    },
+
+    async previewSessionDeletion(params) {
+      const client = await sessionDeletionClient(params.workspace);
+      return client.request(
+        V4_METHODS.sessionDeletionPreview,
+        params,
+        v4SessionDeletionPreviewSchema,
+      );
+    },
+    async previewSessionDeletions(params) {
+      // 修复原因：逐项预检让 CLI 每项各扫一遍全表（N×13 次同步扫描）。按实际 CLI client 分组，
+      // 同一 client 整批一次扫描；某组失败只把该组各项记为错误，不影响其他组。
+      const results: V4SessionDeletionPreviewBatchItem[] = [];
+      const clients = new Map<string, Promise<CCbuddyProtocolClient>>();
+      const groups = new Map<CCbuddyProtocolClient, number[]>();
+      for (const [index, item] of params.items.entries()) {
+        const key = JSON.stringify([
+          item.workspace.workspacePath,
+          item.workspace.workspaceIdentity ?? "",
+        ]);
+        let client = clients.get(key);
+        if (!client) {
+          client = sessionDeletionClient(item.workspace);
+          clients.set(key, client);
+        }
+        try {
+          const resolved = await client;
+          groups.set(resolved, [...(groups.get(resolved) ?? []), index]);
+        } catch (error) {
+          results[index] = { error: { code: sessionDeletionErrorCode(error) } };
+        }
+      }
+      for (const [client, group] of groups)
+        for (let start = 0; start < group.length; start += V4_SESSION_DELETION_PREVIEW_BATCH_MAX) {
+          const indexes = group.slice(start, start + V4_SESSION_DELETION_PREVIEW_BATCH_MAX);
+          const items = indexes.map((index) => params.items[index]!);
+          let batch: V4SessionDeletionPreviewBatchItem[];
+          try {
+            batch = await client
+              .request(
+                V4_METHODS.sessionDeletionPreviewBatch,
+                { items },
+                v4SessionDeletionPreviewBatchResultSchema,
+              )
+              .then((result) => result.results)
+              .catch(async (error: unknown) => {
+                // 旧 CLI 不认识批量方法时逐项回退，结果语义不变。
+                if (!isProtocolMethodNotFoundError(error)) throw error;
+                const fallback: V4SessionDeletionPreviewBatchItem[] = [];
+                for (const item of items)
+                  fallback.push(
+                    await client
+                      .request(
+                        V4_METHODS.sessionDeletionPreview,
+                        item,
+                        v4SessionDeletionPreviewSchema,
+                      )
+                      .then(
+                        (preview) => ({ preview }),
+                        (itemError: unknown) => ({
+                          error: { code: sessionDeletionErrorCode(itemError) },
+                        }),
+                      ),
+                  );
+                return fallback;
+              });
+            if (batch.length !== items.length) throw new Error("session-data.unavailable");
+          } catch (error) {
+            const code = sessionDeletionErrorCode(error);
+            batch = items.map(() => ({ error: { code } }));
+          }
+          indexes.forEach((index, position) => {
+            results[index] = batch[position]!;
+          });
+        }
+      return { results };
+    },
+    async executeSessionDeletion(params) {
+      const client = await sessionDeletionClient(params.workspace);
+      return client.request(
+        V4_METHODS.sessionDeletionExecute,
+        params,
+        v4SessionDeletionResultSchema,
+      );
+    },
+
+    async measureSessionData(params) {
+      // 只读测量：和全局工作流同一载体选择（本机已活跃 runtime，否则管理面进程）。
+      const { client } = await resolveGlobalSavedWorkflowCarrier();
+      return client.request(
+        V4_METHODS.sessionDataMeasure,
+        { sessionIds: params.sessionIds, directories: params.directories },
+        v4SessionDataMeasureResultSchema,
+      );
+    },
+
+    async purgeSessionData({ workspace, ...params }) {
+      if (!isLocalActiveWorkspaceClient(workspace)) throw new Error("project.data-local-only");
+      // 会话可能已加载在该 cwd 的 Agent 进程里：必须由那个进程删除，它才能判断运行中并释放会话；
+      // 绝不为删除拉起该项目的 Agent（文件夹可能已不存在），没有进程时交给管理面进程。
+      const client = await getReadOnlyClient(workspace, "existing-only").catch(() =>
+        getPluginManagementClient(),
+      );
+      return client.request(V4_METHODS.sessionDataPurge, params, v4SessionDataPurgeResultSchema);
     },
 
     async getTaskTokenUsage(params: CCbuddyAgentTaskTokenUsageParams) {
@@ -4257,6 +5163,7 @@ export function createCCbuddyAgentService(
           sessionId: params.sessionId,
           afterMessageId: params.afterMessageId,
           limit: params.limit,
+          direction: params.direction,
         },
         ccbuddySessionMessagesResultSchema,
       );
@@ -4273,7 +5180,7 @@ export function createCCbuddyAgentService(
     },
 
     async readSessionEvents(params: CCbuddyAgentReadSessionEventsParams) {
-      const client = await getReadOnlyClient(params);
+      const client = await getReadOnlyClient(params, params.runtimePolicy);
       const result = await client.request(
         ccbuddyProtocolMethods.sessionEvents,
         {
@@ -4367,9 +5274,26 @@ export function createCCbuddyAgentService(
       );
     },
 
+    async setWorkspaceMcpTrust(params) {
+      const client = await getReadOnlyClient(params);
+      return client.request(
+        ccbuddyProtocolMethods.workspaceMcpTrust,
+        {
+          workspace: buildWorkspaceRef(params),
+          serverName: params.serverName,
+          declarationDigest: params.declarationDigest,
+          trusted: params.trusted,
+        },
+        ccbuddyWorkspaceMcpTrustResultSchema,
+      );
+    },
+
     async listMcpServerStatuses(params: CCbuddyAgentListMcpServerStatusesParams) {
       const requestMcpList = async (options?: { omitMcpServers?: boolean; omitMode?: boolean }) => {
         const client = await getMcpStatusClient();
+        // 管理目录只是进程载体；先登记本次实际探测目标，反向授权才能精确校验归属。
+        // 放在重试闭包内，兼容重试和进程重建都不会遗漏登记。
+        rememberClientTarget(client, params);
         return client.request(
           ccbuddyProtocolMethods.mcpList,
           {
@@ -4402,6 +5326,9 @@ export function createCCbuddyAgentService(
         ) {
           const omitMode = unrecognizedKeys.includes("mode");
           const omitMcpServers = unrecognizedKeys.includes("mcpServers");
+          if (omitMcpServers && params.mcpServers?.some((server) => server.scope === "workspace")) {
+            throw new Error("workspace_mcp_trust_unavailable");
+          }
           logger.warn(undefined, "MCP 状态列表命中新旧协议兼容重试", {
             omittedKeys: [...(omitMode ? ["mode"] : []), ...(omitMcpServers ? ["mcpServers"] : [])],
             workspaceKey: resolveWorkspaceKey(params),
@@ -4822,12 +5749,7 @@ export function createCCbuddyAgentService(
       const { client, workspace } = await resolveSavedWorkflowCarrier(params);
       return client.request(
         ccbuddyProtocolMethods.workflowsUpdateMeta,
-        {
-          workspace,
-          name: params.name,
-          meta: params.meta,
-          ...savedWorkflowScopeParam(params),
-        },
+        { workspace, name: params.name, meta: params.meta, ...savedWorkflowScopeParam(params) },
         ccbuddyWorkflowsUpdateMetaResultSchema,
       );
     },
@@ -4935,11 +5857,7 @@ export function createCCbuddyAgentService(
               ccbuddyProtocolMethods.processChildProcesses,
               {},
               ccbuddyProcessChildProcessesResultSchema,
-              {
-                timeoutMs: CHILD_PROCESSES_REQUEST_TIMEOUT_MS,
-                lifecycle: "observation",
-                signal,
-              },
+              { timeoutMs: CHILD_PROCESSES_REQUEST_TIMEOUT_MS, lifecycle: "observation", signal },
             );
             children = result.processes;
           } catch {
@@ -4958,11 +5876,15 @@ export function createCCbuddyAgentService(
 
     async getPluginsOverview(params: CCbuddyAgentPluginViewParams) {
       const client = await getPluginManagementClient();
+      // 扩展摘要只向声明了能力位的 CLI 要（docs/plugins/plugin-publishing.md §4.3）：参数与结果都是
+      // strict，旧 CLI 收到新参数整条拒绝；不要时 CLI 也不带，旧 services 不会解析到新键。
+      const includeExtensionSummary = await supportsPluginExtensionSummary(client);
       return client.request(
         ccbuddyProtocolMethods.pluginsOverview,
         {
           workspace: buildWorkspaceRef(params),
           ...(params.configScope ? { configScope: params.configScope } : {}),
+          ...(includeExtensionSummary ? { includeExtensionSummary: true } : {}),
         },
         ccbuddyPluginsOverviewResultSchema,
         { timeoutMs: PLUGIN_MANAGEMENT_REQUEST_TIMEOUT_MS },
@@ -5157,6 +6079,21 @@ export function createCCbuddyAgentService(
       );
     },
 
+    async setWorkspacePluginTrust(params: CCbuddyAgentSetWorkspacePluginTrustParams) {
+      const client = await getPluginManagementClient();
+      return client.request(
+        ccbuddyProtocolMethods.pluginsWorkspaceTrust,
+        {
+          workspace: buildWorkspaceRef(params),
+          pluginRoot: params.pluginRoot,
+          declarationDigest: params.declarationDigest,
+          trusted: params.trusted,
+        },
+        ccbuddyPluginsWorkspaceTrustResultSchema,
+        { timeoutMs: PLUGIN_MANAGEMENT_REQUEST_TIMEOUT_MS },
+      );
+    },
+
     async listAutomations(params: CCbuddyAgentWorkspaceTarget) {
       return automationService.list(params);
     },
@@ -5167,6 +6104,7 @@ export function createCCbuddyAgentService(
 
     async createAutomation(params: CCbuddyAgentCreateAutomationParams) {
       return automationService.create({
+        projectId: params.projectId,
         title: params.title,
         cronExpr: params.cronExpr,
         relativeDelayMinutes: params.relativeDelayMinutes,
@@ -5268,6 +6206,7 @@ export function createCCbuddyAgentService(
         client,
         reason: "workspace_generate_text",
         workspace: params,
+        refreshRegistry: true,
       });
       const operationId = params.signal ? randomUUID() : undefined;
       const cancel = () => {
@@ -5323,6 +6262,7 @@ export function createCCbuddyAgentService(
         client,
         reason: "provider_test_model_connectivity",
         workspace: params,
+        refreshRegistry: true,
       });
       return client.request(
         ccbuddyProtocolMethods.providerTestModelConnectivity,
@@ -5338,6 +6278,12 @@ export function createCCbuddyAgentService(
     async sendPrompt(params: CCbuddyAgentSendPromptParams) {
       const startedAt = Date.now();
       const client = await getClient(params);
+      await ensureAccountProviderConfigSynced({
+        client,
+        reason: "session_send",
+        workspace: params,
+        refreshRegistry: true,
+      });
       const sessionTraceId = params.sessionTraceId?.trim() || getSessionTraceId(params);
       const logTraceId = sessionTraceId ?? params.inputId;
       const browserAmbientContext =
@@ -5381,6 +6327,14 @@ export function createCCbuddyAgentService(
         });
         return result;
       } catch (error) {
+        // 旧 CLI 拒绝 basis 时，剥离重试会重新接纳异步解析前的旧模型。
+        // 必须先于可选字段兼容处理明确失败；首次 schema 拒绝尚未接纳输入。
+        if (
+          protocolParams.modelSelectionBasis &&
+          getUnrecognizedTopLevelKeys(error).includes("modelSelectionBasis")
+        ) {
+          throw new CCbuddyAgentModelSelectionBasisUnsupportedError(error);
+        }
         const compatFields = getSessionSendCompatFields(error);
         if (compatFields.length > 0) {
           logger.warn(logTraceId, "CCbuddy Agent session/send 命中新旧协议兼容重试", {
@@ -5500,75 +6454,6 @@ export function createCCbuddyAgentService(
       }
     },
 
-    onDynamicSessionLifecycle(params) {
-      return (listener) =>
-        sessionLifecycleEmitter.event((event) => {
-          if (event.workspaceKey === resolveWorkspaceKey(params)) listener(event.snapshot);
-        });
-    },
-    async getSessionLifecycle(params) {
-      const client = await getReadOnlyClient(params);
-      try {
-        return await client.request(
-          ccbuddyProtocolMethods.sessionLifecycleGetState,
-          { sessionId: params.sessionId },
-          sessionLifecycleSnapshotSchema,
-        );
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === -32601) return null;
-        throw error;
-      }
-    },
-    async ensureSessionReady(params) {
-      const client = await getClient(params);
-      await client.request(
-        ccbuddyProtocolMethods.sessionLifecycleEnsureReady,
-        { sessionId: params.sessionId, workspace: buildWorkspaceRef(params) },
-        sessionLifecycleResultSchema,
-      );
-    },
-    async stopSessionRuntime(params) {
-      const client = await getClient(params);
-      await client.request(
-        ccbuddyProtocolMethods.sessionLifecycleStop,
-        { sessionId: params.sessionId },
-        sessionLifecycleResultSchema,
-      );
-    },
-    async restartSessionRuntime(params) {
-      const client = await getClient(params);
-      try {
-        await client.request(
-          ccbuddyProtocolMethods.sessionLifecycleRestart,
-          { sessionId: params.sessionId, workspace: buildWorkspaceRef(params) },
-          sessionLifecycleResultSchema,
-        );
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === -32601)
-          throw new Error("fault.sessionLifecycle.unsupported", { cause: error });
-        throw error;
-      }
-    },
-
-    async measureSessionData(params) {
-      const { client } = await resolveGlobalSavedWorkflowCarrier();
-      return client.request(
-        V4_METHODS.sessionDataMeasure,
-        params,
-        v4SessionDataMeasureResultSchema,
-      );
-    },
-
-    async purgeSessionData({ workspace, ...params }) {
-      if (!isLocalActiveWorkspaceClient(workspace)) throw new Error("project.data-local-only");
-      const active = activeClientsByWorkspaceKey.get(resolveWorkspaceKey(workspace));
-      const client =
-        active && isReusableActiveClientEntry(workspace, active)
-          ? active.client
-          : await getPluginManagementClient();
-      return client.request(V4_METHODS.sessionDataPurge, params, v4SessionDataPurgeResultSchema);
-    },
-
     async closeSession(
       params: CCbuddyAgentSessionTarget & {
         expectedPersistence?: "deferred" | "immediate";
@@ -5587,6 +6472,28 @@ export function createCCbuddyAgentService(
       );
       // 兼容尚未返回 closed 字段、但已成功执行普通 close 的 Agent。
       return result.closed ?? true;
+    },
+
+    async releaseSessionsUnderDirectory(params) {
+      // 绝不为卸载拉起 CLI：没有进程时没有驻留会话。
+      const client = processManager.getExistingClient(params);
+      if (!client || client.isDisposed) return { released: [], busy: [] };
+      return await client.request(
+        ccbuddyProtocolMethods.sessionReleaseUnderDirectory,
+        { directory: params.directory },
+        ccbuddySessionReleaseUnderDirectoryResultSchema,
+      );
+    },
+
+    async queryCommandResult(params) {
+      // 命令结果是 CLI 的事实；进程已退出时以只读方式拉起，读取持久化的命令记录。
+      const client = await getReadOnlyClient(params);
+      const result = await client.request(
+        V4_METHODS.commandsQuery,
+        commandsQueryParamsSchema.parse({ commands: [params.key] }),
+        commandsQueryResultSchema,
+      );
+      return result.results[0]?.result ?? "unknown";
     },
 
     async setModel(params: CCbuddyAgentSetModelParams) {
@@ -5699,16 +6606,17 @@ export function createCCbuddyAgentService(
         preferences = ccbuddySessionRuntimePreferencesResultSchema.parse(
           params.resolution.preferences,
         );
-        if (options?.resolveSessionDirectories) {
-          preferences.additionalDirectories = pending.request.directorySessionId
-            ? await options.resolveSessionDirectories({
-                ...pending.workspace,
-                sessionId: pending.request.directorySessionId,
-              })
-            : await readSessionDirectories(pending.client, {
-                ...pending.workspace,
-                sessionId: pending.request.sessionId,
-              });
+        // App 控制能力属于当前 Host 装配，不能由外部设置应答方声明。
+        preferences.appControlEnabled = Boolean(options?.resolveAppControlService?.());
+        // 远端组织态由远端 Host 读取；客户端设置回包不能覆盖本机目录事实。
+        if (
+          pending.request.scope === "runtime-materialization" &&
+          options?.resolveSessionDirectories
+        ) {
+          preferences.additionalDirectories = await resolveSessionDirectories(
+            { ...pending.workspace, sessionId: pending.request.sessionId },
+            pending.request.directorySessionId,
+          );
         }
       } catch (error) {
         logger.warn(undefined, "Host 返回运行时偏好格式非法", {
@@ -5753,6 +6661,9 @@ export function createCCbuddyAgentService(
       const pending = pendingProviderRuntimeHeaders.get(key);
       if (!pending) {
         throw new Error(`CCbuddy provider runtime headers request not found: ${params.requestId}`);
+      }
+      if (!pending.interactionRequired) {
+        throw new Error("Provider runtime headers request does not require interaction");
       }
       if (pending.responding) {
         throw new Error(
@@ -5814,10 +6725,7 @@ export function createCCbuddyAgentService(
         pending.protocolRequestId,
         requestAuth
           ? { headersApplied: true, requestAuth }
-          : {
-              headersApplied: false,
-              errorMessage: "Provider request auth is missing",
-            },
+          : { headersApplied: false, errorMessage: "Provider request auth is missing" },
       );
       const logContext = {
         modelId: pending.request.modelSelection.modelId,
@@ -5849,7 +6757,11 @@ export function createCCbuddyAgentService(
         // 必须先注册 live listener，再补投递当前 session 的 pending 请求，封住前后两个窗口。
         const pendingSessionPrefix = `${sessionEventKey(params)}\u0000`;
         for (const [key, pending] of pendingProviderRuntimeHeaders) {
-          if (key.startsWith(pendingSessionPrefix)) {
+          if (
+            key.startsWith(pendingSessionPrefix) &&
+            pending.interactionRequired &&
+            !pending.responding
+          ) {
             listener(pending.request);
           }
         }
@@ -5870,7 +6782,11 @@ export function createCCbuddyAgentService(
         // 隔离按 workspaceKey（identity 优先），禁止把远程同路径 workspace 的请求互投。
         const pendingWorkspacePrefix = `${resolveWorkspaceKey(params)}\u0000`;
         for (const [key, pending] of pendingProviderRuntimeHeaders) {
-          if (key.startsWith(pendingWorkspacePrefix)) {
+          if (
+            key.startsWith(pendingWorkspacePrefix) &&
+            pending.interactionRequired &&
+            !pending.responding
+          ) {
             listener(pending.request);
           }
         }
@@ -6049,6 +6965,8 @@ export function createCCbuddyAgentService(
           // 与 connection scope 的 hello 同一份能力集：直连 base service 的宿主内部消费者
           // 也能收到 `workflowRun.*` 增量（是否真收由它自己的 clientHello 决定）。
           workflowRunDeltas: true,
+          historyFirst: true,
+          residentRowsRange: true,
         },
         auth: {},
       };
@@ -6090,14 +7008,15 @@ export function createCCbuddyAgentService(
         client,
         reason: "conversation_subscribe",
         workspace: params,
+        refreshRegistry: true,
       });
       const providerRegistrySyncMs = Math.max(
         0,
         Math.round(performance.now() - providerRegistryStartedAt),
       );
       const connection = resolveV4Connection(params);
+      const historyFirst = connection.historyFirst === true && (await supportsHistoryFirst(client));
       const topic = conversationTopic(params.sessionId);
-      const additionalDirectories = await readSessionDirectories(client, params);
       const taskMetaStartedAt = performance.now();
       const resumeThoughtLevel = await automationTaskIndexRepo
         .getTaskMeta({
@@ -6119,6 +7038,7 @@ export function createCCbuddyAgentService(
           });
           return undefined;
         });
+      const additionalDirectories = await readSessionDirectories(client, params);
       const taskMetaReadMs = Math.max(0, Math.round(performance.now() - taskMetaStartedAt));
       const cliRequestStartedAt = performance.now();
       const result = await client.request(
@@ -6131,6 +7051,17 @@ export function createCCbuddyAgentService(
           // 缺席即 CLI 按旧消费者发整键 patch，并先裁到旧界——重订阅、recovery、Web 客户端
           // relay attachment 都走这一条 subscribe，所以这一处写全即可。
           ...(connection.workflowRunDeltas === true ? { workflowRunDeltas: true } : {}),
+          ...(connection.pluginDiscoveryUi && (await supportsPluginDiscoveryUi(client))
+            ? { pluginDiscoveryUi: true }
+            : {}),
+          ...(historyFirst
+            ? {
+                historyFirst: true,
+                ...(params.retryInitialization
+                  ? { retryInitialization: params.retryInitialization }
+                  : {}),
+              }
+            : {}),
           // Bug 根因：冷订阅过去只传 sessionId，CLI 只能从历史 session.path 反推
           // workspace 身份；该路径已可能被 path.resolve 改写。当前 attachment 才是权威来源。
           workspace: buildWorkspaceRef(params),
@@ -6177,7 +7108,50 @@ export function createCCbuddyAgentService(
     },
 
     async sendConversationCommandV4(params: CCbuddyAgentConversationCommandParams) {
-      const client = await getClient(params);
+      const ttft =
+        !params.workspaceIdentity?.trim() &&
+        !params.remoteSessionId &&
+        (readTrustedCCbuddyAgentV4Connection(params)?.clientMode ??
+          params.clientMode ??
+          "desktop-continuous") === "desktop-continuous"
+          ? params.envelope.ttft
+          : undefined;
+      const logStage = (phase: string, status: string, at: number, durationMs?: number) => {
+        if (!ttft) return;
+        try {
+          logger.info(undefined, "[ttft]", {
+            event: "ttft.phase",
+            observationId: ttft.observationId,
+            commandId: params.envelope.commandId,
+            sessionId: params.envelope.sessionId,
+            phase,
+            status,
+            source: "host",
+            at,
+            durationMs,
+            pid: process.pid,
+          });
+        } catch {
+          /* 观测失败不改变命令裁决。 */
+        }
+      };
+      const measure = async <T>(phase: string, operation: () => Promise<T>): Promise<T> => {
+        if (!ttft) return operation();
+        const start = performance.timeOrigin + performance.now();
+        logStage(phase, "started", start);
+        try {
+          const result = await operation();
+          const end = performance.timeOrigin + performance.now();
+          logStage(phase, "completed", end, end - start);
+          return result;
+        } catch (error) {
+          const end = performance.timeOrigin + performance.now();
+          logStage(phase, "failed", end, end - start);
+          throw error;
+        }
+      };
+      const client = await measure("host.runtime", () => getClient(params));
+      // 新 Host 可能连接旧 CLI；先检查执行端，避免 z.object 静默丢弃状态后仍执行用户输入。
       const genUiContext = (params.envelope.payload as { genUiContext?: unknown } | null)
         ?.genUiContext;
       if (
@@ -6197,7 +7171,7 @@ export function createCCbuddyAgentService(
         planPayload.config?.planEnabled ||
         planPayload.firstInput?.planEnabled
       ) {
-        await ensureIndependentPlanSupport(client);
+        await measure("host.plan_support", () => ensureIndependentPlanSupport(client));
       }
       // RPC facade 会清掉调用方可伪造的顶层 clientMode，再用 trusted carrier 注入 host
       // 真值；host 内部 adapter 直调仍兼容显式 clientMode。
@@ -6205,17 +7179,55 @@ export function createCCbuddyAgentService(
         readTrustedCCbuddyAgentV4Connection(params)?.clientMode ??
         params.clientMode ??
         "desktop-continuous";
-      if (params.envelope.type === "createSession") {
-        // V4 草稿预热直接走 command 转发；新会话创建前只需等待 Account Config，
-        // CCbuddy Built-in / Personal 已由 Worker 进程 Registry 自己装配。
-        await ensureAccountProviderConfigSynced({
-          client,
-          reason: "v4_command_create_session",
-          workspace: params,
-        });
+      let envelope = {
+        ...(await measure("host.envelope", () => buildConversationCommandEnvelope(params))),
+        inputOrigin:
+          commandClientMode === "web-remote-replayable"
+            ? ("mobile" as const)
+            : ("desktop" as const),
+      };
+      // 来自 UI 的同名字段永远不是授权；relay 透传的是下游握手。旧 CLI 严格校验，缺席比发送 false 安全。
+      delete envelope.pluginDiscoveryUi;
+      if (
+        envelope.type === "createSession" &&
+        envelope.payload &&
+        typeof envelope.payload === "object"
+      ) {
+        const { pluginDiscoveryToolEnabled: _untrusted, ...payload } = envelope.payload as Record<
+          string,
+          unknown
+        >;
+        envelope.payload = payload;
       }
-      let envelope = await buildConversationCommandEnvelope(params);
-      // TTFT 首版只允许可信桌面本地 continuous，Web/远端透传不能开启本地观测。
+      if (
+        readTrustedCCbuddyAgentV4Connection(params)?.pluginDiscoveryUi &&
+        (await supportsPluginDiscoveryUi(client))
+      ) {
+        // 偏好控制下一次输入的工具面；已展示的确认卡片仍可完成或跳过，避免关开关后卡住旧轮。
+        if (
+          latestAppRuntimePreferences?.pluginAutoRecommendationEnabled === true ||
+          envelope.type === "resolveInteraction"
+        ) {
+          envelope.pluginDiscoveryUi = true;
+        }
+      }
+      const highspeedPayload = envelope.payload as { highspeedMeta?: { ownerKey?: string } };
+      if (highspeedPayload.highspeedMeta?.ownerKey && !(await supportsHighspeedCardOwner(client))) {
+        // 旧执行端strict schema会拒绝新字段；只剥离归属，不改变本轮发送和加速材料。
+        const { ownerKey: _ownerKey, ...legacyMeta } = highspeedPayload.highspeedMeta;
+        envelope = { ...envelope, payload: { ...highspeedPayload, highspeedMeta: legacyMeta } };
+      }
+      if (requiresProviderRegistryRefresh(envelope.type)) {
+        await measure("host.provider_sync", () =>
+          ensureAccountProviderConfigSynced({
+            client,
+            reason: "v4_command",
+            workspace: params,
+            refreshRegistry: true,
+          }),
+        );
+      }
+      // TTFT 首版只允许可信桌面本地 continuous，手机/远端透传不能开启本地观测。
       if (
         commandClientMode !== "desktop-continuous" ||
         params.workspaceIdentity?.trim() ||
@@ -6234,15 +7246,14 @@ export function createCCbuddyAgentService(
               : ("desktop" as const),
         };
         envelope = { ...envelope, payload };
-        const browserAmbientContext = await collectBrowserAmbientContext(
-          options?.browserControlExecutor,
-          {
+        const browserAmbientContext = await measure("host.browser_context", () =>
+          collectBrowserAmbientContext(options?.browserControlExecutor, {
             sessionId,
             workspacePath: params.workspacePath,
             ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
             ...(params.remoteSessionId ? { remoteSessionId: params.remoteSessionId } : {}),
             clientMode: commandClientMode,
-          },
+          }),
         );
         if (browserAmbientContext) {
           envelope = {
@@ -6251,13 +7262,24 @@ export function createCCbuddyAgentService(
           };
         }
       }
-      const ack: CommandAck = await client.request(V4_METHODS.command, envelope, commandAckSchema);
+      if (envelope.type === "createSession") {
+        const payload = commandPayloadSchemas.createSession.parse(envelope.payload);
+        if (payload.sessionId) rememberClientTarget(client, params, payload.sessionId);
+      }
+      envelope = { ...envelope, ...coldResumeWorkspace(params) };
+      // ACK 往返可与执行重叠，诊断单列，不能与六个 TTFT 主阶段相加。
+      const ack: CommandAck = await measure("host.cli_ack", () =>
+        client.request(V4_METHODS.command, envelope, commandAckSchema),
+      );
       if (
         envelope.type === "forkAssistant" &&
         envelope.sessionId &&
+        // fork 到新 worktree 已由 Host 在发送前预留目标 cwd；ACK 不能再按父目录继承并覆盖它。
+        !commandPayloadSchemas.forkAssistant.parse(envelope.payload).targetCwd &&
         (ack.status === "accepted" || ack.status === "duplicate") &&
         ack.result?.type === "forkAssistant"
       ) {
+        // 正文提交不代表 Host 组织态已写入；等待归属交接再允许界面立即打开，失败可重放同一 ACK。
         await options?.prepareForkCreation?.({
           ...params,
           sessionId: ack.result.sessionId,
@@ -6289,6 +7311,7 @@ export function createCCbuddyAgentService(
       if (!trusted) throw new Error("fault.attachment.connectionUntrusted");
       const client = await getClient(params);
       const wireParams = {
+        ...coldResumeWorkspace(params),
         connectionId: trusted.connectionId,
         uploadId: params.uploadId,
         sessionId: params.sessionId,
@@ -6352,6 +7375,7 @@ export function createCCbuddyAgentService(
         throw new Error("fault.attachment.readConnectionUntrusted");
       }
       const wireParams = v4AttachmentReadParamsSchema.parse({
+        ...coldResumeWorkspace(params),
         sessionId: params.sessionId,
         ref: params.ref,
         ...(params.target ? { target: params.target } : {}),
@@ -6372,6 +7396,7 @@ export function createCCbuddyAgentService(
         );
       }
       const wireParams = v4ConversationAttachmentReadParamsSchema.parse({
+        ...coldResumeWorkspace(params),
         sessionId: params.sessionId,
         ref: params.ref,
         target: params.target,
@@ -6394,6 +7419,7 @@ export function createCCbuddyAgentService(
         );
       }
       const wireParams = v4ConversationAttachmentStatParamsSchema.parse({
+        ...coldResumeWorkspace(params),
         sessionId: params.sessionId,
         ref: params.ref,
         target: params.target,
@@ -6414,6 +7440,7 @@ export function createCCbuddyAgentService(
         return { kind: "chunked" } as const;
       }
       const wireParams = v4AttachmentPreviewSourceParamsSchema.parse({
+        ...coldResumeWorkspace(params),
         sessionId: params.sessionId,
         ref: params.ref,
         ...(params.target ? { target: params.target } : {}),
@@ -6442,14 +7469,19 @@ export function createCCbuddyAgentService(
     async conversationRowsRangeV4(params: CCbuddyAgentConversationRowsRangeParams) {
       const trusted = readTrustedCCbuddyAgentV4Connection(params);
       if (!trusted) throw new Error("fault.conversation.rowsRangeConnectionUntrusted");
-      const client = await getReadOnlyClient(params);
+      const residentOnly = params.residency === "resident-only";
+      const client = residentOnly
+        ? await getResidentRowsClient(params)
+        : await getReadOnlyClient(params);
       return client.request(
         V4_METHODS.conversationRowsRange,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           clientMode: trusted.clientMode,
           ...(params.beforeRowId !== undefined ? { beforeRowId: params.beforeRowId } : {}),
           limit: params.limit,
+          ...(residentOnly ? { residency: "resident-only" as const } : {}),
         },
         v4ConversationRowsRangeResultSchema,
       );
@@ -6460,9 +7492,32 @@ export function createCCbuddyAgentService(
       const client = await getReadOnlyClient(params);
       return client.request(
         V4_METHODS.conversationPlans,
-        { sessionId: params.sessionId },
+        { ...coldResumeWorkspace(params), sessionId: params.sessionId },
         v4ConversationPlansResultSchema,
       );
+    },
+
+    // 输入预测：只读 query；绝不为它拉起运行时（existing-only）。开关关闭、无运行时、
+    // 旧 CLI 不认识方法、模型失败都降级为空结果——ghost hint 是可有可无的建议。
+    async conversationInputPredictionV4(params: CCbuddyAgentConversationInputPredictionParams) {
+      if (!isRemoteInputPredictionEnabled()) {
+        return emptyInputPredictionResult("unavailable", params.requestId);
+      }
+      try {
+        const client = await getReadOnlyClient(params, "existing-only");
+        return await client.request(
+          V4_METHODS.conversationInputPrediction,
+          {
+            sessionId: params.sessionId,
+            revision: params.revision,
+            ...(params.draft !== undefined ? { draft: params.draft } : {}),
+            ...(params.requestId !== undefined ? { requestId: params.requestId } : {}),
+          },
+          v4ConversationInputPredictionResultSchema,
+        );
+      } catch {
+        return emptyInputPredictionResult("unavailable", params.requestId);
+      }
     },
 
     // workflow run 事件日志：同样是只读 query，沿现有 workspace attachment 透传。
@@ -6473,6 +7528,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationWorkflowRunEvents,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           runId: params.runId,
           ...(params.afterSequence !== undefined ? { afterSequence: params.afterSequence } : {}),
@@ -6488,6 +7544,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationWorkflowRuns,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           ...(params.limit !== undefined ? { limit: params.limit } : {}),
         },
@@ -6504,7 +7561,7 @@ export function createCCbuddyAgentService(
       const client = await getReadOnlyClient(params);
       return client.request(
         V4_METHODS.conversationWorkflowRunArtifacts,
-        { sessionId: params.sessionId, runId: params.runId },
+        { ...coldResumeWorkspace(params), sessionId: params.sessionId, runId: params.runId },
         v4ConversationWorkflowRunArtifactsResultSchema,
       );
     },
@@ -6518,6 +7575,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationWorkflowRunArtifactData,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           runId: params.runId,
           artifactId: params.artifactId,
@@ -6537,6 +7595,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationWorkflowRunArtifactRead,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           runId: params.runId,
           artifactId: params.artifactId,
@@ -6556,7 +7615,7 @@ export function createCCbuddyAgentService(
       const client = await getReadOnlyClient(params);
       return client.request(
         V4_METHODS.conversationWorkflowRunWorkspace,
-        { sessionId: params.sessionId, runId: params.runId },
+        { ...coldResumeWorkspace(params), sessionId: params.sessionId, runId: params.runId },
         v4ConversationWorkflowRunWorkspaceResultSchema,
       );
     },
@@ -6568,6 +7627,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationWorkflowRunNodeResult,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           runId: params.runId,
           siteId: params.siteId,
@@ -6611,6 +7671,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationFileChanges,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           target: params.target,
           baseRevision: params.baseRevision,
@@ -6625,6 +7686,7 @@ export function createCCbuddyAgentService(
       return client.request(
         V4_METHODS.conversationFileRewindPreview,
         {
+          ...coldResumeWorkspace(params),
           sessionId: params.sessionId,
           target: params.target,
           baseRevision: params.baseRevision,
@@ -6634,6 +7696,40 @@ export function createCCbuddyAgentService(
       );
     },
 
+    async getSessionLifecycle(params) {
+      const client = await getReadOnlyClient(params);
+      try {
+        return await client.sessionLifecycle.getState(params.sessionId);
+      } catch (error) {
+        // 较旧 CLI 尚无该协议；只对 method-not-found 回落旧订阅，不吞掉断线或真实初始化错误。
+        if (error instanceof Error && "code" in error && error.code === -32601) return null;
+        throw error;
+      }
+    },
+    async ensureSessionReady(params) {
+      const client = await getClient(params);
+      await client.sessionLifecycle.ensureReady(params.sessionId, buildWorkspaceRef(params));
+    },
+    async stopSessionRuntime(params) {
+      const client = await getClient(params);
+      await client.sessionLifecycle.stop(params.sessionId);
+    },
+    async restartSessionRuntime(params) {
+      const client = await getClient(params);
+      try {
+        await client.sessionLifecycle.restart(params.sessionId, buildWorkspaceRef(params));
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === -32601)
+          throw new Error("fault.sessionLifecycle.unsupported", { cause: error });
+        throw error;
+      }
+    },
+    onDynamicSessionLifecycle(params) {
+      return (listener: (snapshot: SessionLifecycleSnapshot) => void) =>
+        sessionLifecycleEmitter.event((event) => {
+          if (event.workspaceKey === resolveWorkspaceKey(params)) listener(event.snapshot);
+        });
+    },
     onDynamicConversationFrame(params: CCbuddyAgentWorkspaceTarget) {
       return getConversationFrameEmitter(params).event;
     },
@@ -6644,16 +7740,45 @@ export function createCCbuddyAgentService(
           if (event.workspaceKey === resolveWorkspaceKey(params)) listener(event.facts);
         });
     },
+    onDynamicRemoteConversationTelemetry() {
+      return remoteConversationTelemetryEmitter.event;
+    },
     onDynamicConversationTelemetryFact(params: CCbuddyAgentWorkspaceTarget) {
       return getConversationTelemetryFactEmitter(params).event;
     },
+    getContextComposition: (params) => contextComposition.getContextComposition(params),
+    getPluginMentionItems: (params) => pluginHostQueries.getPluginMentionItems(params),
+    onDynamicContextCompositionChanged: (target) => contextComposition.onDidChange(target),
+    onDynamicModelRequestMetrics: (target) => contextComposition.onModelRequestMetrics(target),
+    onDynamicOffPeakLifecycle(params: CCbuddyAgentWorkspaceTarget) {
+      return getOffPeakLifecycleEmitter(params).event;
+    },
+    async controlOffPeakExecutionV4(
+      params: CCbuddyAgentWorkspaceTarget & { control: OffPeakControlParams },
+    ) {
+      const control = offPeakControlParamsSchema.parse(params.control);
+      const client = await getReadOnlyClient(params, "existing-only");
+      return client.request(V4_METHODS.offPeakControl, control, offPeakControlResultSchema);
+    },
 
+    onDynamicPluginUiToolResult() {
+      return pluginUiToolResultEmitter.event;
+    },
     onDynamicCuaPermissionObservation() {
       return cuaPermissionObservationEmitter.event;
     },
 
     // ── sessions-index 通道（列表活性）：复用 conversationSubscribe RPC，
     // 按 topic 前缀由 CLI server 分派 ──
+
+    async reconcileSessionsIndexV4(params) {
+      const client = await getReadOnlyClient(params, "existing-only");
+      return client.request(
+        V4_METHODS.sessionsIndexReconcile,
+        { workspaceId: resolveWorkspaceKey(params), sessionIds: params.sessionIds },
+        sessionsIndexReconcileResultSchema,
+      );
+    },
 
     async subscribeSessionsIndexV4(params: CCbuddyAgentSessionsIndexSubscribeParams) {
       // 侧栏会同时登记所有 restored workspace。被动订阅若使用启动型 client，
@@ -6687,6 +7812,32 @@ export function createCCbuddyAgentService(
           });
         }
       }
+      // 本地 worktree 任务的 cwd 不是 workspace 目录，CLI 按 directory 冷扫描看不到它们；
+      // 从 tasks-index 精确提供 id（docs/git/worktree.md §6.6.2）。读取失败只影响这些任务的摘要。
+      let worktreeSessionIds: string[] = [];
+      if (!params.workspaceIdentity?.trim()) {
+        try {
+          worktreeSessionIds = (
+            await automationTaskIndexRepo.listTaskMetas({
+              workspacePath: params.workspacePath,
+              provider: "glm",
+            })
+          )
+            .filter((task) => Boolean(task.worktreeRoot))
+            .slice(0, MAX_LEGACY_TASK_IDS_PER_SUBSCRIBE)
+            .map((task) => task.taskId);
+        } catch (error) {
+          logger.warn(
+            undefined,
+            "读取 worktree 任务列表失败，sessions-index 不含这些任务的冷摘要",
+            {
+              error: error instanceof Error ? error.message : String(error),
+              event: "sessions_index.worktree_task_ids_read_failed",
+              workspacePath: params.workspacePath,
+            },
+          );
+        }
+      }
       const result = await client.request(
         V4_METHODS.conversationSubscribe,
         {
@@ -6694,6 +7845,7 @@ export function createCCbuddyAgentService(
           connectionId: connection.connectionId,
           clientMode: connection.clientMode,
           ...(legacyTaskIds.length > 0 ? { legacyTaskIds } : {}),
+          ...(worktreeSessionIds.length > 0 ? { worktreeSessionIds } : {}),
           ...(params.base ? { base: params.base } : {}),
           ...(params.visibility ? { visibility: params.visibility } : {}),
         },
@@ -6773,6 +7925,25 @@ export function createCCbuddyAgentService(
     onDynamicMcpTelemetry() {
       return mcpTelemetryEmitter.event;
     },
+    onDynamicPluginStartupDegraded(params: CCbuddyAgentWorkspaceTarget) {
+      return (listener) => {
+        const key = resolveWorkspaceKey(params);
+        let seen: CCbuddyProtocolClient | undefined;
+        const accept = (client: CCbuddyProtocolClient) => {
+          if (client.isDisposed || !client.pluginStartupDegraded || seen === client) return;
+          seen = client;
+          listener();
+        };
+        const disposable = pluginStartupDegradedEmitter.event((event) => {
+          if (event.workspaceKey === key) accept(event.client);
+        });
+        // 先订阅再回放，覆盖预热早于 UI 挂载和手机晚接入；只读取当前工作区进程。
+        for (const runtime of processManager.listManagedProcesses()) {
+          if (resolveWorkspaceKey(runtime) === key) accept(runtime.client);
+        }
+        return disposable;
+      };
+    },
 
     // （CLI 重连重订）：进程换代直通 process manager；v4 订阅方（task-index
     // syncer 等）据此重发 subscribe——订阅活在 CLI 进程内存，换代即静默失活。
@@ -6784,23 +7955,64 @@ export function createCCbuddyAgentService(
       return processManager.onRuntimeLifecycle(listener);
     },
 
+    onAgentRuntimeExited(listener: (event: CCbuddyAgentRuntimeExitedEvent) => void) {
+      return processManager.onRuntimeExited(listener);
+    },
+
     async disposeWorkspace(params): Promise<void> {
-      const workspaceKey = resolveWorkspaceKey(params);
-      // 释放不仅要终止当前进程，还要让已排队的 provider-ready continuation 失效；
-      // 否则它会在 dispose 完成后把同一个 workspace 的 Agent 再次启动。
-      cancelWaitingWorkspaceStartup(workspaceKey);
-      clearV4SubscriptionRoutes(workspaceKey);
-      cuaOperationTurnTracker?.clearWorkspaceKey(workspaceKey);
-      const active = activeClientsByWorkspaceKey.get(workspaceKey);
-      if (active) {
-        invalidateWorkspaceClient(workspaceKey, active.client);
-      } else {
-        interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
+      const workspaces = processManager.getRuntimeWorkspaces(params);
+      if (params.releasePreparation && processManager.isSharedRuntime(params)) {
+        cancelWaitingWorkspaceStartup(resolveWorkspaceKey(params));
+        const client = processManager.getExistingClient(params);
+        if (client) {
+          for (const [sessionId, key] of clientSessions.get(client) ?? []) {
+            if (key !== resolveWorkspaceKey(params)) continue;
+            await client.request(
+              ccbuddyProtocolMethods.sessionClose,
+              { sessionId, expectedPersistence: "deferred" },
+              ccbuddySessionCloseResultSchema,
+              { invalidateConnectionOnTimeout: false },
+            );
+          }
+        }
+        return;
       }
-      // 该入口被 restartWorkspaceProcess 用作 runtime invalidation，并非
-      // workspace/service 真 teardown。销毁 workspace emitter 会让既有 UI/task-index
-      // listener 永久绑在死对象上；emitters 只由 disposeLocalState/disposeAll 释放。
+      for (const target of workspaces.length ? workspaces : [params]) {
+        const workspaceKey = resolveWorkspaceKey(target);
+        // 释放不仅要终止当前进程，还要让已排队的 provider-ready continuation 失效；
+        // 否则它会在 dispose 完成后把同一个 workspace 的 Agent 再次启动。
+        cancelWaitingWorkspaceStartup(workspaceKey);
+        clearV4SubscriptionRoutes(workspaceKey);
+        cuaOperationTurnTracker?.clearWorkspaceKey(workspaceKey);
+        const active = activeClientsByWorkspaceKey.get(workspaceKey);
+        if (active) {
+          invalidateWorkspaceClient(workspaceKey, active.client);
+        }
+        // 该入口被 restartWorkspaceProcess 用作 runtime invalidation，并非
+        // workspace/service 真 teardown。销毁 workspace emitter 会让既有 UI/task-index
+        // listener 永久绑在死对象上；emitters 只由 disposeLocalState/disposeAll 释放。
+        remoteConversationTelemetry.get(workspaceKey)?.dispose();
+        remoteConversationTelemetry.delete(workspaceKey);
+      }
       await processManager.disposeWorkspace(params);
+    },
+
+    async supportsWorktreeCwd(target) {
+      // 能力集合在 getClient 的启动屏障内写入，这里读到的是本次连接协商后的结果。
+      const client = await getClient(target);
+      return worktreeCwdClients.has(client);
+    },
+
+    async supportsExtensionInputSource(target) {
+      // 与 supportsWorktreeCwd 同一启动屏障；CLI 换代后 getClient 返回新连接，结果随之重算。
+      const client = await getClient(target);
+      return extensionInputSourceClients.has(client);
+    },
+
+    async supportsConversationQuoteComment(target) {
+      // 与 worktreeCwd 相同：能力集合在 getClient 的启动屏障内写入。
+      const client = await getClient(target);
+      return conversationQuoteCommentClients.has(client);
     },
 
     disposeAll(): void {
@@ -6825,4 +8037,58 @@ export function createCCbuddyAgentService(
       disposeLocalState();
     },
   };
+
+  // 删除 worktree 期间拒绝其中会话的新命令与冷订阅，避免在正被删除的目录里启动 turn 或恢复会话（§8.3）。
+  const runSessionOperation = options?.runSessionOperation;
+  if (runSessionOperation) {
+    const send = service.sendConversationCommandV4.bind(service);
+    service.sendConversationCommandV4 = (params) => {
+      const sessionId = params.envelope.sessionId;
+      return sessionId
+        ? runSessionOperation(sessionTargetOf(params, sessionId), () => send(params))
+        : send(params);
+    };
+    const subscribe = service.subscribeConversationV4.bind(service);
+    service.subscribeConversationV4 = (params) =>
+      runSessionOperation(sessionTargetOf(params, params.sessionId), () => subscribe(params));
+  }
+  // 敏感设置读取不挂在 service 对象上：service 会整体登记进 ServiceCollection 并经 RPC 暴露，
+  // ProxyChannel 按属性名分派，所以只放进侧表，由 Window Host 进程内取用。
+  inProcessPluginUserOptionsReaders.set(service, {
+    readPluginUserOptions: (params) => pluginHostQueries.readPluginUserOptions(params),
+  });
+  return service;
+}
+
+/**
+ * Window Host 进程内的插件 user 层设置读取（含敏感值），键是 createCCbuddyAgentService 返回的对象。
+ * WeakMap 条目不是任何对象的属性，RPC 的 ProxyChannel 无法按名字触达。
+ */
+const inProcessPluginUserOptionsReaders = new WeakMap<
+  ICCbuddyAgentService,
+  PluginUserOptionsReader
+>();
+
+/** 只由 node.ts 的 Local Host 装配调用；远端或测试替身的 agent 服务没有条目，返回 undefined。 */
+export function getInProcessPluginUserOptionsReader(
+  service: ICCbuddyAgentService,
+): PluginUserOptionsReader | undefined {
+  return inProcessPluginUserOptionsReaders.get(service);
+}
+
+function sessionTargetOf(
+  workspace: { workspacePath: string; workspaceIdentity?: string },
+  sessionId: string,
+): CCbuddyAgentSessionTarget {
+  return {
+    workspacePath: workspace.workspacePath,
+    ...(workspace.workspaceIdentity ? { workspaceIdentity: workspace.workspaceIdentity } : {}),
+    sessionId,
+  };
+}
+
+/** JSON-RPC method-not-found：旧 CLI 不认识新方法。 */
+/** 批量预检的单项错误码：取错误消息（如 session-data.identity-mismatch），读不到时记为不可用。 */
+function sessionDeletionErrorCode(error: unknown): string {
+  return (error instanceof Error && error.message) || "session-data.unavailable";
 }

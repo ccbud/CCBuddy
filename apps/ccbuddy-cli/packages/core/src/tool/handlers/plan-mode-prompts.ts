@@ -2,9 +2,11 @@
 // Plan Mode Tool Provider Prompts
 // ============================================================
 
-export function createEnterPlanModeProviderDescription(options: {
-  embeddedSearchEnabled?: boolean;
-} = {}): string {
+export function createEnterPlanModeProviderDescription(
+  options: {
+    embeddedSearchEnabled?: boolean;
+  } = {},
+): string {
   const explorationTools = options.embeddedSearchEnabled
     ? "`find`/Glob, `grep`/Grep, and Read"
     : "Glob, Grep, and Read";

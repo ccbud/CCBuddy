@@ -14,7 +14,7 @@ import { logger } from "@/logger.js";
 type DraftModelReadinessStatus = "checking" | "ready" | "missing" | "check-failed";
 
 interface DraftModelReadinessState {
-  gateKey: string;
+  scope: object;
   status: DraftModelReadinessStatus;
   dismissed: boolean;
 }
@@ -55,28 +55,40 @@ export function useDraftModelReadinessGate(params: {
   const displayProvider = provider ?? CCBUDDY_AGENT_PROVIDER;
   const enabled = sessionId === null && isCCbuddyAgentProvider(displayProvider);
   const gateKey = `${workspaceKey}\u0000${displayProvider}`;
+  const scope = useMemo(() => ({ gateKey }), [enabled, gateKey, modelSelectionService]);
   const [state, setState] = useState<DraftModelReadinessState>(() => ({
-    gateKey,
+    scope,
     status: enabled ? "checking" : "ready",
     dismissed: false,
   }));
+  // 进入新草稿的首帧不能沿用正式会话的 ready，否则先建预热、effect 再改 checking，
+  // 会立刻回收在途创建。检查结果只属于本次生命周期，旧复查也不能覆盖新草稿。
+  const effectiveState: DraftModelReadinessState =
+    state.scope === scope
+      ? state
+      : { scope, status: enabled ? "checking" : "ready", dismissed: false };
+  if (state.scope !== scope) setState(effectiveState);
 
   const commitStatus = useCallback(
     (status: DraftModelReadinessStatus, options: { revealMissing?: boolean } = {}) => {
-      setState((current) => ({
-        gateKey,
-        status,
-        dismissed:
-          status === "missing"
-            ? options.revealMissing
-              ? false
-              : current.gateKey === gateKey && current.status === "missing"
-                ? current.dismissed
-                : false
-            : false,
-      }));
+      setState((current) =>
+        current.scope !== scope
+          ? current
+          : {
+              scope,
+              status,
+              dismissed:
+                status === "missing"
+                  ? options.revealMissing
+                    ? false
+                    : current.status === "missing"
+                      ? current.dismissed
+                      : false
+                  : false,
+            },
+      );
     },
-    [gateKey],
+    [scope],
   );
 
   useEffect(() => {
@@ -125,11 +137,6 @@ export function useDraftModelReadinessGate(params: {
     };
   }, [commitStatus, enabled, modelSelectionService, workspaceKey]);
 
-  const effectiveState: DraftModelReadinessState =
-    state.gateKey === gateKey
-      ? state
-      : { gateKey, status: enabled ? "checking" : "ready", dismissed: false };
-
   const markProviderNotReady = useCallback(() => {
     commitStatus("missing", { revealMissing: true });
   }, [commitStatus]);
@@ -170,11 +177,11 @@ export function useDraftModelReadinessGate(params: {
 
   const dismissError = useCallback(() => {
     setState((current) =>
-      current.gateKey === gateKey && current.status === "missing"
+      current.scope === scope && current.status === "missing"
         ? { ...current, dismissed: true }
         : current,
     );
-  }, [gateKey]);
+  }, [scope]);
 
   return {
     agentStartupAllowed:

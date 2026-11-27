@@ -1,0 +1,205 @@
+/**
+ * 真 git 验证：本仓库的解析器冒烟，以及隔离临时仓库的外部命令回归。
+ *
+ * 为什么值得单独有这么一个用例：fake 端口能证明"给定这段文本，解析出这个结构"，但证明不了
+ * "git 真的会输出这段文本"。这份实现里有三条假设**只能**由真 git falsify，而且每一条都已经
+ * 在写代码的过程中被它纠正过一次：
+ *
+ *   1. `-z` 下 porcelain 的 rename 项占**两段**（NUL 分隔，不是 TAB）。
+ *   2. `-z` 让 `status --porcelain=v2` 输出**仓库根相对**路径——不加 `-z` 时它是 cwd 相对的，
+ *      而且没有任何 flag/config 能在 `-z` 下把它改回来。这一条直接决定了"基准统一在线上取
+ *      根相对、由我们剥一次前缀"这个设计。
+ *   3. `ls-files --others` 默认是 **cwd 相对**，所以必须补 `--full-name` 才能与上面两条对齐。
+ *
+ * 断言只钉**形状**与**一致性**，不钉内容：工作树的干净程度、分支名、commit 数都随环境变化。
+ * 形状足够了——偏移错了路径就不再是路径（会带上 hash 前缀或整段错位），基准错了三条命令之间
+ * 就会不一致（这正是第 2、3 条要防的那个 bug）。
+ *
+ * parser smoke 不在 git 仓库里（或没有 git）时跳过；外部命令回归必须有 Git，不跳过。
+ */
+
+import { execFile, execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { describe, expect, it } from "vitest";
+import {
+  GIT_LOG_PRETTY,
+  GIT_SHOW_PREFIX_ARGV,
+  GIT_STATUS_ARGV,
+  GIT_UNTRACKED_ARGV,
+  gitChangedFilesPlan,
+  gitDiffArgv,
+  parseGitLog,
+  parseGitPathList,
+  parseGitShowPrefix,
+  parseGitStatusPorcelainV2,
+} from "../src/app/workflow-git-world-read.js";
+
+const execGit = promisify(execFile);
+
+describe("real git diff — external commands", () => {
+  it.each(["external", "textconv"])("does not execute a configured %s command", async (kind) => {
+    const cwd = await mkdtemp(join(tmpdir(), "workflow-git-diff-"));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: join(cwd, "empty.gitconfig"),
+      GIT_CONFIG_COUNT: "0",
+      GIT_ATTR_NOSYSTEM: "1",
+    };
+    for (const key of [
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_INDEX_FILE",
+      "GIT_EXTERNAL_DIFF",
+      "GIT_CONFIG_PARAMETERS",
+    ]) {
+      delete env[key];
+    }
+    const run = async (args: readonly string[]) =>
+      (await execGit("git", [...args], { cwd, env })).stdout;
+    const marker = join(cwd, ".git", "diff-probe.calls");
+    try {
+      await run(["init", "-q"]);
+      await run(["config", "user.name", "Git Diff Test"]);
+      await run(["config", "user.email", "git-diff@example.invalid"]);
+      await run(["config", "commit.gpgsign", "false"]);
+      await run(["config", "core.hooksPath", join(cwd, "empty-hooks")]);
+      await writeFile(join(cwd, ".gitattributes"), "sample.txt diff=probe\n");
+      await writeFile(join(cwd, "sample.txt"), "original before\n");
+      await run(["add", ".gitattributes", "sample.txt"]);
+      await run(["commit", "-qm", "baseline"]);
+      await writeFile(join(cwd, "sample.txt"), "original after\n");
+      await writeFile(
+        join(cwd, ".git", "diff-probe.cjs"),
+        [
+          'const { appendFile } = require("node:fs/promises");',
+          'appendFile(".git/diff-probe.calls", "called\\n").then(() => process.stdout.write("converted\\n"));',
+        ].join("\n"),
+      );
+      await run([
+        "config",
+        kind === "external" ? "diff.external" : "diff.probe.textconv",
+        "node .git/diff-probe.cjs",
+      ]);
+
+      // 先证明 fixture 的命令可执行，避免因配置失效而得到“未调用”的假通过。
+      await run(["diff", "HEAD", "--", "sample.txt"]);
+      expect(await readFile(marker, "utf8")).toContain("called");
+      await rm(marker);
+
+      const patch = await run(gitDiffArgv(undefined, "sample.txt"));
+      expect(patch).toContain("-original before");
+      expect(patch).toContain("+original after");
+      expect(patch).not.toContain("converted");
+      for (const base of [undefined, "HEAD"]) {
+        const paths: string[] = [];
+        for (const plan of gitChangedFilesPlan(base)) {
+          paths.push(...parseGitPathList(await run(plan.argv), ""));
+        }
+        expect(paths).toEqual(["sample.txt"]);
+      }
+      await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+/** 跑一条 git；不可用（无 git / 非仓库）时返回 undefined 让用例跳过。 */
+function git(args: readonly string[]): string | undefined {
+  try {
+    return execFileSync("git", [...args], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** 交出去的路径必须是**工作区相对**的：不越界、不带仓库根前缀的残留。 */
+function expectWorkspaceRelative(path: string): void {
+  expect(path.length).toBeGreaterThan(0);
+  // 越界的路径是这套收束要防的那件事——脚本会拿它去 files.read。
+  expect(path.startsWith("../")).toBe(false);
+  expect(path.startsWith("/")).toBe(false);
+  expect(path.split("/").includes("..")).toBe(false);
+  // 路径不该以定长字段的残留开头：XY 位、mode、或一段 40 位 hash。
+  expect(path).not.toMatch(/^[.MADRCU]{2}\s/);
+  expect(path).not.toMatch(/^\d{6}\s/);
+  expect(path).not.toMatch(/^[0-9a-f]{40}\s/);
+}
+
+describe("real git output — parser smoke", () => {
+  it("parses this repository's actual porcelain-v2 -z status", () => {
+    const prefixRaw = git(GIT_SHOW_PREFIX_ARGV);
+    const raw = git(GIT_STATUS_ARGV);
+    if (prefixRaw === undefined || raw === undefined) return;
+    const prefix = parseGitShowPrefix(prefixRaw);
+    const status = parseGitStatusPorcelainV2(raw, prefix);
+
+    // 分支名要么缺席（detached），要么是一个非空且不含空格的名字。偏移读错时这里会拿到
+    // 一段带 oid 的残句。
+    if (status.branch !== undefined) {
+      expect(status.branch.length).toBeGreaterThan(0);
+      expect(status.branch).not.toContain(" ");
+    }
+    for (const bucket of [status.staged, status.unstaged, status.untracked]) {
+      expect(Array.isArray(bucket)).toBe(true);
+      for (const path of bucket) expectWorkspaceRelative(path);
+      // 每个桶内部去重且已排序（journal 存的是这个值，必须只依赖内容）。
+      expect(bucket).toEqual([...new Set(bucket)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    }
+    // clean 与三个桶必须一致——它是从桶算出来的，这条断言防的是有人改成别的来源。
+    const empty =
+      status.staged.length === 0 && status.unstaged.length === 0 && status.untracked.length === 0;
+    expect(status.clean).toBe(empty);
+  });
+
+  it("agrees on one path base across all three path-producing commands", () => {
+    // 这是第 2、3 条假设的回归防线，也是这份冒烟最有价值的一条：三条命令的 git 默认基准各不
+    // 相同（status -z 根相对、diff 根相对、ls-files cwd 相对），所以只要有一条的 argv 少了
+    // 对齐用的 flag，它交出的路径就会与另外两条不在同一个基准上。这里断言它们的**并集**
+    // 整体都是工作区相对的——基准混搭时，走错基准的那一批会立刻违反它。
+    const prefixRaw = git(GIT_SHOW_PREFIX_ARGV);
+    if (prefixRaw === undefined) return;
+    const prefix = parseGitShowPrefix(prefixRaw);
+
+    const plans = gitChangedFilesPlan(undefined);
+    // 无 base 时是"已跟踪 diff + 未跟踪 ls-files"两条命令，且第二条恰是那份固定 argv。
+    expect(plans).toHaveLength(2);
+    expect(plans[1]?.argv).toEqual(GIT_UNTRACKED_ARGV);
+
+    for (const plan of plans) {
+      const raw = git(plan.argv);
+      if (raw === undefined) return;
+      for (const path of parseGitPathList(raw, prefix)) expectWorkspaceRelative(path);
+    }
+  });
+
+  it("parses this repository's actual log records", () => {
+    const raw = git(["log", "-n3", GIT_LOG_PRETTY]);
+    if (raw === undefined) return;
+    const commits = parseGitLog(raw);
+    expect(commits.length).toBeGreaterThan(0);
+    for (const commit of commits) {
+      // 全长 hash（`%H`），不是缩写——脚本可能拿它去比较。
+      expect(commit.hash).toMatch(/^[0-9a-f]{40}$/);
+      expect(commit.subject.length).toBeGreaterThan(0);
+      // subject 里绝不该出现换行或 NUL：前者会破坏按行切分，后者会破坏按字段切分。
+      // `%s` 按定义是单行，这也是 log 这一条不需要 `-z` 的理由。
+      expect(commit.subject).not.toContain("\n");
+      expect(commit.subject).not.toContain(" ");
+      expect(commit.author.length).toBeGreaterThan(0);
+      // `%aI` 是严格 ISO 8601。日期落到 author 位（偏移错一格）会在这里失败。
+      expect(commit.date).toMatch(ISO_8601);
+    }
+  });
+});

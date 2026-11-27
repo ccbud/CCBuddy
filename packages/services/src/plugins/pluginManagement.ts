@@ -20,6 +20,7 @@ import type {
   CCbuddyPluginsReferenceCatalogResult,
   CCbuddyPluginsRestoreBuiltinResult,
   CCbuddyPluginsSetEnabledResult,
+  CCbuddyPluginsWorkspaceTrustResult,
   CCbuddyPluginsUninstallResult,
   CCbuddyPluginsValidateResult,
 } from "@ccbuddy/shared";
@@ -38,6 +39,7 @@ import type {
   CCbuddyAgentRemovePluginMarketplaceParams,
   CCbuddyAgentRestoreBuiltinPluginParams,
   CCbuddyAgentSetPluginEnabledParams,
+  CCbuddyAgentSetWorkspacePluginTrustParams,
   CCbuddyAgentUninstallPluginParams,
   CCbuddyAgentUpdatePluginMarketplaceParams,
   CCbuddyAgentUpdatePluginParams,
@@ -92,8 +94,40 @@ export interface IPluginManagementService {
   setPluginEnabled(
     params: CCbuddyAgentSetPluginEnabledParams,
   ): Promise<CCbuddyPluginsSetEnabledResult>;
+  /** 信任项目目录插件：只写目标 Host 的用户域记录，对之后新建的会话生效。 */
+  setWorkspacePluginTrust(
+    params: CCbuddyAgentSetWorkspacePluginTrustParams,
+  ): Promise<CCbuddyPluginsWorkspaceTrustResult>;
 }
 
 export const IPluginManagementService = createServiceDescriptor<IPluginManagementService>(
   ServiceChannels.PluginManagement,
 );
+
+/** 入口只附加观测上下文；RPC 方法由 Proxy 动态提供，不能通过对象展开复制。 */
+export function withPluginTelemetry(
+  service: IPluginManagementService,
+  telemetry: NonNullable<CCbuddyAgentInstallPluginParams["telemetry"]>,
+): IPluginManagementService {
+  const mutations = new Set<PropertyKey>([
+    "addPluginMarketplace",
+    "removePluginMarketplace",
+    "updatePluginMarketplace",
+    "installPlugin",
+    "uninstallPlugin",
+    "updatePlugin",
+    "restoreBuiltinPlugin",
+    "configurePlugin",
+    "resetPluginConfig",
+    "setPluginEnabled",
+  ]);
+  return new Proxy(service, {
+    get(target, property) {
+      const method = Reflect.get(target, property, target);
+      if (typeof method !== "function") return method;
+      if (!mutations.has(property)) return method.bind(target);
+      return (params: CCbuddyAgentInstallPluginParams) =>
+        method.call(target, { ...params, telemetry });
+    },
+  });
+}

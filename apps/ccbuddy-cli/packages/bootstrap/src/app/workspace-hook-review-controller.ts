@@ -1,5 +1,6 @@
 import {
   SessionEventType,
+  isWorkspaceHookScriptUnavailable,
   type WorkspaceHookBundleSnapshot,
   type WorkspaceHookReasonCode,
 } from "@ccbuddy/contracts";
@@ -47,6 +48,8 @@ export class WorkspaceHookReviewController {
   private readonly store: Promise<WorkspaceHookTrustStoreMutationPort>;
   private readonly now: () => number;
   private readonly createId: () => string;
+  private readonly resolveTargetTrustIdentity: (workspaceIdentity: string) => Promise<string>;
+  private readonly workspaceKey?: string;
   private readonly registry = new WorkspaceHookReviewFlowRegistry();
   /** flow → 监管 promise。WeakMap 使 flow 被回收后自动移除，不额外持有引用。 */
   private readonly supervisedFlows = new WeakMap<
@@ -71,6 +74,18 @@ export class WorkspaceHookReviewController {
     this.store = options.store;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? (() => crypto.randomUUID());
+    // 修复原因（D23）：snapshot.workspaceIdentity 是 Trust identity，受管 worktree 中已归一为源仓库
+    // 路径；而 Settings/Banner 发来的 target 带的是 workspaceKey（worktree 路径），直接比较会把
+    // worktree 中每次 requestReview/revoke 判成 snapshot_mismatch。target 先经同一 resolver 解析。
+    // 调用点都在读取 snapshot 之前 await，读 snapshot 与比较之间不留出替换窗口。
+    this.resolveTargetTrustIdentity =
+      options.resolveTargetTrustIdentity ?? ((workspaceIdentity) => Promise.resolve(workspaceIdentity));
+    this.workspaceKey = options.workspaceKey;
+  }
+
+  /** 对外字段使用的 workspace 标识：会话 workspaceKey，不是 Trust identity（D23）。 */
+  private externalWorkspaceIdentity(snapshot: WorkspaceHookBundleSnapshot): string {
+    return this.workspaceKey ?? snapshot.workspaceIdentity;
   }
 
   /**
@@ -107,9 +122,10 @@ export class WorkspaceHookReviewController {
     workspaceIdentity: string;
     bundleDigest: string;
   }): Promise<WorkspaceHookReviewCommandResult> {
+    const targetIdentity = await this.resolveTargetTrustIdentity(target.workspaceIdentity);
     const snapshot = this.admission.getCurrentSnapshot();
     if (
-      target.workspaceIdentity !== snapshot.workspaceIdentity ||
+      targetIdentity !== snapshot.workspaceIdentity ||
       target.bundleDigest !== snapshot.bundleDigest
     ) {
       return {
@@ -163,6 +179,7 @@ export class WorkspaceHookReviewController {
           reasonCode: "workspace_hooks_review_superseded" as const,
         };
       }
+      const targetIdentity = await this.resolveTargetTrustIdentity(target.workspaceIdentity);
       const snapshot = this.admission.getCurrentSnapshot();
       // request 绑定打开时的 immutable snapshot bundle。今天
       // replaceSnapshot 只有 toggle 一个合法调用方（经 refreshPendingFlow supersede 旧
@@ -170,7 +187,7 @@ export class WorkspaceHookReviewController {
       // 个调用方且绕过 refreshPendingFlow，tombstone 缺失会让授权落到新 bundle 上。
       // 与 revokeCurrent 对齐显式校验，消除隐式依赖。
       if (
-        target.workspaceIdentity !== snapshot.workspaceIdentity ||
+        targetIdentity !== snapshot.workspaceIdentity ||
         target.bundleDigest !== snapshot.bundleDigest
       ) {
         this.telemetry.responseRejected(
@@ -196,6 +213,20 @@ export class WorkspaceHookReviewController {
         return {
           accepted: false,
           reasonCode: "workspace_hooks_blocked_by_policy" as const,
+        };
+      }
+      // 入口脚本不存在或无法读取时没有可审核的内容（D24）：选中任一这样的条目即整体拒绝。
+      if (
+        snapshot.hooks.some(
+          (entry) =>
+            validation.reviewItemIds.includes(entry.reviewItemId) &&
+            isWorkspaceHookScriptUnavailable(entry),
+        )
+      ) {
+        this.telemetry.responseRejected(target, "workspace_hook_script_unavailable");
+        return {
+          accepted: false,
+          reasonCode: "workspace_hook_script_unavailable" as const,
         };
       }
       let applied: { grantedRecordCount?: number };
@@ -389,11 +420,12 @@ export class WorkspaceHookReviewController {
     target: WorkspaceHookTrustRevokeTarget,
   ): Promise<WorkspaceHookReviewCommandResult> {
     return this.enqueueMutation(async () => {
+      const targetIdentity = await this.resolveTargetTrustIdentity(target.workspaceIdentity);
       const snapshot = this.admission.getCurrentSnapshot();
       if (
         target.sessionId !== this.sessionId ||
         target.remoteSessionId !== this.host.remoteSessionId ||
-        target.workspaceIdentity !== snapshot.workspaceIdentity ||
+        targetIdentity !== snapshot.workspaceIdentity ||
         target.bundleDigest !== snapshot.bundleDigest
       ) {
         return {
@@ -542,6 +574,7 @@ export class WorkspaceHookReviewController {
     return buildWorkspaceHookReviewRequest({
       snapshot,
       evaluation,
+      workspaceKey: this.externalWorkspaceIdentity(snapshot),
       ...flow,
       sessionId: this.sessionId,
       host: this.host,
@@ -598,9 +631,7 @@ export class WorkspaceHookReviewController {
       payload: {
         pendingCount,
         bundleDigest: snapshot.bundleDigest,
-        ...(snapshot.workspaceIdentity
-          ? { workspaceIdentity: snapshot.workspaceIdentity }
-          : {}),
+        workspaceIdentity: this.externalWorkspaceIdentity(snapshot),
       },
     });
   }

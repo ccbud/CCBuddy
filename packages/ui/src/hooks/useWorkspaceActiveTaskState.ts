@@ -1,17 +1,15 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CCbuddyProvider, CCbuddyTaskMeta } from "@ccbuddy/shared";
-import { useActiveTaskSnapshotMeta } from "@/hooks/useActiveTaskSnapshotMeta.js";
+import { useCCbuddyTaskService } from "@/hooks/useCCbuddyTaskService.js";
+import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { useTaskNativeSessionLogFile } from "@/hooks/useTaskNativeSessionLogFile.js";
 import { useTaskSessionFilePath } from "@/hooks/useTaskSessionFilePath.js";
-import { buildTaskEntityKey } from "@/lib/taskQueryCache.js";
-import { mergeTaskMetaCandidates } from "@/lib/ccbuddyTaskMetaMerge.js";
+import { logger } from "@/logger.js";
 import { resolveWorkspaceHeaderProvider } from "@/lib/workspaceHeaderProvider.js";
 import {
-  getTaskMeta,
   selectWorkspaceCCbuddyState,
   useCCbuddySessionStore,
 } from "@/store/ccbuddySessionStore.js";
-import { useTaskQueryCacheStore } from "@/store/taskQueryCacheStore.js";
 
 interface UseWorkspaceActiveTaskStateParams {
   workspaceAbsPath: string;
@@ -62,6 +60,86 @@ function areResolvedTaskMetasEqual(left: CCbuddyTaskMeta | null, right: CCbuddyT
   );
 }
 
+/**
+ * 任务元数据只读 Host 的 tasks-index（唯一数据源）：先订阅再读取，任务列表或项目变化时重读。
+ * 会话头部与按 cwd 工作的界面（docs/git/worktree.md §3.7）共用这一份读取逻辑。
+ */
+export function useIndexedTaskMeta({
+  workspacePath: workspaceAbsPath,
+  workspaceIdentity,
+  remoteSessionId: workspaceRemoteSessionId,
+  taskId: activeTaskId,
+}: {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  remoteSessionId?: string | null;
+  taskId: string | null;
+}): CCbuddyTaskMeta | null {
+  const service = useCCbuddyTaskService(
+    workspaceAbsPath,
+    workspaceRemoteSessionId,
+    workspaceIdentity,
+  );
+  const { broadcastService } = useBaseWorkspaceServices();
+  const version = useCCbuddySessionStore(
+    (state) =>
+      selectWorkspaceCCbuddyState(state, workspaceAbsPath, workspaceIdentity).taskListVersion,
+  );
+  const targetKey = JSON.stringify([
+    workspaceIdentity?.trim() || workspaceAbsPath,
+    activeTaskId,
+    workspaceRemoteSessionId ?? null,
+  ]);
+  const [indexed, setIndexed] = useState<{
+    service: typeof service;
+    targetKey: string;
+    meta: CCbuddyTaskMeta | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!activeTaskId) return;
+    let disposed = false;
+    let serial = 0;
+    const target = { workspacePath: workspaceAbsPath, workspaceIdentity, taskId: activeTaskId };
+    const refresh = async () => {
+      const request = ++serial;
+      try {
+        // Bugfix: 旧列表退场后，标题 fallback 的 readSession 早于 V4 冷恢复而报
+        // Session is not active。标题只读 Host 索引；正文恢复不再决定标题是否可用。
+        const meta = await service.getTaskMeta(target);
+        if (!disposed && request === serial) setIndexed({ service, targetKey, meta });
+      } catch (error) {
+        if (!disposed && request === serial)
+          logger.warn("[active-task-meta] 读取 Host 任务元数据失败", { ...target, error });
+      }
+    };
+    // 先订阅再查询，避免读取与订阅之间漏掉重命名/归档；同目标的迟到结果也不能覆盖新结果。
+    const events = service.onDynamicWorkspaceEvent(target)((event) => {
+      if (event.type === "workspace_task_list_changed") void refresh();
+    });
+    const projects = broadcastService.onMessage((event) => {
+      if (event.channel === "state:projects") void refresh();
+    });
+    void refresh();
+    return () => {
+      disposed = true;
+      events.dispose();
+      projects.dispose();
+    };
+  }, [
+    service,
+    broadcastService,
+    workspaceAbsPath,
+    workspaceIdentity,
+    activeTaskId,
+    targetKey,
+    version,
+  ]);
+  // 同 ID 可存在于不同远端；渲染时即拒绝旧目标，不能等 effect 才清标题。
+  const indexedMeta =
+    indexed?.service === service && indexed.targetKey === targetKey ? indexed.meta : null;
+  return indexedMeta;
+}
+
 export function useStableResolvedActiveTaskMeta(taskMeta: CCbuddyTaskMeta | null) {
   const stableTaskMetaRef = useRef<CCbuddyTaskMeta | null>(null);
   const stableTaskMeta = stableTaskMetaRef.current;
@@ -81,52 +159,19 @@ export function useWorkspaceActiveTaskState({
   selectedProvider,
   intl,
 }: UseWorkspaceActiveTaskStateParams) {
-  const workspaceState = useCCbuddySessionStore((state) =>
-    selectWorkspaceCCbuddyState(state, workspaceAbsPath, workspaceIdentity),
-  );
-  const activeTaskQueryMeta = useTaskQueryCacheStore((state) => {
-    if (!activeTaskId) {
-      return null;
-    }
-    return (
-      state.taskMetaByEntityKey[
-        buildTaskEntityKey({
-          taskId: activeTaskId,
-          workspacePath: workspaceAbsPath,
-          workspaceIdentity,
-        })
-      ] ?? null
-    );
+  const optimisticMeta = useCCbuddySessionStore((state) => {
+    const workspace = selectWorkspaceCCbuddyState(state, workspaceAbsPath, workspaceIdentity);
+    return activeTaskId ? (workspace.optimisticTaskListByTaskId[activeTaskId] ?? null) : null;
   });
-  const activeTaskMeta = useMemo(() => {
-    if (!activeTaskId) {
-      return null;
-    }
-
-    // App 以前依赖 ccbuddyTaskMetaMerge 同时拉普通列表和 pinned 列表，只是为了给当前激活 task
-    // 找一份 meta。这样任何列表刷新都会把整棵 App 一起带着重渲。
-    // 这里改成直接从 workspace store 读 taskListCache + optimistic meta 的合并结果；
-    // 普通任务可以同步命中，pinned / archived 再由 snapshot meta 兜底，不再要求 App 常驻订阅旧列表 hook。
-    // 重启恢复后 raw snapshot meta 可能先进入 workspace store，而 sqlite/list
-    // query cache 里保留着 titleOverridden 的手动标题。Header 必须按同一套 title authority
-    // 合并两边，否则当前 task 会看起来被还原成生成标题或首条 query。
-    return (
-      mergeTaskMetaCandidates(getTaskMeta(workspaceState, activeTaskId), activeTaskQueryMeta) ??
-      null
-    );
-  }, [activeTaskId, activeTaskQueryMeta, workspaceState]);
-
-  const activeTaskSnapshotMeta = useActiveTaskSnapshotMeta(
-    workspaceAbsPath,
-    activeTaskId,
-    workspaceRemoteSessionId,
+  const indexedMeta = useIndexedTaskMeta({
+    workspacePath: workspaceAbsPath,
     workspaceIdentity,
-    activeTaskMeta,
-  );
-  const resolvedActiveTaskMeta = useStableResolvedActiveTaskMeta(
-    activeTaskMeta ?? activeTaskSnapshotMeta,
-  );
-  // store 收尾：taskMessagesByTaskId 已无写入方（旧 ChatView/广播消息回放均退役），
+    remoteSessionId: workspaceRemoteSessionId,
+    taskId: activeTaskId,
+  });
+  const activeTaskMeta = indexedMeta ?? optimisticMeta;
+  const resolvedActiveTaskMeta = useStableResolvedActiveTaskMeta(activeTaskMeta);
+  // M5② store 收尾：taskMessagesByTaskId 已无写入方（旧 ChatView/bot 消息回放均退役），
   // 由消息流派生的实时改动摘要恒为空；摘要展示回落到 task meta.changeSummary（持久化侧）。
   const activeTaskChangeSummary = null;
   const activeTraceId = resolvedActiveTaskMeta?.traceId ?? null;
@@ -136,14 +181,13 @@ export function useWorkspaceActiveTaskState({
     activeTaskProvider,
     selectedProvider,
   );
-  const activeTaskBaseTitle = resolvedActiveTaskMeta?.title?.trim()
+  // 切换任务后 Host 元数据异步返回；用“新建任务”填补空标题会先闪占位再跳成真标题。
+  // 等待时保持标题为空，不保留上个任务的标题，也不增加另一份标题缓存。
+  const activeTaskTitle = resolvedActiveTaskMeta?.title?.trim()
     ? resolvedActiveTaskMeta.title
-    : intl.formatMessage({
-        id: resolvedActiveTaskMeta?.forkedFromTaskId
-          ? "taskList.forkedUntitled"
-          : "taskList.newThread",
-      });
-  const activeTaskTitle = activeTaskBaseTitle;
+    : resolvedActiveTaskMeta?.forkedFromTaskId
+      ? intl.formatMessage({ id: "taskList.forkedUntitled" })
+      : "";
   const taskNativeSessionLogFile = useTaskNativeSessionLogFile(
     workspaceAbsPath,
     activeTaskId,

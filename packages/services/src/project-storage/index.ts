@@ -1,6 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
 import { ProjectRepository } from "#src/project-storage/project-repository.js";
-import { resolveWorkspaceKey } from "@ccbuddy/shared";
 import { sqliteMigrations } from "@ccbuddy/shared/sqlite-migrations";
 import type { ProjectStorageContract } from "#src/project-storage/contract.js";
 import type { ProjectDataRepositoryContract } from "#src/project-storage/purge/contract.js";
@@ -25,6 +24,7 @@ import {
   REMOTE_ENTRY_DELETED_CACHE_SQL,
   SESSION_CREATION_COMMANDS_SQL,
   TASK_PROJECT_COLUMNS,
+  TASK_WORKTREE_ROOT_SQL,
 } from "#src/project-storage/schema.js";
 
 export type {
@@ -93,6 +93,12 @@ export const projectStorage: ProjectStorageContract = {
           sql: REMOTE_TASK_OWNERSHIP_MIGRATION,
           apply: repairRemoteTaskOwnership,
         },
+        {
+          id: "0010_task_worktree_root",
+          appVersion: "3.18.0",
+          touchedTables: ["tasks"],
+          sql: TASK_WORKTREE_ROOT_SQL,
+        },
       ],
       {
         database: "tasks_index",
@@ -105,21 +111,5 @@ export const projectStorage: ProjectStorageContract = {
     return result;
   },
   admitTaskIdentity,
-  recordTaskFacts(db, { meta, title }, hostId) {
-    if (!db.isTransaction) throw new Error("project.facts-transaction-required");
-    admitTaskIdentity(db, meta, hostId);
-    db.prepare(`UPDATE tasks SET cli_title=coalesce(?,cli_title),
-      cli_title_source=coalesce(cli_title_source,'default'),cli_created_at=?,
-      cli_updated_at=max(coalesce(cli_updated_at,0),?),
-      cli_last_outcome=coalesce(?,cli_last_outcome),cli_deleted=coalesce(cli_deleted,0)
-      WHERE workspace_key=? AND task_id=?`).run(
-      title ?? null,
-      meta.createdAt,
-      meta.updatedAt,
-      meta.status === "completed" || meta.status === "error" ? meta.status : null,
-      resolveWorkspaceKey(meta),
-      meta.taskId,
-    );
-  },
   repository: (db, hostId) => new ProjectRepository(db, hostId),
 };

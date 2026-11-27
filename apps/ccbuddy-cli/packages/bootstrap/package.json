@@ -34,6 +34,7 @@
     "@ccbuddy/i18n": "workspace:*",
     "@ccbuddy/provider": "workspace:*",
     "@ccbuddy/provider-node": "workspace:*",
+    "@ccbuddy/session-control": "workspace:*",
     "@ccbuddy/shared": "workspace:*",
     "@ccbuddy/telemetry": "workspace:*",
     "diff": "^9.0.0",
