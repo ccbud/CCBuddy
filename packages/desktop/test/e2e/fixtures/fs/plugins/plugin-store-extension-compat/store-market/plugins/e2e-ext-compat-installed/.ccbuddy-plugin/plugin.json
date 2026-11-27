@@ -1,0 +1,11 @@
+{
+  "name": "e2e-ext-compat-installed",
+  "version": "1.0.0",
+  "description": "E2E Installed extension",
+  "skills": "skills",
+  "extension": {
+    "engines": {
+      "ccbuddy": "^1.4.0"
+    }
+  }
+}

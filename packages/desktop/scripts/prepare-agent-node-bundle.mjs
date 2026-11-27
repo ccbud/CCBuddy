@@ -9,9 +9,10 @@
 // - 单平台体积从 ~180MB 降到 ~16MB，且同一份 JS 跨平台通用；
 // - app-server 命令路径不会加载 @ccbuddy/tui，所以这里天然不打包 TUI。
 //
-// 远端（SSH/WSL/Docker）没有 Electron，仍走 prepare:remote-assets 的原生二进制，互不影响。
+// 远端（SSH/WSL/Docker）没有 Electron，由 Source Server archive 自带目标 Node，互不影响。
 
-import { cpSync, existsSync, mkdirSync } from "node:fs";
+// 修复原因：bootstrap 清理旧插件 dist 时使用 rmSync，漏导入会在构建前抛出 ReferenceError。
+import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,7 @@ import {
   isSharpRequiredByComputerUse,
   stageSharpIntoBundledAgents,
 } from "./sharp-package-assets.mjs";
+import { stageKoffiIntoBundledAgents } from "./koffi-package-assets.mjs";
 import { officialPluginPackages } from "./agent-official-plugin-packages.mjs";
 import { BUNDLED_NPM_VERSION, stageBundledNpm } from "./bundled-npm-assets.mjs";
 
@@ -28,6 +30,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
 const cliBundlePath = resolve(repoRoot, "apps/ccbuddy-cli/packages/cli/dist/ccbuddy.cjs");
+const adaptersRoot = resolve(repoRoot, "apps/ccbuddy-cli/packages/adapters");
 const pnpmRunEnv = {
   ...process.env,
   // pnpm 11 会在 apps/ccbuddy-cli 子 workspace 执行 run 前触发 install；
@@ -76,6 +79,37 @@ const arch = normalizeArch(process.env.CCBUDDY_TARGET_ARCH || "") || process.arc
 const platformKey = `${platform}-${arch}`;
 
 const glmDir = resolve(desktopRoot, "bundled-agents", platformKey, "glm");
+// ccbuddy.cjs / .node-bundle-meta.json 的落点由 stage-agent-bundle.mjs 自己解析（同源）。
+// node_repl 宿主抽成独立包
+// @ccbuddy/node-repl-host 之后，browser-use 不再产出 dist/mcp/server.js，CUA 资产
+// （docs/computer-use.md、scripts/computer-use-client.mjs）也已归 @ccbuddy/ccbuddy-cua-plugin。
+// 这份清单当时漏改，打包准备阶段照旧去 browser-use 要那三个文件，直接 missing runtime 挂掉。
+// dev 链路走的是 scripts/build-desktop-agent-cli.mjs 的 requiredDevPluginRuntimeBuilds（那份改对了），
+// 两份平行清单各自维护，所以 dev 测不出来 —— 权威归属见 bootstrap/official-plugin-definitions.ts。
+const browserUseRequiredRuntimePaths = [
+  "scripts/browser-client.mjs",
+  "docs/api.json",
+  "docs/documents.json",
+  "docs/overview.md",
+  // documents.json 已暴露 recording lookup，桌面安装包不能复用缺少正文的 runtime。
+  "docs/recording.md",
+  "docs/workflow.md",
+  "skills/control-browser/SKILL.md",
+  "skills/web-gui-tester/SKILL.md",
+];
+// 文档插件（documents / pdf / presentations / spreadsheets）的查看面板由共享包
+// @ccbuddy/office-runtime 构建进各插件 dist/；插件包自身没有 TypeScript 源码。
+const officeInvocationPaths = [
+  "scripts/ccbuddy_libreoffice.py",
+  "scripts/libreoffice-profile/user/registrymodifications.xcu",
+  "scripts/libreoffice-profile/user/basic/script.xlc",
+  "scripts/libreoffice-profile/user/basic/dialog.xlc",
+  "scripts/libreoffice-profile/user/basic/Standard/script.xlb",
+  "scripts/libreoffice-profile/user/basic/Standard/dialog.xlb",
+  "scripts/libreoffice-profile/user/basic/Standard/CCbuddy.xba",
+];
+
+const officeViewerRuntimePaths = ["dist/server.mjs", "dist/ui/assets.json", "dist/ui/panel.html"];
 // 随 CLI 内置的技能包（不是插件）：bootstrap 的 resolveBundledSkillRoots 沿官方插件同款候选目录
 // 在 ccbuddy.cjs 旁找 packages/bundled-skills 并原地读取。漏 stage 它，桌面包的 /workflow 会展开成
 // 「先加载 dynamic-workflows 技能」而技能不存在——这正是把它从可卸载的 ccbuddy-guide 插件搬出来要修的事故形态。
@@ -156,25 +190,20 @@ function buildOfficialPluginRuntimes() {
 
 function buildOfficialPluginRuntimeForBootstrap(plugin) {
   const pluginRoot = resolve(repoRoot, plugin.relativePath);
-  const hasCompleteRuntime = plugin.requiredRuntimePaths.every((relativePath) =>
-    existsSync(resolve(pluginRoot, ...relativePath.split("/"))),
-  );
-  if (plugin.packageName !== BROWSER_USE_PLUGIN_PACKAGE_NAME && hasCompleteRuntime) {
-    console.log(
-      `[prepare:agent-bundle] reuse existing official plugin runtime: ${plugin.packageName}`,
-    );
-    return;
-  }
-
-  // bootstrap:with-remote 会连续构建 remote assets 和桌面 agent bundle。
+  // Bugfix: bootstrap:with-remote 会连续构建 remote assets 和桌面 agent bundle。
   // 通过 pnpm/filter 进入插件 build 时，tsc shim 在本地低内存环境中容易被 SIGKILL；
   // 这里仅在 bootstrap 开关下用当前 Node 直接执行等价 tsc + build-mcp，不改变插件自身 build 脚本。
-  // browser-use 的 server 与 browser-client 是同一发布对；即使旧 server.js 存在也必须重建，
-  // 否则会把旧 server 与当前 client（或缺失 client）一起 stage 到桌面安装包。
-  runCommand(process.execPath, ["../../node_modules/typescript/bin/tsc"], {
-    cwd: pluginRoot,
-    env: process.env,
-  });
+  // Bug 原因：过去除 browser-use 外只要 dist 文件齐全就复用，源码变化后 bootstrap 仍会
+  // 打包上一代插件 runtime；所有代码型官方插件都必须在本轮重建。
+  rmSync(resolve(pluginRoot, "dist"), { recursive: true, force: true });
+  // 文档插件没有自己的 tsconfig（源码在 office-runtime），直接跑 tsc 会因找不到工程配置失败；
+  // 只有带 tsconfig 的插件才需要这一步。
+  if (existsSync(resolve(pluginRoot, "tsconfig.json"))) {
+    runCommand(process.execPath, ["../../node_modules/typescript/bin/tsc"], {
+      cwd: pluginRoot,
+      env: process.env,
+    });
+  }
   runCommand(process.execPath, [plugin.runtimeBuildScript], {
     cwd: pluginRoot,
     env: process.env,
@@ -191,10 +220,10 @@ function assertOfficialPluginRuntime(plugin) {
   }
 }
 
-function stageBundle() {
+async function stageBundle() {
   // 实现已抽到 stage-agent-bundle.mjs：dev 链（scripts/build-desktop-agent-cli.mjs）
   // 必须用同一份，否则 dev 会继续跑上一次打包留下的陈旧 agent。
-  stageAgentBundle({ repoRoot, platformKey });
+  await stageAgentBundle({ repoRoot, platformKey });
 }
 
 function stageOfficialPlugins() {
@@ -250,6 +279,16 @@ function stageBundledSkillPack() {
   console.log(`[prepare:agent-bundle] staged bundled skill pack ${bundledSkillPack.stagedPath}`);
 }
 
+// stdio MCP 的 npm/npx 回退（用户没装 Node 时由 Electron Node 运行随包 npm）。
+// tarball 按 sha512 缓存在 node_modules/.cache，重复打包不再下载。
+async function stageBundledNpmRuntime() {
+  const stagedRoot = await stageBundledNpm({
+    cacheDir: resolve(repoRoot, "node_modules", ".cache", "ccbuddy-bundled-npm"),
+    glmDir,
+  });
+  console.log(`[prepare:agent-bundle] staged npm@${BUNDLED_NPM_VERSION} into ${stagedRoot}`);
+}
+
 function stageSharpForNodeReplPlugin() {
   if (!isSharpRequiredByComputerUse({ desktopPackageRoot: desktopRoot })) {
     console.log(
@@ -290,12 +329,25 @@ function stageSharpForNodeReplPlugin() {
 // 必须先构建 CLI 依赖，再构建官方插件；开发机残留的 dist 曾掩盖这个顺序问题。
 buildCliBundle();
 buildOfficialPluginRuntimes();
-stageBundle();
+await stageBundle();
 stageOfficialPlugins();
 stageBundledSkillPack();
-const stagedNpmRoot = await stageBundledNpm({
-  cacheDir: resolve(repoRoot, "node_modules", ".cache", "ccbuddy-bundled-npm"),
-  glmDir,
-});
-console.log(`[prepare:agent-bundle] staged npm@${BUNDLED_NPM_VERSION} into ${stagedNpmRoot}`);
+await stageBundledNpmRuntime();
+stageKoffiForCuaPlugin();
 stageSharpForNodeReplPlugin();
+
+function stageKoffiForCuaPlugin() {
+  const cuaPluginStagedDir = resolve(glmDir, "packages", "ccbuddy-cua-plugin");
+  if (!existsSync(resolve(cuaPluginStagedDir, ".ccbuddy-plugin", "plugin.json"))) {
+    console.log("[prepare:agent-bundle] ccbuddy-cua-plugin not staged, skip koffi staging");
+    return;
+  }
+  stageKoffiIntoBundledAgents({
+    koffiPackageRoot: adaptersRoot,
+    glmDir: cuaPluginStagedDir,
+    targetPlatform: { os: platform, arch },
+  });
+  console.log(
+    `[prepare:agent-bundle] staged koffi into ${resolve(cuaPluginStagedDir, "node_modules")} (${platform}-${arch})`,
+  );
+}

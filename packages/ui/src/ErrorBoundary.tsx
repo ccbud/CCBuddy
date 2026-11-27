@@ -1,10 +1,9 @@
 import { Component } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import type { Locale } from "@ccbuddy/shared";
-import { DEFAULT_LOCALE } from "@ccbuddy/shared";
+import { DEFAULT_LOCALE, isLocale, resolveLocaleFromLanguageTag } from "@ccbuddy/shared";
 import { DesktopWindowFrame } from "@/DesktopWindowFrame.js";
-import zhCN from "@/i18n/locales/zh-CN.js";
-import enUS from "@/i18n/locales/en-US.js";
+import { LOCALE_MESSAGES } from "@/i18n/localeMessages.js";
 import { logger } from "@/logger.js";
 import { reportReactErrorToArms } from "@/lib/reactErrorArmsTelemetry.js";
 import { cn } from "@/components/lib/utils.js";
@@ -16,6 +15,8 @@ interface AppErrorBoundaryProps {
   isDesktop?: boolean;
   isMacDesktop?: boolean;
   isWindowsDesktop?: boolean;
+  /** 宿主注入紧急重启能力；根边界位于 PlatformProvider 外，不能依赖故障子树。 */
+  onRestart?: () => Promise<unknown>;
   /**
    * React 错误边界捕获的异常不会冒泡到 window.onerror，监控 SDK默认收不到。
    * Desktop 等宿主可传入此回调，将 React 错误边界捕获的异常转发到监控 SDK。
@@ -66,7 +67,7 @@ function resolveBoundaryLocale(): Locale {
   if (typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
     try {
       const storedPreference = localStorage.getItem(LOCALE_PREFERENCE_KEY);
-      if (storedPreference === "zh-CN" || storedPreference === "en-US") {
+      if (isLocale(storedPreference)) {
         return storedPreference;
       }
     } catch {
@@ -77,7 +78,7 @@ function resolveBoundaryLocale(): Locale {
   }
 
   if (typeof navigator !== "undefined") {
-    return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+    return resolveLocaleFromLanguageTag(navigator.language);
   }
 
   return DEFAULT_LOCALE;
@@ -85,7 +86,7 @@ function resolveBoundaryLocale(): Locale {
 
 function formatBoundaryMessage(id: string): string {
   const locale = resolveBoundaryLocale();
-  const messages = locale === "en-US" ? enUS : zhCN;
+  const messages = LOCALE_MESSAGES[locale];
   return messages[id] ?? id;
 }
 
@@ -105,6 +106,7 @@ function ErrorFallback({
   componentStack,
   onReset,
   onReload,
+  onRestart,
   isDesktop,
   isMacDesktop,
   isWindowsDesktop,
@@ -113,6 +115,7 @@ function ErrorFallback({
   componentStack: string;
   onReset: () => void;
   onReload: () => void;
+  onRestart?: () => void;
   isDesktop?: boolean;
   isMacDesktop?: boolean;
   isWindowsDesktop?: boolean;
@@ -157,7 +160,24 @@ function ErrorFallback({
               <RefreshCw />
               {formatBoundaryMessage("appError.reload")}
             </Button>
+            {onRestart ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onRestart}
+                data-testid="app-error-restart"
+              >
+                <RefreshCw />
+                {formatBoundaryMessage("appError.restart")}
+              </Button>
+            ) : null}
           </div>
+
+          {onRestart ? (
+            <p className="mt-2 text-ui-base text-foreground-subtle">
+              {formatBoundaryMessage("appError.restartHint")}
+            </p>
+          ) : null}
 
           <p className="mt-4 text-ui-base leading-5 text-on-surface-muted">
             {formatBoundaryMessage("appError.hint")}
@@ -345,6 +365,12 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     }
   };
 
+  private handleRestart = () => {
+    void this.props.onRestart?.().catch((error: unknown) => {
+      logger.error("[AppErrorBoundary] restart failed:", error);
+    });
+  };
+
   override render() {
     if (!this.state.error) {
       return this.props.children;
@@ -356,6 +382,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
         componentStack={this.state.componentStack}
         onReset={this.handleReset}
         onReload={this.handleReload}
+        onRestart={this.props.onRestart ? this.handleRestart : undefined}
         isDesktop={this.props.isDesktop}
         isMacDesktop={this.props.isMacDesktop}
         isWindowsDesktop={this.props.isWindowsDesktop}

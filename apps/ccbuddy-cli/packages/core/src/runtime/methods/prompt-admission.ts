@@ -4,6 +4,7 @@ import type { PromptRuntimeCommand } from "../command-queue.js";
 import { createRuntimeCommandId } from "../command-queue.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { enqueueCancellableRuntimeCommand } from "./runtime-command-submit.js";
+import { acceptSubmissionModelSelection, captureHighspeedFallbackSelection } from "./turn-model.js";
 import type {
   ActiveTurnStartReservation,
   ExecuteTurnOptions,
@@ -28,11 +29,14 @@ export async function admitPrompt(
     // Bootstrap 的 busy 快照决定是否排队，状态在跨层 await 期间转为空闲会误用普通模型启动。
     return await this.enqueueDeferredInput({
       attachments,
+      automationId: options.automationId,
       commandKind: options.commandKind,
       delivery: "queue",
       input,
       inputId: options.inputId,
       intent: admissionIntent(options.intent, "queue"),
+      modelSelectionScope: options.modelExecution?.selectionScope,
+      highspeedFallbackSelection: options.modelExecution?.selectionFallback?.target,
       queryId: options.queryId,
       toolDisallowlist: options.toolDisallowlist,
       traceContext: options.traceContext,
@@ -67,6 +71,7 @@ export async function admitPrompt(
     if (canSteer) {
       const delivery = options?.queueDelivery === "guide" ? "guide" : undefined;
       return await this.steerTurn({
+        automationId: options?.automationId,
         commandKind: options?.commandKind,
         delivery,
         expectedTurnId: options?.expectedTurnId,
@@ -85,6 +90,7 @@ export async function admitPrompt(
       options?.queueDelivery === "guide" && attachments === undefined ? "guide" : "queue";
     return await this.enqueueDeferredInput({
       attachments,
+      automationId: options?.automationId,
       commandKind: options?.commandKind,
       delivery,
       input,
@@ -112,11 +118,26 @@ export async function admitPrompt(
     turnId,
   };
   this.reserveTurnStart(turnId, turnTraceContext, "regular");
+  let selectionAccepted = Promise.resolve();
 
+  if (options?.modelExecution) {
+    options = {
+      ...options,
+      modelExecution: captureHighspeedFallbackSelection(this, options.modelExecution),
+    };
+  }
   const executeOptions = options as ExecuteTurnOptions | undefined;
   const completion = enqueueCancellableRuntimeCommand<TurnResult, PromptRuntimeCommand>(this, {
     abortSignal: options?.abortSignal,
     onCommandCancelled: () => this.releaseTurnStart(turnId),
+    onCommandAccepted: () => {
+      selectionAccepted = acceptSubmissionModelSelection(
+        this,
+        options?.intent,
+        turnTraceContext,
+        options?.modelExecution,
+      );
+    },
     createCommand: ({ reject, resolve }) => ({
       attachments,
       createdAt: new Date(),
@@ -137,6 +158,7 @@ export async function admitPrompt(
   });
   // admission 已经完成；执行失败由现有 turn 事件/调用方消费，不制造 unhandled rejection。
   void completion.catch(() => undefined);
+  await selectionAccepted;
   return { completion, kind: "started", turnId };
 }
 

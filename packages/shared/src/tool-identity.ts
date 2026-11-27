@@ -46,6 +46,7 @@ export type CCbuddyToolFamily =
   | "file-write"
   | "shell"
   | "search"
+  | "web-fetch"
   | "todo"
   | "ask-user-question"
   | "agent"
@@ -65,7 +66,7 @@ const TOOL_FAMILY_BY_NAME: Record<CCbuddyKnownToolName, CCbuddyToolFamily> = {
   Bash: "shell",
   Glob: "search",
   Grep: "search",
-  WebFetch: "search",
+  WebFetch: "web-fetch",
   WebSearch: "search",
   web_search: "search",
   TodoRead: "todo",

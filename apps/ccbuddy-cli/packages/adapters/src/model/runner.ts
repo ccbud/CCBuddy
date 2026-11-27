@@ -36,7 +36,10 @@ import { resolveRetryOptionsForBudget } from "./retry-budget.js";
 import { DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-timeout.js";
 import { runGenerateText } from "./runner-generate.js";
 import { runStreamText } from "./runner-stream.js";
-import { normalizeReasoningHistory } from "./reasoning-history-normalization.js";
+import {
+  normalizeOpenAiReasoningHistory,
+  normalizeReasoningHistory,
+} from "./reasoning-history-normalization.js";
 import {
   defaultRuntime,
   type AiSdkModelRuntime,
@@ -59,6 +62,9 @@ export type {
 export { normalizeUsage, toModelStreamEvent } from "./runner-normalization.js";
 
 export interface AiSdkModelAdapterOptions {
+  /** 注入请求观测或测试传输，仍经过现有代理、协议及参数映射链。 */
+  transport?: typeof globalThis.fetch;
+  observeTransport?: (transport: typeof globalThis.fetch) => typeof globalThis.fetch;
   defaultHeaders?: AiSdkModelExecutionConfig["defaultHeaders"];
   requestSecurityState?: ModelRequestSecurityState;
   endpointRoutingPort?: import("@ccbuddy/contracts").ProviderEndpointRoutingPort;
@@ -105,6 +111,8 @@ export class AiSdkModelAdapter {
         ...(options.env ? { env: options.env } : {}),
       },
       {
+        ...(options.transport ? { transport: options.transport } : {}),
+        ...(options.observeTransport ? { observeTransport: options.observeTransport } : {}),
         ...(options.requestSecurityState
           ? { requestSecurityState: options.requestSecurityState }
           : {}),
@@ -393,14 +401,16 @@ function projectRequestHistory(
   request: AiSdkModelTextRequest,
   resolved: ResolvedAiSdkModel,
 ): AiSdkModelTextRequest {
+  const targetModel = { providerId: resolved.providerId, modelId: resolved.modelId };
+  if (resolved.providerKind === "openai") {
+    const messages = normalizeOpenAiReasoningHistory(request.messages, targetModel);
+    return messages === request.messages ? request : { ...request, messages };
+  }
   if (resolved.providerKind !== "anthropic") return request;
 
   // 结构归一化过去位于每次物理请求都会经过的 serializer，签名修复重试
   // 因而会再次删除上一轮刚补出的 assistant 占位并合并 user。逻辑请求入口只投影一次，
   // 后续 attempt 只能复用或从这份 request-local history 派生。
-  const messages = normalizeReasoningHistory(request.messages, {
-    providerId: resolved.providerId,
-    modelId: resolved.modelId,
-  });
+  const messages = normalizeReasoningHistory(request.messages, targetModel);
   return messages === request.messages ? request : { ...request, messages };
 }

@@ -19,12 +19,13 @@ import {
   collectCCbuddyBackgroundTaskNotificationsByToolUseId,
   mergeCCbuddyBackgroundTaskControlItems,
   parseCCbuddyBackgroundTaskControlItems,
-  parseCCbuddyBackgroundTaskNotificationText,
+  parseCCbuddyBackgroundTaskNotifications,
   parseModelPickerValue as parseSharedModelSelection,
   formatModelPickerValue as formatSharedModelSelection,
   resolveCCbuddyVisibleSessionTitle,
   textFromCCbuddyMessageParts,
   CCBUDDY_AGENT_PROVIDER,
+  ccbuddyBackgroundTaskNotificationFailureText,
   ccbuddyBackgroundTaskNotificationToolUpdateStatus,
   appendCCbuddyStreamingToolInputDelta,
   buildCCbuddyStreamingToolInputPreview,
@@ -856,14 +857,15 @@ export function ccbuddySessionEventToCCbuddyStreamEvents(params: {
       ...(event.turnId ? { turnId: event.turnId } : {}),
       startedAt: event.timestamp,
     };
-    const taskNotificationToolUpdate = backgroundTaskNotificationToolUpdateFromInput({
+    const taskNotificationToolUpdates = backgroundTaskNotificationToolUpdatesFromInput({
       input: stringValue(payload.input),
+      originMeta: payload.originMeta,
       taskId,
       traceId,
       inputId: eventInputId,
     });
-    if (taskNotificationToolUpdate) {
-      return [runStartedEvent, taskNotificationToolUpdate];
+    if (taskNotificationToolUpdates.length > 0) {
+      return [runStartedEvent, ...taskNotificationToolUpdates];
     }
     if (
       stringValue(payload.inputSource) === "goal-continuation" &&
@@ -1289,35 +1291,37 @@ export function ccbuddyUserInputResponseToCCbuddyStreamEvent(
   };
 }
 
-function backgroundTaskNotificationToolUpdateFromInput(params: {
+function backgroundTaskNotificationToolUpdatesFromInput(params: {
   input: string | undefined;
   inputId: InputId | undefined;
+  originMeta: unknown;
   taskId: string;
   traceId: TraceId;
-}): Extract<CCbuddyStreamEvent, { type: "tool_call_update" }> | null {
-  const parsed = parseCCbuddyBackgroundTaskNotificationText(params.input);
-  if (!parsed) {
-    return null;
-  }
-  const status = ccbuddyBackgroundTaskNotificationToolUpdateStatus(parsed.notification.status);
-  return {
-    type: "tool_call_update",
-    taskId: params.taskId,
-    traceId: params.traceId,
-    ...(params.inputId ? { inputId: params.inputId } : {}),
-    toolId: parsed.toolUseId,
-    status,
-    content: parsed.notification.result ?? parsed.notification.summary,
-    // 修复原因：ToolLayout 的既有失败 hover 只读取 toolCall.error；notification
-    // 原先只更新 status/raw，导致“执行失败”没有可展示的详情。
-    ...(status === "failed" && parsed.notification.error
-      ? { error: parsed.notification.error }
-      : {}),
-    raw: attachCCbuddyBackgroundTaskNotificationToRaw(
-      { toolCallId: parsed.toolUseId },
-      parsed.notification,
-    ),
-  };
+}): Extract<CCbuddyStreamEvent, { type: "tool_call_update" }>[] {
+  // 终态与失败原文优先取本轮 originMeta 的结构化结果，不解析 summary 文本。
+  // 合并轮的每条通知各自更新自己的工具。
+  return parseCCbuddyBackgroundTaskNotifications(params.input, params.originMeta).map((parsed) => {
+    const status = ccbuddyBackgroundTaskNotificationToolUpdateStatus(parsed.notification.status);
+    return {
+      type: "tool_call_update",
+      taskId: params.taskId,
+      traceId: params.traceId,
+      ...(params.inputId ? { inputId: params.inputId } : {}),
+      toolId: parsed.toolUseId,
+      status,
+      content: parsed.notification.result ?? parsed.notification.summary,
+      // 修复原因：ToolLayout 的既有失败 hover 只读取 toolCall.error；notification
+      // 原先只更新 status/raw，导致“执行失败”没有可展示的详情。
+      // 修复原因：合并轮没有结构化结果，通知里也没有 <error>，失败详情原来是空的。
+      ...(status === "failed"
+        ? { error: ccbuddyBackgroundTaskNotificationFailureText(parsed.notification) }
+        : {}),
+      raw: attachCCbuddyBackgroundTaskNotificationToRaw(
+        { toolCallId: parsed.toolUseId },
+        parsed.notification,
+      ),
+    };
+  });
 }
 
 function ccbuddyMessageToCCbuddyPersistedMessage(
@@ -1796,7 +1800,9 @@ function mapToolPart(
       status: notificationFailed ? "failed" : "completed",
       input: state.input,
       output: state.output,
-      ...(notificationFailed && taskNotification?.error ? { error: taskNotification.error } : {}),
+      ...(notificationFailed && taskNotification
+        ? { error: ccbuddyBackgroundTaskNotificationFailureText(taskNotification) }
+        : {}),
       raw,
     };
   }
@@ -2467,9 +2473,12 @@ function isPreviousBackgroundAgentLaunchAcknowledgement(content: string): boolea
   );
 }
 
+/** CLI 后台 Agent 启动回执的开头（core `agent.ts` 的 formatAgentOutputForModel）；Agent 卡片也按它识别后台启动。 */
+export const BACKGROUND_AGENT_LAUNCH_RECEIPT_PREFIX = "Async agent launched successfully.";
+
 function isCurrentBackgroundAgentLaunchAcknowledgement(content: string): boolean {
   return (
-    content.startsWith("Async agent launched successfully.") &&
+    content.startsWith(BACKGROUND_AGENT_LAUNCH_RECEIPT_PREFIX) &&
     content.includes("agentId:") &&
     content.includes("The agent is working in the background.") &&
     content.includes("notified automatically when it completes")

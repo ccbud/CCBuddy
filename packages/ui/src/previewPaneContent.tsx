@@ -11,6 +11,7 @@ import type { CodeCommentLabels } from "@/components/ui/code-viewer.js";
 import { MarkdownPreviewContent } from "@/previewPaneMarkdownContent.js";
 import { CodeContent } from "@/previewPaneCodeContent.js";
 import { ImagePreviewContent, SvgPreviewContent } from "@/previewPaneImageContent.js";
+import type { WorkspaceFileDragPayload } from "@/lib/workspaceFileDrag.js";
 import { PreviewPaneMediaContent } from "@/previewPaneMediaContent.js";
 import { PdfPreviewContent } from "@/previewPanePdfContent.js";
 import { PptxPreviewContent } from "@/previewPanePptxContent.js";
@@ -33,6 +34,8 @@ interface PreviewPaneContentProps {
   loadingInitial: boolean;
   loadingImagePreview: boolean;
   imagePreview: FileMediaPreview | null;
+  imageFileReference?: WorkspaceFileDragPayload;
+  loadImageDownloadSource?: () => Promise<string>;
   mediaSource: MediaCodeViewerSource | null;
   loadingMediaPreview: boolean;
   mediaPreviewUrl: string | null;
@@ -74,6 +77,8 @@ interface PreviewPaneContentProps {
   onDeleteCodeComment?: (commentId: string) => void;
   onScroll?: UIEventHandler<HTMLDivElement>;
   scrollContainerRef?: Ref<HTMLDivElement>;
+  appliedFocusRequestId?: string;
+  onFocusRequestApplied?: (requestId: string) => void;
 }
 
 function isSvgPath(path?: string): boolean {
@@ -87,6 +92,28 @@ export function getPreviewPaneErrorTextClass(
   return error === fileMissingMessage ? "text-foreground-subtlest" : "text-destructive";
 }
 
+/**
+ * 文件链接行号段 → CodeViewer 定位与高亮的行号段。按文件行数截断：结束行超出末尾截到最后一行；
+ * 起始行超出行数的段丢弃；全部丢弃时返回 null，预览照旧从开头显示，不报错
+ * （docs/ui/preview-pane.md「带行号的文件链接」）。
+ */
+function resolveFileLinkFocusedRanges(
+  lineRanges: readonly CodeCommentRange[] | undefined,
+  content: string,
+): CodeCommentRange[] | null {
+  if (!lineRanges?.length) return null;
+  // 起始行 ≥ 1、结束行 ≥ 起始行已在 buildFileLinkLineFocus 规整。
+  // Bugfix：按 split 计行会把末尾换行后的空串也算一行（150 行文件得到 151），`:140-999` 被截到
+  // 不存在的第 151 行，定位时找不到跨度终点行，预览不滚动。@pierre/diffs 不渲染末尾换行后的空行，这里同口径扣掉。
+  const lines = content.split(/\r\n|\r|\n/);
+  const lineCount =
+    lines.length > 1 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+  const ranges = lineRanges
+    .filter(({ startLine }) => startLine <= lineCount)
+    .map(({ startLine, endLine }) => ({ startLine, endLine: Math.min(endLine, lineCount) }));
+  return ranges.length > 0 ? ranges : null;
+}
+
 export function PreviewPaneContent({
   source,
   filePreview,
@@ -94,6 +121,8 @@ export function PreviewPaneContent({
   loadingInitial,
   loadingImagePreview,
   imagePreview,
+  imageFileReference,
+  loadImageDownloadSource,
   mediaSource,
   loadingMediaPreview,
   mediaPreviewUrl,
@@ -130,6 +159,8 @@ export function PreviewPaneContent({
   onDeleteCodeComment,
   onScroll,
   scrollContainerRef,
+  appliedFocusRequestId,
+  onFocusRequestApplied,
 }: PreviewPaneContentProps) {
   const { intl } = useCCbuddyIntl();
   const fileMissingMessage = intl.formatMessage({ id: "codeViewer.fileMissing" });
@@ -215,7 +246,15 @@ export function PreviewPaneContent({
     }
 
     if (isSvgSource && svgViewMode === "preview") {
-      return <SvgPreviewContent title={source.title} svgContent={source.content} />;
+      return (
+        <SvgPreviewContent
+          title={source.title}
+          svgContent={source.content}
+          fileReference={imageFileReference}
+          sourcePath={source.path}
+          loadDownloadSource={loadImageDownloadSource}
+        />
+      );
     }
 
     return (
@@ -265,6 +304,7 @@ export function PreviewPaneContent({
         title={source.title}
         imageSource={`data:${imagePreview.mediaType};base64,${imagePreview.dataBase64}`}
         sourcePath={source.path}
+        fileReference={imageFileReference}
       />
     );
   }
@@ -408,6 +448,20 @@ export function PreviewPaneContent({
     source.type === "code-review"
       ? resolveCodeReviewContentProjection(source, filePreview.content)
       : null;
+  // Bugfix：文件链接的行号曾在打开预览时被丢弃，CodeViewer 拿不到定位范围，总停在第 1 行。
+  // 这里复用代码评审已有的 focusRequestId 定位触发；focusRequestId 每次点击都新生成，
+  // 所以复用同文件 tab 时也会重新滚动。区间、多段的高亮与滚动规则由 CodeViewer 的 focusedLineRanges 处理。
+  // Bugfix：focusRequestId 常驻 source，CodeViewer 重新挂载（切 tab、折叠侧栏、resize）或内容刷新时
+  // 会再次定位，把用户滚到的位置冲回链接行。高亮只跟 lineRanges 走；定位只给尚未执行过的请求，
+  // 执行过的由 tab 上的 appliedFocusRequestId 过滤（唯一来源在侧边面板状态，组件 ref 会随重新挂载丢失）。
+  const fileLinkFocusedRanges =
+    source.type === "file"
+      ? resolveFileLinkFocusedRanges(source.lineRanges, filePreview.content)
+      : null;
+  const fileLinkFocusRequestId =
+    source.type === "file" && source.focusRequestId !== appliedFocusRequestId
+      ? source.focusRequestId
+      : undefined;
   const isMarkdownFile = fileLanguage === "markdown";
   const isSvgFile = isSvgPath(source.path);
   if (source.type !== "code-review" && isMarkdownFile && markdownViewMode === "preview") {
@@ -425,7 +479,15 @@ export function PreviewPaneContent({
   }
 
   if (source.type !== "code-review" && isSvgFile && svgViewMode === "preview") {
-    return <SvgPreviewContent title={source.title} svgContent={filePreview.content} />;
+    return (
+      <SvgPreviewContent
+        title={source.title}
+        svgContent={filePreview.content}
+        fileReference={imageFileReference}
+        sourcePath={source.path}
+        loadDownloadSource={loadImageDownloadSource}
+      />
+    );
   }
 
   return (
@@ -445,7 +507,15 @@ export function PreviewPaneContent({
           : undefined
       }
       focusedRange={codeReviewProjection?.focusedRange}
-      focusRequestId={source.type === "code-review" ? source.review.requestId : undefined}
+      focusedLineRanges={fileLinkFocusedRanges}
+      focusRequestId={
+        source.type === "code-review"
+          ? source.review.requestId
+          : fileLinkFocusedRanges
+            ? fileLinkFocusRequestId
+            : undefined
+      }
+      onFocusRequestApplied={source.type === "file" ? onFocusRequestApplied : undefined}
       enableLineSelection={source.type === "code-review" ? false : enableCodeLineSelection}
       enableGutterUtility={source.type === "code-review" ? false : enableCodeGutterUtility}
       labels={codeCommentLabels}

@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-background-subagent-rate-limit",
+  "spec": "./test/e2e/conversation-session/background/conversation-session-background-subagent-rate-limit.test.ts",
+  "fixtures": [
+    {
+      "id": "background-subagent-rate-limit-title",
+      "description": "background subagent rate limit case 的固定标题响应。",
+      "metadata": {
+        "kind": "common",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "标题生成不属于本 case，只需稳定返回以免误匹配业务 fixture。"
+      },
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["Generate a concise title", "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT"]
+      },
+      "response": {
+        "statusCode": 200,
+        "statusMessage": "OK",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{\"id\":\"upstream-e2e-background-subagent-rate-limit-title\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-flash\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"title\\\":\\\"Background Agent 429\\\"}\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":125,\"cache_creation_input_tokens\":0,\"cache_read_tokens\":0,\"output_tokens\":24,\"service_tier\":\"standard\"}}"
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-parent-launch",
+      "description": "父模型启动一个 background Agent。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-tool-use",
+        "source": "synthetic",
+        "syntheticReason": "稳定创建真实 Agent(run_in_background=true) 以覆盖 terminal notification 投影。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT"],
+        "bodyIncludes": [
+          "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT",
+          "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT_DONE"
+        ],
+        "bodyExcludes": [
+          "Async agent launched successfully",
+          "Generate a concise title",
+          "CRITICAL: Respond with TEXT ONLY"
+        ]
+      },
+      "response": {
+        "statusCode": 200,
+        "toolUse": {
+          "id": "toolu_e2e_background_subagent_rate_limit_agent",
+          "name": "Agent",
+          "input": {
+            "description": "世界杯冠军预测分析",
+            "prompt": "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_CHILD: make one provider request; the replay server will return a stable 429.",
+            "run_in_background": true,
+            "subagent_type": "general-purpose"
+          }
+        }
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-parent-launch-ack",
+      "description": "父模型在 background Agent launch ACK 后结束当前 turn。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "让父会话先回 idle，随后由 failed task notification 唤醒。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": [
+          "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT",
+          "Async agent launched successfully",
+          "toolu_e2e_background_subagent_rate_limit_agent"
+        ],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"],
+        "lastUserMessageExcludes": ["<task-notification>"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "upstream-e2e-background-subagent-rate-limit-launch-ack",
+          "text": "background-subagent-rate-limit-launched-ok"
+        }
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-child-initial-429",
+      "description": "child-only marker 的首个请求延迟返回 429，确保父 turn 先消费 launch ACK。",
+      "metadata": {
+        "kind": "subagent",
+        "timingPolicy": "fault-stream",
+        "source": "synthetic",
+        "syntheticReason": "首个 429 延迟到父 turn 消费 launch ACK 后返回；BG26 worker 禁用模型 retry，只验证 terminal/UI/snapshot 的原始错误投影。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_CHILD"],
+        "bodyIncludes": ["E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_CHILD"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 429,
+        "statusMessage": "Too Many Requests",
+        "delayMs": 1500,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "retry-after": "0"
+        },
+        "body": "{\"error\":{\"code\":\"AccountRateLimitExceeded\",\"message\":\"Requests are too frequent. Please reduce your request frequency, wait a short moment, and retry your request. Request id: e2e-background-subagent-rate-limit\",\"param\":null,\"type\":\"TooManyRequests\"}}"
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-parent-notification",
+      "description": "父模型消费 failed background Agent notification。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "task-notification",
+        "source": "synthetic",
+        "syntheticReason": "证明 failed notification 经 runtime command queue 回到父模型并正常收口。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["<task-notification>", "<status>failed</status>"],
+        "bodyIncludes": [
+          "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT",
+          "<tool-use-id>toolu_e2e_background_subagent_rate_limit_agent</tool-use-id>",
+          "<status>failed</status>"
+        ],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "upstream-e2e-background-subagent-rate-limit-parent-done",
+          "text": "E2E_BACKGROUND_SUBAGENT_RATE_LIMIT_PARENT_DONE"
+        }
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-title",
+      "description": "BG26 合并通知用例的固定标题响应。",
+      "metadata": {
+        "kind": "common",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "标题生成不属于本 case，只需稳定返回以免误匹配业务 fixture。"
+      },
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["Generate a concise title", "E2E_BG26_MERGED_PARENT"]
+      },
+      "response": {
+        "statusCode": 200,
+        "statusMessage": "OK",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{\"id\":\"upstream-e2e-bg26-merged-title\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-flash\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"title\\\":\\\"Background Agent merged notifications\\\"}\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":125,\"cache_creation_input_tokens\":0,\"cache_read_tokens\":0,\"output_tokens\":24,\"service_tier\":\"standard\"}}"
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-parent-launch",
+      "description": "父模型在同一 response 启动三个 background Agent：失败、完成、失败。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-tool-use",
+        "source": "synthetic",
+        "syntheticReason": "同一 response 启动三个真实 Agent(run_in_background=true)，终止顺序由各 child 的延迟决定。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_BG26_MERGED_PARENT"],
+        "bodyIncludes": ["E2E_BG26_MERGED_PARENT", "E2E_BG26_MERGED_PARENT_DONE"],
+        "bodyExcludes": [
+          "Async agent launched successfully",
+          "Generate a concise title",
+          "CRITICAL: Respond with TEXT ONLY"
+        ]
+      },
+      "response": {
+        "statusCode": 200,
+        "toolUses": [
+          {
+            "id": "toolu_e2e_bg26_merged_first_failing_agent",
+            "name": "Agent",
+            "input": {
+              "description": "BG26 first failing background Agent",
+              "prompt": "E2E_BG26_MERGED_FIRST_FAILING_CHILD: make one provider request; the replay server will return a stable 429.",
+              "run_in_background": true,
+              "subagent_type": "general-purpose"
+            }
+          },
+          {
+            "id": "toolu_e2e_bg26_merged_completing_agent",
+            "name": "Agent",
+            "input": {
+              "description": "BG26 completing background Agent",
+              "prompt": "E2E_BG26_MERGED_COMPLETING_CHILD: Return exactly E2E_BG26_MERGED_COMPLETED_RESULT.",
+              "run_in_background": true,
+              "subagent_type": "general-purpose"
+            }
+          },
+          {
+            "id": "toolu_e2e_bg26_merged_last_failing_agent",
+            "name": "Agent",
+            "input": {
+              "description": "BG26 last failing background Agent",
+              "prompt": "E2E_BG26_MERGED_LAST_FAILING_CHILD: make one provider request; the replay server will return a stable 429.",
+              "run_in_background": true,
+              "subagent_type": "general-purpose"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-parent-launch-ack",
+      "description": "父模型在三个 Agent launch ACK 后延迟结束当前 turn。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "delayed-text",
+        "source": "synthetic",
+        "syntheticReason": "九秒延迟让三个 child 都在父 launch turn 结束前终止，三条通知在父会话空闲时由同一次 drain 合并为一轮。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": [
+          "E2E_BG26_MERGED_PARENT",
+          "Async agent launched successfully",
+          "toolu_e2e_bg26_merged_first_failing_agent",
+          "toolu_e2e_bg26_merged_completing_agent",
+          "toolu_e2e_bg26_merged_last_failing_agent"
+        ],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"],
+        "lastUserMessageExcludes": ["<task-notification>"]
+      },
+      "response": {
+        "statusCode": 200,
+        "delayMs": 9000,
+        "text": {
+          "id": "upstream-e2e-bg26-merged-launch-ack",
+          "text": "bg26-merged-agents-launched-ok"
+        }
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-first-child-partial-step",
+      "description": "第一个失败 child 的首个请求先回正文和一个 TodoWrite 调用，留下部分报告。",
+      "metadata": {
+        "kind": "subagent",
+        "timingPolicy": "fast-tool-use",
+        "source": "synthetic",
+        "syntheticReason": "子代理先写出正文再失败，失败通知的 <result> 才有部分报告；TodoWrite 不需要 shell 和权限，第二次请求按工具调用 id 匹配。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_BG26_MERGED_FIRST_FAILING_CHILD"],
+        "bodyIncludes": ["E2E_BG26_MERGED_FIRST_FAILING_CHILD"],
+        "bodyExcludes": [
+          "Generate a concise title",
+          "CRITICAL: Respond with TEXT ONLY",
+          "toolu_e2e_bg26_merged_first_partial_step"
+        ]
+      },
+      "response": {
+        "statusCode": 200,
+        "statusMessage": "OK",
+        "headers": {
+          "cache-control": "no-cache",
+          "content-type": "text/event-stream; charset=utf-8"
+        },
+        "body": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"upstream-e2e-bg26-merged-first-partial-step\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-flash\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":120,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"E2E_BG26_MERGED_FIRST_PARTIAL_REPORT\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_e2e_bg26_merged_first_partial_step\",\"name\":\"TodoWrite\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"todos\\\":[{\\\"content\\\":\\\"Check module A\\\",\\\"priority\\\":\\\"high\\\",\\\"status\\\":\\\"in_progress\\\"}]}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":120,\"output_tokens\":24}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-first-child-429",
+      "description": "第一个失败 child 的第二个请求在 0.5 秒后返回 429。",
+      "metadata": {
+        "kind": "subagent",
+        "timingPolicy": "fault-stream",
+        "source": "synthetic",
+        "syntheticReason": "最先终止，失败通知排在批次第一条；在部分报告那一步之后失败，延迟缩短到 0.5 秒，保证仍早于 3 秒完成的 child。BG26 worker 禁用模型 retry。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": [
+          "E2E_BG26_MERGED_FIRST_FAILING_CHILD",
+          "toolu_e2e_bg26_merged_first_partial_step"
+        ],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 429,
+        "statusMessage": "Too Many Requests",
+        "delayMs": 500,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "retry-after": "0"
+        },
+        "body": "{\"error\":{\"code\":\"AccountRateLimitExceeded\",\"message\":\"Requests are too frequent. Please reduce your request frequency, wait a short moment, and retry your request. Request id: e2e-bg26-merged-first-failure\",\"param\":null,\"type\":\"TooManyRequests\"}}"
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-child-completed",
+      "description": "完成 child 在 3 秒后返回结果。",
+      "metadata": {
+        "kind": "subagent",
+        "timingPolicy": "delayed-text",
+        "source": "synthetic",
+        "syntheticReason": "第二个终止，完成通知排在批次第二条，紧跟第一条失败通知。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_BG26_MERGED_COMPLETING_CHILD: Return exactly"],
+        "bodyIncludes": ["E2E_BG26_MERGED_COMPLETING_CHILD"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 200,
+        "delayMs": 3000,
+        "text": {
+          "id": "upstream-e2e-bg26-merged-child-completed",
+          "text": "E2E_BG26_MERGED_COMPLETED_RESULT"
+        }
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-last-child-429",
+      "description": "最后一个失败 child 的唯一请求在 4.5 秒后返回 429。",
+      "metadata": {
+        "kind": "subagent",
+        "timingPolicy": "fault-stream",
+        "source": "synthetic",
+        "syntheticReason": "最后终止，失败通知排在批次第三条，覆盖后面的通知块取得终态。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_BG26_MERGED_LAST_FAILING_CHILD"],
+        "bodyIncludes": ["E2E_BG26_MERGED_LAST_FAILING_CHILD"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 429,
+        "statusMessage": "Too Many Requests",
+        "delayMs": 4500,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "retry-after": "0"
+        },
+        "body": "{\"error\":{\"code\":\"AccountRateLimitExceeded\",\"message\":\"Requests are too frequent. Please reduce your request frequency, wait a short moment, and retry your request. Request id: e2e-bg26-merged-last-failure\",\"param\":null,\"type\":\"TooManyRequests\"}}"
+      }
+    },
+    {
+      "id": "background-subagent-rate-limit-merged-parent-notification",
+      "description": "父模型在同一轮消费三条 notification。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "task-notification",
+        "source": "synthetic",
+        "syntheticReason": "同一条 last user message 同时含三条通知与完成任务的结果，证明合并为一轮后父模型正常收口。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": [
+          "<tool-use-id>toolu_e2e_bg26_merged_first_failing_agent</tool-use-id>",
+          "<tool-use-id>toolu_e2e_bg26_merged_completing_agent</tool-use-id>",
+          "<tool-use-id>toolu_e2e_bg26_merged_last_failing_agent</tool-use-id>",
+          "E2E_BG26_MERGED_COMPLETED_RESULT"
+        ],
+        "bodyIncludes": ["E2E_BG26_MERGED_PARENT"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "upstream-e2e-bg26-merged-parent-done",
+          "text": "E2E_BG26_MERGED_PARENT_DONE"
+        }
+      }
+    }
+  ]
+}

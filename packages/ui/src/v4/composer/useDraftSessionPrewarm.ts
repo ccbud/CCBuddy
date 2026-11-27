@@ -11,7 +11,7 @@
 //
 // 结构：生命周期收敛在纯控制器 startDraftSessionPrewarm（可单测，无 React 依赖），
 // useDraftSessionPrewarm 只做 effect 接线与 owner-scoped binding 暴露。
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type {
   CommandAck,
   CommandType,
@@ -93,7 +93,7 @@ export function startDraftSessionPrewarm(params: {
         return;
       }
       if (ack.status !== "accepted" || ack.result?.type !== "createSession") {
-        logger.warn("[v4-draft-prewarm] createSession 被拒，回落无预热路径", {
+        logger.warn("[v4-draft-prewarm] createSession 被拒", {
           status: ack.status,
           reasonCode: ack.reasonCode ?? null,
           workspaceKey,
@@ -113,7 +113,7 @@ export function startDraftSessionPrewarm(params: {
       onReady(createdSessionId);
     })
     .catch((error) => {
-      logger.warn("[v4-draft-prewarm] createSession 失败，回落无预热路径", {
+      logger.warn("[v4-draft-prewarm] createSession 失败", {
         error: error instanceof Error ? error.message : String(error),
         workspaceKey,
       });
@@ -152,11 +152,15 @@ export function startDraftSessionPrewarm(params: {
 export interface DraftSessionPrewarm {
   /** 当前 workspace/transport generation 已就绪的预热 binding。 */
   binding: DraftPrewarmBinding | null;
+  /** 首发等待本 owner 当前创建任务；失败或换代即拒绝，不在发送路径另建会话。 */
+  waitForSession(): Promise<DraftPrewarmBinding>;
 }
 
 export interface DraftPrewarmBinding {
   workspaceKey: string;
   sessionId: string;
+  /** 页面保活独立于展示订阅；换代时通知页面撤销，首发提升不撤销。 */
+  retain(onInvalidated: () => void): () => void;
   /** 首条 admission 命令发出前同步占住生命周期；false 表示 binding 已不是当前 owner。 */
   beginPromotion(): boolean;
   /** 首发成功后标记（阻止清理路径 deleteSession 已提升的会话）。 */
@@ -166,15 +170,18 @@ export interface DraftPrewarmBinding {
 }
 
 interface DraftPrewarmSubscriber {
+  generation: object;
   invalidationVersion: number;
   onBinding: (binding: DraftPrewarmBinding | null) => void;
 }
 
 interface DraftPrewarmCurrent {
+  retainers: Set<() => void>;
   invalidationVersion: number;
   controller: DraftPrewarmController;
   binding: DraftPrewarmBinding | null;
   settled: boolean;
+  completion: Promise<void>;
   retiring: boolean;
   /** 本代是第几次退避重试的产物；0 表示首发。 */
   retryAttempt: number;
@@ -224,7 +231,53 @@ class DraftSessionPrewarmCoordinator {
     this.resolveInitialConfig = resolveInitialConfig;
   }
 
+  async waitForSession(
+    invalidationVersion: number,
+    generation: object,
+  ): Promise<DraftPrewarmBinding> {
+    const assertCurrentSubscriber = () => {
+      if (
+        this.requestedInvalidationVersion() !== invalidationVersion ||
+        !Array.from(this.subscribers.values()).some(
+          (subscriber) => subscriber.generation === generation,
+        )
+      )
+        throw new Error("草稿会话已切换，请重新发送");
+    };
+    assertCurrentSubscriber();
+    // 新草稿已接管时，旧创建仍可能在回收；这是等待窗口，不是用户再次切换。
+    // 资格绑定本次订阅，防止相同版本的离开/重进让旧提交借新草稿继续发送。
+    if (this.current?.retiring) {
+      await this.current.completion;
+      assertCurrentSubscriber();
+    }
+    // 已确定失败/失效后，用户再次点击可以重试；仍由 owner 创建并合并并发等待者，
+    // 不能因后台重试耗尽就让当前草稿永久无法发送。
+    if (this.current?.settled && !this.current.binding) {
+      this.clearRetryTimer();
+      this.blockedInvalidationVersion = null;
+      this.current = null;
+      this.startCurrent(invalidationVersion);
+    }
+    const current = this.current;
+    if (!current) throw new Error("草稿会话尚未开始创建");
+    // Bug 根因：binding=null 同时表示创建在途和失败，首发据此另建会话会与预热并发。
+    // 创建只归此 owner；等待捕获的一代，不能在 await 后悄悄换成另一个会话发送。
+    await current.completion;
+    assertCurrentSubscriber();
+    if (
+      this.current !== current ||
+      current.retiring ||
+      current.invalidationVersion !== invalidationVersion ||
+      this.requestedInvalidationVersion() !== invalidationVersion
+    )
+      throw new Error("草稿会话已切换，请重新发送");
+    if (!current.binding) throw new Error("草稿会话创建失败，请重试");
+    return current.binding;
+  }
+
   acquire(params: {
+    generation: object;
     invalidationVersion: number;
     onBinding: (binding: DraftPrewarmBinding | null) => void;
   }): () => void {
@@ -245,7 +298,7 @@ class DraftSessionPrewarmCoordinator {
       // 是否真的离开，避免“create → cleanup delete → create”的协议 churn。
       this.cleanupTimer = setTimeout(() => {
         this.cleanupTimer = null;
-        if (this.subscribers.size > 0) {
+        if (this.subscribers.size > 0 || this.current?.retainers.size) {
           return;
         }
         this.retireCurrent();
@@ -302,7 +355,7 @@ class DraftSessionPrewarmCoordinator {
 
   /**
    * createSession 收口却没拿到 binding = 失败（被拒或异常）。回收导致的 client disposed 是
-   * 瞬态的，按退避重排一次创建；用尽则维持既有的「回落无预热路径」行为。
+   * 瞬态的，按退避重排一次创建；用尽后保留失败态，由下一次生命周期失效重新创建。
    */
   private scheduleRetryAfterFailure(failed: DraftPrewarmCurrent): void {
     const delay = PREWARM_RETRY_DELAYS_MS[failed.retryAttempt];
@@ -322,6 +375,10 @@ class DraftSessionPrewarmCoordinator {
 
   private startCurrent(invalidationVersion: number, retryAttempt = 0): void {
     let current!: DraftPrewarmCurrent;
+    let complete!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
     const controller = startDraftSessionPrewarm({
       workspaceKey: this.workspaceKey,
       dispatchCommand: (type, payload, targetSessionId) =>
@@ -335,6 +392,24 @@ class DraftSessionPrewarmCoordinator {
         binding = {
           workspaceKey: this.workspaceKey,
           sessionId,
+          retain: (onInvalidated) => {
+            if (this.current !== current || current.retiring || current.binding !== binding)
+              throw new Error("草稿会话已失效");
+            const invalidate = () => onInvalidated();
+            current.retainers.add(invalidate);
+            return () => {
+              if (!current.retainers.delete(invalidate)) return;
+              if (
+                this.current === current &&
+                !current.retiring &&
+                !current.retainers.size &&
+                !this.subscribers.size
+              ) {
+                this.retireCurrent();
+                if (!this.current) this.onEmpty();
+              }
+            };
+          },
           beginPromotion: () => {
             if (this.current !== current || current.binding !== binding) {
               return false;
@@ -347,6 +422,16 @@ class DraftSessionPrewarmCoordinator {
               return;
             }
             current.controller.markPromoted();
+            // 页面可继续持有原 session；草稿槽位必须立即脱离，不能等页面引用释放。
+            current.binding = null;
+            current.retiring = true;
+            this.current = null;
+            // 修复原因：这里原先向订阅者推 null，pane 的预热会话 id 立即清空；正式 sessionId 要等
+            // Shell 提交新任务（任务树刷新 + 导航）后才到达。E2E 日志实测两者之间约 260ms 没有有效会话：
+            // 会话 lease 退回 keep-warm 再重新取回，插件 UI 与扩展的屏幕会话报告在这段时间消失。
+            // 修法：提升时不再通知当前订阅者，它保留已提升的 binding，直到 pane 绑定正式会话
+            // （sessionId 非空 → 预热停用 → generation 换代，binding 随之失效）。
+            // useSessionPaneLease 的「草稿晋升复用预热 lease」由此成立，交接期间有效会话不变。
           },
           discard: () => {
             if (this.current !== current || current.binding !== binding) {
@@ -355,6 +440,9 @@ class DraftSessionPrewarmCoordinator {
             current.controller.markDiscarded();
             current.binding = null;
             this.blockedInvalidationVersion = current.invalidationVersion;
+            const retainers = [...current.retainers];
+            current.retainers.clear();
+            for (const invalidate of retainers) invalidate();
             this.emitBindings();
           },
         };
@@ -363,6 +451,7 @@ class DraftSessionPrewarmCoordinator {
       },
       onSettled: () => {
         current.settled = true;
+        complete();
         if (this.current !== current || !current.retiring) {
           // 未被 retire 却没拿到 binding = createSession 失败；瞬态回收可退避重试。
           if (this.current === current && !current.retiring && current.binding === null) {
@@ -379,10 +468,12 @@ class DraftSessionPrewarmCoordinator {
       },
     });
     current = {
+      retainers: new Set(),
       invalidationVersion,
       controller,
       binding: null,
       settled: false,
+      completion,
       retiring: false,
       retryAttempt,
     };
@@ -397,6 +488,8 @@ class DraftSessionPrewarmCoordinator {
     this.clearRetryTimer();
     current.retiring = true;
     current.binding = null;
+    for (const invalidate of [...current.retainers]) invalidate();
+    current.retainers.clear();
     current.controller.dispose();
     this.emitBindings();
     if (current.settled) {
@@ -463,6 +556,27 @@ function getDraftSessionPrewarmCoordinator(params: {
   return coordinator;
 }
 
+interface AcquiredDraftPrewarm {
+  generation: object;
+  coordinator: DraftSessionPrewarmCoordinator;
+}
+
+// Bug 原因：等待回调与订阅 effect 共享作用域，隐式捕获旧 dispatch，再经 pane 回调串起历次草稿。
+// 工厂只持有等待所需的 ref/代次；过期调用仍按原 generation 拒绝，不把旧请求改投新 owner。
+function createWaitForDraftSession(
+  acquired: RefObject<AcquiredDraftPrewarm | null>,
+  enabled: boolean,
+  generation: object,
+  invalidationVersion: number,
+): DraftSessionPrewarm["waitForSession"] {
+  return async () => {
+    if (!enabled) throw new Error("草稿会话尚未启用");
+    const current = acquired.current;
+    if (current?.generation !== generation) throw new Error("草稿会话已切换，请重新发送");
+    return current.coordinator.waitForSession(invalidationVersion, generation);
+  };
+}
+
 export function useDraftSessionPrewarm(params: {
   /** pane 未绑定会话（sessionId===null）时启用。 */
   enabled: boolean;
@@ -492,21 +606,13 @@ export function useDraftSessionPrewarm(params: {
     () => ({ workspaceKey, paneId, transportIdentity }),
     [paneId, transportIdentity, workspaceKey],
   );
-  const coordinator = useMemo(
-    () =>
-      getDraftSessionPrewarmCoordinator({
-        workspaceKey,
-        paneId,
-        transportIdentity,
-        dispatchCommand,
-        resolveInitialConfig,
-      }),
-    [owner],
-  );
-  useLayoutEffect(() => {
-    coordinator.update(dispatchCommand, resolveInitialConfig);
-  }, [coordinator, dispatchCommand, resolveInitialConfig]);
   const generation = useMemo(() => ({ owner }), [enabled, invalidationVersion, owner]);
+  const acquired = useRef<AcquiredDraftPrewarm | null>(null);
+  useLayoutEffect(() => {
+    if (acquired.current?.generation === generation) {
+      acquired.current.coordinator.update(dispatchCommand, resolveInitialConfig);
+    }
+  }, [dispatchCommand, generation, resolveInitialConfig]);
   const [ready, setReady] = useState<{
     generation: typeof generation;
     binding: DraftPrewarmBinding;
@@ -514,7 +620,17 @@ export function useDraftSessionPrewarm(params: {
 
   useEffect(() => {
     if (!enabled) return;
-    return coordinator.acquire({
+    // 原先在 render 登记，未启用预热的历史页没有 acquire/release，Map 会永久保留闭包中的
+    // 已关闭 store 和历史。登记与订阅必须同属已提交的 effect，中止 render 也不能留下 owner。
+    const coordinator = getDraftSessionPrewarmCoordinator({
+      ...owner,
+      dispatchCommand,
+      resolveInitialConfig,
+    });
+    coordinator.update(dispatchCommand, resolveInitialConfig);
+    acquired.current = { generation, coordinator };
+    const release = coordinator.acquire({
+      generation,
       invalidationVersion,
       onBinding: (binding) => {
         setReady((current) => {
@@ -525,7 +641,16 @@ export function useDraftSessionPrewarm(params: {
         });
       },
     });
-  }, [coordinator, enabled, generation, invalidationVersion]);
+    return () => {
+      acquired.current = null;
+      release();
+    };
+  }, [enabled, generation, invalidationVersion, owner]);
 
-  return { binding: ready?.generation === generation ? ready.binding : null };
+  const waitForSession = useMemo(
+    () => createWaitForDraftSession(acquired, enabled, generation, invalidationVersion),
+    [enabled, generation, invalidationVersion],
+  );
+
+  return { binding: ready?.generation === generation ? ready.binding : null, waitForSession };
 }

@@ -32,13 +32,24 @@ export interface MentionResultGroup<TItem = MentionItem> {
   loading: boolean;
   errorText: string | null;
   emptyText: string;
+  /** 只有这一组可见时也显示组名（插件 composer.mention 的分组靠组名说明来源）。 */
+  showHeader?: boolean;
+  /**
+   * 组内一行弱提示（插件分组的查询失败、扩展已停止）：不用错误行的红底，不影响别的组。
+   * DESIGN.md「Extension slots」：插件相关的状态只用文字说明，不用 destructive 填充。
+   */
+  noticeText?: string | null;
 }
 
 export function buildVisibleMentionGroups<TItem>(
   groups: MentionResultGroup<TItem>[],
 ): MentionResultGroup<TItem>[] {
   return groups.filter(
-    (group) => group.loading || group.errorText !== null || group.items.length > 0,
+    (group) =>
+      group.loading ||
+      group.errorText !== null ||
+      Boolean(group.noticeText) ||
+      group.items.length > 0,
   );
 }
 

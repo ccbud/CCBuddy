@@ -9,6 +9,7 @@ import {
   isFillWorkflowHoleOwnedRun,
   PermissionCapabilityGroup,
   type PermissionCapabilityGroup as PermissionCapabilityGroupType,
+  type PermissionOptionsPolicy,
   type PermissionRuleValue,
   type PermissionRuleset,
   type PermissionUpdate,
@@ -31,6 +32,14 @@ import type { ToolPermissionRulePolicy } from "../tool/types.js";
 
 /** 草稿免确认的规则号。 */
 const WORKFLOW_DRAFT_PREAPPROVED_RULE_ID = "tool.workflowDraft.preapproved";
+
+/**
+ * `disallowedTools` 拒绝整个工具时模型看到的文字（2026-11-14，原来是 `Tool X is explicitly disallowed`）。
+ * 项目权限规则的拒绝可能只针对部分输入（路径、命令），文字不变，不能说成整个工具被拒绝。
+ */
+function toolDeniedMessage(toolName: string): string {
+  return `Permission to use ${toolName} has been denied.`;
+}
 
 export interface PermissionContext {
   toolName: string;
@@ -66,6 +75,8 @@ export type PermissionBehavior = "allow" | "ask" | "deny";
 
 export interface PermissionDecisionResult {
   approvalMode?: "user-once";
+  /** 判定自带的询问选项策略，覆盖工具声明的策略（Plan 下的 MCP 询问不提供始终允许）。 */
+  optionsPolicy?: PermissionOptionsPolicy;
   decision: PermissionBehavior;
   allowed: boolean;
   reason?: string;
@@ -136,6 +147,15 @@ export class PermissionService {
     }
 
     if (capability.requiresUserInteraction) {
+      if (this.config.disallowedTools.has(context.toolName)) {
+        return this.deny(
+          context,
+          capability,
+          "rule.disallowedTools",
+          toolDeniedMessage(context.toolName),
+        );
+      }
+
       return this.ask(
         context,
         capability,
@@ -147,15 +167,7 @@ export class PermissionService {
     // 独立 Plan 优先于 Guarded 的 YOLO 基础策略，审批不能解除 Plan 的执行限制。
     const planEnabled = context.planEnabled ?? context.mode === "plan";
     if (!planEnabled && context.mode === "guarded" && toolCapability?.userApprovalRule) {
-      return {
-        ...this.ask(
-          context,
-          capability,
-          toolCapability.userApprovalRule,
-          "Dangerous command requires your approval for this execution",
-        ),
-        approvalMode: "user-once",
-      };
+      return this.guardedSingleUseAsk(context, capability, toolCapability.userApprovalRule);
     }
 
     // 保留 staging 的工具级确认，不被 Guarded 普通调用的 YOLO 基础策略跳过。
@@ -173,6 +185,24 @@ export class PermissionService {
         capability,
         "mode.auto.unimplemented",
         "Auto mode is reserved but not implemented yet",
+      );
+    }
+
+    if (this.config.disallowedTools.has(context.toolName)) {
+      return this.deny(
+        context,
+        capability,
+        "rule.disallowedTools",
+        toolDeniedMessage(context.toolName),
+      );
+    }
+
+    if (this.matchesProjectRules(projectRules, "deny", context, capability, rulePolicy)) {
+      return this.deny(
+        context,
+        capability,
+        "rule.project.deny",
+        `Tool ${context.toolName} is denied by project permission rules`,
       );
     }
 
@@ -204,7 +234,24 @@ export class PermissionService {
     }
 
     if (planEnabled) {
-      return this.checkPlanMode(context, capability);
+      const planDecision = this.checkPlanMode(context, capability);
+      if (planDecision?.decision === "deny") return planDecision;
+      // 修复原因：上方 guarded 单次确认带 !planEnabled，开着 Plan 时被整个跳过，下方又补回 guarded
+      // 放行；危险命令规则一旦匹配到能通过闸门的工具，guarded + Plan 就会免确认执行。
+      // 闸门没拒绝时在这里补做单次确认，Plan 的拒绝仍优先。
+      if (context.mode === "guarded" && toolCapability?.userApprovalRule) {
+        return this.guardedSingleUseAsk(context, capability, toolCapability.userApprovalRule);
+      }
+      if (planDecision) return planDecision;
+      // 闸门放过后按原模式判定；yolo/guarded 的放行在上方因 planEnabled 被跳过，这里补回。
+      if (context.mode === "yolo" || context.mode === "guarded") {
+        return this.allow(
+          context,
+          capability,
+          "mode.yolo",
+          "Yolo mode bypasses permission prompts",
+        );
+      }
     }
 
     if (this.matchesProjectRules(projectRules, "allow", context, capability, rulePolicy)) {
@@ -222,6 +269,25 @@ export class PermissionService {
         capability,
         "tool.webfetch.preapproved",
         "WebFetch URL is preapproved",
+      );
+    }
+
+    // 根因：needsApproval=false 不会越过 build/edit 对 workspace 副作用的通用询问，
+    // 导致无人值守的 automation 执行轮停在审批界面。该工具无模型可控 id，只能暂停
+    // Host 为本轮注入且用户可恢复的任务；显式 project deny/ask 与 plan 限制已在上方处理。
+    if (
+      context.toolName === "CronPauseSelf" &&
+      capability.permissionName === "automation.pause" &&
+      capability.sideEffectScope === "workspace" &&
+      capability.riskLevel === "low" &&
+      !capability.destructive &&
+      !capability.needsApproval
+    ) {
+      return this.allow(
+        context,
+        capability,
+        "tool.automationPauseSelf.preapproved",
+        "The current automation run may pause only its own automation",
       );
     }
 
@@ -254,6 +320,14 @@ export class PermissionService {
       );
     }
 
+    if (capability.permission?.confirmationHandledByTool) {
+      return this.allow(
+        context,
+        capability,
+        "tool.explicitConfirmation",
+        "Tool collects explicit confirmation before mutations",
+      );
+    }
     if (context.mode === "edit") {
       return this.checkEditMode(context, capability);
     }
@@ -369,6 +443,22 @@ export class PermissionService {
         "Auto mode is reserved but not implemented yet",
       );
     }
+    if (this.config.disallowedTools.has(context.toolName)) {
+      return this.deny(
+        context,
+        capability,
+        "rule.disallowedTools",
+        toolDeniedMessage(context.toolName),
+      );
+    }
+    if (this.matchesProjectRules(projectRules, "deny", context, capability, rulePolicy)) {
+      return this.deny(
+        context,
+        capability,
+        "rule.project.deny",
+        `Tool ${context.toolName} is denied by project permission rules`,
+      );
+    }
     // 会话免确认：阻断分支之后、ask 之前。命中即放行，不发 permission 事件、不弹窗；
     // 与 gate 本身一样不看模式（yolo / plan / build 一致）。
     if (this.matchesProjectRules(this.sessionRules, "allow", context, capability, rulePolicy)) {
@@ -380,7 +470,7 @@ export class PermissionService {
       );
     }
     // 修订免确认：AmendWorkflow 的前驱是
-    // **本会话发起**的 run、且不是用户亲手停下的，即放行。与会话规则同位——阻断分支之后、ask 之前，
+    // **本会话发起**的 run、不是用户亲手停下的、且这次修订没有引入新 provider，即放行。与会话规则同位——阻断分支之后、ask 之前，
     // 不看模式。事实来自 resolveInput 回填的 `predecessor`（journal 的 parent_session_id / stopReason），
     // 不是内存表：重启、冷恢复后依然成立，也没有可播种、可撤销的东西。别的会话的 run、用户停过的
     // run 照常 ask：钥匙是 run 的归属，不是字段的在场。
@@ -418,11 +508,32 @@ export class PermissionService {
     return false;
   }
 
+  /** Guarded 危险命令的单次确认：不提供始终允许，确认只对这一次执行有效。 */
+  private guardedSingleUseAsk(
+    context: PermissionContext,
+    capability: ResolvedPermissionCapability,
+    ruleId: string,
+  ): PermissionDecisionResult {
+    return {
+      ...this.ask(
+        context,
+        capability,
+        ruleId,
+        "Dangerous command requires your approval for this execution",
+      ),
+      approvalMode: "user-once",
+    };
+  }
+
+  /**
+   * Plan 闸门：只在原模式之上收紧。返回 undefined 表示放过，由调用方继续按原模式判定。
+   */
   private checkPlanMode(
     context: PermissionContext,
     capability: ResolvedPermissionCapability,
-  ): PermissionDecisionResult {
-    if (capability.readOnly && !capability.destructive) {
+  ): PermissionDecisionResult | undefined {
+    // 原模式对只读免审批工具同样放行，这里直接放行只为保留 ruleId。
+    if (capability.readOnly && !capability.destructive && !capability.needsApproval) {
       return this.allow(
         context,
         capability,
@@ -431,13 +542,23 @@ export class PermissionService {
       );
     }
 
+    // 修复原因：这里曾对只读工具不看 needsApproval、对非 destructive MCP 直接放行，Plan 因此比
+    // 原模式更宽（任意 URL 的 WebFetch、MCP 写工具、node_repl 的 js 都免审批），而 EnterPlanMode
+    // 本身免确认。现在需审批的只读工具（WebFetch、readOnlyHint MCP）只过闸，交给原模式判定。
+    if (capability.readOnly && !capability.destructive) return undefined;
+
     if (this.isMcpToolCapability(capability) && !capability.destructive) {
-      return this.allow(
-        context,
-        capability,
-        "mode.plan.mcp",
-        "Plan mode allows non-destructive MCP tool execution",
-      );
+      if (context.mode === "yolo" || context.mode === "guarded") return undefined;
+      // 询问排在 allow 规则之前，规则不能跳过；Plan 下记住的规则不会生效，所以不提供始终允许。
+      return {
+        ...this.ask(
+          context,
+          capability,
+          "mode.plan.mcp",
+          "Plan mode requires approval for MCP tools that are not read-only",
+        ),
+        optionsPolicy: "no-always-allow",
+      };
     }
 
     if (
@@ -623,6 +744,7 @@ export class PermissionService {
         !this.isReadOnlyTool(context.toolName),
       permissionCapabilityGroup: toolCapability?.permissionCapabilityGroup,
       permissionName: toolCapability?.permission?.permission,
+      permission: toolCapability?.permission,
     };
   }
 
@@ -675,6 +797,7 @@ export class PermissionService {
 }
 
 interface ResolvedPermissionCapability {
+  permission?: ToolPermissionSpec;
   allowedInPlanMode: boolean;
   alwaysAsk: boolean;
   readOnly: boolean;

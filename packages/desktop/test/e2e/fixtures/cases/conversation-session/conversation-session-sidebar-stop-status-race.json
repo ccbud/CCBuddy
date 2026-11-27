@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-sidebar-stop-status-race",
+  "spec": "./test/e2e/conversation-session/task-management/conversation-session-sidebar-stop-status-race.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-sidebar-stop-status-race.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "sidebar-stop-status-race-title",
+      "description": "TSL18 首发的 case-local 标题生成响应。",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "首发会触发默认 title sidecar；固定 marker 响应避免回退共享 provider fixture。"
+    },
+    {
+      "id": "sidebar-stop-status-race-controlled-stream",
+      "description": "稳定制造 running spinner 与 Stop 窗口；测试侧暂挂真实 project.readTree 回包。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "TSL18 必须在项目目录读取在途时触发 Stop；用受控响应维持 running，Stop 取消流，不依赖固定延时。"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { TID_FEEDBACK_LOGS_OPT_IN } from "@ccbuddy/shared";
+import { TID_FEEDBACK_LOGS_OPT_IN } from "@ccbuddy/shared/test-ids";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -6,6 +6,7 @@ import { Switch } from "@/components/ui/switch.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { cn } from "@/components/lib/utils.js";
 import { SubmitProgressView } from "@/feedback/FeedbackSubmitProgressView.js";
+import { RequiredMarker } from "@/feedback/feedbackBadges.js";
 import { rememberFeedbackContactInput } from "@/feedback/feedbackContactPreference.js";
 import type { FeedbackSubmissionProgressState } from "@/feedback/feedbackSubmissionJob.js";
 import { InboxIcon } from "lucide-react";
@@ -23,12 +24,20 @@ export function DescriptionSection({
 }) {
   return (
     <Section
-      title={formatMessage("feedback.submit.simple.descriptionTitle")}
+      title={
+        <>
+          <RequiredMarker />
+          {formatMessage("feedback.submit.simple.descriptionTitle")}
+        </>
+      }
       right={<Counter value={value.length} max={max} />}
     >
       <Field>
         <Textarea
           autoFocus
+          required
+          aria-required="true"
+          aria-label={formatMessage("feedback.submit.simple.descriptionTitle")}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           rows={5}
@@ -142,7 +151,12 @@ export function SubmitFooter({
           size="lg"
           onClick={onViewTickets}
           disabled={submitting}
-          className="min-w-0 justify-start rounded-lg text-foreground-subtle hover:text-foreground"
+          // Bugfix: Button 基础样式自带 shrink-0，只写 min-w-0 时这个按钮并不会收缩。日文等长文案下
+          // 三个按钮的最小宽度（501px）超过 480px 窗口里的弹窗宽度（446px），整行溢出，提交按钮被裁，
+          // 聚焦后弹窗被横向滚动导致左侧被截。这里显式允许这个次要入口收缩并截断文字，
+          // 用 title 保留完整文案；右侧主操作保持不收缩。见 docs/ui/feedback-dialog-narrow-window-layout.md。
+          title={formatMessage("feedback.center.ticketsTitle")}
+          className="min-w-0 shrink justify-start rounded-lg text-foreground-subtle hover:text-foreground"
         >
           <InboxIcon className="size-4 shrink-0" />
           <span className="truncate">{formatMessage("feedback.center.ticketsTitle")}</span>
@@ -177,7 +191,7 @@ export function Section({
   right,
   children,
 }: {
-  title: string;
+  title: ReactNode;
   right?: ReactNode;
   children: ReactNode;
 }) {

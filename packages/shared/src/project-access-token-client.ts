@@ -1,9 +1,19 @@
 import { z } from "zod";
 import { projectTokenSuccessCodeSchema } from "./project-access-token-response.js";
 import { API_KEY_USAGE_SCENE } from "./api-key-usage-scene.js";
-import { ProjectAccessTokenCache, ProjectAccessTokenError } from "./project-access-token.js";
+import {
+  ProjectAccessTokenCache,
+  ProjectAccessTokenError,
+  ProjectAccessTokenHttpStatusError,
+  projectAccessTokenRequestFailureCode,
+  ProjectAccessTokenTransientError,
+} from "./project-access-token.js";
 import { CCBUDDY_VERSION } from "./version.js";
+import { isCredentialDecryptError } from "./oauth.js";
 
+const MAX_TOKEN_ISSUE_ATTEMPTS = 2;
+const MIN_RATE_LIMIT_RETRY_DELAY_MS = 250;
+const MAX_RATE_LIMIT_RETRY_DELAY_MS = 1_000;
 const DEFAULT_ORGANIZATION_NAME = "默认机构";
 const DEFAULT_PROJECT_NAME = "默认项目";
 const customerSchema = z.object({
@@ -80,8 +90,9 @@ export class ProjectAccessTokenClient {
       observe?(event: { family: string; stage: "resolve"; code: string }): void;
       locationStore?: {
         load(key: string): Promise<string | null>;
-        save(key: string, value: string): Promise<void>;
-        delete(key: string): Promise<void>;
+        save(key: string, value: string, assertCurrent?: () => void): Promise<void>;
+        delete(key: string, assertCurrent?: () => void): Promise<void>;
+        recoverUnreadable?(key: string, assertCurrent: () => void): Promise<string | null>;
       };
       now?: () => number;
       random?: () => number;
@@ -140,7 +151,29 @@ export class ProjectAccessTokenClient {
       let pending = current.locations.get(locationKey);
       if (!pending) {
         pending = (async () => {
-          const saved = await this.options.locationStore?.load(storageKey);
+          let saved: string | null | undefined;
+          try {
+            saved = await this.options.locationStore?.load(storageKey);
+          } catch (error) {
+            // 异常分支也必须先校验代次；clear 后的迟到失败不得触发恢复副作用。
+            assertCurrent();
+            if (!isCredentialDecryptError(error) || !this.options.locationStore?.recoverUnreadable)
+              throw error;
+            // 恢复端口本身可能发生 IO 错误；先保留固定诊断，避免外层错误归一后丢失解密线索。
+            this.options.observe?.({
+              family: input.family,
+              stage: "resolve",
+              code: "project_token_location_unreadable",
+            });
+            // 位置是可重建缓存，不是登录事实。恢复端口在共享锁内重读并仅删除仍坏的记录。
+            saved = await this.options.locationStore.recoverUnreadable(storageKey, assertCurrent);
+            assertCurrent();
+            this.options.observe?.({
+              family: input.family,
+              stage: "resolve",
+              code: "project_token_location_recovery",
+            });
+          }
           assertCurrent();
           if (saved) {
             let parsed: unknown;
@@ -160,7 +193,7 @@ export class ProjectAccessTokenClient {
           }
           const result = await this.#resolveLocation(input, origin, loginToken, request);
           assertCurrent();
-          await this.options.locationStore?.save(storageKey, JSON.stringify(result));
+          await this.options.locationStore?.save(storageKey, JSON.stringify(result), assertCurrent);
           assertCurrent();
           return result;
         })();
@@ -180,22 +213,60 @@ export class ProjectAccessTokenClient {
           usageScene: API_KEY_USAGE_SCENE.CODING_PLAN,
           loginGeneration: current.generation,
         },
-        async () => {
-          const raw = await request(
-            `${keyListUrl(origin, location)}/${encodeURIComponent(location.apiKeyId)}/access_tokens`,
-            {
-              method: "POST",
-              headers,
-              body: JSON.stringify({
-                clientType: "ccbuddy",
-                clientVersion: CCBUDDY_VERSION,
-              }),
-            },
-          );
+        async (hasValidFallback) => {
+          let raw: unknown;
+          // 首签临时失败曾直接终止整轮；仅在已知 Key ID 的同一 pending 内重试一次。
+          // 不把查询/创建 Key 或 OAuth 纳入重试，失败后先核对代次，避免旧账号继续签发。
+          for (let attempt = 1; ; attempt++) {
+            try {
+              raw = await request(
+                `${keyListUrl(origin, location)}/${encodeURIComponent(location.apiKeyId)}/access_tokens`,
+                {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({ clientType: "ccbuddy", clientVersion: CCBUDDY_VERSION }),
+                },
+              );
+              break;
+            } catch (error) {
+              assertCurrent();
+              const failure =
+                error instanceof ProjectAccessTokenTransientError ? error.failure : undefined;
+              const retryable =
+                failure?.kind === "network" ||
+                failure?.kind === "timeout" ||
+                (failure?.kind === "http" &&
+                  (failure.status === 429 || (failure.status >= 500 && failure.status < 600)));
+              // 提前刷新已有可用 PAT 时直接走同一 pending 的降级，避免多等一轮超时。
+              if (attempt >= MAX_TOKEN_ISSUE_ATTEMPTS || !retryable || hasValidFallback())
+                throw error;
+              if (failure?.kind === "http" && failure.status === 429) {
+                const requestedDelay = failure.retryAfterMs;
+                if (requestedDelay !== undefined && requestedDelay > MAX_RATE_LIMIT_RETRY_DELAY_MS)
+                  throw error;
+                const minimumDelay = Math.max(
+                  MIN_RATE_LIMIT_RETRY_DELAY_MS,
+                  Number.isFinite(requestedDelay) ? requestedDelay! : 0,
+                );
+                const random = Math.max(0, Math.min(1, (this.options.random ?? Math.random)()));
+                const delay =
+                  minimumDelay +
+                  Math.floor((MAX_RATE_LIMIT_RETRY_DELAY_MS - minimumDelay) * random);
+                // 限流不能紧接着重复请求；长 Retry-After 不截短重试，交还上层处理。
+                await new Promise((resolve) => setTimeout(resolve, delay));
+                assertCurrent();
+              }
+              this.options.observe?.({
+                family: input.family,
+                stage: "resolve",
+                code: "project_token_request_retry",
+              });
+            }
+          }
           // 仅明确不存在才废弃 ID；权限/网络/开关错误不能触发创建或 Key 回退。
           if (raw && typeof raw === "object" && "code" in raw && raw.code === 404) {
             current.locations.delete(locationKey);
-            await this.options.locationStore?.delete(storageKey);
+            await this.options.locationStore?.delete(storageKey, assertCurrent);
           }
           return raw;
         },
@@ -206,17 +277,21 @@ export class ProjectAccessTokenClient {
       return { token: value.token, ...location };
     } catch (error) {
       // 上游错误体或网络异常可能携带凭据；只传播固定错误码，不保留原始 cause/message。
+      // adapter 已结构化归类的请求失败按类别投影，其余未知异常仍归 request_failed。
       const code =
         error instanceof ProjectAccessTokenError
           ? error.code
-          : error instanceof Error &&
-              [
-                "project_token_disabled",
-                "project_token_project_unavailable",
-                "project_token_invalid_response",
-              ].includes(error.message)
-            ? error.message
-            : "project_token_request_failed";
+          : error instanceof ProjectAccessTokenTransientError ||
+              error instanceof ProjectAccessTokenHttpStatusError
+            ? projectAccessTokenRequestFailureCode(error.failure)
+            : error instanceof Error &&
+                [
+                  "project_token_disabled",
+                  "project_token_project_unavailable",
+                  "project_token_invalid_response",
+                ].includes(error.message)
+              ? error.message
+              : "project_token_request_failed";
       this.options.observe?.({ family: input.family, stage: "resolve", code });
       throw new Error(code);
     }
@@ -228,9 +303,9 @@ export class ProjectAccessTokenClient {
     loginToken: string,
     request: (url: string, init: RequestInit) => Promise<unknown>,
   ): Promise<KeyLocation> {
-    // 管理接口沿用旧鉴权格式；不能把签发端的 Bearer 约定扩散到所有端点。
+    // customerInfo 要求裸业务 token；Bearer 格式拒绝会被误判为登录失效。
     const headers = {
-      Authorization: input.family === "zai" ? `Bearer ${loginToken}` : loginToken,
+      Authorization: loginToken,
       "Content-Type": "application/json",
     };
     const customer = customerSchema.safeParse(
@@ -285,7 +360,11 @@ export class ProjectAccessTokenClient {
           "bigmodel-organization": location.organizationId,
           "bigmodel-project": location.projectId,
         }
-      : headers;
+      : {
+          ...headers,
+          // 个人 Key 管理保留既有格式，不能套用 customerInfo 的鉴权约定。
+          Authorization: input.family === "zai" ? `Bearer ${loginToken}` : loginToken,
+        };
     const list = z
       .array(z.unknown())
       .safeParse(readData(await request(url, { method: "GET", headers: keyHeaders })));

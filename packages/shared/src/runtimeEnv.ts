@@ -12,6 +12,12 @@ export const CCBUDDY_TOOL_ENV_PASSTHROUGH_ENV_KEY = "CCBUDDY_TOOL_ENV_PASSTHROUG
 export const CCBUDDY_DESKTOP_CONTEXT_PROMPT_ENABLED_ENV = "CCBUDDY_DESKTOP_CONTEXT_PROMPT_ENABLED";
 export const CCBUDDY_CUA_PRODUCT_HELPER_ENV_KEY = "CCBUDDY_CUA_PRODUCT_HELPER";
 export const CCBUDDY_CUA_BROKER_SOCKET_ENV_KEY = "CCBUDDY_CUA_PERMISSION_BROKER_SOCKET";
+/** 独立 CLI 自签凭据组时的 socket 哨兵值：node_repl 见到它就在本进程内运行 broker。 */
+export const CCBUDDY_CUA_IN_PROCESS_BROKER_SOCKET = "in-process";
+// 官方命令端点（agent 侧代理，技术方案 5.8）：地址与 session token 只由 agent 按 session 注入
+// Bash/tool 子进程，不随 agent 全局 env 继承。
+export const CCBUDDY_OFFICIAL_ENDPOINT_ENV_KEY = "CCBUDDY_OFFICIAL_ENDPOINT";
+export const CCBUDDY_OFFICIAL_ENDPOINT_TOKEN_ENV_KEY = "CCBUDDY_OFFICIAL_ENDPOINT_TOKEN";
 /** Shared node_repl host marker; unlike the broker bearer values it is not a secret. */
 export const CCBUDDY_CUA_NODE_REPL_HOST_ENV_KEY = "CCBUDDY_CUA_NODE_REPL_HOST";
 // One-knob local-development bundle. Setting CCBUDDY_CUA_DEV_MODE implies the internal feature
@@ -70,6 +76,10 @@ const SANITIZED_RUNTIME_ENV_KEYS = [
   "CCBUDDY_CUA_PERMISSION_BROKER_TOKEN",
   "CCBUDDY_CUA_PERMISSION_BROKER_REFRESH_MARKER",
   "CCBUDDY_CUA_PLUGIN_AUTHORITY",
+  // 官方命令端点的地址与 token 属于某一个 session，由 agent 定向注入；从父进程继承来的
+  // 值（例如嵌套运行的 agent）一律剔除，避免一个 session 拿着另一个 session 的 token。
+  CCBUDDY_OFFICIAL_ENDPOINT_ENV_KEY,
+  CCBUDDY_OFFICIAL_ENDPOINT_TOKEN_ENV_KEY,
   // Agent OTLP Endpoint/Auth/Identity 只属于 CLI telemetry bootstrap，不能继续泄漏给
   // Bash、MCP 或模型工具子进程。sanitize 前会捕获到本进程私有 Map，供 Agent 启动边界读取。
   "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -101,6 +111,8 @@ const NON_TOOL_PASSTHROUGH_RUNTIME_ENV_KEYS = [
   CCBUDDY_CUA_BROKER_SOCKET_ENV_KEY,
   "CCBUDDY_CUA_PERMISSION_BROKER_REFRESH_MARKER",
   "CCBUDDY_CUA_PLUGIN_AUTHORITY",
+  CCBUDDY_OFFICIAL_ENDPOINT_ENV_KEY,
+  CCBUDDY_OFFICIAL_ENDPOINT_TOKEN_ENV_KEY,
   CCBUDDY_REMOTE_RUNTIME_NETWORK_AUTHORITY_ENV_KEY,
   CCBUDDY_REMOTE_HTTP_PROXY_ENV_KEY,
   CCBUDDY_REMOTE_NO_PROXY_ENV_KEY,
@@ -188,6 +200,15 @@ export function readCCbuddyAgentTelemetryEnv(
 
 export function getCapturedCCbuddyAgentTelemetryEnv(): Record<string, string> {
   return { ...capturedCCbuddyAgentTelemetryEnv };
+}
+
+export function mintStandaloneCCbuddyCuaBrokerCredentials(): boolean {
+  if (capturedCuaBrokerCredentials) return false;
+  capturedCuaBrokerCredentials = Object.freeze({
+    socket: CCBUDDY_CUA_IN_PROCESS_BROKER_SOCKET,
+    pluginAuthority: globalThis.crypto.randomUUID().replaceAll("-", ""),
+  });
+  return true;
 }
 
 export function getCapturedCCbuddyCuaBrokerCredentials(): {

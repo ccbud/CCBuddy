@@ -3,7 +3,7 @@
 // 与 renderer 的 packages/ui/src/v4/commandFactory.ts 平行：renderer 走浏览器
 // localStorage 持久化 clientId；host 进程用进程内稳定 clientId（host 重启 = 新提交端，
 // 幂等表以 commandId 为键不受影响）。不合并成一个实现的原因：ui 包不能被 services 反向依赖。
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   COMMANDS_REQUIRING_BASE_REVISION,
   ROW_TARGETING_COMMANDS,
@@ -69,6 +69,16 @@ export function createHostCommandEnvelope<T extends CommandType>(
   if (ROW_TARGETING_COMMANDS.has(input.type) && !input.baseLogEpoch) {
     throw new Error(`command ${input.type} 是 row target 命令，必须携带 baseLogEpoch`);
   }
+  // 会话 ID 恢复 UUID v4；在信封首次构造时分配，避免重试重新生成并预留另一条任务。
+  const payload =
+    input.type === "createSession"
+      ? {
+          ...input.payload,
+          sessionId:
+            (input.payload as CommandPayloadMap["createSession"]).sessionId ??
+            `sess_${randomUUID()}`,
+        }
+      : input.payload;
   return {
     commandId: input.commandId ?? uuidv7(),
     clientId: input.clientId ?? hostV4ClientId,
@@ -76,7 +86,7 @@ export function createHostCommandEnvelope<T extends CommandType>(
     ...(input.baseRevision !== undefined ? { baseRevision: input.baseRevision } : {}),
     ...(input.baseLogEpoch ? { baseLogEpoch: input.baseLogEpoch } : {}),
     type: input.type,
-    payload: input.payload,
+    payload,
     issuedAt: Date.now(),
   };
 }
@@ -132,6 +142,8 @@ export async function sendHostCasCommandV4<T extends CommandType>(input: {
   sessionId: string;
   contextMessage: string;
   maxAttempts?: number;
+  /** 提交端身份；缺省用 host 进程稳定 id。扩展切换权限模式时是 `extension:<pluginId>`（§17.12）。 */
+  clientId?: string;
 }): Promise<CommandAck> {
   const maxAttempts = input.maxAttempts ?? 4;
   let baseRevision = 0;
@@ -143,6 +155,7 @@ export async function sendHostCasCommandV4<T extends CommandType>(input: {
         payload: input.payload,
         sessionId: input.sessionId,
         baseRevision,
+        ...(input.clientId ? { clientId: input.clientId } : {}),
       }),
     );
     if (ack.status === "stale") {

@@ -1,8 +1,8 @@
 import type { ProjectTaskRef } from "#src/project-storage/contract.js";
 
 /**
- * 彻底删除项目数据时 Host 侧的行操作（规格：docs/specs/upstream-v3.17.2-integration.md）。
- * 与 ProjectRepositoryContract 同一实例、同一 Host 范围；只删本 Host 自有的行。
+ * 彻底删除项目数据时 Host 侧的行操作（规格：docs/superpowers/specs/2026-10-24-project-management.md
+ * 「彻底删除数据」）。与 ProjectRepositoryContract 同一实例、同一 Host 范围；只删本 Host 自有的行。
  */
 export interface ProjectDataRepositoryContract {
   /** 项目的全部任务（含已归档、已软删除），只读本 Host 的行；cwd 是会话绑定目录。 */

@@ -1,14 +1,18 @@
 import { resolve } from "node:path";
-import { createConfig, resolvePath } from "@ccbuddy/adapters/config";
+import { createConfigWithPluginMigrations, resolvePath } from "@ccbuddy/adapters/config";
 import { createNodeSkillAdapter } from "@ccbuddy/adapters/skills";
 import type { Logger, SkillContent, SkillDiagnostic, SkillLoadOutcome } from "@ccbuddy/contracts";
 import { resolveBundledSkillRoots } from "./app/bundled-skills.js";
 import { getCliStorageRoot } from "./app/paths.js";
 import { filterVisualizeSkillRoots } from "./app/visualize-skill-gate.js";
-import { resolveCCbuddyPlugins } from "./plugins.js";
+import { resolveCCbuddyPlugins, type ResolveCCbuddyPluginsOptions } from "./plugins.js";
 import { collectDisabledPaths } from "./skill-command-overrides.js";
 
 export interface ListCCbuddySkillsOptions {
+  workspaceIdentity?: string;
+  remoteSessionId?: string;
+  pluginPreparation?: ResolveCCbuddyPluginsOptions["pluginPreparation"];
+  pluginDiscovery?: ResolveCCbuddyPluginsOptions["pluginDiscovery"];
   env?: NodeJS.ProcessEnv;
   /** 协议宿主草稿目录使用；CLI 命令缺省关闭。 */
   includeVisualize?: boolean;
@@ -31,7 +35,7 @@ export interface CCbuddySkillInspection {
 export async function listCCbuddySkills(
   options: ListCCbuddySkillsOptions = {},
 ): Promise<SkillLoadOutcome> {
-  const discovery = createSkillDiscovery(options);
+  const discovery = await createSkillDiscovery(options);
   if (!discovery.enabled) {
     return {
       diagnostics: [],
@@ -48,7 +52,7 @@ export async function listCCbuddySkills(
 export async function inspectCCbuddySkill(
   options: InspectCCbuddySkillOptions,
 ): Promise<CCbuddySkillInspection> {
-  const discovery = createSkillDiscovery(options);
+  const discovery = await createSkillDiscovery(options);
   if (!discovery.enabled) {
     throw new Error("Skills are disabled.");
   }
@@ -75,7 +79,7 @@ export async function inspectCCbuddySkill(
   };
 }
 
-function createSkillDiscovery(options: ListCCbuddySkillsOptions):
+async function createSkillDiscovery(options: ListCCbuddySkillsOptions): Promise<
   | {
       enabled: false;
       workingDirectory: string;
@@ -84,9 +88,10 @@ function createSkillDiscovery(options: ListCCbuddySkillsOptions):
       enabled: true;
       skillPort: ReturnType<typeof createNodeSkillAdapter>;
       workingDirectory: string;
-    } {
+    }
+> {
   const workingDirectory = resolve(options.workingDirectory ?? process.cwd());
-  const configResult = createConfig({
+  const configResult = await createConfigWithPluginMigrations({
     env: options.env,
     projectConfigPath: options.projectConfigPath,
     workingDirectory,
@@ -100,7 +105,11 @@ function createSkillDiscovery(options: ListCCbuddySkillsOptions):
       workingDirectory,
     };
   }
-  const pluginOutcome = resolveCCbuddyPlugins({
+  const pluginOutcome = await resolveCCbuddyPlugins({
+    pluginPreparation: options.pluginPreparation,
+    pluginDiscovery: options.pluginDiscovery,
+    workspaceIdentity: options.workspaceIdentity,
+    remoteSessionId: options.remoteSessionId,
     configResult,
     env: options.env,
     logger: options.logger,

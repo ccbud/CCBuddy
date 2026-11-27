@@ -3,7 +3,7 @@
 // gateway READY hydration 路径。从 v4-gateway 拆出（单一职责 + max-lines）。
 //
 // 语义要点：
-// - 这里只保留既有 runtime activation 单飞；完整 READY 水位由 gateway 负责；
+// - runtime activation 单飞归宿主生命周期 owner；完整 READY 水位由 gateway 负责；
 // - 错误分型（项目规范：不靠错误文本分流）：
 //   fault.subscribe.sessionNotFound（store 里也没有 / 宿主不支持恢复）
 //   vs fault.subscribe.resumeFailed（恢复中途失败，保留原始 cause）。
@@ -13,7 +13,11 @@ import type { MessageWithParts } from "@ccbuddy/contracts";
 import type { CCbuddyWorkspaceRef } from "@ccbuddy/shared";
 
 export type ColdSessionResumeOutcome =
-  | { status: "resumed"; persistedMessages?: MessageWithParts[] }
+  | {
+      status: "resumed";
+      persistedMessages?: MessageWithParts[];
+      disposeOnFailure?: () => Promise<void>;
+    }
   | { status: "notFound" };
 
 /** 协调器需要的宿主能力窄面（与 V4GatewayHost 同形，避免循环 import）。 */
@@ -23,6 +27,7 @@ export interface ColdSessionResumeHost {
     resumeThoughtLevel?: string,
     workspace?: CCbuddyWorkspaceRef,
     additionalDirectories?: string[],
+    persistedMessages?: MessageWithParts[],
   ): Promise<ColdSessionResumeOutcome>;
   onDebug?(message: string): void;
   onError?(scope: string, error: unknown, context?: Record<string, unknown>): void;
@@ -41,10 +46,17 @@ export class V4SubscribeSessionUnavailableError extends Error {
   }
 }
 
-export class ColdSessionResumeCoordinator {
-  /** sessionId → 进行中的 runtime activation；settle 后立即释放。 */
-  private readonly flights = new Map<string, Promise<MessageWithParts[] | undefined>>();
+/** rowsRange `residency: "resident-only"` 命中冷会话：只读热会话的调用方（手机预加载）据此跳过。 */
+export class V4SessionNotResidentError extends Error {
+  readonly reasonCode = "proto.sessionNotResident";
 
+  constructor(readonly sessionId: string) {
+    super(`session is not resident: ${sessionId} (proto.sessionNotResident)`);
+    this.name = "V4SessionNotResidentError";
+  }
+}
+
+export class ColdSessionResumeCoordinator {
   constructor(private readonly host: ColdSessionResumeHost) {}
 
   ensureResumed(
@@ -52,28 +64,17 @@ export class ColdSessionResumeCoordinator {
     resumeThoughtLevel?: string,
     workspace?: CCbuddyWorkspaceRef,
     additionalDirectories?: string[],
+    persistedMessages?: MessageWithParts[],
+    onActivated?: (outcome: Extract<ColdSessionResumeOutcome, { status: "resumed" }>) => void,
   ): Promise<MessageWithParts[] | undefined> {
-    const inFlight = this.flights.get(sessionId);
-    if (inFlight) {
-      this.host.onDebug?.(`cold resume joined existing flight session=${sessionId}`);
-      return inFlight;
-    }
-    this.host.onDebug?.(`cold resume flight created session=${sessionId}`);
-    const flight = this.resume(
+    return this.resume(
       sessionId,
       resumeThoughtLevel,
       workspace,
       additionalDirectories,
-    ).finally(() => {
-      this.flights.delete(sessionId);
-      this.host.onDebug?.(`cold resume flight cleared session=${sessionId}`);
-    });
-    this.flights.set(sessionId, flight);
-    return flight;
-  }
-
-  clear(): void {
-    this.flights.clear();
+      persistedMessages,
+      onActivated,
+    );
   }
 
   private async resume(
@@ -81,6 +82,8 @@ export class ColdSessionResumeCoordinator {
     resumeThoughtLevel?: string,
     workspace?: CCbuddyWorkspaceRef,
     additionalDirectories?: string[],
+    persistedMessages?: MessageWithParts[],
+    onActivated?: (outcome: Extract<ColdSessionResumeOutcome, { status: "resumed" }>) => void,
   ): Promise<MessageWithParts[] | undefined> {
     const resume = this.host.resumePersistedSession;
     if (!resume) {
@@ -92,15 +95,14 @@ export class ColdSessionResumeCoordinator {
     }
     let outcome: ColdSessionResumeOutcome;
     try {
-      outcome = workspace
-        ? await resume.call(
-            this.host,
-            sessionId,
-            resumeThoughtLevel,
-            workspace,
-            additionalDirectories,
-          )
-        : await resume.call(this.host, sessionId, resumeThoughtLevel);
+      outcome = await resume.call(
+        this.host,
+        sessionId,
+        resumeThoughtLevel,
+        workspace,
+        additionalDirectories,
+        persistedMessages,
+      );
     } catch (error) {
       this.host.onError?.("v4.subscribe.resume", error, {
         phase: "resumePersistedSession",
@@ -122,6 +124,11 @@ export class ColdSessionResumeCoordinator {
         `Session is not active and not persisted: ${sessionId}`,
       );
     }
+    onActivated?.(outcome);
+    // 修复原因：冷恢复完成只有 agent 侧可观察。生命周期统一重构把 flight 表连同这条
+    // 诊断一起删除后，依赖它判定「子会话重新订阅已冷恢复」的调用方（桌面 E2E BGV04）
+    // 再也等不到任何完成信号。保留 onDebug 完成事实，不恢复已废弃的 flight 去重。
+    this.host.onDebug?.(`cold resume completed session=${sessionId}`);
     return outcome.persistedMessages;
   }
 }

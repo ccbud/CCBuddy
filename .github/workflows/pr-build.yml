@@ -24,9 +24,22 @@ jobs:
         with:
           node-version: 24.14.0
       - name: Install pinned pnpm and locked workspace
+        shell: bash
         run: |
+          set -euo pipefail
           npm install --global pnpm@10.33.2
-          pnpm install --frozen-lockfile
+          # pnpm 10 会并行把 esbuild 链进 tsup/node_modules，偶发
+          # ERR_PNPM_ENOENT（rename _tmp_* -> esbuild）。半成品目录不能接着装，清掉再试。
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "pnpm install failed on attempt ${attempt}; removing partial node_modules and retrying"
+            rm -rf node_modules
+          done
         env:
           HUSKY: "0"
       - name: Check types, lint, formatting, and architecture
@@ -72,10 +85,23 @@ jobs:
         with:
           node-version: 24.14.0
       - name: Require arm64 runner and install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           test "$(uname -m)" = arm64
           npm install --global pnpm@10.33.2
-          pnpm install --frozen-lockfile
+          # pnpm 10 会并行把 esbuild 链进 tsup/node_modules，偶发
+          # ERR_PNPM_ENOENT（rename _tmp_* -> esbuild）。半成品目录不能接着装，清掉再试。
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "pnpm install failed on attempt ${attempt}; removing partial node_modules and retrying"
+            rm -rf node_modules
+          done
       - name: Prepare local runtime and build desktop
         run: |
           pnpm --filter @ccbuddy/desktop run prepare:runtime-assets

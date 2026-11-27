@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { genUiModelContextSchema, selectGenUiModelContext } from "@ccbuddy/shared/gen-ui";
-import { attachGenUiContext, normalizeGenUiInput } from "../src/agent/gen-ui-context.js";
+import { attachGenUiContext, normalizeGenUiInput } from "../src/agent/message-history.js";
 import {
   createRuntimeUserEntry,
   systemReminderAttachmentEntry,

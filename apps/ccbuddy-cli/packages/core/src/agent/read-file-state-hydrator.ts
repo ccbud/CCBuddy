@@ -3,6 +3,7 @@ import {
   parseReadFileStateMetadata,
   type PersistedReadFileStateMetadata,
   type PersistedReadFileStateTool,
+  type RestorableReadFileStateMetadata,
 } from "../tool/read-file-state-metadata.js";
 import { READ_FILE_UNCHANGED_STUB } from "../tool/handlers/read-text.js";
 import {
@@ -85,7 +86,12 @@ function restoreSnapshot(
 ): boolean {
   const fullWindow = isHistoricalFullReadWindow(snapshot);
   if (snapshot.tool !== "Read" && !fullWindow) return false;
-  setReadState(readFileState, snapshot.path, snapshot.content, {
+  // 新快照只有正文哈希，升级前的旧快照带正文；都原样带进 live 记录，写前比较见 readFileStateContentMatches。
+  const body =
+    snapshot.content === undefined
+      ? { contentSha256: snapshot.contentSha256 }
+      : { content: snapshot.content };
+  setReadState(readFileState, snapshot.path, body, {
     isPartialView: snapshot.isPartialView,
     ...requestedPathField(requestedPath, snapshot.path),
     ...(fullWindow ? {} : { offset: snapshot.offset, limit: snapshot.limit }),
@@ -102,7 +108,7 @@ function restoreSnapshot(
 function setReadState(
   readFileState: ReadFileStateMap,
   filePath: string,
-  content: string,
+  body: { content: string } | { contentSha256: string },
   metadata: {
     isPartialView?: boolean;
     limit?: number;
@@ -112,14 +118,14 @@ function setReadState(
     requestedPath?: string;
     restoredFromSession?: true;
     revisionId?: string;
-    sizeBytes?: number;
+    sizeBytes: number;
     sourceTool?: PersistedReadFileStateTool;
   },
 ): void {
   setReadFileStateEntry(readFileState, {
     path: filePath,
     ...(metadata.requestedPath === undefined ? {} : { requestedPath: metadata.requestedPath }),
-    content,
+    ...body,
     offset: metadata.offset,
     limit: metadata.limit,
     isPartialView: metadata.isPartialView ?? false,
@@ -127,7 +133,7 @@ function setReadState(
     sourceTool: metadata.sourceTool,
     revisionId: metadata.revisionId,
     mtimeMs: metadata.mtimeMs,
-    sizeBytes: metadata.sizeBytes ?? Buffer.byteLength(content, "utf8"),
+    sizeBytes: metadata.sizeBytes,
     ...(metadata.restoredFromSession ? { restoredFromSession: true } : {}),
   });
 }
@@ -177,7 +183,7 @@ function inSnapshotOrder(parts: MessagePart[]): RestorableSnapshot[] {
 }
 
 interface RestorableSnapshot {
-  snapshot: PersistedReadFileStateMetadata;
+  snapshot: RestorableReadFileStateMetadata;
   /** 工具输入里 `file_path` 的原始写法；compaction 补回按它再判定一次 deny。 */
   requestedPath?: string;
 }

@@ -2,29 +2,43 @@
   "name": "@ccbuddy/shared",
   "private": true,
   "type": "module",
+  "imports": {
+    "#src/*": "./src/*"
+  },
   "exports": {
     ".": "./src/index.ts",
-    "./account-provider-state": "./src/account-provider-state.ts",
-    "./ccbuddy-protocol-v4": "./src/ccbuddy-protocol-v4/index.ts",
-    "./ccbuddyEndpoint": "./src/ccbuddyEndpoint.ts",
-    "./config-schema": "./src/config-schema.ts",
-    "./gen-ui": "./src/gen-ui/index.ts",
+    "./runtime-env": "./src/runtimeEnv.ts",
+    "./test-ids": "./src/test-ids.ts",
     "./mcp": "./src/mcp.ts",
-    "./mcp-apps": "./src/mcp-apps/index.ts",
-    "./model-config": "./src/model-config.ts",
-    "./model-selection": "./src/model-selection.ts",
-    "./node": "./src/node.ts",
+    "./runtime-tool-runtime": "./src/runtime-tool-runtime.ts",
     "./node-repl-browser-broker": "./src/browser-use/nodeReplBroker.ts",
     "./process-diagnostic": "./src/process-diagnostic.ts",
-    "./runtime-env": "./src/runtimeEnv.ts",
-    "./runtime-tool-runtime": "./src/runtime-tool-runtime.ts",
+    "./agent-crash-diagnostic": "./src/agent-crash-diagnostic/index.ts",
+    "./model-selection": "./src/model-selection.ts",
+    "./account-provider-state": "./src/account-provider-state.ts",
+    "./model-config": "./src/model-config.ts",
+    "./config-schema": "./src/config-schema.ts",
+    "./node": "./src/node.ts",
     "./sqlite-migrations": "./src/sqlite-migrations/index.ts",
+    "./ccbuddyEndpoint": "./src/ccbuddyEndpoint.ts",
+    "./workspaceFileSearch": "./src/workspaceFileSearch.ts",
+    "./workspaceFileEntriesCodec": "./src/workspaceFileEntriesCodec.ts",
+    "./ccbuddy-protocol-v4": "./src/ccbuddy-protocol-v4/index.ts",
+    "./mcp-apps": "./src/mcp-apps/index.ts",
+    "./extension-host": "./src/extension-host/index.ts",
     "./workspace-hook-discovery": "./src/workspace-hook-discovery.ts",
     "./workspace-hook-mutation": "./src/workspace-hook-mutation.ts",
     "./workspace-hook-review-monotonicity": "./src/workspace-hook-review-monotonicity.ts",
     "./workspace-hook-trust-store-file": "./src/workspace-hook-trust-store-file.ts",
-    "./workspaceFileEntriesCodec": "./src/workspaceFileEntriesCodec.ts",
-    "./workspaceFileSearch": "./src/workspaceFileSearch.ts"
+    "./managed-worktree": "./src/managed-worktree/index.ts",
+    "./gen-ui": "./src/gen-ui/index.ts",
+    "./request-security": "./src/request-security-edition/index.ts",
+    "./conversation-telemetry": "./src/conversation-telemetry/index.ts",
+    "./conversation-telemetry/messageTelemetry": "./src/conversation-telemetry/messageTelemetry.ts",
+    "./conversation-telemetry/providerTelemetryIdentity": "./src/conversation-telemetry/providerTelemetryIdentity.ts",
+    "./preinstalled-tools": "./src/preinstalled-tools/contract.ts",
+    "./preinstalled-tools/node": "./src/preinstalled-tools/node.ts",
+    "./credential-security": "./src/credential-security/module.ts"
   },
   "scripts": {
     "lint": "oxlint",
@@ -32,10 +46,14 @@
   },
   "dependencies": {
     "@ccbuddy/model-option-map": "workspace:*",
+    "@ccbuddy/session-control": "workspace:*",
+    "@napi-rs/keyring": "2.1.2",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.0",
-    "typescript": "^6.0.2"
+    "@types/ws": "8.18.1",
+    "typescript": "^6.0.2",
+    "ws": "8.20.0"
   }
 }

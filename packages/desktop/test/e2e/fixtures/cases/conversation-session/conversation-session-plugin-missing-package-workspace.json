@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-plugin-missing-package-workspace",
+  "spec": "./test/e2e/conversation-session/plugins/conversation-session-plugin-missing-package-workspace.test.ts",
+  "fileFixtures": [],
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-plugin-missing-package-workspace.json"
+  ],
+  "requests": [
+    {
+      "id": "conversation-session-plugin-missing-package-workspace-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "upstream-plugin-missing-package-workspace-tool-call",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "固定工具调用，证明缺包声明不会自动激活，显式安装后才进入 runtime。"
+    },
+    {
+      "id": "upstream-plugin-missing-package-workspace-final",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "固定最终响应，闭合显式安装后的 Plugin MCP 调用。"
+    }
+  ]
+}

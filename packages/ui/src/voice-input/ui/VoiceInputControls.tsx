@@ -1,0 +1,242 @@
+import { memo, useEffect, useState } from "react";
+import { MicIcon } from "lucide-react";
+import {
+  TID_V4_COMPOSER_VOICE_INPUT,
+  TID_V4_COMPOSER_VOICE_PERMISSION_GUIDE,
+  TID_V4_COMPOSER_VOICE_PERMISSION_OPEN_SETTINGS,
+  TID_V4_COMPOSER_VOICE_PERMISSION_REAUTHORIZE,
+  TID_V4_COMPOSER_VOICE_PERMISSION_RELAUNCH,
+  TID_V4_COMPOSER_VOICE_WAVEFORM,
+} from "@ccbuddy/shared/test-ids";
+import { Button } from "@/components/ui/button.js";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+} from "@/components/ui/popover.js";
+import { Spinner } from "@/components/ui/spinner.js";
+import { ControlHintTooltip } from "@/ControlHintTooltip.js";
+import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
+import type {
+  ComposerVoiceInput,
+  MicrophonePermissionGuide,
+  VoiceInputState,
+} from "@/voice-input/contract.js";
+
+const TITLE_IDS: Record<VoiceInputState, string> = {
+  idle: "voiceInput.button.start",
+  requesting: "voiceInput.button.connecting",
+  recording: "voiceInput.button.stop",
+  finishing: "voiceInput.button.recognizing",
+};
+
+// 10 根 3px 竖条、4px 间距，加左右内边距约 82px，不超过按钮（28px）的 3 倍。
+const DOT_COUNT = 10;
+const SILENT_LEVELS: readonly number[] = Array.from({ length: DOT_COUNT }, () => 0);
+
+/** 峰值电平 → 0..1：-50 dBFS 以下为 0，-10 dBFS 以上为 1。 */
+function levelOf(peak: number): number {
+  if (peak <= 0) return 0;
+  return Math.min(1, Math.max(0, (20 * Math.log10(peak) + 50) / 40));
+}
+
+/**
+ * 音量波形：每根竖条是一个 100ms 音频块的峰值，新数据从右侧进入；静音时是 3px 圆点。
+ * 颜色取 DESIGN.md 的 Voice Input Recording token（sky 色系），两套主题各自适配。
+ * 只在本组件内更新状态，Composer 不随音量重新渲染。
+ */
+const VoiceInputWaveform = memo(function VoiceInputWaveform(props: {
+  active: boolean;
+  subscribeLevel: ComposerVoiceInput["subscribeLevel"];
+}) {
+  const { active, subscribeLevel } = props;
+  const [levels, setLevels] = useState(SILENT_LEVELS);
+  useEffect(() => {
+    if (!active) return;
+    const unsubscribe = subscribeLevel((peak) =>
+      setLevels((previous) => [...previous.slice(1), levelOf(peak)]),
+    );
+    return () => {
+      unsubscribe();
+      setLevels(SILENT_LEVELS);
+    };
+  }, [active, subscribeLevel]);
+  return (
+    <span
+      aria-hidden
+      data-testid={TID_V4_COMPOSER_VOICE_WAVEFORM}
+      data-voice-active-dots={levels.filter((level) => level > 0).length}
+      className="flex h-3.5 items-center gap-1 pr-1 pl-3"
+    >
+      {levels.map((level, index) => (
+        <span
+          key={index}
+          className="w-0.75 rounded-full bg-voice-input-wave transition-[height] duration-100 ease-out motion-reduce:transition-none"
+          style={{ height: `${3 + 11 * level}px` }}
+        />
+      ))}
+    </span>
+  );
+});
+
+/**
+ * 麦克风权限引导浮层内容（docs/chat/composer-voice-input.md「权限引导浮层」）。
+ * mac：打开系统设置 + 重新授权；重置后仍需重启时只提供重启 CCbuddy。Windows：只有打开系统设置。
+ */
+function MicrophonePermissionGuideContent(props: { guide: MicrophonePermissionGuide }) {
+  const { guide } = props;
+  const { intl } = useCCbuddyIntl();
+  const restart = guide.phase === "restart-required";
+  const mac = guide.os === "mac";
+  return (
+    <PopoverContent
+      side="top"
+      align="end"
+      className="w-80 gap-3"
+      data-testid={TID_V4_COMPOSER_VOICE_PERMISSION_GUIDE}
+      data-voice-permission-phase={guide.phase ?? undefined}
+      // 打开和关闭都不移动焦点：焦点和光标留在输入框，与麦克风按钮不抢焦点一致。
+      onOpenAutoFocus={(event) => event.preventDefault()}
+      onCloseAutoFocus={(event) => event.preventDefault()}
+    >
+      <PopoverHeader>
+        <PopoverTitle>
+          {intl.formatMessage({
+            id: restart ? "voiceInput.permission.restartTitle" : "voiceInput.permission.title",
+          })}
+        </PopoverTitle>
+        <PopoverDescription className="text-ui-sm">
+          {intl.formatMessage({
+            id: restart
+              ? "voiceInput.permission.restartDescription"
+              : `voiceInput.permission.description.${guide.os}`,
+          })}
+        </PopoverDescription>
+      </PopoverHeader>
+      <div className="flex flex-wrap justify-end gap-2">
+        {restart ? (
+          <Button
+            type="button"
+            size="sm"
+            data-testid={TID_V4_COMPOSER_VOICE_PERMISSION_RELAUNCH}
+            onClick={guide.relaunch}
+          >
+            {intl.formatMessage({ id: "voiceInput.permission.relaunch" })}
+          </Button>
+        ) : (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant={mac ? "outline" : "default"}
+              data-testid={TID_V4_COMPOSER_VOICE_PERMISSION_OPEN_SETTINGS}
+              onClick={guide.openSettings}
+            >
+              {intl.formatMessage({ id: "voiceInput.action.openPrivacySettings" })}
+            </Button>
+            {mac ? (
+              <Button
+                type="button"
+                size="sm"
+                disabled={guide.busy}
+                data-testid={TID_V4_COMPOSER_VOICE_PERMISSION_REAUTHORIZE}
+                onClick={guide.reauthorize}
+              >
+                {guide.busy ? <Spinner className="size-3.5" /> : null}
+                {intl.formatMessage({ id: "voiceInput.permission.reauthorize" })}
+              </Button>
+            ) : null}
+          </>
+        )}
+      </div>
+    </PopoverContent>
+  );
+}
+
+/**
+ * Composer 右侧工具栏的语音输入入口，位于发送 / 停止按钮左侧。
+ * 空闲时是麦克风按钮；录音中扩展为浅蓝胶囊：左侧蓝色波形，右侧蓝色停止方块（sky 色系 token）。
+ * 外层容器始终渲染，按钮不会因状态切换重新挂载，键盘焦点保持在按钮上。
+ * 展开动画：波形外层是单列 grid，列宽从 0fr 过渡到 1fr，胶囊从按钮向左展开，
+ * 同时底色和透明度渐入（200ms ease-out）。左侧模型选择随宽度平滑左移，不跳动。
+ */
+export const VoiceInputButton = memo(function VoiceInputButton(props: {
+  state: VoiceInputState;
+  onToggle: () => void;
+  subscribeLevel: ComposerVoiceInput["subscribeLevel"];
+  permissionGuide: MicrophonePermissionGuide;
+  /** 当前生效的快捷键 label；未分配时为空串，不显示 */
+  shortcut: string;
+  /** 输入框不可用时禁用（docs/chat/composer-voice-input.md「范围」） */
+  disabled: boolean;
+}) {
+  const { intl } = useCCbuddyIntl();
+  const title = intl.formatMessage({ id: TITLE_IDS[props.state] });
+  const active = props.state !== "idle";
+  const guide = props.permissionGuide;
+  return (
+    <Popover
+      open={guide.available && guide.phase !== null}
+      onOpenChange={(open) => {
+        if (!open) guide.close();
+      }}
+    >
+      <PopoverAnchor asChild>
+        <span
+          className={
+            "flex shrink-0 items-center rounded-full transition-colors duration-200 ease-out motion-reduce:transition-none " +
+            (active ? "bg-voice-input-surface" : "")
+          }
+        >
+          <span
+            data-voice-pill-expanded={active}
+            className={
+              "grid transition-[grid-template-columns,opacity] duration-200 ease-out motion-reduce:transition-none " +
+              (active ? "grid-cols-[1fr] opacity-100" : "grid-cols-[0fr] opacity-0")
+            }
+          >
+            <span className="min-w-0 overflow-hidden">
+              {active ? (
+                <VoiceInputWaveform
+                  active={props.state === "recording"}
+                  subscribeLevel={props.subscribeLevel}
+                />
+              ) : null}
+            </span>
+          </span>
+          <ControlHintTooltip title={title} shortcut={props.shortcut || undefined}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-md"
+              data-testid={TID_V4_COMPOSER_VOICE_INPUT}
+              data-voice-state={props.state}
+              aria-label={title}
+              aria-pressed={active}
+              disabled={props.disabled}
+              // 识别中等待服务端结果，不响应点击；用 aria-disabled 保留 hover 提示。
+              aria-disabled={props.state === "finishing" || undefined}
+              // 按下按钮不抢走输入框焦点：语音文字写在原光标处，用户也能直接继续打字来停止语音输入。
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={props.state === "finishing" ? undefined : props.onToggle}
+              className="shrink-0 rounded-full"
+            >
+              {props.state === "idle" ? (
+                <MicIcon className="size-4" />
+              ) : props.state === "recording" ? (
+                <span className="size-2.5 rounded-[3px] bg-voice-input-wave" />
+              ) : (
+                <Spinner className="size-4" />
+              )}
+              <span className="sr-only">{title}</span>
+            </Button>
+          </ControlHintTooltip>
+        </span>
+      </PopoverAnchor>
+      <MicrophonePermissionGuideContent guide={guide} />
+    </Popover>
+  );
+});

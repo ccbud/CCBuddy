@@ -4,6 +4,7 @@ import { cp } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join, win32 } from "node:path";
 import { homedir } from "node:os";
+import { readAssignedCredentialsFile } from "@ccbuddy/shared/credential-security";
 import {
   DATA_BASE_DIR_FORBIDDEN_WINDOWS_INSTALL_DIR_ERROR_CODE,
   CCBUDDY_AGENT_RUNTIME,
@@ -55,6 +56,32 @@ export function getConversationWorkspaceDir(): string {
 /** {dataBaseDir}/.ccbuddy/v2 */
 export function getAppConfigDir(): string {
   return join(getCCbuddyDataRootDir(), "v2");
+}
+
+/**
+ * 本进程读写的凭据文件，所有凭据读写方的唯一解析入口。
+ * 进程装配的 CCBUDDY_CREDENTIALS_FILE 优先（只有使用自有凭据库的 Source Server Core 设置，
+ * 其 Agent 继承）；否则为 {appConfigDir}/credentials.json。调用时读取，不在模块加载时缓存。
+ */
+export function getCredentialsFilePath(): string {
+  return readAssignedCredentialsFile(process.env) ?? join(getAppConfigDir(), "credentials.json");
+}
+
+/**
+ * Agent 侧用户级默认指令（个性化）文件的 home 解析。
+ * 必须与 CLI adapter（apps/ccbuddy-cli/packages/adapters/src/context/index.ts 的
+ * resolveUserHomeDir）保持完全一致：只认 HOME/USERPROFILE。不能改用
+ * CCBUDDY_DATA_BASE_DIR（CLI 读该文件时忽略它）或 CCBUDDY_DESKTOP_HOME_DIR
+ * （agent 子进程不认），否则 App 写的文件和 Agent 读的文件会分叉。
+ */
+export function resolveAgentUserInstructionsHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const envHome = env.HOME?.trim() || env.USERPROFILE?.trim();
+  return envHome && envHome.length > 0 ? envHome : homedir();
+}
+
+/** `{home}/.ccbuddy/AGENTS.md`：用户自定义指令（个性化）的唯一事实源文件。 */
+export function getAgentUserInstructionsFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(resolveAgentUserInstructionsHomeDir(env), ".ccbuddy", "AGENTS.md");
 }
 
 function readEnvValue(env: Record<string, string | undefined>, key: string): string | undefined {

@@ -1,4 +1,11 @@
-import type { ToolSearchExecutionContext, ModelCallWrapper } from "@ccbuddy/contracts";
+import type {
+  ToolSearchExecutionContext,
+  ModelCallWrapper,
+  WaitForMcpServersOutput,
+  InputPreemptionControl,
+  InputPreemptionHandling,
+} from "@ccbuddy/contracts";
+import type { SessionControlBinding } from "./session-control/contract.js";
 import type { McpToolUiDescriptor } from "@ccbuddy/shared/mcp-apps";
 // ============================================================
 // Tool Types - Core tool types for registry and executor
@@ -11,6 +18,7 @@ import type {
   CoordinatorResponsePort,
   DynamicWorkflowRunPort,
   DynamicWorkflowSnippetPort,
+  PluginDiscoveryPort,
   EmbeddedSearchBackend,
   ExecutionPort,
   ExecutionShellSelection,
@@ -18,6 +26,7 @@ import type {
   HttpClientPort,
   ImageProcessorPort,
   JsonSchema,
+  Logger,
   Model,
   ModelCatalogPort,
   ModelContentProtection,
@@ -39,6 +48,7 @@ import type {
   SessionStorePort,
   SkillPort,
   SkillTelemetryMetadata,
+  SubagentIdentity,
   SubagentPort,
   SubagentRunOptions,
   ToolArtifactStorePort,
@@ -54,10 +64,12 @@ import type {
   TraceId,
   TurnId,
   WorkflowEscalatePort,
+  WorkflowWebSearchBudgetPort,
   WorkflowPort,
   WorkflowSubmitPort,
 } from "@ccbuddy/contracts";
 import type { RuntimeTaskRegistry } from "../runtime-task/registry.js";
+import type { SystemReminderSource } from "../system-reminder/source.js";
 import type {
   PersistedReadFileStateMetadata,
   PersistedReadFileStateTool,
@@ -111,6 +123,14 @@ export interface ToolMetadata {
 
 export type ToolRuntimeScope = "main" | "subagent";
 
+/**
+ * Agent 工具写进父 transcript tool part 的子代理事实。身份（含输出文件）在 child session 就绪时记下；
+ * launch 返回 `async_launched` 时再记一次，带上 `background`。
+ */
+export interface SubagentToolPartFacts extends SubagentIdentity {
+  background?: true;
+}
+
 export interface BackgroundTaskControlStopOptions {
   /** 谁在停：TaskStop 填 "model"，终态通知据此措辞。 */
   initiator?: "user" | "model";
@@ -137,16 +157,37 @@ export interface BackgroundTaskControlPort {
   ): Promise<BackgroundTaskControlStopResult>;
 }
 
+/** executor 侧的输入抢占接管点：工具经 `register` 注册判断函数，executor 用 `decide` 取结果。 */
+export interface InputPreemptionSlot extends InputPreemptionControl {
+  /** 没有注册判断函数时返回 `cancel`。 */
+  decide(): InputPreemptionHandling;
+}
+
+/**
+ * 工作流工具面的未激活形态（docs/dynamic-workflow/launch.md「On demand: activation」）。
+ * - `none`：不是「按需且未激活」（disabled、alwaysOn、已激活）。
+ * - `session`：有 `/workflow` 入口的会话，用户发命令后工具会出现在本会话。
+ * - `subagent`：子 runtime（Agent 子代理、`/expert` 等 workflow 子会话）。未激活状态是创建时从父配置
+ *   带来的，自己没有命令入口，本会话的工具面不会再变。
+ */
+export type DynamicWorkflowToolSurfaceDeferral = "none" | "session" | "subagent";
+
 export interface ToolExecutionContext {
-  automationId?: string;
   toolSearch?: ToolSearchExecutionContext;
   toolCallId: string;
   /**
    * 当前 Tool 的实时观测写入器。Handler 只能通过窄接口写事实，不能接触原始 OTel Span。
    */
   telemetry?: ToolExecutionSpanWriter;
+  /**
+   * Runtime 日志。只给需要记录工具内部事实（如 Bash 子进程 pid）的 handler 用，
+   * 工具调用开始/结束的通用日志仍由 executor 写。
+   */
+  logger?: Logger;
   /** 当前工具调用是否属于 automation 派发轮；写工具 handler 用它做最终权限校验。 */
   automationTurn?: boolean;
+  /** Host 准入注入的本轮 automationId；CronPauseSelf 唯一的暂停目标，不来自模型输入。 */
+  automationId?: string;
   /** 当前工具调用是否属于闲时任务派发轮；OffPeakCreate handler 用它做最终拒绝。 */
   offPeakTurn?: boolean;
   traceContext?: TraceContext;
@@ -154,6 +195,12 @@ export interface ToolExecutionContext {
   spanId?: string;
   parentSpanId?: string;
   abortSignal: AbortSignal;
+  /**
+   * 本次调用的输入抢占接管点（executor 每次调用新建）。只有 Agent handler 把它传给 SubagentPort；
+   * 其他工具不注册判断函数，立即发送时照旧取消。这里只暴露 register：判断函数有副作用
+   * （能转后台时会把前台 Agent 转入后台），只由 executor 在立即发送到达时调用。
+   */
+  inputPreemption?: InputPreemptionControl;
   backgroundTaskControlPort?: BackgroundTaskControlPort;
   emitEvent?: (event: SessionEvent) => Promise<void>;
   executionPort?: ExecutionPort;
@@ -175,10 +222,15 @@ export interface ToolExecutionContext {
   workflowSubmitPort?: WorkflowSubmitPort;
   /** 工作流 actor 升级阻塞问题并等待主代理作答的端口；仅在 workflow actor 会话注入。 */
   workflowEscalatePort?: WorkflowEscalatePort;
+  /** 工作流 actor 每个 ask 的 WebSearch 预算；仅在 workflow actor 会话注入，缺席即无上限。 */
+  webSearchBudget?: WorkflowWebSearchBudgetPort;
   artifactStore?: ToolArtifactStorePort;
+  /** 仅可信根会话装配；子代理不继承此控制权。 */
+  sessionControl?: SessionControlBinding;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
   topicResourcePort?: TopicResourcePort;
+  pluginDiscoveryPort?: PluginDiscoveryPort;
   sessionStore?: SessionStorePort;
   sessionModePort?: SessionModePort;
   workflowPort?: WorkflowPort;
@@ -188,22 +240,37 @@ export interface ToolExecutionContext {
   dynamicWorkflowSnippetPort?: DynamicWorkflowSnippetPort;
   /** 模型目录端口；缺席则 ListModels 报能力缺席，CreateWorkflow 的 subagent_model 被拒。 */
   modelCatalogPort?: ModelCatalogPort;
+  /** WaitForMcpServers 的端口；缺席则该工具报能力缺席。 */
+  mcpServerWaitPort?: McpServerWaitPort;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
   readFileState?: ReadFileStateMap;
   recordReadFileStateMetadata?: (metadata: PersistedReadFileStateMetadata) => void;
+  /** 记录这次调用派生的子代理事实；执行器挂上最后一次记录（成功、失败结果都挂），结算写进 tool part。 */
+  recordSubagent?: (facts: SubagentToolPartFacts) => void;
   /** 记录 Skill resolved metadata；仅用于 telemetry，不改变模型可见结果。 */
   recordSkillTelemetryMetadata?: (metadata: SkillTelemetryMetadata) => void;
+  /**
+   * 「本会话的工作流工具面此刻是不是按需且尚未激活、是哪一种」的同步只读探针（handlers/skill.ts 的
+   * 未激活提示）。runtime 直接读它自己的 `dynamicWorkflowToolsActivated`，这里不存任何副本。缺席 =
+   * 调用方不参与（单元测试直接造的 context、没有 runtime 的嵌入方），不加提示——与技能门「探针缺席
+   * 不生效」同一约定。
+   */
+  getDynamicWorkflowToolSurfaceDeferral?: () => DynamicWorkflowToolSurfaceDeferral;
   bashShellSelection?: ExecutionShellSelection;
   embeddedSearch?: ToolEmbeddedSearchContext;
   setWorkingDirectory?: (cwd: string) => Promise<void> | void;
   workingDirectory: string;
   workspaceRoot: string;
   workspaceIdentity?: string;
+  /** 会话所属 workspace 的 key；受管 worktree 会话 = 项目，不等于 workingDirectory。 */
+  workspaceKey?: string;
   remoteSessionId?: string;
   clientMode?: "desktop-continuous" | "web-remote-replayable";
   deliveryKind?: "desktop-continuous" | "web-remote-replayable";
   memoryRoot?: string;
   runtimeScope?: ToolRuntimeScope;
+  /** 本 runtime 是前台启动的子代理；后台 Bash 据此说明最终回复之后不会再有通知。 */
+  syncSubagent?: boolean;
   providerVisibleToolNames?: readonly string[];
   sessionId: SessionId;
   turnId?: TurnId;
@@ -221,26 +288,51 @@ export interface ToolEmbeddedSearchContext {
 }
 
 export interface ReadFileStateEntry {
-  requestedPath?: string;
-  seededFromContext?: true;
-  restoredFromSession?: true;
   path: string;
-  content: string;
+  /**
+   * 模型看到的正文。工具执行时写入的记录都有；冷恢复或 rewind 从新快照重建的记录只带
+   * contentSha256，没有正文。
+   * 比较内容一律用 read-file-state.ts 的 readFileStateContentMatches。
+   */
+  content?: string;
+  /** 正文的 sha256（read-file-state.ts 的 hashReadFileStateContent）；只有冷恢复或 rewind 从新快照重建的记录带它。 */
+  contentSha256?: string;
   offset?: number;
   limit?: number;
   isPartialView: boolean;
   readAt: Date;
   sourceTool?: PersistedReadFileStateTool;
+  /**
+   * 工具输入里 `file_path` 的原始写法，和 path 不同时才有。读权限规则按原始字符串匹配，
+   * compaction 补回用它和 path 各判定一次 deny（见 rewind-compact.md 的文件恢复）。
+   */
+  requestedPath?: string;
   revisionId?: string;
   mtimeMs?: number;
   sizeBytes?: number;
+  /** 会话开始由 context 写入（MEMORY.md 索引）；只在进程内使用，不进 tool part metadata。 */
+  seededFromContext?: true;
+  /** 冷恢复从 tool part 快照写入；只在进程内使用。compaction 选择补回文件时按读取时间排序。 */
+  restoredFromSession?: true;
 }
 
+/** 键是 `createReadFileStatePathKey(path)`：每个文件一条。 */
 export type ReadFileStateMap = Map<string, ReadFileStateEntry>;
 
 // -----------------------------------------------
 // Tool Handler
 // -----------------------------------------------
+
+/**
+ * WaitForMcpServers 的运行时端口。会话视图是唯一状态来源：端口只按名称选目标、等待离开连接状态并分类，
+ * 不发起连接或授权。servers 缺省时等全部 pending；没有 pending 时报告失败的 server。
+ */
+export interface McpServerWaitPort {
+  waitForServers(
+    servers: readonly string[] | undefined,
+    signal?: AbortSignal,
+  ): Promise<WaitForMcpServersOutput>;
+}
 
 // tool handler 用该返回值表达可预期业务失败；成功 output 不使用此保留形状。
 export interface ToolHandlerFailure {
@@ -251,6 +343,10 @@ export interface ToolHandlerFailure {
 
 export interface ToolInputValidationContext {
   runtimeTaskRegistry?: RuntimeTaskRegistry;
+  /** 与 handler 相同的执行端口；Bash 用它判断后台是否可用。 */
+  executionPort?: ExecutionPort;
+  /** 与 handler 相同的 shell 选择；CMD 下不按 Bash 语法判断。 */
+  bashShellSelection?: ExecutionShellSelection;
 }
 
 export type ToolInputValidationResult = { result: true } | ToolHandlerFailure;
@@ -305,17 +401,7 @@ export type ToolHandler<TInput = unknown, TOutput = unknown> = (
 // Tool Entry
 // -----------------------------------------------
 
-export interface ToolBatchNotice {
-  source: import("../system-reminder/source.js").SystemReminderSource;
-  content: string;
-}
-
 export interface ToolEntry extends ToolContractDeclaration {
-  formatBatchNotice?: (
-    output: unknown,
-  ) =>
-    | { source: import("../system-reminder/source.js").SystemReminderSource; content: string }
-    | undefined;
   /** 宿主资源在审批之前固定归属；所有返回路径均释放，撤销信号进入现有取消链。 */
   retainExecution?: (callId: string) => { signal: AbortSignal; release(): void };
   aliases?: readonly string[];
@@ -340,9 +426,29 @@ export interface ToolEntry extends ToolContractDeclaration {
    * 只由宿主验证后的可信来源写入；不能从模型可见的 MCP 名称或 descriptor 推导。
    */
   permissionCapabilityGroup?: PermissionCapabilityGroup;
+  /**
+   * provider contract 已冻结后，把 advertisement entry 原子切换为当前 live execution entry。
+   * 该步骤发生在输入校验、Hook 和权限判断之前，不能改变 provider-visible contracts。
+   */
+  resolveForExecution?: (input: {
+    signal?: AbortSignal;
+  }) => Promise<{ status: "ready"; entry: ToolEntry } | { status: "unavailable"; message: string }>;
   executionMode?: ToolExecutionMode;
   providerNative?: ProviderNativeToolSpec;
   handler: ToolHandler;
+  /**
+   * 调用在 handler 返回之前超时或取消时，追加给模型的对账说明（规格 0.15）；返回 undefined 不追加。
+   *
+   * 只服务「请求可能已被受理、但回执没能送回」的写操作：它们靠回执把请求身份交给模型，回执送不回来，
+   * 模型就拿不到身份，只能另起新请求，于是重复执行。执行器只在超时与执行中取消这两种错误上调用它。
+   */
+  describeUnsettledCall?: (input: unknown, toolCallId: string) => string | undefined;
+  /**
+   * 工具调用失败时（handler 抛错，或之后的结果处理阶段报错）追加给模型的补充文本，接在错误原文之后；
+   * 返回 undefined 不追加。只进入 `ToolExecutionResult.modelContent`，不改 `error.message`、工具错误事件和日志。
+   * 在执行器的失败分支里同步调用，不得抛错：抛错会让这次失败结果生成不出来。
+   */
+  formatErrorModelContent?: (error: unknown) => string | undefined;
   /** 当前 turn 模型能力对 provider descriptor 与 executor schema 的同源投影。 */
   resolveModelContract?: (context: ToolExecutionModelContext) => {
     description?: string;
@@ -383,7 +489,13 @@ export interface ToolEntry extends ToolContractDeclaration {
     context: ToolInputResolutionContext,
   ) => ToolInputAdjustmentResult;
   formatModelContent?: (output: unknown) => ModelMessageContent;
+  /**
+   * formatModelContent 已对该输出自行限长时返回 true（例如 Bash 失败结果按字符保留头尾）；
+   * serializer 对这类输出不再按 resultBudget 落盘或截断。
+   */
   isModelContentBounded?: (output: unknown) => boolean;
+  /** 工具批次结算后紧跟在这批结果之后的提示，不进 tool_result（例如 Read 部分视图的截断说明）。 */
+  formatBatchNotice?: (output: unknown) => ToolBatchNotice | undefined;
   formatPersistedModelContent?: (
     input: ToolPersistedModelContentInput,
   ) => ModelMessageContent | undefined;
@@ -464,8 +576,12 @@ export interface ToolExecutionModelContext {
 // Execution Results
 // -----------------------------------------------
 
+export interface ToolBatchNotice {
+  source: SystemReminderSource;
+  content: string;
+}
+
 export interface ToolExecutionResult {
-  hookAdditionalContexts?: string[];
   toolCallId: string;
   toolName: string;
   success: boolean;
@@ -474,7 +590,14 @@ export interface ToolExecutionResult {
   followUpUserInput?: ToolExecutionFollowUpUserInput;
   display?: ToolResultDisplayPayload;
   modelContent?: ModelMessageContent;
+  /**
+   * 工具 Hook 给模型的附加上下文，每条已写成 `<Event>:<ToolName> hook additional context: …`。
+   * 不进 tool result；结算把每条写成这批 tool result 之后的 `tool_hook_context` 附件。
+   */
+  hookAdditionalContexts?: string[];
   readFileStateMetadata?: PersistedReadFileStateMetadata;
+  /** Agent 调用派生的子代理事实（child session 就绪后才有）；成功与失败结果都带。 */
+  subagent?: SubagentToolPartFacts;
   serialization?: ToolResultSerialization;
   /** Executor 汇总后的内部性能事实；不进入模型可见 Tool Output。 */
   performance?: ToolExecutionTelemetry;

@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-stop-held-queue",
+  "spec": "./test/e2e/conversation-session/queue/conversation-session-stop-held-queue.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-stop-held-queue.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-stop-held-queue-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "默认回放捕获到显式发送成功后的标题旁路；本例登记固定响应以避免依赖共享旧 fixture。"
+    },
+    {
+      "id": "upstream-stop-held-queue-first-contract",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "B08 允许显式立即发送首项一次；发送前及完成后，其余暂停项均不得自动消费。"
+    },
+    {
+      "id": "upstream-stop-held-running-slow-stream",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "held queue 需要当前轮保持 running；真实 provider 过快完成会让后续输入变成普通新轮。"
+    },
+    {
+      "id": "upstream-stop-held-queue-second-contract",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "held queue 的产品语义是保留队列且不自动消费；fixture 只覆盖 marker 合同。"
+    },
+    {
+      "id": "upstream-stop-held-queue-third-contract",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "held queue 的产品语义是保留队列且不自动消费；fixture 只覆盖 marker 合同。"
+    },
+    {
+      "id": "upstream-stop-held-queue-append-contract",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "取消发送确认必须保留原草稿和队列，不发送 APPEND marker。"
+    }
+  ]
+}

@@ -1,8 +1,6 @@
 import type { Model, ModelInputMessage } from "@ccbuddy/contracts";
-import { ContextBuilder } from "../context/builder.js";
+import { ContextBuilder, buildMetaUserAttachments } from "../context/builder.js";
 import {
-  buildContextMetaUserBody,
-  buildSkillsMetaUserBody,
   type ContextBuilderConfig,
   type ContextBuildResult,
   type ContextSection,
@@ -10,19 +8,19 @@ import {
 } from "../context/index.js";
 import { buildCliPrefixSection } from "../context/sections/cli-prefix.js";
 import { buildCurrentDateSection } from "../context/sections/current-date.js";
+import { buildEnvironmentSections } from "../context/sections/env-info.js";
 import { buildRequestUserContextSection } from "../context/sections/request-user-context.js";
-import { buildSkillsSection } from "../context/sections/skills.js";
+import { TOTAL_TOKENS_SYSTEM_LINE } from "../context/total-tokens.js";
 import { estimateTokens } from "../context/utils.js";
-import { buildSubagentCommonNotes, buildSubagentEnvironmentContext } from "./system-prompt.js";
+import { SUBAGENT_LAUNCHER_MESSAGES_NOTE, buildSubagentCommonNotes } from "./system-prompt.js";
 
 export interface SubagentContextBuilderConfig {
   agentPrompt: string;
   currentDate?: string;
   envInfo: EnvInfo;
   model?: Model;
-  skillMetadataBudget?: number;
-  skills?: ContextBuilderConfig["skills"];
   userInstructions?: ContextBuilderConfig["userInstructions"];
+  totalTokensReminder?: boolean;
 }
 
 const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" as const };
@@ -64,40 +62,13 @@ export class SubagentContextBuilder extends ContextBuilder {
           cacheControl: EPHEMERAL_CACHE_CONTROL,
         }),
       );
-    const skillsContent = buildSkillsMetaUserBody(
-      orderedSections.filter(
-        (section) => section.injectionTarget === "meta_user" && section.source === "skills",
-      ),
-    );
-    const contextContent = buildContextMetaUserBody(
-      orderedSections.filter(
-        (section) => section.injectionTarget === "meta_user" && section.source !== "skills",
-      ),
-    );
 
     return {
       sections: orderedSections,
       totalChars,
       totalTokens,
       systemMessages,
-      metaUserAttachments: [
-        ...(skillsContent
-          ? [
-              {
-                source: "skills_listing" as const,
-                content: skillsContent,
-              },
-            ]
-          : []),
-        ...(contextContent
-          ? [
-              {
-                source: "context_prefix" as const,
-                content: contextContent,
-              },
-            ]
-          : []),
-      ],
+      metaUserAttachments: buildMetaUserAttachments(orderedSections),
     };
   }
 }
@@ -110,7 +81,8 @@ export function createSubagentContextBuilder(
 
 function buildSubagentContextSections(config: SubagentContextBuilderConfig): ContextSection[] {
   const sections: ContextSection[] = [buildCliPrefixSection()];
-  const agentPrompt = config.agentPrompt.trimEnd();
+  // agent 正文首尾都 trim；左边界换行仍由下方按 CCbuddy 设计补上。
+  const agentPrompt = config.agentPrompt.trim();
   if (agentPrompt) {
     sections.push(
       createSubagentSection({
@@ -130,18 +102,21 @@ function buildSubagentContextSections(config: SubagentContextBuilderConfig): Con
       source: "subagent_notes",
       cacheHint: "stable",
       // CCbuddy by design：后续 Subagent system block 统一自带双换行左边界。
-      content: `\n\n${buildSubagentCommonNotes()}`,
+      // 启动方消息段排在 Notes 之前。
+      content: `\n\n${SUBAGENT_LAUNCHER_MESSAGES_NOTE}\n\n${buildSubagentCommonNotes()}`,
     }),
-    createSubagentSection({
-      name: "Subagent Environment",
-      source: "subagent_environment",
-      cacheHint: "dynamic",
-      content: `\n\n${buildSubagentEnvironmentContext({
-        agentPrompt: config.agentPrompt,
-        envInfo: config.envInfo,
-        model: config.model,
-      })}`,
-    }),
+    // 固定的 token 预算行紧跟 Notes，是子 agent system 的最后一段；开关关闭时不产出。
+    ...(config.totalTokensReminder === true
+      ? [
+          createSubagentSection({
+            name: "Total Tokens",
+            source: "total_tokens",
+            cacheHint: "stable",
+            content: `\n\n${TOTAL_TOKENS_SYSTEM_LINE}`,
+          }),
+        ]
+      : []),
+    ...buildEnvironmentSections(config.envInfo, config.model),
   );
 
   const requestUserContextSection = buildRequestUserContextSection({
@@ -154,15 +129,7 @@ function buildSubagentContextSections(config: SubagentContextBuilderConfig): Con
   if (currentDateSection) {
     sections.push(currentDateSection);
   }
-  if (config.skills) {
-    const skillsSection = buildSkillsSection({
-      outcome: config.skills,
-      metadataBudget: config.skillMetadataBudget,
-    });
-    if (skillsSection) {
-      sections.push(skillsSection);
-    }
-  }
+  // skill 列表由 runtime 的 skills_listing 收集器追加，工具表里有 Skill 时才发（与主会话相同）。
 
   return sections;
 }
@@ -195,7 +162,5 @@ function toBaseContextBuilderConfig(config: SubagentContextBuilderConfig): Conte
     envInfo: config.envInfo,
     model: config.model,
     currentDate: config.currentDate,
-    skillMetadataBudget: config.skillMetadataBudget,
-    skills: config.skills,
   };
 }

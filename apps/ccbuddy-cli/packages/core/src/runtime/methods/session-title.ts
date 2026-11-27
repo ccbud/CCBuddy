@@ -17,14 +17,19 @@ import {
   SESSION_TITLE_QUERY_SOURCE,
   generateTitleCandidate,
   normalizeTitleInput,
+  retainTitleModelContext,
+  type TitleModelContext,
 } from "./title-generation-sidecar.js";
 
-const GENERATED_TITLE_EXPECTED_SOURCES: readonly SessionTitleSource[] = [
-  "default",
-  "first_input",
-  "generated",
-];
+// 修复原因：这里曾包含 "generated"。turnNumber 和 sessionTitleGenerationAttempted 在冷恢复时重建，
+// compact 后 active 历史只剩摘要，两者都回到初始值，下一条消息又会生成一次标题并覆盖旧标题。
+// 标题每个会话只生成一次，以持久化的 titleSource 为唯一判据：请求前与写回 CAS 共用这份列表。
+const GENERATED_TITLE_EXPECTED_SOURCES: readonly SessionTitleSource[] = ["default", "first_input"];
 const MIN_GENERATED_TITLE_INPUT_CHARS = 10;
+
+function acceptsGeneratedTitle(titleSource: SessionTitleSource | undefined): boolean {
+  return GENERATED_TITLE_EXPECTED_SOURCES.includes(titleSource ?? "first_input");
+}
 
 export function maybeStartSessionTitleGeneration(
   this: AgentRuntimeInternal,
@@ -34,11 +39,13 @@ export function maybeStartSessionTitleGeneration(
   options?: {
     deferIfProviderRuntimeHeadersRefresh?: boolean;
     goalSummaryTargetID?: string;
+    offPeakExecutionId?: string;
   },
 ): boolean {
   return maybeStartSessionTitleGenerationFromSeed.call(this, input, {
     deferIfProviderRuntimeHeadersRefresh: options?.deferIfProviderRuntimeHeadersRefresh,
     goalSummaryTargetID: options?.goalSummaryTargetID,
+    offPeakExecutionId: options?.offPeakExecutionId,
     messageID,
     traceContext,
   });
@@ -49,10 +56,12 @@ export function maybeStartDeferredSessionTitleGeneration(
   input: string,
   messageID: MessageId,
   traceContext: TraceContext,
+  offPeakExecutionId?: string,
 ): boolean {
   return maybeStartSessionTitleGenerationFromSeed.call(this, input, {
     messageID,
     traceContext,
+    offPeakExecutionId,
   });
 }
 
@@ -79,6 +88,7 @@ function maybeStartSessionTitleGenerationFromSeed(
     messageID?: MessageId;
     traceContext: TraceContext;
     bypassShortInputGuard?: boolean;
+    offPeakExecutionId?: string;
   },
 ): boolean {
   if (
@@ -100,10 +110,12 @@ function maybeStartSessionTitleGenerationFromSeed(
   // 标题任务会越过当前 Turn 的生命周期。入队时冻结 causation，避免后续 await、
   // 调度器或实现重构使后台 Trace 静默丢失指向触发 Span 的 Link。
   const causation = this.agentTelemetry.captureCausation();
+  const modelContext = retainTitleModelContext(this, options.offPeakExecutionId);
 
   const generation = generateAndPersistSessionTitle
     .call(this, input, options.messageID, options.traceContext, {
       causation,
+      modelContext,
       goalSummaryTargetID: options.goalSummaryTargetID,
     })
     .catch(async (error) => {
@@ -122,7 +134,8 @@ function maybeStartSessionTitleGenerationFromSeed(
           traceContext: options.traceContext,
         });
       }
-    });
+    })
+    .finally(() => modelContext.release());
   void this.trackResidencyBlockingWork(generation).catch((error) => {
     this.logger?.warn("Session title fallback persistence failed", {
       ...traceContextToLogContext(options.traceContext),
@@ -140,6 +153,7 @@ function shouldAttemptSessionTitleGeneration(
   input: string,
   options: { bypassShortInputGuard?: boolean } = {},
 ): boolean {
+  if (runtime.shuttingDown) return false;
   if (runtime.sessionTitleGenerationAttempted) return false;
   if (runtime.config.titleGeneration?.enabled === false) return false;
   if (!runtime.config.titleGeneration) return false;
@@ -179,6 +193,7 @@ async function generateAndPersistSessionTitle(
   options: {
     causation?: AgentTelemetryCausation;
     goalSummaryTargetID?: string;
+    modelContext?: TitleModelContext;
   } = {},
 ): Promise<void> {
   const initialSession = await this.sessionStore?.getSession(this.sessionId);
@@ -197,13 +212,13 @@ async function generateAndPersistSessionTitle(
     return;
   }
 
-  const shouldPersistSessionTitle = initialSession.titleSource !== "custom";
+  const shouldPersistSessionTitle = acceptsGeneratedTitle(initialSession.titleSource);
   if (!shouldPersistSessionTitle && !options.goalSummaryTargetID) {
     this.logger?.debug("Session title generation skipped", {
       ...traceContextToLogContext(traceContext),
       event: "session_title_generation.skipped",
       module: "core.runtime",
-      reason: "custom_title",
+      reason: `${initialSession.titleSource}_title`,
     });
     return;
   }
@@ -220,6 +235,7 @@ async function generateAndPersistSessionTitle(
 
   const generated = await generateTitleCandidate.call(this, input, {
     causation: options.causation,
+    modelContext: options.modelContext,
     messageID,
     querySource: SESSION_TITLE_QUERY_SOURCE,
     traceContext,

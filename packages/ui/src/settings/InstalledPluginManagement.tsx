@@ -33,7 +33,7 @@ export function InstalledPluginDetailDialog({
   onRequestUpdate,
   onSavePluginOptions,
   open,
-  operationId,
+  activeOperations,
   plugin,
   renderPluginSource,
   setPluginOptionDraft,
@@ -51,7 +51,7 @@ export function InstalledPluginDetailDialog({
   onRequestUpdate?: (pluginId: string) => void;
   onSavePluginOptions: (plugin: CCbuddyPluginInfo) => void;
   open: boolean;
-  operationId: string | null;
+  activeOperations: ReadonlyArray<{ id: string }>;
   plugin: CCbuddyPluginInfo | null;
   renderPluginSource: (plugin: CCbuddyPluginInfo) => string;
   setPluginOptionDraft: (pluginId: string, key: string, value: string | number | boolean) => void;
@@ -72,7 +72,7 @@ export function InstalledPluginDetailDialog({
           configScope={configScope}
           installedAt={installedAt}
           latestVersion={latestVersion}
-          operationId={operationId}
+          activeOperations={activeOperations}
           plugin={plugin}
           renderPluginSource={renderPluginSource}
           setPluginOptionDraft={setPluginOptionDraft}
@@ -96,7 +96,7 @@ export function InstalledPluginDetailPanel({
   onRequestUninstall,
   onRequestUpdate,
   onSavePluginOptions,
-  operationId,
+  activeOperations,
   plugin,
   renderPluginSource,
   setPluginOptionDraft,
@@ -112,7 +112,7 @@ export function InstalledPluginDetailPanel({
   onRequestUninstall?: (pluginId: string) => void;
   onRequestUpdate?: (pluginId: string) => void;
   onSavePluginOptions: (plugin: CCbuddyPluginInfo) => void;
-  operationId: string | null;
+  activeOperations: ReadonlyArray<{ id: string }>;
   plugin: CCbuddyPluginInfo | null;
   renderPluginSource: (plugin: CCbuddyPluginInfo) => string;
   setPluginOptionDraft: (pluginId: string, key: string, value: string | number | boolean) => void;
@@ -231,7 +231,7 @@ export function InstalledPluginDetailPanel({
                 getValue={getPluginOptionValue}
                 onSave={onSavePluginOptions}
                 onSetDraft={setPluginOptionDraft}
-                operationId={operationId}
+                activeOperations={activeOperations}
                 plugin={plugin}
                 scope={configScope}
               />
@@ -263,7 +263,9 @@ export function InstalledPluginDetailPanel({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={operationId === `plugin:update:${plugin.id}`}
+                disabled={activeOperations.some(
+                  (operation) => operation.id === `plugin:update:${plugin.id}`,
+                )}
                 onClick={() => onRequestUpdate(plugin.id)}
               >
                 {intl.formatMessage({ id: "settings.plugins.detail.update" })}
@@ -279,7 +281,9 @@ export function InstalledPluginDetailPanel({
               variant="ghost"
               size="sm"
               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-              disabled={operationId === `plugin:uninstall:${plugin.id}`}
+              disabled={activeOperations.some(
+                (operation) => operation.id === `plugin:uninstall:${plugin.id}`,
+              )}
               onClick={() => onRequestUninstall(plugin.id)}
             >
               <Trash2 className="size-3.5" aria-hidden="true" />

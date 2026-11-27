@@ -1,5 +1,6 @@
 import type {
   McpPort,
+  McpConfigurationSnapshot,
   McpServerConfig,
   McpServerStatus,
   McpStdioServerConfig,
@@ -15,9 +16,7 @@ import {
   CCBUDDY_PLUGIN_ID_ENV_KEY,
 } from "@ccbuddy/shared";
 
-export {
-  CCBUDDY_CUA_BROKER_SOCKET_ENV_KEY as CCBUDDY_CUA_BROKER_SOCKET_ENV,
-} from "@ccbuddy/shared";
+export { CCBUDDY_CUA_BROKER_SOCKET_ENV_KEY as CCBUDDY_CUA_BROKER_SOCKET_ENV } from "@ccbuddy/shared";
 // 保留环境变量名供旧诊断脚本读取；迁移后的配置路径不会据此启动独立 CUA MCP。
 export const CCBUDDY_CUA_BROKER_UNAVAILABLE_ENV = "CCBUDDY_CUA_PERMISSION_BROKER_UNAVAILABLE";
 // CLI 入口会先清理 broker 凭据；shared node_repl 的可信配置随后从进程内捕获快照恢复它们。
@@ -30,9 +29,7 @@ function resolveCCbuddyCuaBrokerSocket(): string | undefined {
 }
 
 function resolveCCbuddyCuaBrokerToken(): string | undefined {
-  return (
-    undefined
-  );
+  return undefined;
 }
 
 const NODE_REPL_SERVER_NAME = "node_repl";
@@ -80,8 +77,6 @@ export async function listMcpServerStatuses(
       transport: config.type,
       toolCount: 0,
       updatedAt,
-      error: getConfiguredServerError(name, config, untrustedServerNames),
-      ...(configuredStatus === "untrusted" ? { failureKind: "status_unavailable" as const } : {}),
     };
   }
 
@@ -99,9 +94,7 @@ export function omitMcpServers(
 ): Record<string, McpServerConfig> {
   const kept = Object.fromEntries(
     Object.entries(servers).filter(
-      ([name, config]) =>
-        !omittedNames.has(name) &&
-        !isRetiredCuaMcpServer(name, config),
+      ([name, config]) => !omittedNames.has(name) && !isRetiredCuaMcpServer(name, config),
     ),
   );
 
@@ -196,7 +189,9 @@ function isCCbuddyCuaStdioServer(
 function isRetiredCuaMcpServer(name: string, config: McpServerConfig | undefined): boolean {
   // node_repl is the single supported CUA host and may share the CUA plugin's
   // authority marker; all other CUA-shaped MCP entries are retired.
-  return name !== NODE_REPL_SERVER_NAME && config !== undefined && isCCbuddyCuaStdioServer(name, config);
+  return (
+    name !== NODE_REPL_SERVER_NAME && config !== undefined && isCCbuddyCuaStdioServer(name, config)
+  );
 }
 
 function getConfiguredServerStatus(
@@ -215,4 +210,31 @@ function getConfiguredServerError(
 ): string | undefined {
   if (config.enabled === false || !untrustedServerNames.has(name)) return undefined;
   return "Project MCP server requires explicit connection before use.";
+}
+
+/** 用户覆盖插件，宿主身份最后合并；首次加载和热更新共用。 */
+export function resolveEffectiveMcpConfiguration(input: {
+  enabled: boolean;
+  servers: Record<string, McpServerConfig>;
+  pluginServers?: Record<string, McpServerConfig>;
+  explicit?: Partial<McpConfigurationSnapshot>;
+  builtInServers?: Record<string, McpServerConfig>;
+  computerUse?: boolean;
+}): { configuredServers: Record<string, McpServerConfig>; mcp: McpConfigurationSnapshot } {
+  const configured = {
+    ...input.pluginServers,
+    ...(input.explicit?.servers ?? input.servers),
+    ...input.builtInServers,
+  };
+  const trusted = resolveTrustedOfficialCuaServerNames(configured, input.pluginServers ?? {});
+  const bridgeNames = new Set(trusted);
+  if (input.computerUse && configured.node_repl) bridgeNames.add("node_repl");
+  return {
+    configuredServers: configured,
+    mcp: {
+      enabled: input.explicit?.enabled ?? input.enabled,
+      servers: omitMcpServers(configured, new Set(), bridgeNames),
+      trustedOfficialCuaServerNames: [...trusted],
+    },
+  };
 }

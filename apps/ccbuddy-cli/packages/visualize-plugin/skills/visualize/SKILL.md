@@ -58,7 +58,7 @@ Read this file in full before authoring. Reread truncated ranges in smaller call
 ### External resources
 
 - Floating UI Core 1.7.3 / DOM 1.7.4, Lucide 1.17.0, and D3 7.9.0 are bundled. Keep their prescribed script URLs unchanged: the Desktop host resolves those exact URLs locally, and standalone export embeds the files. Use a literal `<script src="...">` for D3 so exports remain offline; do not add another copy or fetch a fallback. Other versions, query strings, libraries, fonts, and map data are not bundled by this rule.
-- The CSP allows only `cdnjs.cloudflare.com`, `esm.sh`, `cdn.jsdelivr.net`, `unpkg.com`, `fonts.googleapis.com`, `fonts.gstatic.com`, and `fonts.bunny.net`. Other origins are blocked and fail silently.
+- The CSP allows only `cdnjs.cloudflare.com`, `esm.sh`, `cdn.jsdelivr.net`, `unpkg.com`, `fonts.googleapis.com`, `fonts.gstatic.com`, `fonts.bunny.net`, and `ccbuddy.z.ai`. Other origins are blocked and fail silently.
 
 ## Exporting an existing visualization
 
@@ -179,6 +179,8 @@ Choose the smallest composition that fits.
 
 - Let utilities own geometry, appearance, and interaction. Use the matching utility for every button and form control. Never restyle utilities, descendants, or pseudo-elements: no custom sizes, spacing, borders, radii, shadows, colors, or interaction states.
 
+Use the host typography scale: body and controls use the body size; h1 is body +4px, h2 +2px, h3–h6 the body size. Container radii step down xl → lg → md → sm through visible card/widget nesting. Layout wrappers do not add a level. Controls use the matching parent radius automatically. Primary controls are neutral; chart series and links retain their separate accent colors.
+
 ### Surfaces and layout
 
 Use the host typography scale: body and controls use the body size; h1 is body +4px, h2 +2px, h3–h6 the body size. Container radii step down xl → lg → md → sm through visible card/widget nesting. Layout wrappers do not add a level. Controls use the matching parent radius automatically. Primary controls are neutral; chart series and links retain their separate accent colors.
@@ -234,7 +236,7 @@ Use the host typography scale: body and controls use the body size; h1 is body +
 
 - Place related inputs and buttons on one row, aligned at their vertical centers. Put labels and values on a separate row above them.
 - `.btn`: Use for a content-sized secondary action. Add `.btn-primary` for one main action per control group or `.btn-ghost` for low emphasis.
-- `.btn-secondary`: Use for a filled secondary action. `.btn-xs`, `.btn-sm`, `.btn-lg` select 20px, 24px, 32px minimum heights; default is 28px. Touch targets retain their minimum size.
+- `.btn-secondary`: Use for a filled secondary action. `.btn-xs`, `.btn-sm`, `.btn-lg` select 20px, 24px, 32px heights; default is 28px. Touch targets retain their minimum size.
 - `.btn-block`: Add to a `.btn` only when the action should intentionally fill the available inline space. Never use it for ordinary row actions.
 - `<a>`: Use for links. Add `.btn` to style a link as a button.
 - `[data-tooltip]`: Use for concise supplementary plain text on static or dynamic triggers; the sandbox handles hover, focus, and touch and creates `.tooltip` elements. Keep essential content visible and triggers labeled. Never use `title`, custom markup, or initialization. Example: `<button type="button" data-tooltip="Reset view">Reset</button>`.
@@ -292,7 +294,7 @@ Use the host typography scale: body and controls use the body size; h1 is body +
 
 ## CCbuddy host compatibility
 
-- Emit inline references only when the Desktop context advertises Gen UI and supplies its session output directory; otherwise return an ordinary HTML artifact. Paths must be absolute on the executor, inside that session directory, with no symlinks or parent traversal. The host renders completed assistant messages only.
+- Emit inline references only when the Desktop context advertises Gen UI and the environment lists its session output directory; otherwise return an ordinary HTML artifact. Paths must be absolute on the executor, inside that session directory, with no symlinks or parent traversal. The host renders completed assistant messages only.
 - The frame starts at 240px, follows content height up to 10,000px, and has a host-compensated 5px paint gutter. These are implementation limits, not a target height or a reason to add padding. Secondary annotations are optional; there is no required footer.
 - `window.ccbuddy` exposes widget state, state saving, and follow-up messages. See [API](references/api.md) for acknowledgement, cancellation, and Tweak object bindings. The standalone export supplies state fallback, not Agent access.
 - Older text `::visualize{path="..."}` references remain supported for historical replies. Generate the Unicode reference described above for new replies.

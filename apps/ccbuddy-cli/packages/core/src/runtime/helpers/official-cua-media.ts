@@ -13,10 +13,7 @@ export function officialCuaImageRefIndexesForUnavailableMedia(
   for (const mediaIndex of unavailableMediaIndexes) {
     if (content[mediaIndex]?.type !== "image") continue;
     const candidate = content[mediaIndex + 1];
-    if (
-      candidate?.type === "text" &&
-      containsOfficialCuaImageRefCredentialText(candidate.text)
-    ) {
+    if (candidate?.type === "text" && containsOfficialCuaImageRefCredentialText(candidate.text)) {
       imageRefIndexes.add(mediaIndex + 1);
     }
   }

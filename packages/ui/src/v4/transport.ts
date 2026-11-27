@@ -1,3 +1,4 @@
+import type { SessionLifecycleSnapshot } from "@ccbuddy/shared";
 // V4 会话数据层的传输接缝（依赖注入）。
 // desktop 走 preload/MessagePort，web 走 ws relay——数据层对两者零感知，
 // 这是「依赖注入解决 desktop/web 兼容」原则在 v4 数据层的落点。
@@ -46,6 +47,8 @@ import type { AttachmentUploadOptions } from "@/v4/attachmentUploadTransaction.j
  * 每条连接各配一个 SessionDataLayer。
  */
 export interface ConversationTransport {
+  getSessionLifecycle?(sessionId: string): Promise<SessionLifecycleSnapshot | null>;
+  onSessionLifecycle?(listener: (snapshot: SessionLifecycleSnapshot) => void): () => void;
   /** v4/conversation/subscribe。connectionId 由传输实现补齐，不进 UI 层。 */
   subscribe(params: SubscribeParams): Promise<V4ConversationSubscribeResult>;
   /** store 写入 ACK subscriptionId 后激活，并按原序释放 ACK 前 notification。 */
@@ -54,8 +57,11 @@ export interface ConversationTransport {
   resync(params: ConversationResyncParams): Promise<V4ConversationResyncResult>;
   /** v4/conversation/unsubscribe。 */
   unsubscribe(subscriptionId: string): Promise<void>;
-  /** v4/command。 */
-  sendCommand(envelope: CommandEnvelope): Promise<CommandAck>;
+  /** v4/command；代理换代必须保留 Host 创建归属 context。 */
+  sendCommand(
+    envelope: CommandEnvelope,
+    context?: { projectId?: string | null },
+  ): Promise<CommandAck>;
   /** v4/commands/query：重连后按 commandId 与 CLI 权威事实对账。 */
   queryCommands(params: CommandsQueryParams): Promise<CommandsQueryResult>;
   /** v4/conversation/rowsRange（loadOlder）：按游标向上取一窗历史行。 */

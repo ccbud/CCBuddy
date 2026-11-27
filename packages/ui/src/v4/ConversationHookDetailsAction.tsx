@@ -4,10 +4,14 @@ import {
   CircleSlash2Icon,
   CircleXIcon,
   ClockAlertIcon,
-  LoaderCircleIcon,
+  LoaderCircle,
   ShieldAlertIcon,
 } from "lucide-react";
-import { TID_V4_HOOK_DETAILS_CONTENT, TID_V4_HOOK_DETAILS_TRIGGER, testId } from "@ccbuddy/shared";
+import {
+  TID_V4_HOOK_DETAILS_CONTENT,
+  TID_V4_HOOK_DETAILS_TRIGGER,
+  testId,
+} from "@ccbuddy/shared/test-ids";
 import type {
   HookExecutionProjection,
   HookInvocationRow,
@@ -71,7 +75,7 @@ function hookDetailStatus(execution: HookExecutionProjection): HookDetailStatus 
 const HookStatusIcon = memo(function HookStatusIcon({ status }: { status: HookDetailStatus }) {
   if (status === "running") {
     return (
-      <LoaderCircleIcon
+      <LoaderCircle
         aria-hidden
         className="size-3.5 shrink-0 animate-spin text-foreground-subtle motion-reduce:animate-none"
       />

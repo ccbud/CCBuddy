@@ -88,9 +88,51 @@ export function getSearchPrimaryText(intl: IntlLike, input: unknown): string {
 
 export function SearchToolCallBlock(context: ToolCallBlockRenderContext) {
   const { intl } = useCCbuddyIntl();
+  return (
+    <SearchToolCallLayout
+      {...context}
+      searchPrimaryText={getSearchPrimaryText(intl, context.toolCallNode.toolCall.input)}
+    />
+  );
+}
+
+export function ToolSearchToolCallBlock(context: ToolCallBlockRenderContext) {
+  const { intl } = useCCbuddyIntl();
+  const { input } = context.toolCallNode.toolCall;
+  const query = isPlainRecord(input) && typeof input.query === "string" ? input.query.trim() : "";
+  const selection = /^select:(.+)$/i.exec(query);
+  const label = selection
+    ? selection[1]!
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .join(", ")
+    : query;
+  const searchPrimaryText = label
+    ? intl.formatMessage({ id: "chat.toolCall.search.toolsWithQuery" }, { query: label })
+    : intl.formatMessage({ id: "chat.toolCall.search.tools" });
+  return (
+    <SearchToolCallLayout
+      {...context}
+      searchPrimaryText={searchPrimaryText}
+      kindLabelOverride=""
+      titleOverride="ToolSearch"
+      hideSnapshotNotice
+    />
+  );
+}
+
+function SearchToolCallLayout(
+  context: ToolCallBlockRenderContext & {
+    searchPrimaryText: string;
+    titleOverride?: string;
+    hideSnapshotNotice?: boolean;
+  },
+) {
+  const { intl } = useCCbuddyIntl();
   const { toolCallNode, isRunning, statusLabel, errorText } = context;
   const { toolCall } = toolCallNode;
-  const searchPrimaryText = getSearchPrimaryText(intl, toolCall.input);
+  const { searchPrimaryText } = context;
   const primaryText = useMemo(
     () => <span className="truncate">{searchPrimaryText}</span>,
     [searchPrimaryText],
@@ -106,7 +148,7 @@ export function SearchToolCallBlock(context: ToolCallBlockRenderContext) {
         kindLabel={
           context.kindLabelOverride ??
           intl.formatMessage({
-            id: isRunning ? "chat.toolCall.search.searching" : "chat.toolCall.kind.search",
+            id: isRunning ? "chat.toolCall.search.searching" : "chat.toolCall.search.searched",
           })
         }
         sourceLabel={context.sourceLabel}
@@ -117,18 +159,19 @@ export function SearchToolCallBlock(context: ToolCallBlockRenderContext) {
         statusTooltip={toolCall.status === "failed" ? errorText : undefined}
         showFailureStatus={toolCall.status === "failed"}
         isRunning={isRunning}
-        title={toolCall.title}
+        title={context.titleOverride ?? toolCall.title}
         content={null}
       />
-      <ToolSnapshotFieldNotice
-        refs={toolCall.snapshotRefs ?? []}
-        onLoadFullToolCallFields={
-          context.onLoadFullToolCallFields
-            ? () => context.onLoadFullToolCallFields?.(toolCall.toolId)
-            : undefined
-        }
-      />
-      {/* <pre>{JSON.stringify(toolCall, null, 2)}</pre> */}
+      {!context.hideSnapshotNotice && (
+        <ToolSnapshotFieldNotice
+          refs={toolCall.snapshotRefs ?? []}
+          onLoadFullToolCallFields={
+            context.onLoadFullToolCallFields
+              ? () => context.onLoadFullToolCallFields?.(toolCall.toolId)
+              : undefined
+          }
+        />
+      )}
     </>
   );
 }

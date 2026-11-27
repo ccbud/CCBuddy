@@ -10,7 +10,14 @@ import {
 import type { ISubagentsService } from "@ccbuddy/services";
 import { shouldExposeE2EStoreBridge } from "@/lib/e2eStoreBridge.js";
 import { logger } from "@/logger.js";
+import { getRemoteWorkspaceServicesForIdentity } from "@/store/remoteWorkspaceSessionStore.js";
 import { getSubagentsContextKey, useSubagentsContextStore } from "@/store/subagentsContextStore.js";
+import { getServiceAuthorityId } from "@/store/serviceAuthorityKey.js";
+import {
+  isLatestAgentLoadRequest,
+  loadAgentsOnce,
+  nextAgentLoadRequestId,
+} from "@/store/subagentsStoreLoading.js";
 
 interface SubagentsStoreState {
   workspacePath: string | null;
@@ -60,52 +67,7 @@ interface SubagentsStoreState {
   ) => Promise<boolean>;
 }
 
-const inFlightAgentLoads = new Map<string, ReturnType<ISubagentsService["list"]>>();
-let latestAgentLoadRequestId = 0;
-
-function getAgentLoadKey(
-  workspacePath: string,
-  provider: CCbuddyProvider,
-  workspaceIdentity?: string,
-): string {
-  return `${workspaceIdentity?.trim() || workspacePath}::${provider}`;
-}
-
-function loadAgentsOnce(
-  workspacePath: string,
-  provider: CCbuddyProvider,
-  subagentsService: ISubagentsService,
-  workspaceIdentity?: string,
-  options: { bypassCache?: boolean } = {},
-): ReturnType<ISubagentsService["list"]> {
-  const key = getAgentLoadKey(workspacePath, provider, workspaceIdentity);
-  if (!options.bypassCache) {
-    const current = inFlightAgentLoads.get(key);
-    if (current) {
-      return current;
-    }
-  }
-  // 设置页写入 subagent 后必须重新扫文件系统。
-  // 如果 refresh 继续复用旧的 in-flight list，请求会把写入前的列表带回输入框 @ 面板。
-  const request = subagentsService
-    .list({ workspacePath, workspaceIdentity, provider })
-    .finally(() => {
-      if (inFlightAgentLoads.get(key) === request) {
-        inFlightAgentLoads.delete(key);
-      }
-    });
-  inFlightAgentLoads.set(key, request);
-  return request;
-}
-
-function nextAgentLoadRequestId(): number {
-  latestAgentLoadRequestId += 1;
-  return latestAgentLoadRequestId;
-}
-
-function isLatestAgentLoadRequest(requestId: number): boolean {
-  return requestId === latestAgentLoadRequestId;
-}
+let loadedSubagentsServiceAuthorityId: number | null = null;
 
 export const useSubagentsStore = create<SubagentsStoreState>((set, get) => ({
   workspacePath: null,
@@ -145,8 +107,10 @@ export const useSubagentsStore = create<SubagentsStoreState>((set, get) => ({
       });
       return;
     }
+    const serviceAuthorityId = getServiceAuthorityId(subagentsService);
     const hasCachedAgents =
       currentState.agents.length > 0 &&
+      loadedSubagentsServiceAuthorityId === serviceAuthorityId &&
       currentState.loadedWorkspacePath === workspacePath &&
       currentState.loadedWorkspaceIdentity === normalizedWorkspaceIdentity &&
       currentState.loadedProvider === provider;
@@ -170,6 +134,7 @@ export const useSubagentsStore = create<SubagentsStoreState>((set, get) => ({
       if (!isLatestAgentLoadRequest(requestId)) {
         return;
       }
+      loadedSubagentsServiceAuthorityId = serviceAuthorityId;
       set({
         agents: result.agents,
         capability: result.capability,
@@ -204,8 +169,15 @@ export const useSubagentsStore = create<SubagentsStoreState>((set, get) => ({
     const workspaceIdentityFromState =
       workspaceIdentity?.trim() || get().workspaceIdentity || undefined;
     const provider = normalizeAgentProviderToCCbuddyAgent(get().provider);
-    const hasCachedAgents = get().agents.length > 0;
-    set({ loading: !hasCachedAgents, error: null });
+    const serviceAuthorityId = getServiceAuthorityId(subagentsService);
+    const hasCachedAgents =
+      get().agents.length > 0 && loadedSubagentsServiceAuthorityId === serviceAuthorityId;
+    set({
+      agents: hasCachedAgents ? get().agents : [],
+      capability: hasCachedAgents ? get().capability : null,
+      loading: !hasCachedAgents,
+      error: null,
+    });
     const requestId = nextAgentLoadRequestId();
     try {
       const result = await loadAgentsOnce(
@@ -218,6 +190,7 @@ export const useSubagentsStore = create<SubagentsStoreState>((set, get) => ({
       if (!isLatestAgentLoadRequest(requestId)) {
         return;
       }
+      loadedSubagentsServiceAuthorityId = serviceAuthorityId;
       set({
         agents: result.agents,
         capability: result.capability,
@@ -378,38 +351,78 @@ if (shouldExposeE2EStoreBridge()) {
 }
 
 export async function refreshLoadedSubagentsStoreForWorkspace(params: {
+  scope?: "user" | "workspace";
   workspacePath?: string | null;
   workspaceIdentity?: string | null;
   subagentsService: ISubagentsService;
 }): Promise<void> {
+  const userScope = params.scope === "user";
   const workspacePath = params.workspacePath?.trim();
-  if (!workspacePath) {
-    return;
-  }
+  if (!userScope && !workspacePath) return;
   const workspaceIdentity = params.workspaceIdentity?.trim() || null;
   const state = useSubagentsStore.getState();
-  const refreshes: Promise<void>[] = [];
-  if (state.workspacePath === workspacePath && state.workspaceIdentity === workspaceIdentity) {
-    refreshes.push(state.refresh(params.subagentsService, workspaceIdentity ?? undefined));
-  }
-
   const contextStore = useSubagentsContextStore.getState();
-  const contextKey = getSubagentsContextKey(
-    workspacePath,
-    CCBUDDY_AGENT_PROVIDER,
-    workspaceIdentity,
-  );
-  if (contextStore.contexts[contextKey]) {
-    // 分屏输入框按 workspaceKey 持有子智能体目录；设置页变更后只刷新对应桶，
-    // 避免同路径的本地/远端 workspace 相互污染。
+  const refreshes: Promise<void>[] = [];
+  // Bug 根因：User 保存曾按 active remote workspace 刷新，空路径又跳过本机 @ 缓存。
+  // 只刷新同 authority 已有的投影；新目标加载中不能借用旧 loaded authority。
+  const refreshLegacy = userScope
+    ? state.workspacePath === state.loadedWorkspacePath &&
+      state.workspaceIdentity === state.loadedWorkspaceIdentity &&
+      loadedSubagentsServiceAuthorityId === getServiceAuthorityId(params.subagentsService)
+    : state.workspacePath === workspacePath && state.workspaceIdentity === workspaceIdentity;
+  if (state.workspacePath && refreshLegacy) {
+    refreshes.push(state.refresh(params.subagentsService, state.workspaceIdentity ?? undefined));
+  }
+  for (const [key, context] of Object.entries(contextStore.contexts)) {
+    if (
+      !userScope &&
+      (context.workspacePath !== workspacePath || context.workspaceIdentity !== workspaceIdentity)
+    )
+      continue;
+    if (
+      key !==
+      getSubagentsContextKey(
+        context.workspacePath,
+        context.provider,
+        context.workspaceIdentity,
+        params.subagentsService,
+      )
+    )
+      continue;
     refreshes.push(
       contextStore.refresh(
-        workspacePath,
-        CCBUDDY_AGENT_PROVIDER,
+        context.workspacePath,
+        context.provider,
         params.subagentsService,
-        workspaceIdentity ?? undefined,
+        context.workspaceIdentity ?? undefined,
       ),
     );
   }
   await Promise.all(refreshes);
+}
+
+/**
+ * 刷新某台远端设备上已打开项目的斜杠（/）建议中的子智能体缓存（子智能体推送、设置页改动远端「用户」之后）。
+ *
+ * Bug 根因：建议缓存按项目的服务对象分桶（useSubagents 取 useServices()），而推送和远端「用户」
+ * 传入的是该设备的 source-settings 服务；refreshLoadedSubagentsStoreForWorkspace 只刷新同一服务对象
+ * 的缓存，已打开远程项目的缓存全被跳过，且已有缓存时 useSubagents 不再重载，新子智能体一直不出现。
+ * 修法：按每个项目的 identity 取已注册的项目服务，逐个复用上面的刷新；取不到服务就跳过，不回退到本机。
+ */
+export async function refreshSubagentsStoreForRemoteWorkspaces(
+  workspaces: readonly { workspacePath: string; workspaceIdentity?: string | null }[],
+): Promise<void> {
+  await Promise.all(
+    workspaces.map(async ({ workspacePath, workspaceIdentity }) => {
+      const identity = workspaceIdentity?.trim();
+      const services = identity ? getRemoteWorkspaceServicesForIdentity(identity) : null;
+      if (!services) return;
+      await refreshLoadedSubagentsStoreForWorkspace({
+        scope: "workspace",
+        workspacePath,
+        workspaceIdentity: identity,
+        subagentsService: services.subagentsService,
+      });
+    }),
+  );
 }

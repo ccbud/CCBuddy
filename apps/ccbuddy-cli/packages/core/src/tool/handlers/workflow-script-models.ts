@@ -19,7 +19,11 @@ import {
   type AnalyzeResult,
   type ModelReference,
 } from "@ccbuddy/dynamic-workflow";
-import type { CreateWorkflowDiagnostic, ModelCatalogPort, ModelSelection } from "@ccbuddy/contracts";
+import type {
+  CreateWorkflowDiagnostic,
+  ModelCatalogPort,
+  ModelSelection,
+} from "@ccbuddy/contracts";
 import { parseModelPickerValue } from "@ccbuddy/shared/model-selection";
 import type { ToolInputResolutionResult } from "../types.js";
 import { analyzeScript } from "./workflow-script-analysis.js";

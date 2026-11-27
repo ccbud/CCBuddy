@@ -2,6 +2,7 @@
 import { Client as SSHClient } from "ssh2";
 import type { ConnectConfig } from "ssh2";
 import { createReadStream } from "node:fs";
+import type { Duplex } from "node:stream";
 import { posix } from "node:path";
 import { Emitter } from "@ccbuddy/rpc";
 import { resolveCCbuddyRuntimeEnv } from "@ccbuddy/shared";
@@ -18,7 +19,10 @@ import {
   normalizeRemotePlatform,
   resolveRemotePlatform,
 } from "@ccbuddy/server/remote/detectEnv.js";
-import { createCloseEventController } from "@ccbuddy/server/remote/closeEvent.js";
+import {
+  createCloseEventController,
+  resolveRemoteExitCode,
+} from "@ccbuddy/server/remote/closeEvent.js";
 import {
   buildPosixShellExecCommand,
   quotePosixShellArg,
@@ -98,6 +102,10 @@ export class SSHBackend implements IRemoteBackend {
   private disposed = false;
   private hasEverConnected = false;
   private disconnectReported = false;
+  /** 本次连接尝试中 keyboard-interactive 提示明确要求动态口令；每次 connect 前清零，只用于认证失败的分类。 */
+  private additionalVerificationPrompted = false;
+  /** 在途连接尝试的失败出口；dispose 用它让等待中的 ensureConnected 立即结束。 */
+  private failPendingConnect: ((error: Error) => void) | undefined;
   private readonly disconnectEmitter = new Emitter<RemoteDisconnectEvent>();
   readonly onDidDisconnect = this.disconnectEmitter.event;
 
@@ -107,7 +115,11 @@ export class SSHBackend implements IRemoteBackend {
       // dispose 期间保留监听器只为吸收这类迟到事件，不能再向上层重复报告或触发未捕获异常。
       return;
     }
-    const normalizedError = normalizeSSHConnectError(error);
+    // 先读取 connected：reportDisconnect 会把它清零，而 ready 后的 client-timeout 只来自 Keepalive。
+    const normalizedError = normalizeSSHConnectError(error, {
+      established: this.connected,
+      additionalVerificationPrompted: this.additionalVerificationPrompted,
+    });
     // ready 之后如果底层连接抖动，ssh2 仍会发出 "error" 事件。
     // 若没有常驻监听，Node 会把它当成未捕获异常直接抛出，可能导致 host 进程崩溃。
     // 这里先记录错误详情再上报断连；上层收到断连后会退出 host，反过来会丢掉真实 error 文案。
@@ -157,9 +169,9 @@ export class SSHBackend implements IRemoteBackend {
         }
       ).on(
         "keyboard-interactive",
-        createKeyboardInteractiveResponder(options.password) as unknown as (
-          ...args: unknown[]
-        ) => void,
+        createKeyboardInteractiveResponder(options.password, () => {
+          this.additionalVerificationPrompted = true;
+        }) as unknown as (...args: unknown[]) => void,
       );
     }
   }
@@ -176,26 +188,39 @@ export class SSHBackend implements IRemoteBackend {
     this.assertNotDisposed();
     if (this.connected) return;
     return new Promise((resolve, reject) => {
-      const handleReady = () => {
+      const settle = () => {
+        this.client.off("ready", handleReady);
         this.client.off("error", handleConnectError);
-        if (this.disposed) {
-          // dispose 与 ssh2 ready 可能交错；迟到的 ready 若重新标记 connected，
-          // 后续 detect 会继续使用已取消连接的旧凭据。再次关闭 socket，并让原调用失败。
-          this.client.end();
-          reject(new Error("SSH backend 已释放，无法重新建立连接"));
-          return;
-        }
+        this.failPendingConnect = undefined;
+      };
+      const handleReady = () => {
+        settle();
         this.connected = true;
         this.hasEverConnected = true;
         this.disconnectReported = false;
         resolve();
       };
       const handleConnectError = (error: unknown) => {
-        this.client.off("ready", handleReady);
-        reject(normalizeSSHConnectError(error));
+        settle();
+        reject(
+          normalizeSSHConnectError(error, {
+            additionalVerificationPrompted: this.additionalVerificationPrompted,
+          }),
+        );
+      };
+      // Bug 原因：ssh2 收到服务端 banner 后，若认证完成前 dispose 调用 end() 关闭连接，ssh2 既不发
+      // ready 也不发 error，还会清掉 60 秒 readyTimeout。旧逻辑只等 ready/error，Promise 永不结束：
+      // 启动重连 10 秒超时释放 backend 后，设备一直停在“连接中”，之后的手动连接都 join 到这次
+      // 永不结束的尝试上（ZCT-2112827425880723456）。修复：dispose 通过这个出口让在途尝试立即失败，
+      // manager 随之写回 failed 并移除 flight。不改用 close 事件判定，是因为同一 ssh2 Client 重连时
+      // 旧连接的 close 可能晚到，无法与本次尝试区分。
+      this.failPendingConnect = (error) => {
+        settle();
+        reject(error);
       };
       this.client.once("ready", handleReady);
       this.client.once("error", handleConnectError);
+      this.additionalVerificationPrompted = false;
       this.client.connect(this.config);
     });
   }
@@ -217,9 +242,21 @@ export class SSHBackend implements IRemoteBackend {
 
   async detect(): Promise<RemoteEnvironment> {
     await this.ensureConnected();
-    const reportedPlatform = normalizeRemotePlatform(await this.execSimple("uname -s"));
-    const arch = normalizeRemoteArch(await this.execSimple("uname -m"));
-    const kernelOstype = await this.readKernelOstype();
+    // Bug 原因：冷启动曾为 platform、arch、kernel ostype 串行创建三个 SSH exec channel，
+    // 仅环境探测就占掉大部分 10 秒恢复预算。保持一个 POSIX channel 可同时避免首次多 channel 竞态。
+    const output = await this.execSimple(
+      "printf 'platform='; uname -s; printf 'arch='; uname -m; printf 'kernel='; " +
+        "if [ -r /proc/sys/kernel/ostype ]; then cat /proc/sys/kernel/ostype; else printf '\\n'; fi",
+    );
+    const readField = (name: string): string =>
+      output
+        .split(/\r?\n/u)
+        .find((line) => line.startsWith(`${name}=`))
+        ?.slice(name.length + 1)
+        .trim() ?? "";
+    const reportedPlatform = normalizeRemotePlatform(readField("platform"));
+    const arch = normalizeRemoteArch(readField("arch"));
+    const kernelOstype = readField("kernel");
     const platform = resolveRemotePlatform(reportedPlatform, kernelOstype);
 
     if (platform !== reportedPlatform) {
@@ -294,16 +331,18 @@ export class SSHBackend implements IRemoteBackend {
           if (code !== 0) {
             console.warn(`[ssh] exec channel failed: code=${code}`);
           }
-          onClose.fire(code ?? 0);
+          onClose.fire(code);
         };
 
         // ssh2 channels may fire 'exit' before 'close', or sometimes
         // only one of them. Listen to both to be safe.
-        channel.on("exit", (code: number | null) => {
-          fireOnce(code ?? 0);
+        // ssh2 收到 exit-signal 时 code 为 null；没有收到任何退出信息时 close 不带参数。
+        // 两种情况都不是成功，见 resolveRemoteExitCode。
+        channel.on("exit", (code: number | null, signal?: string) => {
+          fireOnce(resolveRemoteExitCode(code, signal));
         });
-        channel.on("close", () => {
-          fireOnce(0);
+        channel.on("close", (code?: number | null, signal?: string) => {
+          fireOnce(resolveRemoteExitCode(code, signal));
         });
 
         resolve({
@@ -312,6 +351,19 @@ export class SSHBackend implements IRemoteBackend {
           stderr: channel.stderr,
           onClose: onClose.event,
         });
+      });
+    });
+  }
+
+  async openDirectTcpChannel(port: number): Promise<Duplex> {
+    if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+      throw new Error(`Invalid remote TCP port: ${port}`);
+    }
+    await this.ensureConnected();
+    return await new Promise<Duplex>((resolve, reject) => {
+      this.client.forwardOut("127.0.0.1", 0, "127.0.0.1", port, (error, channel) => {
+        if (error) reject(error);
+        else resolve(channel);
       });
     });
   }
@@ -366,12 +418,11 @@ export class SSHBackend implements IRemoteBackend {
         // ssh2 在短命令场景下可能先发 exit，再异步派发 stdout data。
         // 不能在 exit 事件直接 finish：会把后续 data 丢掉，导致 platform/arch 偶发识别为空。
         // 这里改为只在 close 统一收尾，并优先使用 exit 记录的真实退出码，避免误判成功。
-        channel.on("exit", (code: number | null) => {
-          exitCode = code ?? 0;
+        channel.on("exit", (code: number | null, signal?: string) => {
+          exitCode = resolveRemoteExitCode(code, signal);
         });
-        channel.on("close", (code: number | null) => {
-          const resolvedCode = exitCode ?? code ?? 0;
-          finish(resolvedCode);
+        channel.on("close", (code?: number | null, signal?: string) => {
+          finish(exitCode ?? resolveRemoteExitCode(code, signal));
         });
       });
     });
@@ -384,18 +435,6 @@ export class SSHBackend implements IRemoteBackend {
 
     this.homeDirPromise = this.execSimple('printf %s "$HOME"').then((homeDir) => homeDir.trim());
     return this.homeDirPromise;
-  }
-
-  private async readKernelOstype(): Promise<string> {
-    try {
-      return (
-        await this.execSimple(
-          "if [ -r /proc/sys/kernel/ostype ]; then cat /proc/sys/kernel/ostype; fi",
-        )
-      ).trim();
-    } catch {
-      return "";
-    }
   }
 
   private shouldFallbackToExecUpload(error: unknown): boolean {
@@ -600,6 +639,9 @@ export class SSHBackend implements IRemoteBackend {
       return;
     }
     this.disposed = true;
+    // 在途连接先失败并摘掉 ready 监听：迟到的 ready 不会再用已取消连接的旧凭据标记 connected，
+    // 也不必等 socket 关闭（TCP 未建立时可能要等系统连接超时）。
+    this.failPendingConnect?.(new Error("SSH backend 已释放，无法重新建立连接"));
     // 首次握手失败后，ssh2 可能在 socket end/close 之后继续发出 error。
     // dispose 后保留 onClientError 作为 no-op sink，不能按 end/close 事件时序提前移除，
     // 否则迟到事件会逃逸为 uncaughtException，让共享 Window Host 连带退出其它 workspace。

@@ -1,5 +1,5 @@
 import type { McpServerConfig, McpServerStatus } from "@ccbuddy/contracts";
-import { matchesModelVisibleMcpServerName } from "../mcp/name.js";
+import { matchesModelVisibleMcpServerName, toModelVisibleMcpNamePart } from "../mcp/name.js";
 
 export interface ParsedAgentMcpServers {
   invalidServerNames: string[];
@@ -31,7 +31,8 @@ export function parseAgentMcpServers(
     for (const [serverName, config] of Object.entries(spec)) {
       const normalizedServerName = serverName.trim();
       if (normalizedServerName.length === 0) continue;
-      if (!isMcpServerConfig(config)) {
+      // 内联声明来自 Agent 文档，不能伪造 Host 来源绕过工作区 MCP 信任；具名引用保留权威来源。
+      if (!isMcpServerConfig(config) || "source" in config || "official" in config) {
         invalidServerNames.push(normalizedServerName);
         continue;
       }
@@ -77,6 +78,28 @@ export function extractRequiredMcpServerNames(allowedTools: readonly string[]): 
     if (requiredName) names.add(requiredName);
   }
   return [...names];
+}
+
+/**
+ * `tools` 引用的 server（`mcp__x__y`、`mcp__x__*`、`mcp__x`），按模型可见名精确映射回配置名。
+ * 只决定启动前等谁，`mcp__*` / `mcp` 不指向具体 server。不能复用
+ * matchesModelVisibleMcpServerName：它按子串匹配，`mcp__git__x` 会同时等 github 与 gitlab。
+ */
+export function resolveReferencedMcpServerNames(
+  allowedTools: readonly string[],
+  configuredServerNames: readonly string[],
+): string[] {
+  const expected = new Set(
+    extractRequiredMcpServerNames(allowedTools)
+      .filter((name) => name !== "*")
+      .map((name) => name.toLowerCase()),
+  );
+  if (expected.size === 0) return [];
+  return configuredServerNames.filter(
+    (serverName) =>
+      expected.has(serverName.trim().toLowerCase()) ||
+      expected.has(toModelVisibleMcpNamePart(serverName).toLowerCase()),
+  );
 }
 
 function extractRequiredMcpServerName(tool: string): string | undefined {

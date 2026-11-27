@@ -41,7 +41,9 @@ function matchesInvocationRule(subject: string, ruleContent: string | undefined)
   if (!ruleContent) return true;
   if (ruleContent.endsWith(":*")) {
     const prefix = ruleContent.slice(0, -2);
-    return subject === prefix || subject.startsWith(`${prefix} `) || subject.startsWith(`${prefix}\t`);
+    return (
+      subject === prefix || subject.startsWith(`${prefix} `) || subject.startsWith(`${prefix}\t`)
+    );
   }
   if (ruleContent.includes("*")) return wildcardToRegExp(ruleContent).test(subject);
   return subject === ruleContent;

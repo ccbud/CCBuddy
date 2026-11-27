@@ -24,6 +24,7 @@ import {
   type CCbuddySessionTodoGroup,
   type CCbuddyWorkspaceRef,
   isMainAgentToolProjectionSource,
+  isConversationRealUserTurnStarter,
 } from "@ccbuddy/shared";
 import {
   EventReducer,
@@ -135,7 +136,7 @@ export async function buildSessionSnapshot(input: {
   };
 }
 
-async function mapSnapshotMessages(
+export async function mapSnapshotMessages(
   app: Pick<CCbuddyApp, "readToolResultArtifact">,
   messages: readonly MessageWithParts[],
 ) {
@@ -300,7 +301,6 @@ export function mapSessionInfo(input: {
     input.projection?.updatedAt.getTime() ??
     createdAt;
   return {
-    archivedAt: input.session?.time.archived,
     createdAt,
     mode: input.projection?.mode ?? input.app?.getMode?.() ?? "build",
     model: input.app ? optionalModelSelectionFromString(input.app.getModel()) : undefined,
@@ -395,6 +395,13 @@ export function shouldExposeSessionEventToProtocol(event: SessionEvent): boolean
 function mapSessionEventPayload(event: SessionEvent): unknown {
   const payload = event.payload;
   switch (event.type) {
+    case SessionEventType.TurnStarted: {
+      // 首条归因只走独立 V4 遥测；透传到旧协议会让 App 的 strict schema 拒绝整页事件。
+      // 只改映射副本，保留内部事件，避免影响持久化与 V4 admission。
+      const legacyPayload = { ...asRecord(payload) };
+      delete legacyPayload.isFirstMessage;
+      return legacyPayload;
+    }
     case SessionEventType.ModelRequest:
       return mapModelRequestPayload(payload);
     case SessionEventType.ModelNetworkStatus:
@@ -441,7 +448,13 @@ function mapToolCallStartedPayload(
   payload: unknown,
   eventTimestamp: Date,
 ): Record<string, unknown> {
-  const record = asRecord(payload);
+  // 修复原因（2026-11-06 PLM-JARVIS-2 的运行时证据；该用例的示例插件 Jarvis 已迁出到市场仓库，用例已删除，
+  // 回归由 tests/session-mapper-legacy-strip.test.ts 守住。当时 App 的 readSession(view:"summary") 报 ZodError，
+  // events.N.payload 有多余的键 readOnly、sideEffectScope）：bc4d317e93 给 ToolCallStartedPayload 加了解析后的
+  // 副作用能力，这里整体 spread，两个字段漏进 strict 的 tool.updated(started)。App 读事件是整页 safeParse，
+  // 一条失败整页失败：调用过工具、正在运行的会话读不到 executionId，中断不了。
+  // 与 mapPermissionRequestedPayload 的剥离同理：只改 App 的 schema 保护不了已经装出去的旧桌面，所以在源头剥掉。
+  const { readOnly: _readOnly, sideEffectScope: _sideEffectScope, ...record } = asRecord(payload);
   return {
     ...record,
     // ToolCallStarted 的 startedAt 来自 runtime Date 对象；协议跨进程后必须是
@@ -857,9 +870,7 @@ function contextCacheUsageFromMessages(
   };
 }
 
-function mapPendingPermission(
-  permission: PendingPermission,
-): CCbuddyPendingPermission {
+function mapPendingPermission(permission: PendingPermission): CCbuddyPendingPermission {
   // display / optionsPolicy 刻意不进 legacy v3 输出。
   // 根因不是"扩 schema 只能单向兼容"，而是 strict schema 随 packages/shared 打进每个桌面端
   // 的产物：今天把 ccbuddyPendingPermissionSchema（shared/src/ccbuddy-protocol/index.ts:1139）和
@@ -886,12 +897,16 @@ function mapPendingPermission(
   };
 }
 
-function mapPermissionRequestedPayload(
-  payload: unknown,
-): Record<string, unknown> {
+function mapPermissionRequestedPayload(payload: unknown): Record<string, unknown> {
   // 同 mapPendingPermission：这个 payload 是整体 spread 出去的，新字段必须在这里显式解构
   // 剔除，否则会直接漏进 strict 的 ccbuddyPermissionRequestedEventPayloadSchema。
-  const { display: _display, optionsPolicy, ...record } = asRecord(payload);
+  // fullAccessSupported（adf550c6e6，审批里「授予完全访问」）同样只给 v4：legacy 剥掉，原因见上面 started 的注释。
+  const {
+    display: _display,
+    optionsPolicy,
+    fullAccessSupported: _fullAccessSupported,
+    ...record
+  } = asRecord(payload);
   const toolName = stringValue(record.toolName) ?? "unknown";
   return {
     ...record,
@@ -1019,8 +1034,10 @@ function withGoalSummaryTitleFallback(
   if (!target || target.summaryTitle || !session?.title) {
     return projection;
   }
+  // 只取真实用户输入：SessionStart hook 的上下文写在首条 prompt 之前，按时间它才是最早的 user 行。
+  // 修复原因：只按 role 取最早一行时会取到这条隐藏提醒，正文对不上 goal，首轮标题补不回来。
   const firstUserMessage = messages
-    .filter((message) => message.info.role === "user")
+    .filter(isConversationRealUserTurnStarter)
     .sort(compareMessagesByCreatedTime)[0];
   if (
     !firstUserMessage ||

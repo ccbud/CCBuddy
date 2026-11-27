@@ -6,7 +6,10 @@
 
 const DISPLAY_TRUNCATION_SUFFIX = "\n...[truncated]";
 
-export function boundDisplayText(value: string, maxBytes: number): { value: string; truncated: boolean } {
+export function boundDisplayText(
+  value: string,
+  maxBytes: number,
+): { value: string; truncated: boolean } {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) {
     return { value, truncated: false };
   }

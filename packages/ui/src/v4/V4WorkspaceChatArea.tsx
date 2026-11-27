@@ -26,21 +26,24 @@ import type {
 import { logger } from "@/logger.js";
 import {
   effectiveFocusedPaneId,
-  MAX_WORKBENCH_PANES,
   paneWorkspaceKey,
   PRIMARY_LEAF,
   usePaneLayoutStore,
   V4_PRIMARY_PANE_ID,
-  type PaneSplitSide,
   type PaneWorkspaceScope,
 } from "@/v4/paneLayoutStore.js";
-import { collectWorkbenchLayout, dividerStyle, SPLIT_VAR_PREFIX } from "@/v4/workbenchLayout.js";
+import {
+  collectWorkbenchLayout,
+  dividerStyle,
+  FULL_WORKBENCH_RECT,
+  SPLIT_VAR_PREFIX,
+} from "@/v4/workbenchLayout.js";
+import { useConversationPanePresentation } from "@/side-pane-full-view/index.js";
 import { WorkbenchLeafPane, type WorkbenchShellBinding } from "@/v4/WorkbenchPane.js";
 import { WorkbenchSplitDivider } from "@/v4/WorkbenchSplitDivider.js";
-import type { ConversationDropTargetController } from "@/v4/composer/conversationDropTarget.js";
+import { type RegisterConversationDropTarget } from "@/v4/composer/conversationDropTarget.js";
 import type {
   ChatSearchResultHighlightRequest,
-  ChatViewSummaryPanelVariant,
   ConversationFindMatchState,
 } from "@/v4/legacyChatViewTypes.js";
 import {
@@ -50,21 +53,6 @@ import {
   useWorkbenchGroupStore,
   type WorkbenchSessionBinding,
 } from "@/v4/workbenchGroupStore.js";
-import type { WorkbenchSessionDragPayload } from "@/v4/workbenchDragDrop.js";
-import {
-  canPlaceWorkbenchSessionInSplit,
-  placeWorkbenchSessionInSplit,
-  type WorkbenchSessionTarget,
-} from "@/v4/workbenchSessionPlacement.js";
-
-function dragPayloadSessionTarget(payload: WorkbenchSessionDragPayload): WorkbenchSessionTarget {
-  return {
-    workspacePath: payload.workspacePath,
-    ...(payload.workspaceIdentity?.trim() ? { workspaceIdentity: payload.workspaceIdentity } : {}),
-    ...(payload.remoteSessionId ? { remoteSessionId: payload.remoteSessionId } : {}),
-    sessionId: payload.sessionId,
-  };
-}
 
 export interface V4WorkspaceChatAreaProps {
   workspacePath: string;
@@ -72,6 +60,8 @@ export interface V4WorkspaceChatAreaProps {
 
   isDesktop?: boolean;
   readOnly?: boolean;
+  readOnlyReason?: string;
+  allowEscapeStopOutsidePane?: boolean;
   /** Settings 等覆盖层打开时为 false，隐藏 Pane 不得消费一次性 Composer 请求。 */
   foregroundEnabled?: boolean;
   remoteSessionId?: string;
@@ -81,7 +71,7 @@ export interface V4WorkspaceChatAreaProps {
   activeSelectionSideChatSessionId?: string | null;
   provider?: CCbuddyProvider;
   /** primary pane createSession/fork 后接入既有选择路径（handleSelectTask）。 */
-  onSessionCreated?: (sessionId: string) => void;
+  onSessionCreated?: (sessionId: string, origin?: "draft-promotion") => void;
   /** primary pane 会话删除后回 draft（shell 起新草稿）。 */
   onSessionDeleted?: () => void;
   /**
@@ -90,19 +80,19 @@ export interface V4WorkspaceChatAreaProps {
    */
   draftComposerHeader?: ReactNode;
   /** 桌面轻量草稿标题栏复用主草稿 composer 的 drop controller。 */
-  onPrimaryDraftDropTargetControllerChange?: (
-    controller: ConversationDropTargetController | null,
-  ) => void;
+  onPrimaryDraftDropTargetControllerChange?: RegisterConversationDropTarget;
   gitSummary?: GitRepositorySummary | null;
   gitDirtyFileCount?: number;
   gitWorktreeReviewSourceId?: GitChangeSourceId | null;
   gitWorktreeChangeSummary?: { added: number; removed: number } | null;
   activeTaskChangeSummary?: CCbuddyTaskChangeSummary | null;
-  summaryPanelVariantOverride?: ChatViewSummaryPanelVariant | null;
-  onSummaryPanelVariantOverrideChange?: (variant: ChatViewSummaryPanelVariant | null) => void;
   onRefreshGit?: () => void;
   onOpenGitReview?: (sourceId?: GitChangeSourceId) => void;
-  onPaneActiveSessionChange?: (scope: PaneWorkspaceScope, sessionId: string) => void;
+  onPaneActiveSessionChange?: (
+    scope: PaneWorkspaceScope,
+    sessionId: string,
+    origin?: "draft-promotion",
+  ) => void;
   onOpenBrowserUrl?: (url: string) => void;
   onOpenAutomationsMain?: OpenAutomationsMain;
   onOpenCodeViewer?: (source: CodeViewerSource) => void;
@@ -145,6 +135,8 @@ export function V4WorkspaceChatArea({
   workspaceIdentity,
   isDesktop = false,
   readOnly = false,
+  readOnlyReason,
+  allowEscapeStopOutsidePane = false,
   foregroundEnabled = true,
   remoteSessionId,
   compactLayout = false,
@@ -160,8 +152,6 @@ export function V4WorkspaceChatArea({
   gitWorktreeReviewSourceId,
   gitWorktreeChangeSummary,
   activeTaskChangeSummary,
-  summaryPanelVariantOverride,
-  onSummaryPanelVariantOverrideChange,
   onRefreshGit,
   onOpenGitReview,
   onPaneActiveSessionChange,
@@ -194,7 +184,6 @@ export function V4WorkspaceChatArea({
   const paneBindings = usePaneLayoutStore((state) => state.panes);
   const paneFocusedPaneId = usePaneLayoutStore((state) => effectiveFocusedPaneId(state));
   // zustand action 引用稳定。
-  const splitPaneAction = usePaneLayoutStore((state) => state.splitPane);
   const closePaneAction = usePaneLayoutStore((state) => state.closePane);
   const confirmRestoredPaneSessionAction = usePaneLayoutStore(
     (state) => state.confirmRestoredPaneSession,
@@ -249,8 +238,10 @@ export function V4WorkspaceChatArea({
   }, [layout]);
 
   const paneCount = layout.leaves.length;
-  const showFocusIndicator = paneCount > 1;
-  const canSplit = paneCount < MAX_WORKBENCH_PANES;
+  const { presentation } = useConversationPanePresentation();
+  // 完整视图浮窗只容纳一个对话：旧的拆分布局只显示焦点 pane，其余隐藏但保持挂载。
+  const soloPaneId = presentation === "floating" && paneCount > 1 ? focusedPaneId : null;
+  const showFocusIndicator = paneCount > 1 && !soloPaneId;
 
   const shellScope = useMemo<PaneWorkspaceScope>(
     () => ({
@@ -259,11 +250,6 @@ export function V4WorkspaceChatArea({
       ...(remoteSessionId ? { remoteSessionId } : {}),
     }),
     [remoteSessionId, workspacePath, workspaceIdentity],
-  );
-  const placementShellBinding = useMemo<WorkbenchSessionBinding | null>(
-    () =>
-      primaryPaneSessionId ? { workspaceScope: shellScope, sessionId: primaryPaneSessionId } : null,
-    [primaryPaneSessionId, shellScope],
   );
 
   const shell = useMemo<WorkbenchShellBinding>(
@@ -274,6 +260,8 @@ export function V4WorkspaceChatArea({
       isDesktop,
       compactLayout,
       readOnly,
+      readOnlyReason,
+      allowEscapeStopOutsidePane,
       sessionId: primaryPaneSessionId,
       // primaryPaneSessionId 在 active task 被 split pane 接管时会刻意置空，
       // 辅助对话划词路由仍需保留 shell 真正的 active task id。
@@ -289,8 +277,6 @@ export function V4WorkspaceChatArea({
       gitWorktreeReviewSourceId,
       gitWorktreeChangeSummary,
       activeTaskChangeSummary: primaryPaneSessionId ? activeTaskChangeSummary : null,
-      summaryPanelVariantOverride,
-      onSummaryPanelVariantOverrideChange,
       onRefreshGit,
       onOpenGitReview,
       onOpenBrowserUrl,
@@ -323,6 +309,8 @@ export function V4WorkspaceChatArea({
       isDesktop,
       compactLayout,
       readOnly,
+      readOnlyReason,
+      allowEscapeStopOutsidePane,
       primaryPaneSessionId,
       activeSelectionSideChatSessionId,
       provider,
@@ -335,8 +323,6 @@ export function V4WorkspaceChatArea({
       gitWorktreeReviewSourceId,
       gitWorktreeChangeSummary,
       activeTaskChangeSummary,
-      summaryPanelVariantOverride,
-      onSummaryPanelVariantOverrideChange,
       onRefreshGit,
       onOpenGitReview,
       onOpenBrowserUrl,
@@ -532,41 +518,19 @@ export function V4WorkspaceChatArea({
     ],
   );
 
-  const canDropSession = useCallback(
-    (payload: WorkbenchSessionDragPayload) => {
-      return canPlaceWorkbenchSessionInSplit(
-        placementShellBinding,
-        dragPayloadSessionTarget(payload),
-        { mode: "drag", side: "right" },
-      );
-    },
-    [placementShellBinding],
-  );
-
-  const handleDropSession = useCallback(
-    (paneId: string, side: PaneSplitSide, payload: WorkbenchSessionDragPayload) => {
-      placeWorkbenchSessionInSplit(placementShellBinding, dragPayloadSessionTarget(payload), {
-        anchorPaneId: paneId,
-        mode: "drag",
-        side,
-      });
-    },
-    [placementShellBinding],
-  );
-
   return (
     <div ref={containerRef} style={containerStyle} className="relative h-full min-h-0 w-full">
       {layout.leaves.map((leaf) => (
         <WorkbenchLeafPane
           key={leaf.paneId}
           paneId={leaf.paneId}
-          rect={leaf.rect}
+          rect={soloPaneId ? FULL_WORKBENCH_RECT : leaf.rect}
+          hidden={soloPaneId !== null && leaf.paneId !== soloPaneId}
           // Settings 只把 workspace 设为 inert，Pane 之前仍保留 focused=true，
           // 会在隐藏状态提前消费 Plugin 试用的一次性预填。可见性并入 focus 后，
           // 请求只会由返回 workspace 后真正可交互的 Composer 消费。
           focused={foregroundEnabled && focusedPaneId === leaf.paneId}
           showFocusIndicator={showFocusIndicator}
-          canSplit={canSplit}
           shellWorkspaceKey={shellWorkspaceKey}
           binding={leaf.paneId === V4_PRIMARY_PANE_ID ? null : (panes[leaf.paneId] ?? null)}
           primaryBinding={
@@ -574,16 +538,13 @@ export function V4WorkspaceChatArea({
           }
           shell={shell}
           onFocusRequest={handleFocusRequest}
-          onSplit={compactLayout || activeGroup ? undefined : splitPaneAction}
           onClosePane={handleClosePane}
           onConfirmRestoredSession={handleConfirmRestoredSession}
           onBindSession={handleBindSession}
           onPaneActiveSessionChange={onPaneActiveSessionChange}
-          canDropSession={compactLayout ? undefined : canDropSession}
-          onDropSession={compactLayout ? undefined : handleDropSession}
         />
       ))}
-      {layout.dividers.map((divider) => (
+      {(soloPaneId ? [] : layout.dividers).map((divider) => (
         <WorkbenchSplitDivider
           key={divider.splitId}
           containerRef={containerRef}

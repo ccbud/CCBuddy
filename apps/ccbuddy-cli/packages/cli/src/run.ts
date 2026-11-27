@@ -1,4 +1,8 @@
 import { ToolSearchModeSchema } from "@ccbuddy/contracts";
+import {
+  STORAGE_MIGRATION_COMMAND,
+  storageMigrationReportSchema,
+} from "@ccbuddy/shared/sqlite-migrations";
 import { extractDisallowedToolsArgs, parseGlobalArgs } from "./arguments.js";
 import { createNodeLoggerFactory } from "@ccbuddy/adapters";
 import { getRuntimeInfo, type PresentationSurface } from "@ccbuddy/core";
@@ -18,6 +22,7 @@ import { loadBootstrapModule } from "./bootstrap-loader.js";
 import { runEmbeddedSearchCli } from "./internal-search/embedded-search-cli.js";
 import { runCommandsCommand } from "./commands-command.js";
 import { resolveCliCwd } from "./cwd.js";
+import { runLoginCommand, runLogoutCommand } from "./login-command.js";
 import { CLI_COMMAND_NAME, CLI_PROCESS_NAME } from "./process-name.js";
 import { isPluginHostInvocation, runPluginHostCommand } from "./plugin-host-command.js";
 import { isDwfChildInvocation, runDwfChildCommand } from "./dwf-child-command.js";
@@ -25,6 +30,7 @@ import { runPrompt } from "./prompt-command.js";
 import { runPluginsCommand, type PluginsCommandFlags } from "./plugins-command.js";
 import { runSkillsCommand } from "./skills-command.js";
 import { runTuiCommand } from "./tui-command.js";
+import { resolveBrowserStateSelection, validateBrowserStateFlags } from "./browser-state-option.js";
 import {
   DEFAULT_CLI_WORKFLOW_MODE,
   normalizeWorkflowModeOption,
@@ -46,6 +52,14 @@ const version = typeof __CLI_VERSION__ === "string" ? __CLI_VERSION__ : "0.0.0";
 const EMPTY_TARGET_ERROR = "--target requires non-empty text.";
 const DEFAULT_HEADLESS_PROMPT_MODE: CliPermissionMode = "yolo";
 const FORCE_MCS_SCOPE_ERROR = "--force-mcs can only be used with --prompt, --target, or tui.";
+const TOOLSEARCH_MODE_SCOPE_ERROR =
+  "--toolsearch-mode can only be used with --prompt, --target, or tui.";
+const TOTAL_TOKENS_REMINDER_SCOPE_ERROR =
+  "--total-tokens-reminder can only be used with --prompt, --target, or tui.";
+const TOTAL_TOKENS_REMINDER_VALUE_ERROR = "--total-tokens-reminder must be one of on, off.";
+const AGENT_ALWAYS_BACKGROUND_SCOPE_ERROR =
+  "--agent-always-background can only be used with --prompt, --target, or tui.";
+const AGENT_ALWAYS_BACKGROUND_VALUE_ERROR = "--agent-always-background must be one of on, off.";
 const TARGET_REPLACE_REQUIRES_TARGET_ERROR = "--target-replace requires --target.";
 const TARGET_CONFLICTS_WITH_PROMPT_ERROR =
   '--target cannot be used with --prompt. Use either --target <objective> or --prompt "/goal <objective>".';
@@ -298,6 +312,37 @@ const runCCbuddyProtocolCommand = async (
 };
 
 export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<number> => {
+  if (ctx.argv[0] === STORAGE_MIGRATION_COMMAND) {
+    try {
+      if (ctx.argv.length !== 1) throw new Error("storage-migrate accepts no arguments");
+      const migrateStorage =
+        deps.migrateStorage ??
+        (async () => {
+          // 复用正常启动的配置解析与存储入口，不初始化 Provider/MCP/Agent 运行态。
+          const { createConfig, resolvePath } = await import("@ccbuddy/adapters/config");
+          const { openStartupSqliteSessionStore } = await import("@ccbuddy/adapters/storage");
+          const config = createConfig({ env: deps.env ?? process.env });
+          const store = await openStartupSqliteSessionStore({
+            dbPath: resolvePath(config.config.storage.sessionDbPath),
+          });
+          try {
+            return store.migrationResult;
+          } finally {
+            store.close();
+          }
+        });
+      const report = storageMigrationReportSchema.parse({
+        version: 1,
+        kind: "storage-migrated",
+        ...(await migrateStorage()),
+      });
+      ctx.stdout.write(`${JSON.stringify(report)}\n`);
+      return 0;
+    } catch (error) {
+      ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
   if (ctx.argv[0] === "__internal-search") {
     return runEmbeddedSearchCli(ctx.argv.slice(1), {
       cwd: (deps.cwd ?? process.cwd)(),
@@ -378,6 +423,17 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     ctx.stderr.write(`${BROWSER_EXECUTABLE_REQUIRES_HEADLESS_ERROR}\n`);
     return 1;
   }
+  const browserStateExplicitPath = parsed.values["browser-state"] as string | undefined;
+  const browserStateDisabled = parsed.values["no-browser-state"] === true;
+  const browserStateFlagError = validateBrowserStateFlags({
+    browserUse,
+    explicitPath: browserStateExplicitPath,
+    disabled: browserStateDisabled,
+  });
+  if (browserStateFlagError) {
+    ctx.stderr.write(`${browserStateFlagError}\n`);
+    return 1;
+  }
 
   const resumeRequest: CliResumeRequest = {
     continueSession: parsed.values.continue === true,
@@ -414,6 +470,27 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     return 1;
   }
   const toolsearchMode = parsedToolsearchMode.data;
+  const totalTokensReminderOption = parsed.values["total-tokens-reminder"];
+  if (
+    totalTokensReminderOption !== undefined &&
+    totalTokensReminderOption !== "on" &&
+    totalTokensReminderOption !== "off"
+  ) {
+    ctx.stderr.write(`${TOTAL_TOKENS_REMINDER_VALUE_ERROR}\n`);
+    return 1;
+  }
+  const totalTokensReminder = totalTokensReminderOption === "on";
+  const agentAlwaysBackgroundOption = parsed.values["agent-always-background"];
+  if (
+    agentAlwaysBackgroundOption !== undefined &&
+    agentAlwaysBackgroundOption !== "on" &&
+    agentAlwaysBackgroundOption !== "off"
+  ) {
+    ctx.stderr.write(`${AGENT_ALWAYS_BACKGROUND_VALUE_ERROR}\n`);
+    return 1;
+  }
+  // 缺省开启：Agent 总在后台运行（07-subagent.md「CCbuddy 当前实现」）。
+  const agentAlwaysBackground = agentAlwaysBackgroundOption !== "off";
   const forceMcs = parsed.values["force-mcs"] === true;
   let targetRequest: CliTargetRequest | undefined;
   try {
@@ -486,15 +563,24 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
   }
   const workflowMode = workflowModeOption ?? DEFAULT_CLI_WORKFLOW_MODE;
 
+  // 只对本次启动生效的参数，作用域相同；报第一个用到的参数。
+  const launchOnlyScopeError = (
+    [
+      [parsed.values["toolsearch-mode"] !== undefined, TOOLSEARCH_MODE_SCOPE_ERROR],
+      [totalTokensReminderOption !== undefined, TOTAL_TOKENS_REMINDER_SCOPE_ERROR],
+      [agentAlwaysBackgroundOption !== undefined, AGENT_ALWAYS_BACKGROUND_SCOPE_ERROR],
+      [forceMcs, FORCE_MCS_SCOPE_ERROR],
+    ] as const
+  ).find(([used]) => used)?.[1];
   if (
-    forceMcs &&
+    launchOnlyScopeError &&
     !isForceMcsSupportedInvocation({
       positionals: parsed.positionals,
       prompt: parsed.values.prompt as string | undefined,
       targetRequest,
     })
   ) {
-    ctx.stderr.write(`${FORCE_MCS_SCOPE_ERROR}\n`);
+    ctx.stderr.write(`${launchOnlyScopeError}\n`);
     return 1;
   }
 
@@ -524,6 +610,28 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     },
   };
 
+  if (browserUse === "headless") {
+    const browserState = await resolveBrowserStateSelection({
+      explicitPath: browserStateExplicitPath,
+      disabled: browserStateDisabled,
+      launchCwd: (deps.cwd ?? process.cwd)(),
+      env,
+    });
+    if (!browserState.ok) {
+      ctx.stderr.write(`${browserState.error}\n`);
+      return 1;
+    }
+    for (const notice of browserState.notices) ctx.stderr.write(`${notice}\n`);
+    if (browserState.selection) {
+      options.browserState = browserState.selection;
+      commandDeps.logger?.info("Browser state file loaded", {
+        event: "cli.browser_state.loaded",
+        module: "cli",
+        ...browserState.logFields,
+      });
+    }
+  }
+
   if (typeof parsed.values.prompt === "string") {
     return await runPrompt(
       ctx,
@@ -539,6 +647,8 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       toolsearchMode,
       presentationSurface,
       workflowMode,
+      totalTokensReminder,
+      agentAlwaysBackground,
     );
   }
 
@@ -557,6 +667,8 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       toolsearchMode,
       presentationSurface,
       workflowMode,
+      totalTokensReminder,
+      agentAlwaysBackground,
     );
   }
 
@@ -579,9 +691,15 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     case "doctor":
       return runDoctor(ctx, options, workingDirectory);
     case "login":
+      return await runLoginCommand(
+        ctx,
+        options,
+        commandDeps,
+        parsed.values["no-browser"] === true,
+        parsed.positionals.slice(1),
+      );
     case "logout":
-      ctx.stderr.write("Account login is unavailable. Configure your own model provider.\n");
-      return 1;
+      return await runLogoutCommand(ctx, options, commandDeps);
     case "commands":
       return await runCommandsCommand(ctx, options, commandDeps, parsed.positionals.slice(1));
     case "plugin":
@@ -607,6 +725,8 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
         forceMcs,
         toolsearchMode,
         workflowMode,
+        totalTokensReminder,
+        agentAlwaysBackground,
       );
     default:
       ctx.stderr.write(`Unknown command: ${commandName(parsed.positionals)}\n\n`);

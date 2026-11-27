@@ -20,3 +20,9 @@ radii to the retained page plane, clearing them while a tweak panel is open with
 remounting the guest. Third-party MCP App style projection is unchanged.
 
 Reference projection accepts the Unicode JSON marker, `::visualize{path="..." title="..." mode="wide"}`, and `::visualize{"path":"...","title":"..."}`. The existing assistant directive parser locates boundaries; JSON decoding belongs only to Gen UI projection. All forms use the same strict reference schema, Markdown code exclusions, completion gate and original message offsets. Messages need no migration.
+
+Gen UI control styling projects dedicated host tokens independently of standard MCP accent variables. Typography and visible container radius nesting follow DESIGN.md; the shared visualize stylesheet provides standalone defaults. See `docs/specs/gen-ui-styles.md`.
+
+Model state travels as bounded `genUiContext` input metadata, never appended to user text.
+The CLI owns legacy-tail decoding and reminder projection; queued inputs retain the snapshot
+captured at admission. Empty arrays identify new-format input. See `docs/specs/gen-ui-model-context.md`.

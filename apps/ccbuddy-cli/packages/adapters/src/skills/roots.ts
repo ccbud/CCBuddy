@@ -2,21 +2,17 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { SkillRoot, SkillSource } from "@ccbuddy/contracts";
-import {
-  resolveCcBuddyDataRoot,
-  resolveWorkspaceStateRoot,
-} from "@ccbuddy/contracts/workspace-state";
 
 const GIT_MARKER = ".git";
 const HOME_PREFIX = "~/";
 const PRIORITY_STEP = 10;
 const SKILLS_DIR = "skills";
+const CCBUDDY_DIR = ".ccbuddy";
 const AGENTS_DIR = ".agents";
 
 export interface SkillRootResolutionOptions {
-  additionalDirectories?: readonly string[];
   homeDirectory?: string;
-  workspaceIdentity?: string;
+  additionalDirectories?: readonly string[];
   extraRoots?: string[];
   extraResolvedRoots?: SkillRoot[];
   includeCCbuddySkills?: boolean;
@@ -48,53 +44,28 @@ export async function resolveDefaultSkillRoots(
   }
 
   if (includeCCbuddy) {
-    roots.push(
-      root(
-        join(resolveCcBuddyDataRoot(options.homeDirectory), SKILLS_DIR),
-        "user",
-        "ccbuddy",
-        nextPriority(),
-      ),
-      root(join(home, AGENTS_DIR, SKILLS_DIR), "user", "agents", nextPriority()),
-    );
+    roots.push(...skillRootsForBase(home, "user", nextPriority));
   }
 
   const projectDirectories = await resolveProjectSkillDirectories(resolvedWorkingDirectory);
-  if (includeCCbuddy) {
-    roots.push(
-      root(
-        join(
-          resolveWorkspaceStateRoot(resolvedWorkingDirectory, {
-            baseDir: options.homeDirectory,
-            workspaceIdentity: options.workspaceIdentity,
-          }),
-          SKILLS_DIR,
-        ),
-        "project",
-        "ccbuddy",
-        nextPriority(),
-      ),
-    );
-  }
   for (const directory of projectDirectories) {
     if (includeCCbuddy) {
       roots.push(...skillRootsForBase(directory, "project", nextPriority));
     }
   }
 
-  if (includeCCbuddy) {
-    for (const directory of new Set(
-      (options.additionalDirectories ?? []).map((path) => resolve(path)),
-    )) {
-      if (directory === resolvedWorkingDirectory) continue;
-      roots.push(
-        ...skillRootsForBase(directory, "project", nextPriority).map((item) => ({
-          ...item,
-          namespace: basename(directory),
-        })),
-      );
-    }
+  for (const directory of new Set(
+    (options.additionalDirectories ?? []).map((path) => resolve(path)),
+  )) {
+    if (directory === resolvedWorkingDirectory) continue;
+    roots.push(
+      ...skillRootsForBase(directory, "project", nextPriority).map((item) => ({
+        ...item,
+        namespace: basename(directory),
+      })),
+    );
   }
+
   roots.push(...(options.extraResolvedRoots ?? []));
 
   return roots;
@@ -114,7 +85,8 @@ async function resolveProjectSkillDirectories(workingDirectory: string): Promise
   return directories;
 }
 
-async function findWorktreeRoot(workingDirectory: string): Promise<string | null> {
+/** 从工作目录向上找最近的 `.git`；项目 skill 根只扫到这一层。 */
+export async function findWorktreeRoot(workingDirectory: string): Promise<string | null> {
   let current = workingDirectory;
   while (true) {
     if (await pathExists(join(current, GIT_MARKER))) return current;
@@ -138,8 +110,12 @@ function skillRootsForBase(
   scope: SkillRoot["scope"],
   nextPriority: () => number,
 ): SkillRoot[] {
-  // 项目内只发现显式的兼容技能目录；CCbuddy 自己的状态位于应用数据根。
-  return [root(join(baseDirectory, AGENTS_DIR, SKILLS_DIR), scope, "agents", nextPriority())];
+  // 合并而不是 fallback：用户可能同时安装原生 `.ccbuddy` skill 和兼容 `.agents` skill。
+  // 同一级别仍保持 `.ccbuddy` 优先，后续同名按 root 顺序解析。
+  return [
+    root(join(baseDirectory, CCBUDDY_DIR, SKILLS_DIR), scope, "ccbuddy", nextPriority()),
+    root(join(baseDirectory, AGENTS_DIR, SKILLS_DIR), scope, "agents", nextPriority()),
+  ];
 }
 
 function root(

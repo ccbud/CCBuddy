@@ -1,6 +1,9 @@
 import {
   createDefaultFileWorkspaceHookTrustStore,
 } from "@ccbuddy/adapters/storage";
+import { resolveWorkspaceHookTrustIdentityForWorkspace } from "@ccbuddy/adapters/config";
+import { isRemoteWorkspaceIdentity } from "@ccbuddy/shared";
+import { readWorkspaceHookScriptState } from "@ccbuddy/shared/workspace-hook-discovery";
 import {
   InMemoryWorkspaceHookPolicyProvider,
   WorkspaceHookTrustCoordinator,
@@ -78,6 +81,14 @@ export function createWorkspaceHookRuntimeSecurity(input: {
     payload: WorkspaceHookAdmissionUpdatedPayload;
   }) => Promise<void>;
   emitReviewEvent?: (event: WorkspaceHookReviewLifecycleEvent) => Promise<void>;
+  /** 解析受管 worktree 数据根目录用（CCBUDDY_DATA_BASE_DIR）；缺省 process.env。 */
+  env?: Record<string, string | undefined>;
+  /**
+   * 会话 workspaceKey（本地 = workspacePath，远程 = identity）。AdmissionUpdated 与审核 request
+   * 对外只发它；snapshot.workspaceIdentity 是 Trust identity，只用于 record/policy/revision（D23）。
+   * 缺省回落 snapshot.workspaceIdentity。
+   */
+  workspaceKey?: string;
   logger: Logger;
   projectConfigPath?: string;
   policy?: WorkspaceHookPolicy;
@@ -93,6 +104,7 @@ export function createWorkspaceHookRuntimeSecurity(input: {
   homeDir?: string;
 }): WorkspaceHookRuntimeSecurity | undefined {
   if (!input.snapshot) return undefined;
+  const externalWorkspaceIdentity = input.workspaceKey ?? input.snapshot.workspaceIdentity;
   const policyProvider =
     input.policyProvider ?? new InMemoryWorkspaceHookPolicyProvider(input.policy);
   const coordinator = new WorkspaceHookTrustCoordinator({
@@ -127,9 +139,9 @@ export function createWorkspaceHookRuntimeSecurity(input: {
           payload: {
             pendingCount: state.pendingCount,
             bundleDigest: state.bundleDigest,
-            ...(state.workspaceIdentity
-              ? { workspaceIdentity: state.workspaceIdentity }
-              : {}),
+            // 修复原因（D23）：state.workspaceIdentity 来自 snapshot，是 Trust identity；受管 worktree 中
+            // 它是源仓库路径。UI Banner 用 workspaceKey 比较，发 Trust identity 会让提示条被隐藏。
+            workspaceIdentity: externalWorkspaceIdentity,
           },
         }).catch((error: unknown) => {
           input.logger.warn("Failed to emit WorkspaceHookAdmissionUpdated", {
@@ -146,6 +158,7 @@ export function createWorkspaceHookRuntimeSecurity(input: {
     logger: input.logger,
     ready,
     ...(onAdmissionStateChanged ? { onAdmissionStateChanged } : {}),
+    readScriptState: readWorkspaceHookScriptState,
     snapshot: input.snapshot,
   });
 
@@ -168,6 +181,20 @@ export function createWorkspaceHookRuntimeSecurity(input: {
       }),
       sessionId: input.sessionId,
       store: store as NonNullable<typeof store>,
+      // target 的 workspaceIdentity 是 workspaceKey：本地按路径解析 Trust identity。
+      // 修复原因（第三轮 CR-02）：远程 Trust identity 由 host 与执行目录构造，曾把整个 workspaceKey
+      // 当作路径传入，得到 host:/remote:… 而与 snapshot 永远不等，远程会话的审核与撤销全部失败。
+      // 远程 key 必须是本会话的 workspaceKey，再按本会话的执行目录解析；其他 key 原样返回，随后被判 mismatch。
+      workspaceKey: externalWorkspaceIdentity,
+      resolveTargetTrustIdentity: (workspaceKey) =>
+        isRemoteWorkspaceIdentity(workspaceKey) && workspaceKey !== externalWorkspaceIdentity
+          ? Promise.resolve(workspaceKey)
+          : resolveWorkspaceHookTrustIdentityForWorkspace({
+              ...(isRemoteWorkspaceIdentity(workspaceKey)
+                ? { workspacePath: input.workingDirectory, workspaceIdentity: workspaceKey }
+                : { workspacePath: workspaceKey }),
+              ...(input.env ? { env: input.env } : {}),
+            }),
     });
   }
 

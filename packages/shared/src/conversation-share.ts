@@ -1,17 +1,22 @@
 import { z } from "zod";
+import {
+  conversationShareContentBlockSchema,
+  SHARE_CONTENT_LIMITS,
+} from "./conversation-share-content.js";
 
+import { toZhOrEnLocale } from "./locale.js";
 import type { Locale } from "./protocol.js";
 import {
   conversationArtifactTypeSchema,
   conversationRowSchema,
-  type ConversationRow,
+  type WireConversationRow,
 } from "./ccbuddy-protocol-v4/rows.js";
 
 /**
  * 分享站按语言分路径：中文站带 /cn 前缀，英文站是裸 /share。
  * web 路由、发布回链改写、导入回链共用这一份定义，避免三处各写一遍前缀。
  */
-const CONVERSATION_SHARE_LOCALE_PATH_PREFIX: Readonly<Record<Locale, string>> = {
+const CONVERSATION_SHARE_LOCALE_PATH_PREFIX: Readonly<Record<"zh-CN" | "en-US", string>> = {
   "zh-CN": "/cn",
   "en-US": "",
 };
@@ -24,7 +29,7 @@ const CONVERSATION_SHARE_PATHNAME_RE = /^\/(cn\/)?share\/([^/]+)\/?$/u;
  */
 export function parseConversationSharePathname(
   pathname: string,
-): { rawCode: string; locale: Locale } | null {
+): { rawCode: string; locale: "zh-CN" | "en-US" } | null {
   const match = CONVERSATION_SHARE_PATHNAME_RE.exec(pathname);
   if (!match) return null;
   return { rawCode: match[2]!, locale: match[1] ? "zh-CN" : "en-US" };
@@ -46,7 +51,8 @@ export function localizeConversationShareUrl(shareUrl: string, locale: Locale): 
   }
   const parsed = parseConversationSharePathname(url.pathname);
   if (!parsed) return shareUrl;
-  url.pathname = `${CONVERSATION_SHARE_LOCALE_PATH_PREFIX[locale]}/share/${parsed.rawCode}`;
+  // 分享站只有中英两套路径；非中文界面语言走英文站。
+  url.pathname = `${CONVERSATION_SHARE_LOCALE_PATH_PREFIX[toZhOrEnLocale(locale)]}/share/${parsed.rawCode}`;
   return url.toString();
 }
 
@@ -90,11 +96,11 @@ export function isConversationShareSchemaVersionSupported(version: number): bool
  * 计数交给调用方转成「部分内容需要更新 CCbuddy 查看」的软提示，不能静默。
  */
 export function decodeConversationShareRows(rows: readonly unknown[]): {
-  rows: ConversationRow[];
+  rows: WireConversationRow[];
   unsupportedCount: number;
   unsupportedKinds: string[];
 } {
-  const decoded: ConversationRow[] = [];
+  const decoded: WireConversationRow[] = [];
   const unsupportedKinds: string[] = [];
   let unsupportedCount = 0;
   for (const row of rows) {
@@ -157,7 +163,11 @@ const conversationShareAllowedArtifactShapeSchema = z.object({
 });
 
 const conversationShareCapabilitiesBaseFields = {
+  content_block_versions: z.record(z.string(), z.number().int().positive()).optional(),
   ttl_ms: z.number().int().positive(),
+  // 创建者可选的有效期范围。旧服务端不返回这两个字段，客户端此时不提供有效期选择、也不发送 ttl_ms。
+  min_ttl_ms: z.number().int().positive().optional(),
+  max_ttl_ms: z.number().int().positive().optional(),
   max_rows: z.number().int().positive(),
   max_payload_bytes: z.number().int().positive(),
   max_artifact_count: z.number().int().nonnegative(),
@@ -253,6 +263,10 @@ export const conversationSharePreparationRequestSchema = z
     access_mode: conversationShareAccessModeSchema,
     payload_sha256: conversationShareSha256Schema,
     artifact_count: z.number().int().nonnegative(),
+    /** 分享有效时长；省略时服务端使用默认值。只在 capabilities 声明了范围时发送。 */
+    ttl_ms: z.number().int().positive().optional(),
+    /** 来源会话 ID（不透明值，不含路径），只回到 owner 的管理列表用于「跳转对话」。 */
+    source_session_id: z.string().trim().min(1).max(128).optional(),
   })
   .strict();
 export type ConversationSharePreparationRequest = z.infer<
@@ -290,6 +304,7 @@ export type ConversationShareArtifactUpload = z.infer<
 >;
 
 const conversationShareIntegrityFields = {
+  content_blocks_sha256: conversationShareSha256Schema.optional(),
   projection_sha256: conversationShareSha256Schema,
   artifact_set_sha256: conversationShareSha256Schema,
 } as const;
@@ -313,6 +328,11 @@ export const conversationShareConfirmRequestSchema = z
     projection: z
       .object({
         rows: z.array(conversationRowSchema).min(1),
+        content_blocks: z
+          .array(conversationShareContentBlockSchema)
+          .min(1)
+          .max(SHARE_CONTENT_LIMITS.blocks)
+          .optional(),
       })
       .strict(),
     integrity: conversationShareOutboundIntegritySchema,
@@ -336,7 +356,11 @@ const conversationSharePublicMetadataSchema = z.object({
 
 export const conversationSharePreviewArtifactSchema =
   conversationShareInboundArtifactDescriptorSchema.extend({
-    url: z.string().url(),
+    // 公开 URL 会进入链接、媒体及 fetch，不允许 API 响应启动其它协议。
+    url: z
+      .string()
+      .url()
+      .refine((url) => /^https?:\/\//iu.test(url)),
     url_expires_at: z.number().int().nonnegative(),
   });
 
@@ -350,12 +374,13 @@ export const conversationSharePreviewDataSchema = z.object({
   schema_version: conversationShareSchemaVersionSchema,
   share: conversationSharePublicMetadataSchema,
   rows: z.array(z.unknown()),
+  content_blocks: z.array(z.unknown()).optional(),
   artifacts: z.array(conversationSharePreviewArtifactSchema),
   integrity: conversationShareIntegritySchema,
 });
 export type ConversationSharePreviewWire = z.infer<typeof conversationSharePreviewDataSchema>;
 export type ConversationSharePreview = Omit<ConversationSharePreviewWire, "rows"> & {
-  rows: ConversationRow[];
+  rows: WireConversationRow[];
   /** 本端认不出、已跳过的行数；>0 时 UI 必须给「部分内容需要更新 CCbuddy 查看」软提示。 */
   unsupportedRowCount: number;
 };
@@ -372,7 +397,7 @@ export type ConversationShareContinuationRequest = z.infer<
 
 export const conversationShareContinuationArtifactSchema =
   conversationShareInboundArtifactDescriptorSchema.extend({
-    download_url: z.string().url(),
+    download_url: conversationSharePreviewArtifactSchema.shape.url,
     download_url_expires_at: z.number().int().nonnegative(),
   });
 
@@ -384,6 +409,7 @@ export const conversationShareContinuationDataSchema = z.object({
     share_id: z.string().trim().min(1),
   }),
   rows: z.array(z.unknown()),
+  content_blocks: z.array(z.unknown()).optional(),
   artifacts: z.array(conversationShareContinuationArtifactSchema),
   integrity: conversationShareIntegritySchema,
 });
@@ -391,7 +417,7 @@ export type ConversationShareContinuationWire = z.infer<
   typeof conversationShareContinuationDataSchema
 >;
 export type ConversationShareContinuation = Omit<ConversationShareContinuationWire, "rows"> & {
-  rows: ConversationRow[];
+  rows: WireConversationRow[];
   /** 未解析的原始 rows：落盘只读副本时按原样保存，避免未知字段被本端永久抹掉。 */
   rawRows: readonly unknown[];
   /** 本端认不出、已跳过的行数；>0 时 UI 必须给「部分内容需要更新 CCbuddy 查看」软提示。 */
@@ -417,8 +443,92 @@ export const conversationShareKnownErrorCodeSchema = z.union([
   z.literal(3213),
   z.literal(3214),
   z.literal(3215),
+  z.literal(3216),
+  z.literal(3217),
+  z.literal(3218),
 ]);
 export type ConversationShareApiErrorCode = z.infer<typeof conversationShareKnownErrorCodeSchema>;
+
+const SHARE_ERROR_KIND_BY_CODE = {
+  3001: "invalid_contract",
+  3002: "rate_limited",
+  3200: "feature_disabled",
+  3201: "authentication_required",
+  3203: "unsupported_schema_version",
+  3204: "invalid_contract",
+  3205: "invalid_conversation",
+  3206: "disclosure_required",
+  3207: "unsafe_structure",
+  3208: "artifact_not_allowed",
+  3209: "limit_exceeded",
+  3210: "upload_incomplete",
+  3211: "not_found",
+  3212: "expired",
+  3213: "authentication_required",
+  3214: "import_not_allowed",
+  3215: "safety_check_pending",
+  3216: "safety_check_rejected",
+  3217: "safety_check_unavailable",
+  3218: "revoked",
+} as const satisfies Record<ConversationShareApiErrorCode, string>;
+
+export type ConversationShareErrorKind =
+  | (typeof SHARE_ERROR_KIND_BY_CODE)[ConversationShareApiErrorCode]
+  | "service_unavailable"
+  | "network"
+  | "unknown";
+
+/** 桌面与网页共享分类；错误码表达业务语义，未知码仍按 HTTP 判断服务故障。 */
+export function classifyConversationShareError(
+  status: number,
+  code?: number,
+): ConversationShareErrorKind {
+  const known = conversationShareKnownErrorCodeSchema.safeParse(code);
+  if (known.success) return SHARE_ERROR_KIND_BY_CODE[known.data];
+  if (status === 401) return "authentication_required";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "service_unavailable";
+  if (status === 403 || status === 404) return "not_found";
+  if (status === 410) return "expired";
+  if (status === 413) return "limit_exceeded";
+  // HTTP 拒绝与响应契约损坏分开；仅成功响应缺少契约时归为 invalid_contract。
+  return status >= 200 && status < 300 && code === undefined ? "invalid_contract" : "unknown";
+}
+
+const rejectionCoordinateSchema = z
+  .string()
+  .min(1)
+  .max(65)
+  .regex(/^[A-Za-z0-9_.[\]~-]+$/u);
+// artifact_id 的协议上限是 128；服务端清洗后可能再追加一个 `~`。不能沿用 65 的坐标上限，
+// 否则长 ID 会被整段丢弃，客户端反查不到是哪个文件。
+const rejectionArtifactIdSchema = z
+  .string()
+  .min(1)
+  .max(129)
+  .regex(/^[A-Za-z0-9_.[\]~-]+$/u);
+export const conversationShareRejectionSchema = z.object({
+  rule: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z][a-z0-9_]*$/u),
+  path: rejectionCoordinateSchema.optional().catch(undefined),
+  field: rejectionCoordinateSchema.optional().catch(undefined),
+  row_index: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().catch(undefined),
+  row_kind: rejectionCoordinateSchema.optional().catch(undefined),
+  /** 服务端拒绝涉及的产物（发布方自定的 artifact_id），客户端据此反查文件名与所属轮次。 */
+  artifact_id: rejectionArtifactIdSchema.optional().catch(undefined),
+  /** 超限类规则的实际值与上限。 */
+  actual: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().catch(undefined),
+  limit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().catch(undefined),
+});
+export type ConversationShareRejection = z.infer<typeof conversationShareRejectionSchema>;
+
+export const conversationShareRequestIdSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9._:-]{1,128}$/u);
 
 /**
  * 错误信封对 code 不设枚举：后端上线一个新业务码时，老客户端应该照样能拿到服务端 msg，
@@ -427,8 +537,88 @@ export type ConversationShareApiErrorCode = z.infer<typeof conversationShareKnow
 export const conversationShareErrorEnvelopeSchema = z.object({
   code: z.number().int(),
   msg: z.string(),
+  logid: conversationShareRequestIdSchema.optional().catch(undefined),
+  data: conversationShareRejectionSchema.optional().catch(undefined),
 });
 export type ConversationShareErrorEnvelope = z.infer<typeof conversationShareErrorEnvelopeSchema>;
+
+/**
+ * 分享有效期选项：默认值与可选范围都来自执行发布的同一份 capabilities。
+ * 服务端未声明范围时返回 undefined，调用方不显示选择也不发送 ttl_ms。
+ */
+export interface ConversationShareTtlOptions {
+  defaultMs: number;
+  minMs: number;
+  maxMs: number;
+}
+
+export function resolveConversationShareTtlOptions(
+  capabilities: Pick<ConversationShareCapabilities, "ttl_ms" | "min_ttl_ms" | "max_ttl_ms">,
+): ConversationShareTtlOptions | undefined {
+  const { ttl_ms: defaultMs, min_ttl_ms: minMs, max_ttl_ms: maxMs } = capabilities;
+  if (minMs === undefined || maxMs === undefined || minMs > maxMs) return undefined;
+  if (defaultMs < minMs || defaultMs > maxMs) return undefined;
+  return { defaultMs, minMs, maxMs };
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** 发布与管理页共用的有效期预设；只展示落在服务端范围内的值，并并入服务端默认值。 */
+export const CONVERSATION_SHARE_TTL_PRESETS_MS: readonly number[] = [
+  HOUR_MS,
+  DAY_MS,
+  7 * DAY_MS,
+  30 * DAY_MS,
+];
+
+export function conversationShareTtlChoices(options: ConversationShareTtlOptions): number[] {
+  const choices = new Set(
+    CONVERSATION_SHARE_TTL_PRESETS_MS.filter(
+      (value) => value >= options.minMs && value <= options.maxMs,
+    ),
+  );
+  choices.add(options.defaultMs);
+  return [...choices].sort((left, right) => left - right);
+}
+
+/** 管理列表每页条数；与服务端默认值一致，显式传入避免依赖服务端默认。Web 与桌面共用。 */
+export const CONVERSATION_SHARE_MANAGE_PAGE_SIZE = 20;
+
+/** 管理 API 的状态只会是 active/revoked；其它取值视为契约错误。 */
+export const conversationShareManagedStatusSchema = z.enum(["active", "revoked"]);
+export type ConversationShareManagedStatus = z.infer<typeof conversationShareManagedStatusSchema>;
+
+export const conversationShareManagedItemSchema = z.object({
+  share_id: z.string().trim().min(1),
+  share_code: z.string().trim().min(1),
+  share_url: z.string().url(),
+  title: z.string(),
+  access_mode: conversationShareAccessModeSchema,
+  status: conversationShareManagedStatusSchema,
+  created_at: z.number().int().nonnegative(),
+  expires_at: z.number().int().nonnegative(),
+  /** 发布时上传的来源会话 ID；旧服务端或旧分享没有该字段。 */
+  source_session_id: z.string().min(1).optional(),
+});
+export type ConversationShareManagedItem = z.infer<typeof conversationShareManagedItemSchema>;
+
+export const conversationShareManagedListSchema = z.object({
+  items: z.array(conversationShareManagedItemSchema),
+  next_cursor: z.string().min(1).optional(),
+});
+export type ConversationShareManagedList = z.infer<typeof conversationShareManagedListSchema>;
+
+// 出站请求保持 strict；至少带一个字段由调用方保证。
+export const conversationShareManagedUpdateRequestSchema = z
+  .object({
+    access_mode: conversationShareAccessModeSchema.optional(),
+    ttl_ms: z.number().int().positive().optional(),
+  })
+  .strict();
+export type ConversationShareManagedUpdateRequest = z.infer<
+  typeof conversationShareManagedUpdateRequestSchema
+>;
 
 export function createConversationShareSuccessEnvelopeSchema<TSchema extends z.ZodType>(
   dataSchema: TSchema,

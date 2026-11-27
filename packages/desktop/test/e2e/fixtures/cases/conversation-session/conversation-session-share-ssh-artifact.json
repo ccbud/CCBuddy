@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-share-ssh-artifact",
+  "spec": "./test/e2e/conversation-session/remote/execution/conversation-session-share-ssh-artifact.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-share-ssh-artifact.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-share-ssh-write",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "回放只固定模型决策；Write、远端产物读取和分享发布均走真实链路。"
+    },
+    {
+      "id": "conversation-share-ssh-main",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "回放只固定模型决策；Write、远端产物读取和分享发布均走真实链路。"
+    }
+  ]
+}

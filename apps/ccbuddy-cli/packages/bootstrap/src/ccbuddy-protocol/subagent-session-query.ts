@@ -11,15 +11,28 @@ import {
   type ToolPart,
   STREAM_RECOVERY_DISCARDED_ERROR_NAME,
 } from "@ccbuddy/contracts";
+import {
+  hasStructuredSubagentFacts,
+  readLegacySubagentRunMetadata,
+  readSubagentRunMetadata,
+  type SubagentRunMetadata,
+} from "@ccbuddy/core";
 import type { CCbuddySessionEndedSubagent, CCbuddySessionRunningSubagent } from "@ccbuddy/shared";
 
 const SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task", "subagent"]);
 const CANCELLATION_PATTERN = /abort|cancel|interrupt|stop/i;
+const BACKGROUND_LAUNCH_ACK_PREFIX = "Async agent launched successfully.";
 
 interface SubagentCandidate {
+  parentMessageIds?: string[];
   agentId?: string;
   childSessionId: string;
-  runInBackground: boolean;
+  /** 父 tool part 记录的是后台启动（part.metadata.background；旧 part 是 launch ACK 前缀）：它的 completed 只表示「已启动」，不是 child 的终态。 */
+  launchAcknowledged: boolean;
+  /** 父 tool part 没有本次新增的结构化事实（升级前写下），按原来的方式读 launch ACK 文本。 */
+  legacyReceipt: boolean;
+  /** 后台启动时定下的输出文件（part.metadata.outputFile；旧 part 取 launch ACK 的 output_file；metadata.json 在同一目录）。 */
+  outputFile?: string;
   output: Record<string, unknown> | null;
   part: ToolPart;
   subagentType: string;
@@ -56,6 +69,17 @@ export interface ProjectSessionSubagentsInput {
   childProjectionsById: ReadonlyMap<string, SessionProjection>;
   parentProjection?: SessionProjection;
   parentEvents?: readonly SessionEvent[];
+  /**
+   * 当前 runtime 进程的启动时间（`performance.timeOrigin`）。给出时，启动早于本进程、且本进程
+   * 没有任何活事实的 Agent 判为上一代 runtime 的遗留，不再算 running。缺省时不做该判断。
+   */
+  runtimeStartedAt?: number;
+  /**
+   * 上一代 runtime 遗留候选的 metadata.json（按 childSessionId），由异步层用
+   * `loadPreviousRuntimeRunMetadata` 预读。它是唯一跨进程保留的终态：新进程读不到旧进程内存里的
+   * SubagentStopped，正常关闭时被统一停止的 Agent 只能从这里认出 stopped。
+   */
+  previousRuntimeRunMetadata?: ReadonlyMap<string, SubagentRunMetadata>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -85,6 +109,7 @@ function parseJsonObject(value: string | undefined): Record<string, unknown> | n
   }
 }
 
+// 只给没有结构化事实的旧 part 用：与引入 part.metadata 事实之前的读法一模一样。
 function agentIdFromLaunchAcknowledgement(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return nonEmptyString(value.match(/(?:^|\n)agentId:\s*([^\s(]+)/)?.[1]);
@@ -167,14 +192,20 @@ function candidateFromToolPart(
   const input = asRecord(part.state.input);
   const stateMetadata = "metadata" in part.state ? asRecord(part.state.metadata) : {};
   const metadata = { ...asRecord(part.metadata), ...stateMetadata };
-  const agentId =
-    stringField(output ?? {}, "agentId") ??
-    // 后台 Agent 的持久化 launch ACK 是纯文本，cold query 未携带
-    // 临时 spawn event 时无法恢复 childSessionId，导致真实 running Agent 被整条跳过。
-    // 标准 ACK 自带 agentId，按该稳定字段恢复，与 runtime 的 session id 规则对齐。
-    agentIdFromLaunchAcknowledgement(completedOutput) ??
-    stringField(metadata, "agentId") ??
-    relation?.agentId;
+  // 修复原因（2026-11-10）：原来按启动回执前缀判断后台启动、用正则从回执文本里取 agentId 与 output_file；
+  // 文本格式会变、超长会被截断，父代理没有 Read / Bash 时回执不带 output_file 行。现在结算把身份与后台
+  // 启动事实写进 part.metadata（agentId / childSessionId / outputFile 一起写，后台再加 background），先读它们。
+  // 修复原因（2026-11-11，!3624 评审 CR-01）：升级前写下的旧 part 没有这些字段，只读结构化字段时旧 Agent
+  // 在子会话目录里不再列出；没有这些字段时按原来的逻辑读回执文本，与之前一模一样。
+  const legacyReceipt = !hasStructuredSubagentFacts(part.metadata);
+  const agentId = legacyReceipt
+    ? (stringField(output ?? {}, "agentId") ??
+      agentIdFromLaunchAcknowledgement(completedOutput) ??
+      stringField(metadata, "agentId") ??
+      relation?.agentId)
+    : (stringField(metadata, "agentId") ??
+      stringField(output ?? {}, "agentId") ??
+      relation?.agentId);
   const childSessionId =
     stringField(output ?? {}, "childSessionId") ??
     stringField(metadata, "childSessionId") ??
@@ -188,9 +219,20 @@ function candidateFromToolPart(
     relation?.description ??
     stringField(input, "prompt") ??
     "Subagent";
+  const launchAcknowledged = legacyReceipt
+    ? completedOutput?.startsWith(BACKGROUND_LAUNCH_ACK_PREFIX) === true
+    : part.state.status === "completed" && metadata.background === true;
+  const outputFile = !launchAcknowledged
+    ? undefined
+    : legacyReceipt
+      ? // 取到行尾：Windows 的用户目录可能带空格。
+        nonEmptyString(completedOutput?.match(/(?:^|\n)output_file:[ \t]*([^\r\n]+)/)?.[1]?.trim())
+      : stringField(metadata, "outputFile");
   return {
     childSessionId,
-    runInBackground: input.run_in_background === true,
+    launchAcknowledged,
+    legacyReceipt,
+    ...(outputFile ? { outputFile } : {}),
     part,
     output,
     agentId: agentId ?? part.callID,
@@ -223,10 +265,32 @@ function collectCandidates(
     for (const part of message.parts) {
       if (part.type !== "tool") continue;
       const candidate = candidateFromToolPart(part, relations.get(part.callID));
-      if (candidate) candidates.set(candidate.childSessionId, candidate);
+      if (candidate) {
+        const previous = candidates.get(candidate.childSessionId);
+        candidates.set(candidate.childSessionId, {
+          ...candidate,
+          parentMessageIds: [
+            ...new Set([...(previous?.parentMessageIds ?? []), String(message.info.id)]),
+          ],
+        });
+      }
     }
   }
   return [...candidates.values()];
+}
+
+/** 与身份候选共用解析和活动分支筛选，不能用投影行是否存在代替持久来源。 */
+export function collectSubagentParentMessageIds(
+  session: SessionInfo,
+  messages: readonly MessageWithParts[],
+  parentEvents?: readonly SessionEvent[],
+): Record<string, string[]> {
+  return Object.fromEntries(
+    collectCandidates(session, messages, parentEvents).map((candidate) => [
+      candidate.childSessionId,
+      candidate.parentMessageIds ?? [],
+    ]),
+  );
 }
 
 export function collectSubagentChildSessionIds(
@@ -289,11 +353,40 @@ function findBackgroundTask(
   );
 }
 
+/**
+ * 上一代 runtime 进程启动、且之后再没有活动的 Agent。child 只在启动它的进程里运行，进程退出
+ * （崩溃、被杀）后不可能仍在跑；新进程的 registry 是空的，持久化的 launch ACK / running part
+ * 又不会被改写，旧逻辑因此把它们永久显示成 running（停止按钮也找不到目标）。
+ * 在本进程里被 SendMessage 恢复过的 Agent 带本进程的 spawn 事件，startedAt 晚于进程启动；
+ * child session 在本进程启动后仍有更新时（另一个进程正在跑它）同样不判为遗留。
+ */
+function candidateLaunchedAt(candidate: SubagentCandidate): number | undefined {
+  return (
+    candidate.startedAt ??
+    ("time" in candidate.part.state ? candidate.part.state.time.start : undefined)
+  );
+}
+
+function isFromPreviousRuntime(input: {
+  candidate: SubagentCandidate;
+  childSession: SessionInfo;
+  runtimeStartedAt?: number;
+}): boolean {
+  if (input.runtimeStartedAt === undefined) return false;
+  const launchedAt = candidateLaunchedAt(input.candidate);
+  return (
+    launchedAt !== undefined &&
+    launchedAt < input.runtimeStartedAt &&
+    input.childSession.time.updated < input.runtimeStartedAt
+  );
+}
+
 function runningStatus(input: {
   background?: BackgroundTaskInfo;
   candidate: SubagentCandidate;
   childOutcome: ReturnType<typeof lastChildOutcome>;
   childProjection?: SessionProjection;
+  fromPreviousRuntime: boolean;
   parentProjection?: SessionProjection;
 }): CCbuddySessionRunningSubagent["status"] | undefined {
   if (input.background?.status === "running") {
@@ -304,14 +397,19 @@ function runningStatus(input: {
   // async Agent 的父 tool part 在 launch ACK 后立即标成 completed，
   // partial parent projection 又可能暂时不带仍运行的 background task。此时仅按
   // tool part 会把 child 误判为 ended，并在 cold seed 时清空 V4 running 行。
-  // child 还没有终态输出、spawn relation 也没有 stop 时，background input 本身
+  // child 还没有终态输出、spawn relation 也没有 stop 时，后台启动事实本身
   // 是可恢复的 running 事实；真实终态仍由 background/child projection/outcome 优先。
+  // 修复原因：这里原来读原始输入的 run_in_background === true。Agent 总在后台运行后输入里没有
+  // 这个字段，冷启动 seed 时运行中的后台子代理被判为已结束；现在读结构化的后台启动事实。
+  // 已知且接受的边界：启动回执返回前的毫秒级窗口里 launchAcknowledged 仍为 false，此时交给下面的
+  // 父 projection 判断；旧逻辑在这个窗口会把启动失败也判成 running。
   if (
-    input.candidate.runInBackground &&
+    input.candidate.launchAcknowledged &&
     input.background === undefined &&
     input.childProjection === undefined &&
     input.candidate.stoppedStatus === undefined &&
-    input.childOutcome.status === undefined
+    input.childOutcome.status === undefined &&
+    !input.fromPreviousRuntime
   ) {
     return "running";
   }
@@ -325,6 +423,7 @@ function runningStatus(input: {
     return "running";
   }
   return input.parentProjection &&
+    !input.fromPreviousRuntime &&
     (input.candidate.part.state.status === "pending" ||
       input.candidate.part.state.status === "running")
     ? "running"
@@ -350,11 +449,29 @@ function terminalBackgroundStatus(
   }
 }
 
+/** metadata.json 的终态映射到子代理目录的状态；running 不是终态（旧进程退出时停在这里）。 */
+function runMetadataEndedStatus(
+  metadata: SubagentRunMetadata | undefined,
+): CCbuddySessionEndedSubagent["status"] | undefined {
+  switch (metadata?.status) {
+    case "completed":
+      return "success";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "cancelled";
+    default:
+      return undefined;
+  }
+}
+
 function endedStatus(input: {
   background?: BackgroundTaskInfo;
   candidate: SubagentCandidate;
   childOutcome: ReturnType<typeof lastChildOutcome>;
   childProjection?: SessionProjection;
+  fromPreviousRuntime: boolean;
+  runMetadata?: SubagentRunMetadata;
 }): CCbuddySessionEndedSubagent["status"] {
   const backgroundStatus = terminalBackgroundStatus(input.background);
   if (backgroundStatus) return backgroundStatus;
@@ -364,10 +481,24 @@ function endedStatus(input: {
     return CANCELLATION_PATTERN.test(input.candidate.part.state.error) ? "cancelled" : "failed";
   }
   if (input.candidate.stoppedStatus) return input.candidate.stoppedStatus;
+  // 上一代进程写下的终态（正常关闭时的统一停止、失败、完成）只在 metadata.json 里跨进程保留，
+  // 与恢复时的对账同一事实源（!3562 评审第二轮 CR-01）。
+  const metadataStatus = input.fromPreviousRuntime
+    ? runMetadataEndedStatus(input.runMetadata)
+    : undefined;
+  if (metadataStatus) return metadataStatus;
+  // 上一代进程退出时没有写下终态：后台 Agent 的 launch ACK 也是 completed，不能据此判 success。
+  // 排在已知终态（child projection、工具错误、SubagentStopped、metadata.json）之后，只补「没有任何
+  // 终态」的情况，不覆盖它们（!3562 评审 SG-01）。
+  if (input.fromPreviousRuntime && input.childOutcome.status === undefined) return "lost";
   const outputStatus = stringField(input.candidate.output ?? {}, "status");
   if (outputStatus === "cancelled" || outputStatus === "stopped") return "cancelled";
   if (outputStatus === "failed" || outputStatus === "error") return "failed";
-  if (outputStatus === "async_launched") return input.childOutcome.status ?? "lost";
+  // 后台启动记录（part.metadata.background；旧 part 是纯文本 launch ACK）与结构化的 async_launched 同义：completed 只表示已启动，终态看 child。
+  // 修复原因：之前按 tool part 的 completed 判 success，冷查询里 child 已失败的后台 Agent 显示为成功。
+  if (outputStatus === "async_launched" || input.candidate.launchAcknowledged) {
+    return input.childOutcome.status ?? "lost";
+  }
   if (input.candidate.part.state.status === "completed") return "success";
   return input.childOutcome.status ?? "lost";
 }
@@ -379,6 +510,64 @@ function startedAt(
   if (background?.startedAt) return background.startedAt.getTime();
   if (candidate.startedAt !== undefined) return candidate.startedAt;
   return "time" in candidate.part.state ? candidate.part.state.time.start : undefined;
+}
+
+/**
+ * 为可能是上一代 runtime 遗留的后台 Agent（后台启动早于本进程启动）预读 metadata.json，
+ * 交给 `projectSessionSubagents` 的 `previousRuntimeRunMetadata`。路径用启动时记在 part 上的
+ * outputFile：之后改了存储配置也不受影响。没有结构化事实的旧 part 按原来的逻辑：先用 launch ACK 的
+ * output_file，没有时按 runner 的目录布局 `<outputRootDir>/<父会话>/<agentId>`；`outputRootDir`
+ * 只在需要时才解析。读不到的不放进结果，投影按原判据处理。
+ */
+export async function loadPreviousRuntimeRunMetadata(input: {
+  parentSession: SessionInfo;
+  messages: readonly MessageWithParts[];
+  parentEvents?: readonly SessionEvent[];
+  runtimeStartedAt: number;
+  resolveOutputRootDir?: () => string | undefined;
+}): Promise<Map<string, SubagentRunMetadata>> {
+  const result = new Map<string, SubagentRunMetadata>();
+  const launches = collectCandidates(
+    input.parentSession,
+    input.messages,
+    input.parentEvents,
+  ).filter((candidate) => {
+    const launchedAt = candidateLaunchedAt(candidate);
+    return (
+      candidate.launchAcknowledged &&
+      candidate.agentId !== undefined &&
+      launchedAt !== undefined &&
+      launchedAt < input.runtimeStartedAt
+    );
+  });
+  let outputRootDir: string | undefined;
+  let outputRootResolved = false;
+  await Promise.all(
+    launches.map(async (candidate) => {
+      if (!candidate.legacyReceipt) {
+        if (!candidate.outputFile) return;
+        const metadata = await readSubagentRunMetadata({
+          agentId: candidate.agentId!,
+          outputFile: candidate.outputFile,
+        });
+        if (metadata) result.set(candidate.childSessionId, metadata);
+        return;
+      }
+      if (!candidate.outputFile && !outputRootResolved) {
+        outputRootResolved = true;
+        outputRootDir = input.resolveOutputRootDir?.();
+      }
+      if (!candidate.outputFile && !outputRootDir) return;
+      const metadata = await readLegacySubagentRunMetadata({
+        agentId: candidate.agentId!,
+        ...(candidate.outputFile ? { outputFile: candidate.outputFile } : {}),
+        ...(outputRootDir ? { outputRootDir } : {}),
+        parentSessionId: input.parentSession.id,
+      });
+      if (metadata) result.set(candidate.childSessionId, metadata);
+    }),
+  );
+  return result;
 }
 
 export function projectSessionSubagents(
@@ -396,11 +585,17 @@ export function projectSessionSubagents(
     const childProjection = input.childProjectionsById.get(candidate.childSessionId);
     const background = findBackgroundTask(input.parentProjection, candidate);
     const childOutcome = lastChildOutcome(input.childMessagesById.get(candidate.childSessionId));
+    const fromPreviousRuntime = isFromPreviousRuntime({
+      candidate,
+      childSession,
+      runtimeStartedAt: input.runtimeStartedAt,
+    });
     const liveStatus = runningStatus({
       background,
       candidate,
       childOutcome,
       childProjection,
+      fromPreviousRuntime,
       parentProjection: input.parentProjection,
     });
     const common = {
@@ -421,13 +616,41 @@ export function projectSessionSubagents(
       "time" in candidate.part.state && "end" in candidate.part.state.time
         ? candidate.part.state.time.end
         : undefined;
+    const runMetadata = input.previousRuntimeRunMetadata?.get(candidate.childSessionId);
+    const persistedStatus = endedStatus({
+      background,
+      candidate,
+      childOutcome,
+      childProjection,
+      fromPreviousRuntime,
+      runMetadata,
+    });
+    // 首次前台 Agent 的 tool end 早于 SendMessage 恢复后的 child 终态；
+    // 冷查询必须采用新一轮持久化结果，否则清除时间会误过滤新结果。
+    const resumedOutcome =
+      !candidate.launchAcknowledged &&
+      fromPreviousRuntime &&
+      childOutcome.status !== undefined &&
+      (childOutcome.endedAt ?? 0) > (stateEndedAt ?? 0)
+        ? childOutcome
+        : undefined;
+    const status = resumedOutcome?.status ?? persistedStatus;
+    const summary = resumedOutcome?.summary ?? candidate.summary ?? childOutcome.summary;
+    const metadataEndedAt =
+      fromPreviousRuntime && runMetadataEndedStatus(runMetadata) === status
+        ? runMetadata?.completedAt
+        : undefined;
     ended.push({
       ...common,
-      status: endedStatus({ background, candidate, childOutcome, childProjection }),
-      ...(candidate.summary || childOutcome.summary
-        ? { summary: candidate.summary ?? childOutcome.summary }
-        : {}),
+      status,
+      ...(summary ? { summary } : {}),
       endedAt:
+        // 遗留 Agent 停在旧进程退出前最后一次落盘的时刻，launch ACK 的时间不是它的结束时间。
+        (fromPreviousRuntime && status === "lost"
+          ? (childOutcome.endedAt ?? childSession.time.updated)
+          : undefined) ??
+        metadataEndedAt ??
+        resumedOutcome?.endedAt ??
         background?.completedAt?.getTime() ??
         candidate.stoppedAt ??
         stateEndedAt ??

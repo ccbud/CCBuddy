@@ -37,6 +37,11 @@ export function createExternalTurnFaultError(code: string, message = code): Erro
   }) satisfies ExternalTurnFaultError;
 }
 
+/** 中止原因是否为宿主外部故障（例如投影超限）。 */
+export function isExternalTurnFault(reason: unknown): boolean {
+  return findExternalTurnFault(reason) !== null;
+}
+
 function findExternalTurnFault(error: unknown): ExternalTurnFaultError | null {
   let current = error;
   const seen = new WeakSet<object>();
@@ -148,6 +153,8 @@ export async function appendTurnOutcomeEvent(
     durationMs: number;
     turnPhase: string;
     inputId?: string;
+    highspeedCardId?: string;
+    highspeedFallbackUnavailable?: boolean;
     traceContext: TraceContext;
     fallbackMessage: string;
     logEvent: string;
@@ -161,6 +168,7 @@ export async function appendTurnOutcomeEvent(
   const { coreError, events, traceContext, turnPhase, inputId } = params;
   const cancelled = coreError.type === CoreErrorType.TurnCancelled;
   const externalFault = findExternalTurnFault(coreError);
+  const projectedError = projectExecutionErrorPayload(coreError, params.fallbackMessage);
 
   const outcomeEvent = cancelled
     ? runtime.createEvent(
@@ -191,7 +199,18 @@ export async function appendTurnOutcomeEvent(
             type: externalFault?.code ?? coreError.type,
             // coreError.message 常是泛化文案，真实 provider/network 原因藏在 cause 链里；
             // 写入可读 payload fields 让桌面端和恢复链路都能展示根因。
-            ...projectExecutionErrorPayload(coreError, params.fallbackMessage),
+            ...projectedError,
+            attribution: {
+              ...projectedError.attribution,
+              // Bug 根因：创建期尚无 userInput 行。每个新错误都发布 string/null，
+              // 让 Renderer 区分“普通轮”与“旧 Agent 没有该字段”。
+              highspeedCardId: params.highspeedCardId ?? null,
+              // 无处可退时没有 fallback 事件，且请求期失败的 code 是 provider 错误码（如 3402），
+              // Renderer 不能按错误码推断退卡；由 Core 把“已归因且无处可退”作为结构化事实发布。
+              ...(params.highspeedFallbackUnavailable
+                ? { highspeedFallbackUnavailable: true }
+                : {}),
+            },
             stack: coreError.stack,
           },
           turnPhase,

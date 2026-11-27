@@ -1,4 +1,11 @@
+import { createInputPreemptionAbortReason } from "@ccbuddy/contracts";
+import {
+  backgroundBatchTelemetryAttributes,
+  telemetryInputOrigin,
+  TELEMETRY_INPUT_ORIGIN_ATTRIBUTE,
+} from "./input-intent-persistence.js";
 import { traceContextToLogContext } from "../deps.js";
+import { refreshOffPeakWork } from "../off-peak/runtime.js";
 import type { RuntimeCommand, TaskNotificationRuntimeCommand } from "../command-queue.js";
 import { uuidv7 } from "@ccbuddy/shared";
 import type { AgentRuntimeInternal } from "../internal.js";
@@ -12,6 +19,7 @@ import { createTurnCancelledError } from "../helpers/index.js";
 import { executeTargetContinuationCommand } from "./target.js";
 import { runActiveTargetContinuationLoop } from "./target-continuation-loop.js";
 import { isStaleBranchRuntimeCommand } from "./runtime-command-generation.js";
+import { noteWorkflowReminderCommandStarted } from "./dynamic-workflow-blocked-reminder.js";
 import type {
   AcquireForegroundPromotionLeaseResult,
   ActiveForegroundExecutionState,
@@ -21,6 +29,17 @@ import type {
 } from "../types.js";
 
 export function enqueueRuntimeCommand(this: AgentRuntimeInternal, command: RuntimeCommand): void {
+  const sourceTaskId =
+    command.mode === "task-notification"
+      ? command.taskId
+      : command.mode === "subagent-message"
+        ? command.agentId
+        : undefined;
+  // 任务卡取消封住该执行的迟到通知；聊天 Stop 不设置此标记，保持原有唤起行为。
+  if (sourceTaskId && this.runtimeTaskRegistry.get(sourceTaskId)?.offPeakCancelled) return;
+  const offPeakExecutionId =
+    sourceTaskId && this.runtimeTaskRegistry.get(sourceTaskId)?.offPeakExecutionId;
+  if (offPeakExecutionId) command = { ...command, offPeakExecutionId };
   this.runtimeCommandQueue.enqueue(command);
   if (command.mode === "task-notification") {
     this.logger?.info?.("Background task notification enqueued into runtime command queue", {
@@ -44,6 +63,7 @@ export async function drainRuntimeCommandQueue(this: AgentRuntimeInternal): Prom
     while ((commands = dequeueNextRunnableBatch.call(this)).length > 0) {
       const firstCommand = commands[0];
       if (!firstCommand) continue;
+      noteWorkflowReminderCommandStarted(this, firstCommand);
       if (firstCommand.mode === "task-notification") {
         const notificationCommands = commands.filter(
           (command): command is TaskNotificationRuntimeCommand =>
@@ -62,11 +82,16 @@ export async function drainRuntimeCommandQueue(this: AgentRuntimeInternal): Prom
     }
   } finally {
     this.runtimeCommandDrainActive = false;
+    refreshOffPeakWork(this);
   }
 
   if (this.runtimeCommandQueue.hasPending() && this.foregroundPromotionLease === undefined) {
     await this.drainRuntimeCommandQueue();
+    return;
   }
+  // 空闲沿：队列排空，且没有任何在跑 / 排着 / 预留的回合（持着晋升租约、或 prompt 已预留未入队时不算，
+  // 那一轮自己排空时会再走到这里）。「run 还欠着决定」的提醒钟从这里起算。
+  if (!hasActiveOrQueuedTurnWork.call(this)) this.workflowBlockedReminder?.sessionIdle();
 }
 
 function dequeueNextRunnableBatch(this: AgentRuntimeInternal): readonly RuntimeCommand[] {
@@ -156,10 +181,20 @@ async function runPostCommandActiveTargetLoop(
   abortSignal: AbortSignal,
 ): Promise<Awaited<ReturnType<AgentRuntimeInternal["continueActiveTargetLoop"]>> | null> {
   if (command.mode === "prompt" && command.options?.continueActiveTargetAfterTurn === true) {
+    const originalTrace = command.options.traceContext ?? command.traceContext;
+    const inputOrigin = telemetryInputOrigin(command.options.intent, originalTrace.attributes);
     return await runActiveTargetContinuationLoop.call(this, {
       abortSignal,
       inputId: command.options.inputId,
-      traceContext: command.options.traceContext ?? command.traceContext,
+      traceContext: inputOrigin
+        ? {
+            ...originalTrace,
+            attributes: {
+              ...originalTrace.attributes,
+              [TELEMETRY_INPUT_ORIGIN_ATTRIBUTE]: inputOrigin,
+            },
+          }
+        : originalTrace,
       trigger: "user-prompt",
       verifyBeforeFirstContinue: true,
     });
@@ -269,6 +304,7 @@ async function runRuntimeCommand(
       });
       const messageId = await persistSubagentMessageCommand.call(this, command);
       await this.executeTurnCommand(command.text, undefined, {
+        offPeakExecutionId: command.offPeakExecutionId,
         abortSignal: foregroundExecution.controller.signal,
         inputSource: "subagent_message",
         inputVisibility: "model-only",
@@ -326,6 +362,13 @@ async function runTaskNotificationBatch(
   const firstCommand = eligibleCommands[0];
   if (!firstCommand) return;
 
+  // 合批轮和 goal 自动续跑属于同一因果链，不能在续跑时回退到首条通知的来源。
+  const batchTraceContext = {
+    ...firstCommand.traceContext,
+    attributes: backgroundBatchTelemetryAttributes(
+      eligibleCommands.map((command) => command.traceContext),
+    ),
+  };
   const foregroundExecution = beginForegroundExecution.call(this, firstCommand);
   const commandIds = eligibleCommands.map((command) => command.id);
   try {
@@ -343,13 +386,16 @@ async function runTaskNotificationBatch(
       module: "core.runtime",
     });
     await this.executeTurnCommand(persisted.text, undefined, {
+      offPeakExecutionId: firstCommand.offPeakExecutionId,
       // wake 缺 inputId，telemetry 借用了持久化 msg_*，与普通 main turn 分叉。
       // 每个独立 batch 使用同一 UUID v7 规则；持久化消息仍使用 recordedInputMessageId。
       inputId: uuidv7(),
       abortSignal: foregroundExecution.controller.signal,
       // 批次展示 metadata 只保留代表任务，composition 必须检查整批，不能被首个 Bash 任务遮蔽。
       backgroundSubagentResultConsumed: eligibleCommands.some(
-        (command) => command.originMeta?.backgroundSource === "subagent",
+        (command) =>
+          command.originMeta?.backgroundSource === "subagent" &&
+          command.originMeta.subagentStall === undefined,
       ),
       // 同一规则的 workflow 维度：run 的完成 / 提问通知在批里。
       workflowResultConsumed: eligibleCommands.some(
@@ -362,11 +408,11 @@ async function runTaskNotificationBatch(
       recordedInputMessageId: persisted.messageId,
       skipInputRecord: true,
       skipUserPromptSubmitHooks: true,
-      traceContext: firstCommand.traceContext,
+      traceContext: batchTraceContext,
     });
     await runPostCommandActiveTargetLoop.call(
       this,
-      firstCommand,
+      { ...firstCommand, traceContext: batchTraceContext },
       foregroundExecution.controller.signal,
     );
     this.logger?.info?.("Background task notification batch completed", {
@@ -464,7 +510,14 @@ export function stopActiveForegroundExecution(
   // turn catch 因而把 queueAutoDrain 关闭。把调用意图固定在当前 foreground
   // execution 上，保证超时后迟到的 TurnComplete 仍能保留原队列授权。
   active.preserveQueueAutoDrainOnCancel = options.preserveQueueAutoDrainOnCancel === true;
-  active.controller.abort(new Error(options.reason ?? "foreground execution stopped"));
+  const message = options.reason ?? "foreground execution stopped";
+  // 立即发送的停止原因带结构化标记，沿 turn → executor → Agent → subagent runner 原样传递；
+  // 前台子代理据此转入后台而不是被取消。Stop 等其他停止仍用普通原因。
+  active.controller.abort(
+    active.preserveQueueAutoDrainOnCancel
+      ? createInputPreemptionAbortReason(message)
+      : new Error(message),
+  );
   return {
     kind: "stopped",
     foregroundExecutionId: active.foregroundExecutionId,

@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-telemetry-parity-core",
+  "spec": "./test/e2e/conversation-session/telemetry/conversation-session-telemetry-parity-core.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-telemetry-parity-core.json"
+  ],
+  "fileFixtures": [
+    {
+      "path": ".ccbuddy-e2e/shared/readonly-tool.txt",
+      "source": "created-by-helper",
+      "description": "prepareConversationE2E 创建的只读工具输入，两个版本执行完全相同的 Read。"
+    }
+  ],
+  "requests": [
+    {
+      "id": "telemetry-parity-title",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "标题不属于对话埋点统计口径；固定成功可避免后台 title 重试干扰主链路时序。"
+    },
+    {
+      "id": "telemetry-parity-tool-call",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "固定工具类型和输入，确保旧版与 V4 执行同一个只读工具。"
+    },
+    {
+      "id": "telemetry-parity-tool-final",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "稳定结束工具轮，使 tool 和 generation 两个 step 可完整对账。"
+    },
+    {
+      "id": "telemetry-parity-compact-seed",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "手动压缩需要一轮已完成历史。"
+    },
+    {
+      "id": "telemetry-parity-compact-success-legacy",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "旧版 compact 使用非流式 generateText；返回 Messages 协议非流式 JSON，保持与 V4 流式响应相同的 summary 语义。"
+    },
+    {
+      "id": "telemetry-parity-compact-success",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "V4 compact 使用流式响应；内容与旧版非流式 fixture 完全相同。"
+    },
+    {
+      "id": "telemetry-parity-reasoning",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "真实模型是否输出 thought 不稳定，使用确定性 Messages 协议 SSE。"
+    },
+    {
+      "id": "telemetry-parity-stall",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "recorded-stream",
+      "syntheticReason": "精确 3000/3001ms 由 fake clock 覆盖；Electron 双跑使用 4001ms，避免操作系统 timer 抖动把 3001ms 压回阈值。"
+    },
+    {
+      "id": "telemetry-parity-interrupted",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "真实模型可能在点击 stop 前完成，使用一分钟尾部间隔稳定制造 interrupted。"
+    }
+  ]
+}

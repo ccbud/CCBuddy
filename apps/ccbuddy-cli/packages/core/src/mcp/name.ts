@@ -1,5 +1,8 @@
 import type { McpToolDescriptor } from "@ccbuddy/contracts";
+
 export const MCP_TOOL_NAME_PREFIX = "mcp__";
+
+/** 模型可见的 MCP 工具名都以 `mcp__` 开头。 */
 export function isMcpToolName(name: string): boolean {
   return name.startsWith(MCP_TOOL_NAME_PREFIX);
 }
@@ -9,7 +12,7 @@ export function toMcpToolName(
 ): string {
   return (
     descriptor.name ??
-    `mcp__${toModelVisibleMcpNamePart(descriptor.serverName)}__${toModelVisibleMcpNamePart(
+    `${MCP_TOOL_NAME_PREFIX}${toModelVisibleMcpNamePart(descriptor.serverName)}__${toModelVisibleMcpNamePart(
       descriptor.toolName,
     )}`
   );

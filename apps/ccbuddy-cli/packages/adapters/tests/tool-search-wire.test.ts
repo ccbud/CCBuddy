@@ -7,7 +7,7 @@ import { prepareRuntimeProviderRequest } from "../../core/src/runtime/helpers/ru
 import { createToolRegistry } from "../../core/src/tool/registry.js";
 import { toolSearchToolEntry } from "../../core/src/tool/handlers/tool-search.js";
 import { deferredToolCallEntry } from "../../core/src/tool/handlers/deferred-tool-call.js";
-import { webFetchToolEntry } from "../../core/src/tool/handlers/webfetch.js";
+import { taskOutputToolEntry } from "../../core/src/tool/handlers/task-output.js";
 import { createTestRuntimeModel } from "../../core/tests/test-runtime-model.js";
 import type { RuntimeMessageEntry } from "../../core/src/agent/message-history.js";
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -29,7 +29,7 @@ it.each([
       ? Array.from({ length: 2_000 }, (_, i) =>
           `mcp__demo__lookup_${String(i).padStart(4, "0")}_`.padEnd(64, "x"),
         )
-      : ["WebFetch"];
+      : ["TaskOutput"];
     let body: any;
     let headers: Headers | undefined;
     const provider = createAnthropic({
@@ -97,11 +97,98 @@ it.each([
   },
 );
 
+it("keeps one announcement in native Anthropic bodies through continuation and the next input", async () => {
+  const bodies: Array<{
+    messages: unknown[];
+    tools: Array<{ name: string; description: string; input_schema: unknown }>;
+  }> = [];
+  const provider = createAnthropic({
+    apiKey: "test",
+    fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ error: { type: "invalid_request_error", message: "capture" } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+  const factory = createTestModelFactory({
+    async generateText(request) {
+      const options = {
+        providerKind: "anthropic" as const,
+        toolSearchEnabled: request.toolSearchEnabled,
+      };
+      await expect(
+        generateText({
+          model: provider("test"),
+          maxRetries: 0,
+          headers: toolSearchHeaders(undefined, request.toolSearchEnabled),
+          tools: toAiSdkTools(request.tools, options),
+          messages: toAiSdkMessages(request.messages, options),
+        }),
+      ).rejects.toBeDefined();
+      return { text: "response", finishReason: bodies.length <= 3 ? "length" : "stop", usage: {} };
+    },
+  });
+  const wrap = (model: Model): Model => ({
+    ...model,
+    requestCapabilities: { toolSearch: { protocolSupported: true, defaultEnabled: true } },
+    bind: (options) => wrap(model.bind(options)),
+  });
+  const runtime = createTestAgentRuntime(
+    createSessionId("toolsearch-continuation-wire"),
+    {
+      toolSearch: { mode: "native" },
+      modelStreaming: "off",
+      titleGeneration: { enabled: false },
+      toolAllowlist: ["ToolSearch", "TaskOutput"],
+    },
+    { eventStore: createTestSessionEventStore(), modelFactory: (input) => wrap(factory(input)) },
+  );
+  await runtime.executeTurn("start");
+  await runtime.executeTurn("next input");
+  expect(bodies).toHaveLength(5);
+  for (const body of bodies) {
+    expect(
+      JSON.stringify(body.messages).split(
+        "The following deferred tools are now available via ToolSearch.",
+      ),
+    ).toHaveLength(2);
+    expect(body.tools.map((tool) => tool.name)).toEqual(["ToolSearch"]);
+    expect(body.tools[0]?.description)
+      .toBe(`Fetches full schema definitions for deferred tools so they can be called.
+
+Deferred tools appear by name in <system-reminder> messages. Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools' complete JSONSchema definitions inside a <functions> block. Once a tool's schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.
+
+Result format: each matched tool appears as one <function>{"description": "...", "name": "...", "parameters": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.
+
+Query forms:
+Regular expressions are not supported. Use space-separated keywords for broad searches, or "select:<name>[,<name>...]" for exact tool names. Characters such as "|" and ".*" are treated literally. For example, use "shell terminal execute command".
+
+- "select:TaskStop,mcp__byob__browser_navigate" — fetch these exact deferred tools by name
+- "notebook jupyter" — keyword search, up to max_results best matches
+- "+slack send" — require "slack" in the name, rank by remaining terms`);
+    expect(body.tools[0]?.input_schema).toMatchObject({
+      required: ["query", "max_results"],
+      properties: {
+        query: {
+          description:
+            'Query to find deferred tools. Use "select:<tool_name>" for direct selection, or keywords to search. Regular expressions are not supported.',
+        },
+        max_results: {
+          description: "Maximum number of results to return (default: 5)",
+          default: 5,
+        },
+      },
+    });
+  }
+});
+
 it.each(["anthropic", "openai-compatible"] as const)(
   "sends only LocalToolSearch on %s wire after native history",
   async (providerKind) => {
     const registry = createToolRegistry();
-    [toolSearchToolEntry, deferredToolCallEntry, webFetchToolEntry].forEach((entry) =>
+    [toolSearchToolEntry, deferredToolCallEntry, taskOutputToolEntry].forEach((entry) =>
       registry.register(entry),
     );
     const model = {
@@ -118,7 +205,7 @@ it.each(["anthropic", "openai-compatible"] as const)(
         message: {
           role: "assistant",
           content: "",
-          toolCalls: [{ id: "search", name: "ToolSearch", input: { query: "select:WebFetch" } }],
+          toolCalls: [{ id: "search", name: "ToolSearch", input: { query: "select:TaskOutput" } }],
         },
       },
       {
@@ -126,7 +213,7 @@ it.each(["anthropic", "openai-compatible"] as const)(
           role: "tool",
           toolName: "ToolSearch",
           toolCallId: "search",
-          content: [{ type: "tool_reference", toolName: "WebFetch" }],
+          content: [{ type: "tool_reference", toolName: "TaskOutput" }],
         },
       },
     ];
@@ -186,6 +273,6 @@ it.each(["anthropic", "openai-compatible"] as const)(
     expect(entries).toEqual(before);
     expect(
       buildToolExposure({ ...input, mode: "native", entries }).tools.map((tool) => tool.name),
-    ).toEqual(["ToolSearch", "WebFetch"]);
+    ).toEqual(["ToolSearch", "TaskOutput"]);
   },
 );

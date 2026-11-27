@@ -49,7 +49,6 @@ interface CanonicalConversationFactBase {
 }
 
 export interface CanonicalUserIntentFact extends CanonicalConversationFactBase {
-  genUiContext?: import("@ccbuddy/contracts").TurnInputIntentMetadata["genUiContext"];
   inputOrigin?: "desktop" | "mobile";
   conversationQuotes?: import("@ccbuddy/contracts").TurnInputIntentMetadata["conversationQuotes"];
   botGroupSource?: import("@ccbuddy/shared").BotGroupInputSource;
@@ -91,6 +90,7 @@ export interface CanonicalUserIntentFact extends CanonicalConversationFactBase {
   admittedAt?: number;
   requestedDelivery?: "auto" | "startNow" | "queue" | "guide";
   admittedDelivery?: "startNow" | "queue" | "guide";
+  genUiContext?: import("@ccbuddy/contracts").TurnInputIntentMetadata["genUiContext"];
   sharedContextRefs?: readonly { kind: "shared_context_import"; context_id: string }[];
   fallbackReasonCode?: string;
   modelSelection?: TurnInputIntentMetadata["modelSelection"];
@@ -259,7 +259,6 @@ function normalizeTurnStarted(
     diagnostics,
     input: input.text,
     intentText: intentInput.text,
-    ...(intentInput.genUiContext !== undefined ? { genUiContext: intentInput.genUiContext } : {}),
     intentKind: payload.intent?.kind === "sendGoalCommand" ? "sendGoalCommand" : "sendText",
     turnNumber: payload.turnNumber,
     executionKind: payload.executionKind ?? "agent",
@@ -286,6 +285,7 @@ function normalizeTurnStarted(
     ...(payload.intent?.admittedDelivery
       ? { admittedDelivery: payload.intent.admittedDelivery }
       : {}),
+    ...(intentInput.genUiContext !== undefined ? { genUiContext: intentInput.genUiContext } : {}),
     ...(payload.intent?.sharedContextRefs
       ? { sharedContextRefs: payload.intent.sharedContextRefs }
       : {}),

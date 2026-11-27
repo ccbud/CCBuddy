@@ -6,10 +6,12 @@
     ".": "./src/index.ts",
     "./stdio": "./src/stdio.ts",
     "./remote": "./src/remote/index.ts",
-    "./remote/*.js": "./src/remote/*.ts"
+    "./remote/*.js": "./src/remote/*.ts",
+    "./source-server": "./src/source-server/index.ts",
+    "./source-server/*.js": "./src/source-server/*.ts"
   },
   "scripts": {
-    "dev": "tsup --watch --onSuccess 'node dist/entry-http.js'",
+    "dev": "node ../../scripts/build-windows-runtime-host.mjs --if-windows --ensure && tsup --watch --onSuccess 'node dist/entry-http.js'",
     "build": "tsup && pnpm run build:remote",
     "build:remote": "tsx build-remote.ts",
     "lint": "oxlint",
@@ -26,6 +28,7 @@
     "@lydell/node-pty-darwin-x64": "1.2.0-beta.10",
     "@lydell/node-pty-linux-arm64": "1.2.0-beta.10",
     "@lydell/node-pty-linux-x64": "1.2.0-beta.10",
+    "@napi-rs/keyring": "2.1.2",
     "axios": "^1.13.6",
     "combined-stream": "^1.0.8",
     "follow-redirects": "^1.16.0",

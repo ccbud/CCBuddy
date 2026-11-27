@@ -1,7 +1,12 @@
+import type {
+  V4SessionDeletionPreview,
+  V4SessionDeletionPreviewBatchResult,
+  V4SessionDeletionResult,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 /* eslint-disable max-lines -- CCbuddy task wrapper service 接口集中承载 app/runtime API，拆散会让替换阶段更难追踪。 */
 import type { Event } from "@ccbuddy/rpc";
 import { ServiceChannels } from "@ccbuddy/shared";
-import type { CommandPayloadMap } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import type { CommandAck, CommandPayloadMap } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { createServiceDescriptor } from "#src/descriptors.js";
 import type {
   CCbuddyHistoryImportParams,
@@ -50,12 +55,6 @@ import type {
   CCbuddyTaskListSortBy,
   CCbuddyTaskListWorkspaceScope,
   CCbuddyWorkspaceEventSubscriptionParams,
-  CCbuddyGroupedTaskView,
-  CCbuddyGroupedTaskViewOrderInput,
-  CCbuddyGroupedTaskViewQuery,
-  CCbuddyGroupedTaskViewStructure,
-  CCbuddyTaskGroup,
-  CCbuddyTaskGroupColor,
 } from "#src/session/ccbuddyTaskListTypes.js";
 
 export interface CCbuddyTaskSnapshotWithEtagResult {
@@ -166,17 +165,6 @@ export type {
   CCbuddyTaskListSortBy,
   CCbuddyTaskListWorkspaceScope,
   CCbuddyWorkspaceEventSubscriptionParams,
-  CCbuddyGroupedTaskRef,
-  CCbuddyGroupedTaskView,
-  CCbuddyGroupedTaskViewNode,
-  CCbuddyGroupedTaskViewOrderInput,
-  CCbuddyGroupedTaskViewQuery,
-  CCbuddyGroupedTaskViewStructure,
-  CCbuddyGroupedTaskViewStructureMember,
-  CCbuddyGroupedTaskViewStructureTopOrder,
-  CCbuddyGroupedTaskViewTopLevelNodeRef,
-  CCbuddyTaskGroup,
-  CCbuddyTaskGroupColor,
 } from "#src/session/ccbuddyTaskListTypes.js";
 
 /** 一个 task 输入轮次的终态结果，供后台派发（定时任务）回写运行结果。 */
@@ -221,6 +209,8 @@ export interface ICCbuddyTaskService {
 
   /** 创建 CCbuddy session 并同步 task 索引。 */
   createTask(params: {
+    projectId?: string | null;
+    additionalDirectories?: string[];
     workspacePath: string;
     workspaceIdentity?: string;
     provider?: CCbuddyProvider;
@@ -231,7 +221,6 @@ export interface ICCbuddyTaskService {
     model?: string;
     /** @deprecated 仅供尚未迁移的旧调用边界读取。 */
     thoughtLevel?: string;
-    draftSessionId?: string;
     forkedFromTaskId?: string;
     mcpServers?: CCbuddyAgentMcpServer[];
     /** 定时任务派发时标记所属 automation，落 tasks-index 的 cron_automation_id 并归入 cron 分组。 */
@@ -306,7 +295,10 @@ export interface ICCbuddyTaskService {
     source: import("@ccbuddy/shared").BotGroupInputSource;
   }): Promise<import("@ccbuddy/shared/ccbuddy-protocol-v4").CommandAck>;
 
-  /** 发送 prompt 到指定 task */
+  /**
+   * 发送 prompt 到指定 task。
+   * v4 文本路径返回 sendText ACK（含 duplicate）；附件旧路径与旧版远端不返回 ACK。
+   */
   sendPrompt(
     params: {
       taskId: string;
@@ -325,10 +317,11 @@ export interface ICCbuddyTaskService {
       botDeliveryTarget?: CCbuddyAutomationBotDeliveryTarget;
       /** 标准模型选择；闲时任务同样经 Registry / ModelFactory 创建 Model。 */
       modelSelection?: CommandPayloadMap["sendText"]["modelSelection"];
+      modelSelectionBasis?: CommandPayloadMap["sendText"]["modelSelectionBasis"];
       /** 单次执行约束与动态鉴权；仅 idle start-now 接受，不进入普通队列。 */
       modelExecution?: CommandPayloadMap["sendText"]["modelExecution"];
     } & CCbuddyBackgroundTurnAttribution,
-  ): Promise<void>;
+  ): Promise<CommandAck | void>;
 
   deliverSessionMessage(
     request: SessionMessageSendRequested,
@@ -426,14 +419,12 @@ export interface ICCbuddyTaskService {
     clientMode?: CCbuddyTaskClientMode;
   }): Promise<boolean>;
 
-  /** 关闭 task（优先 session/close；当 workspace 下最后一个 task 结束时再回收共享进程） */
-  closeTask(params: { taskId: string }): Promise<void>;
-
   /** 恢复已有 task（复用 workspace 级 agent 进程，如无则创建，再执行 session/load） */
   resumeTask(params: {
     taskId: string;
     workspacePath: string;
     workspaceIdentity?: string;
+    additionalDirectories?: string[];
     mode?: CCbuddyTaskMode;
     model?: string;
     thoughtLevel?: string;
@@ -459,77 +450,36 @@ export interface ICCbuddyTaskService {
     workspaceIdentity?: string;
   }): Promise<CCbuddyTaskMeta[]>;
 
-  /** 读取 workspace 下已删除 task id；用于 sessions-index 列表的持久负向 membership join */
+  /** 读取 workspace 下已删除 task id；供闲时绑定会话与 Bots tombstone 判断 session 是否已删除 */
   listDeletedTaskIds(params: {
     workspacePath: string;
     workspaceIdentity?: string;
   }): Promise<string[]>;
 
+  /** 永久删除的最小凭据；供新 attachment 清理离线期间遗留的客户端内容。 */
+  listPermanentlyDeletedTaskIds?(params: {
+    workspacePath: string;
+    workspaceIdentity?: string;
+  }): Promise<string[]>;
+
   /**
-   * 按当前打开的 workspace scopes 聚合查询任务列表，真相源为 tasks-index.sqlite。
-   * 消费面：全文搜索（searchable_text/snippets）与 remoteTimelineTaskStore 补充链路；
-   * 无搜索列表行走 listTasks/listPinnedTasks/listArchivedTasks，workspace 行由
-   * 客户端用各 endpoint 的 task 行 + session detail 构建（多端收敛）。
+   * 读取 workspace 下仍在运行（sessions-index phase 非终态）的 task id。
+   * tasks-index 只镜像 CLI 的 last_outcome，行上的 status 永远不会是 running，
+   * 运行中判断必须来自 syncer 的实时活动集合。
+   */
+  listActiveTaskIds(params: {
+    workspacePath: string;
+    workspaceIdentity?: string;
+  }): Promise<string[]>;
+
+  /**
+   * 按显式 workspace scopes 查询 tasks-index，供全局搜索与 Controller 查询使用。
+   * 项目侧栏的行集合来自 ProjectService；旧远端列表缓存及 Group/bootstrap 已退役。
    */
   listTaskList(params: CCbuddyTaskListQuery): Promise<CCbuddyTaskListResult>;
 
-  /** 创建最小 task group；完整 delete 后续由 group 管理功能补齐 */
-  createTaskGroup(params?: {
-    title?: string;
-    color?: CCbuddyTaskGroupColor;
-  }): Promise<CCbuddyTaskGroup>;
-
-  /** 重命名 task group；workspaceScopes 只用于通知当前可见 grouped 视图刷新 */
-  renameTaskGroup(params: {
-    groupId: string;
-    title: string;
-    workspaceScopes?: CCbuddyTaskListWorkspaceScope[];
-  }): Promise<CCbuddyTaskGroup>;
-
-  /** 更新 task group 颜色；workspaceScopes 只用于通知当前可见 grouped 视图刷新 */
-  updateTaskGroupColor(params: {
-    groupId: string;
-    color: CCbuddyTaskGroupColor;
-    workspaceScopes?: CCbuddyTaskListWorkspaceScope[];
-  }): Promise<CCbuddyTaskGroup>;
-
-  /** 删除 task group；调用方应先把组内 task 移回顶层 root */
-  deleteTaskGroup(params: {
-    groupId: string;
-    workspaceScopes?: CCbuddyTaskListWorkspaceScope[];
-  }): Promise<void>;
-
-  // 服务端 grouped 查询只回原始结构（不 join tasks 表），
-  // renderer 用 task 行分区 + session detail 统一投影。
-
-  /**
-   * 查询 Grouped 视图原始结构（group/member/顶层排序，不 join tasks 表）。
-   * 客户端以 task 行分区为左表 join 本结构，sessions-index 只补充实时 detail。
-   */
-  listGroupedTaskViewStructure(params: {
-    workspaceScopes: CCbuddyTaskListWorkspaceScope[];
-  }): Promise<CCbuddyGroupedTaskViewStructure>;
-
-  /** 一次性提交 grouped 视图最终排序和 membership，服务层用 sqlite transaction 落库 */
-  applyGroupedTaskViewOrder(
-    params: CCbuddyGroupedTaskViewOrderInput,
-  ): Promise<CCbuddyGroupedTaskView>;
-
   /** 列出 workspace 下所有已归档 task */
   listArchivedTasks(params: {
-    workspacePath: string;
-    workspaceIdentity?: string;
-  }): Promise<CCbuddyTaskMeta[]>;
-
-  /** 批量归档超期旧任务；仅归档已完成、无未读、非 pinned 且当前未打开的 task */
-  archiveStaleTasks(params: {
-    workspacePath: string;
-    workspaceIdentity?: string;
-    olderThanDays: number;
-  }): Promise<CCbuddyTaskMeta[]>;
-
-  /** 移除 workspace 时批量归档该 workspace 下所有未归档 task，包含 pinned task */
-  archiveWorkspaceTasks(params: {
     workspacePath: string;
     workspaceIdentity?: string;
   }): Promise<CCbuddyTaskMeta[]>;
@@ -740,6 +690,23 @@ export interface ICCbuddyTaskService {
     resumeTaskId?: string;
     bumpRuntimeEpoch?: boolean;
   }): Promise<void>;
+
+  previewArchivedTaskDeletion(params: {
+    taskId: string;
+    workspacePath: string;
+    workspaceIdentity?: string;
+  }): Promise<V4SessionDeletionPreview>;
+  /** 批量预检，结果按 tasks 顺序；未归档判定与单项 previewArchivedTaskDeletion 一致。 */
+  previewArchivedTaskDeletions(params: {
+    tasks: Array<{ taskId: string; workspacePath: string; workspaceIdentity?: string }>;
+  }): Promise<V4SessionDeletionPreviewBatchResult>;
+  permanentlyDeleteArchivedTask(params: {
+    taskId: string;
+    workspacePath: string;
+    workspaceIdentity?: string;
+    revision: string;
+    operationId: string;
+  }): Promise<V4SessionDeletionResult>;
 
   /** 将已持久化 task 标记为列表不可见；CLI session 内容继续保留 */
   deleteTask(params: {

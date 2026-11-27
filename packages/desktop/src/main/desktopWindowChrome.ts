@@ -1,8 +1,11 @@
 /* eslint-disable max-lines -- 桌面窗口 chrome、webview 安全策略和 popup 路由共享同一 BrowserWindow 生命周期上下文。 */
 import { app, BrowserWindow, Menu, nativeTheme, screen, shell } from "electron";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type {
   ContextMenuParams,
+  DownloadItem,
+  Event,
   Input,
   MenuItemConstructorOptions,
   WebContents,
@@ -49,6 +52,7 @@ const ALLOWED_EMBEDDED_BROWSER_PROTOCOLS = new Set([
   "http:",
   "https:",
   "ccbuddy-browser-restore:",
+  "ccbuddy-html:",
 ]);
 const ALLOWED_EMBEDDED_BROWSER_NEW_WINDOW_PROTOCOLS = new Set(["http:", "https:"]);
 const EXTERNAL_BROWSER_DISPOSITIONS = new Set(["background-tab"]);
@@ -250,6 +254,15 @@ function attachWindowsWindowRepaint(targetWindow: BrowserWindow) {
     // renderer 与 host 仍存活但窗口只剩宿主底色；复用 resize 的有界双帧重绘，不 reload renderer 或会话。
     scheduleRepaint();
   });
+  targetWindow.on("focus", () => {
+    // Bug 原因（ZCT-202610-E0C5B48D）：窗口被其他程序完全覆盖后，Chromium 的 Windows
+    // 遮挡检测（native window occlusion）把它标记为 occluded 并停止提交帧、暂停计时器；
+    // 部分 Intel 核显驱动组合下切回前台（Alt-Tab / 点通知 / 点击窗口）时遮挡状态不重算，
+    // 画面停留在最后一帧，像一张截图。该路径只触发 focus，不触发 show/resized，托盘恢复
+    // 与手动拉伸的补丁都盖不到。用户手动拖动窗口或点标题栏能恢复，说明强制重绘一帧即可
+    // 打破残留状态；focus 时补同样的有界双帧重绘，等价于把用户的手动恢复动作自动化。
+    scheduleRepaint();
+  });
 }
 
 function isAllowedEmbeddedBrowserUrl(url: string): boolean {
@@ -263,6 +276,36 @@ function isAllowedEmbeddedBrowserUrl(url: string): boolean {
 function isAllowedEmbeddedBrowserNewWindowUrl(url: string): boolean {
   try {
     return ALLOWED_EMBEDDED_BROWSER_NEW_WINDOW_PROTOCOLS.has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+// 挂载 window.ccbuddy preload 的窗口（主窗口、更新状态窗口）顶层导航只能停留在应用自身的渲染入口。
+// Mermaid SVG 的 <a xlink:href> 不经过应用链接组件，点击即在窗口内顶层导航，因此在主进程导航边界统一拦截。
+// 子 frame 不注入 preload（未开启 nodeIntegrationInSubFrames），不在此范围内。
+export function guardWindowNavigation(
+  webContents: WebContents,
+  logger: { warn: (...args: unknown[]) => void },
+): void {
+  webContents.on("will-navigate", (event, url) => {
+    if (isAppOriginMainWindowUrl(url)) return;
+    event.preventDefault();
+    logger.warn("[desktop-window] blocked window top-level navigation");
+  });
+}
+
+// 主窗口顶层导航只能停留在应用自身的渲染入口。判定条件与 desktopHostProcess 的 loadWindow 保持一致：
+// 生产包忽略继承的 ELECTRON_RENDERER_URL，避免开发地址被当作可信来源。
+function isAppOriginMainWindowUrl(url: string): boolean {
+  try {
+    const target = new URL(url);
+    if (!app.isPackaged && process.env["ELECTRON_RENDERER_URL"]) {
+      return target.origin === new URL(process.env["ELECTRON_RENDERER_URL"]).origin;
+    }
+    // 目录前缀带尾部 "/"，避免同名前缀的兄弟目录被误判为应用目录。
+    const rendererPrefix = `${pathToFileURL(join(import.meta.dirname, "../renderer")).href}/`;
+    return target.href.startsWith(rendererPrefix);
   } catch {
     return false;
   }
@@ -348,6 +391,19 @@ function attachEmbeddedBrowserWindowOpenHandler(options: {
     | undefined;
   logger: { warn: (...args: unknown[]) => void };
 }) {
+  // 下载响应会让 loadURL 以 ERR_FAILED 拒绝；用真实下载事件区分网络失败。
+  const downloadSession = options.guestWebContents.session;
+  const onDownload = (_event: Event, item: DownloadItem, contents: WebContents) => {
+    if (contents !== options.guestWebContents || options.hostWebContents.isDestroyed()) return;
+    options.hostWebContents.send(PlatformChannels.BrowserViewDownloadStarted, {
+      webContentsId: contents.id,
+      urls: item.getURLChain(),
+    });
+  };
+  downloadSession.on("will-download", onDownload);
+  options.guestWebContents.once("destroyed", () => {
+    downloadSession.removeListener("will-download", onDownload);
+  });
   let externalBrowserModifierActive = false;
 
   options.guestWebContents.on("before-input-event", (_event, input) => {
@@ -599,6 +655,21 @@ export function createBrowserWindow(options: {
       additionalArguments: [`--device-id=${options.deviceMid ?? ""}`],
     },
   });
+
+  // 文档渲染库曾直接 window.open 绕过 DOM 链接检查；主窗口不创建未经管控的原生子窗口。
+  // 合法外链复用现有 Browser 路由，guest 仍由各自的策略管理。
+  win.webContents.setWindowOpenHandler(({ url, disposition }) => {
+    if (isAllowedEmbeddedBrowserNewWindowUrl(url)) {
+      win.webContents.send(PlatformChannels.OpenBrowserUrl, { url, disposition });
+    } else {
+      options.logger.warn("[desktop-window] blocked unsupported popup protocol");
+    }
+    return { action: "deny" };
+  });
+
+  // ZP-20261105-19 / ZP-20261110-03：挂载了 window.ccbuddy preload 的窗口，导航到远程页面后
+  // 该页面会获得全部特权 IPC。远程链接只记录日志、不自动外开：守卫只负责拦截，链接如何打开由 UI 层决定。
+  guardWindowNavigation(win.webContents, options.logger);
 
   // 缩放命令原本只改当前运行窗口，没有在重启后恢复。
   // 创建窗口时由 main 进程先应用 setting.json 中的桌面缩放档位，同时覆盖 Chromium 可能残留的 per-host zoom。

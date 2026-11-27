@@ -20,9 +20,23 @@ export const CREATE_WORKFLOW_TOOL_NAME = "CreateWorkflow";
  */
 export const DYNAMIC_WORKFLOW_SKILL_NAME = "dynamic-workflows";
 
-/** 「恰好给一个执行体来源」的违规说明。写成常量是因为模型是它唯一的读者，三条路径同一句话。 */
-export const CREATE_WORKFLOW_SOURCE_ERROR =
-  "Provide exactly one workflow source: `script` for a one-off script written inline, `saved` to run a workflow saved in this project, or `path` for a script file on disk (the file a previous result named). Passing more than one, or none, is ambiguous.";
+/**
+ * 「一个来源都没到」的共用尾句（CreateWorkflow 与 EvalWorkflowSnippet；两者字段全可选）。
+ *
+ * Bug 原因：参数不是合法 JSON 时，adapter 记 `model.tool_input.normalize_failed` 后把调用恢复成
+ * `{}`（adapters/src/model/tool-input-normalization.ts），`{}` 能过 schema，于是在「恰好一个来源」
+ * 上失败。旧文案把「多给」与「没给」并成一句「…or none, is ambiguous」，明明写了脚本的模型读不出
+ * 原因，只会原样重发同一个坏调用。所以「没给」单独成句，并说出最常见的原因和绕开它的办法。
+ */
+export const WORKFLOW_SOURCE_MISSING_HINT =
+  "If you did pass one, the call's arguments were not valid JSON, and a call that does not parse arrives empty. The usual cause is an unescaped backslash or double quote in the inline source: inside a JSON string a regex's `\\d` must be written `\\\\d`. Escape it, or write the source to a file and pass `path`.";
+
+/** 多给了来源（选择要撤回）。写成常量是因为模型是它唯一的读者，三条路径同一句话。 */
+export const CREATE_WORKFLOW_SOURCE_CONFLICT_ERROR =
+  "Provide exactly one workflow source: `script` for a one-off script written inline, `saved` to run a workflow saved in this project, or `path` for a script file on disk (the file a previous result named). Passing more than one is ambiguous.";
+
+/** 一个来源都没有：多半是参数没解析出来（见 {@link WORKFLOW_SOURCE_MISSING_HINT}）。 */
+export const CREATE_WORKFLOW_SOURCE_MISSING_ERROR = `No workflow source arrived. Pass \`script\` for a one-off script written inline, \`saved\` to run a workflow saved in this project, or \`path\` for a script file on disk. ${WORKFLOW_SOURCE_MISSING_HINT}`;
 
 /** `args` 只属于 `path` 来源的违规说明（`saved` 有自己的 `saved.args`，内联脚本没有声明）。 */
 export const CREATE_WORKFLOW_ARGS_WITHOUT_PATH_ERROR =
@@ -43,7 +57,7 @@ export const CreateWorkflowSavedSourceSchema = z
       .max(SAVED_WORKFLOW_MAX_NAME_CHARS)
       .describe("Name of a saved workflow (see ListSavedWorkflows)."),
     args: z
-      .record(z.unknown())
+      .record(z.string(), z.unknown())
       .optional()
       .describe("Values for the arguments the saved workflow declares."),
     /** 解析回填：保存文件的落点。模型不填。 */
@@ -121,7 +135,7 @@ const CreateWorkflowModelInputSchema = z
      * 所以这个字段与 `path` 同进同退——`validateInput` 在模型入参上把这条钉住。
      */
     args: z
-      .record(z.unknown())
+      .record(z.string(), z.unknown())
       .optional()
       .describe("Values for the arguments a `path` file declares. Only with `path`."),
     /**
@@ -149,7 +163,7 @@ const CreateWorkflowModelInputSchema = z
       .min(1)
       .optional()
       .describe(
-        "Model for the subagents (`providerId/modelId` or a model id). Only when the user asks; you stay on the session model.",
+        "Model for the subagents (`providerId/modelId` or a model id). Only when the user asks, and never a model under another provider the user did not name — ask them first if one would help; you stay on the session model.",
       ),
     // 修订续跑不在这里：它是 `AmendWorkflow` 的工作（amend-workflow.ts）。`.strict()` 让旧写法 `resume_from` 成为可见的 schema 错误，
     // 而不是被静默忽略后变成一次全价重跑。

@@ -1,11 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { PlatformChannels } from "@ccbuddy/shared";
+import { installEmbeddedBrowserDesignBridge } from "./embeddedBrowserDesignBridge.js";
 import { installEmbeddedBrowserWheelForwarding } from "./embeddedBrowserWheel.js";
 
 const BRIDGE_KEY = "__ccbuddyEmbeddedBrowserJavaScriptDialog__";
 
 if (typeof window !== "undefined") {
   installEmbeddedBrowserWheelForwarding(window, (channel, payload) => {
+    ipcRenderer.sendToHost(channel, payload);
+  });
+  installEmbeddedBrowserDesignBridge(window, (channel, payload) => {
     ipcRenderer.sendToHost(channel, payload);
   });
 }

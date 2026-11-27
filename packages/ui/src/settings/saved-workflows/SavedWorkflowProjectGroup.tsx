@@ -5,9 +5,9 @@ import {
   TID_WORKFLOWS_LIST,
   TID_WORKFLOW_PROJECT_GROUP,
   resolveWorkspaceKey,
-  testId,
   type CCbuddySavedWorkflowEntry,
 } from "@ccbuddy/shared";
+import { testId } from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import { toast } from "@/components/ui/toast.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";

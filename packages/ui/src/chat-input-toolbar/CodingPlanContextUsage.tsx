@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- Composer 用量入口集中维护多来源状态、弹层和重置交互；本阶段只迁移 Account Access，不拆分既有 UI 结构。 */
 import { type CodingPlanResetType } from "@ccbuddy/shared";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   type CodingPlanUsageRemainingEntitlement,
@@ -358,7 +358,7 @@ export function ChatCodingPlanUsageRemainingPanel({
       <div className={cn("grid gap-2", getContextQuotaMeterGridClass(quotaGridCount))}>
         {state.loading && !state.visibleSnapshot ? (
           <div className="flex items-center gap-2 p-2 text-ui-base text-foreground-subtle">
-            <Loader2 className="size-3.5 animate-spin" />
+            <LoaderCircle className="size-3.5 animate-spin" />
             {intl.formatMessage({ id: "sidebar.usage.plan.loading" })}
           </div>
         ) : state.displayedEntitlement?.error && !state.visibleSnapshot ? (

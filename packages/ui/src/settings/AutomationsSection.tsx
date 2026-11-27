@@ -13,6 +13,12 @@ import { CircleCheck, RotateCcw, TriangleAlert } from "lucide-react";
 import {
   AUTOMATION_CREATE_LIMIT,
   BUILTIN_MODEL_PROVIDER_IDS,
+  isAutomationCreateLimitError,
+  resolveWorkspaceKey,
+  type CCbuddyAutomation,
+  type CCbuddyOffPeakTask,
+} from "@ccbuddy/shared";
+import {
   TID_AUTOMATION_ACTION_DELETE,
   TID_AUTOMATION_ACTION_TOGGLE,
   TID_AUTOMATION_CARD,
@@ -21,11 +27,7 @@ import {
   TID_AUTOMATIONS_STATUS_FILTER,
   TID_OFFPEAK_CREATE_BUTTON,
   TID_OFFPEAK_TAB,
-  isAutomationCreateLimitError,
-  resolveWorkspaceKey,
-  type CCbuddyAutomation,
-  type CCbuddyOffPeakTask,
-} from "@ccbuddy/shared";
+} from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import {
   DropdownMenu,
@@ -325,9 +327,14 @@ export function canToggleAutomation(
 
 export function getAutomationRunNowToastId(
   result: AutomationRunNowResult,
-): "automations.runNowQueued" | "automations.runNowAlreadyRunning" | "automations.runNowFailed" {
+):
+  | "automations.runNowQueued"
+  | "automations.runNowAlreadyRunning"
+  | "automations.runNowHostMismatch"
+  | "automations.runNowFailed" {
   if (result === "queued") return "automations.runNowQueued";
   if (result === "duplicate") return "automations.runNowAlreadyRunning";
+  if (result === "hostMismatch") return "automations.runNowHostMismatch";
   return "automations.runNowFailed";
 }
 
@@ -1171,11 +1178,10 @@ export function AutomationsSection({
           },
         );
         setNow(Date.now());
-      } else if (result === "duplicate") {
-        // 连续点击或上一条 manual run 仍在执行时，store/host 会返回 duplicate。
+      } else {
+        // duplicate：连续点击或上一条 manual run 仍在执行时，store/host 会返回 duplicate，
         // 这里必须给出可见反馈，否则用户会以为按钮没响应。
-        toast(intl.formatMessage({ id: getAutomationRunNowToastId(result) }));
-      } else if (result === "failed") {
+        // hostMismatch / failed：失败原因不同，提示文案由 getAutomationRunNowToastId 区分。
         toast(intl.formatMessage({ id: getAutomationRunNowToastId(result) }));
       }
     },
@@ -1264,6 +1270,7 @@ export function AutomationsSection({
   const handleOffPeakDelete = useCallback(
     async (task: CCbuddyOffPeakTask) => {
       const confirmed = await confirmDialog({
+        confirmVariant: "destructive",
         title: intl.formatMessage({ id: "offPeak.delete.title" }),
         description: intl.formatMessage({ id: "offPeak.delete.description" }),
         confirmLabel: intl.formatMessage({ id: "offPeak.delete.confirm" }),

@@ -1,5 +1,5 @@
 import { Collapsible as CollapsiblePrimitive } from "radix-ui";
-import { cn } from "../lib/utils.js";
+import { cn } from "@/components/lib/utils.js";
 
 function Collapsible({ ...props }: React.ComponentProps<typeof CollapsiblePrimitive.Root>) {
   return <CollapsiblePrimitive.Root data-slot="collapsible" {...props} />;
@@ -20,27 +20,22 @@ function CollapsibleContent({
     <CollapsiblePrimitive.CollapsibleContent
       data-slot="collapsible-content"
       className={cn(
-        "group/collapsible-content overflow-hidden",
+        "overflow-hidden",
         "data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up data-[state=closed]:[animation-fill-mode:forwards] transition-none duration-300 ease-in-out",
+        "data-[state=open]:[&>div]:animate-in data-[state=open]:[&>div]:fade-in-0",
+        "data-[state=closed]:[&>div]:animate-out data-[state=closed]:[&>div]:fade-out-0 data-[state=closed]:[&>div]:[animation-fill-mode:forwards]",
         className,
       )}
       {...props}
     >
-      <div
-        className={cn(
-          "transition-none duration-300 ease-in-out",
-          "group-data-[state=open]/collapsible-content:animate-in group-data-[state=open]/collapsible-content:fade-in-0",
-          "group-data-[state=closed]/collapsible-content:animate-out group-data-[state=closed]/collapsible-content:fade-out-0 group-data-[state=closed]/collapsible-content:[animation-fill-mode:forwards]",
-        )}
-      >
-        {/* 大会话 resize trace 显示 collapsible 动画层只设置 duration/ease 时，
+      <div className="transition-none duration-300 ease-in-out [--radix-collapsible-content-height:initial] [--radix-collapsible-content-width:initial]">
+        {/* 折叠尺寸只供外层高度动画消费；继承到大型详情子树会在测量更新时
+            使无关后代重算样式。内部截断继承，嵌套折叠仍使用自身的测量值。 */}
+        {/* Bugfix: 大会话 resize trace 显示 collapsible 动画层只设置 duration/ease 时，
             浏览器会用默认 transition-property: all 动画 scrollbar-color，拖拽窗口时触发非合成动画。
             这里显式禁用 CSS transition，只保留 animate-in/out 的关键帧动画。 */}
-        {/* tw-animate-css 并没有 animate-fade-in / animate-fade-out 这类工具类，
-            必须用 animate-in/out 搭配 fade-in-0 / fade-out-0。
-            同时子层 div 本身没有 data-state，所以这里继续读取父层 content 的 state，
-            让透明度动画和高度动画稳定分层。
-            打开时再补一个轻微 delay，避免内容还被 0 高度裁切时就把淡入过程提前消耗掉。 */}
+        {/* 嵌套 content 的同名 group 会匹配祖先 open，覆盖当前 closed 的淡出。
+            动画只由当前 content 的 data-state 作用于直接子层，保持高度/透明度分层。 */}
         {children}
       </div>
     </CollapsiblePrimitive.CollapsibleContent>

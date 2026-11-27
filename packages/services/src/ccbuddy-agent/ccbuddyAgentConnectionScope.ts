@@ -22,6 +22,7 @@ import type {
   CCbuddyAgentRuntimePolicy,
   CCbuddyAgentWorkspaceTarget,
 } from "./ccbuddyAgent.js";
+import { isRemoteInputPredictionEnabled } from "./inputPredictionSwitch.js";
 
 export type CCbuddyAgentV4ClientMode = "desktop-continuous" | "web-remote-replayable";
 
@@ -35,6 +36,8 @@ export interface CCbuddyAgentV4ConnectionContext {
    * 是**连接**的事实，不是某一次订阅可以自选的口味。缺席 = 按旧消费者处理。
    */
   workflowRunDeltas?: boolean;
+  pluginDiscoveryUi?: boolean;
+  historyFirst?: boolean;
 }
 
 const TRUSTED_CONNECTION_FIELD = "__ccbuddyTrustedV4Connection";
@@ -85,6 +88,8 @@ export function readTrustedCCbuddyAgentV4Connection(
     clientMode: context.clientMode,
     // 只认 true：缺席与 false 都是「旧消费者」，键在场与否是下游读端的判据。
     ...(context.workflowRunDeltas === true ? { workflowRunDeltas: true } : {}),
+    ...(context.pluginDiscoveryUi === true ? { pluginDiscoveryUi: true } : {}),
+    ...(context.historyFirst === true ? { historyFirst: true } : {}),
   };
 }
 
@@ -104,6 +109,8 @@ function withTrustedConnection<T extends object>(
   delete forwarded["subscriberScope"];
   // 与 clientMode 同族的可信位：UI 面的 subscribe 不能自己挑增量编码。
   delete forwarded["workflowRunDeltas"];
+  delete forwarded["pluginDiscoveryUi"];
+  delete forwarded["historyFirst"];
   forwarded[TRUSTED_CONNECTION_FIELD] = context;
   return forwarded as T;
 }
@@ -118,6 +125,20 @@ function withTrustedUnsubscribeRoute<T extends object>(
   delete forwarded[TRUSTED_UNSUBSCRIBE_ROUTE_FIELD];
   forwarded[TRUSTED_UNSUBSCRIBE_ROUTE_FIELD] = route;
   return forwarded as T;
+}
+
+/** sendText.source 或 createSession.firstInput.source 是 extension（CLI 契约 conversation-input-source.md §2）。 */
+function carriesExtensionInputSource(envelope: { type: string; payload: unknown }): boolean {
+  const payload =
+    envelope.payload && typeof envelope.payload === "object"
+      ? (envelope.payload as {
+          source?: { kind?: unknown };
+          firstInput?: { source?: { kind?: unknown } } | null;
+        })
+      : undefined;
+  if (envelope.type === "sendText") return payload?.source?.kind === "extension";
+  if (envelope.type === "createSession") return payload?.firstInput?.source?.kind === "extension";
+  return false;
 }
 
 function workspaceKey(target: CCbuddyAgentWorkspaceTarget): string {
@@ -222,6 +243,12 @@ function createHello(context: CCbuddyAgentV4ConnectionContext): HelloMessage {
       // 本 Host 会转发 `workflowRun.*` 键级增量；客户端见到它才能在 clientHello 里回声明
       // （那个 capabilities 是 .strict() 的，反过来会让老 Host 握不上手）。
       workflowRunDeltas: true,
+      pluginDiscovery: true,
+      historyFirst: true,
+      // 手机远控输入预测：受 Host 开关控制；缺席/false 时手机不得发起 inputPrediction。
+      inputPrediction: isRemoteInputPredictionEnabled(),
+      // 手机任务列表预加载：rowsRange 支持 residency=resident-only（只读热会话）。
+      residentRowsRange: true,
     },
     auth: {},
   };
@@ -254,6 +281,8 @@ export function createCCbuddyAgentConnectionScope(
   let boundClientId: string | null = null;
   /** clientHello 里的增量声明；trusted relay 没有自己的 clientHello，只搬运下游的。 */
   let clientWorkflowRunDeltas = false;
+  let pluginDiscoveryUiSupported = false;
+  let clientHistoryFirst = false;
   let commandQueryWorkspaceKey: string | null = null;
   let currentTransportFlowState: V4ConnectionFlowState = "drained";
   let flowClosed = false;
@@ -271,12 +300,18 @@ export function createCCbuddyAgentConnectionScope(
         clientMode: downstream.clientMode,
         // 增量位属于**下游那一端**：relay 自己不消费帧，只把下游 clientHello 的声明带上去。
         ...(downstream.workflowRunDeltas === true ? { workflowRunDeltas: true } : {}),
+        ...(downstream.pluginDiscoveryUi === true ? { pluginDiscoveryUi: true } : {}),
+        ...(downstream.historyFirst === true ? { historyFirst: true } : {}),
       };
     }
     return {
       connectionId: context.connectionId,
       clientMode: context.clientMode,
       ...(clientWorkflowRunDeltas ? { workflowRunDeltas: true } : {}),
+      ...(role === "terminal-client" && pluginDiscoveryUiSupported
+        ? { pluginDiscoveryUi: true }
+        : {}),
+      ...(clientHistoryFirst ? { historyFirst: true } : {}),
     };
   };
 
@@ -669,6 +704,29 @@ export function createCCbuddyAgentConnectionScope(
       });
 
   const overrides: Partial<ICCbuddyAgentService> = {
+    onDynamicSessionLifecycle(params) {
+      return (listener) =>
+        base.onDynamicSessionLifecycle(params)((snapshot) => {
+          if (snapshot.state === "stopping") {
+            const topic = conversationTopic(snapshot.sessionId);
+            const key = workspaceKey(params);
+            // 只清当前 session 的 owner；不能使其他任务或 sessions-index 的订阅失效。
+            for (const entry of owned.values()) {
+              if (workspaceKey(entry.target) === key && entry.topic === topic) forget(entry);
+            }
+            for (const group of [...pendingByOwnership.values()]) {
+              for (const pending of [...group]) {
+                if (workspaceKey(pending.target) !== key || pending.topic !== topic) continue;
+                pending.invalidatedByRuntimeRestart = true;
+                removePendingOwnership(pending);
+                pending.frames.length = 0;
+                pending.stagedBytes = 0;
+              }
+            }
+          }
+          listener(snapshot);
+        });
+    },
     async helloConversationV4() {
       assertOpen();
       helloIssued = true;
@@ -683,6 +741,8 @@ export function createCCbuddyAgentConnectionScope(
       }
       boundClientId = parsed.clientId;
       clientWorkflowRunDeltas = clientSupportsWorkflowRunDeltas(parsed);
+      pluginDiscoveryUiSupported = parsed.capabilities?.pluginDiscoveryUi === true;
+      clientHistoryFirst = parsed.capabilities?.historyFirst === true;
       handshakeComplete = true;
     },
     async setConnectionFlowStateV4(params) {
@@ -705,6 +765,11 @@ export function createCCbuddyAgentConnectionScope(
     },
     async sendConversationCommandV4(params) {
       assertOpen();
+      // extension 来源只由扩展网关经 app-control 注入（docs/plugins/extension-host.md §17.8）；app-control 直接调
+      // 基础 agent 服务，不经任何连接作用域。渲染进程、手机与 relay 的命令都从这里进入，带这个来源就是伪造。
+      if (carriesExtensionInputSource(params.envelope)) {
+        throw new Error("fault.command.extensionSourceUntrusted");
+      }
       if (role === "terminal-client") {
         assertReady();
         if (params.envelope.clientId !== boundClientId) {
@@ -891,6 +956,13 @@ export function createCCbuddyAgentConnectionScope(
         withTrustedConnection(workspaceTarget(params), forwardedConnection(params)),
       );
     },
+    onDynamicPluginUiToolResult() {
+      assertOpen();
+      // 页面创建只属于本地桌面；手机回放和 relay 不拥有原生 guest。
+      if (role !== "terminal-client" || context.clientMode !== "desktop-continuous")
+        return RpcEvent.None;
+      return base.onDynamicPluginUiToolResult();
+    },
     onDynamicCuaPermissionObservation() {
       assertOpen();
       // 权限弹窗是本地桌面副作用；Web 客户端 replay attachment 只能消费可恢复对话事实。
@@ -917,6 +989,10 @@ export function createCCbuddyAgentConnectionScope(
       // 资源事实不属于会话流，桌面 continuous 与Web replayable attachment 均不能订阅。
       if (disposed || role !== "trusted-host-relay") return RpcEvent.None;
       return base.onDynamicMcpResourceSamples();
+    },
+    onDynamicRemoteConversationTelemetry() {
+      if (disposed || role !== "trusted-host-relay") return RpcEvent.None;
+      return base.onDynamicRemoteConversationTelemetry();
     },
     onDynamicMcpTelemetry() {
       assertOpen();
@@ -1071,3 +1147,6 @@ export function createCCbuddyAgentConnectionScope(
     },
   };
 }
+
+// Share RPC 复用同一内部 carrier 写入规则，不能复制一套连接身份拼装。
+export { withTrustedConnection as withTrustedCCbuddyAgentV4Connection };

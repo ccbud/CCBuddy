@@ -1,5 +1,7 @@
 // Config Factory - Load and merge all config sources
 
+import { readFile, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type {
   ConfigPort,
@@ -15,13 +17,28 @@ import {
   DefaultRuntimeConfig,
   createWorkspaceHookBundleSnapshot,
 } from "@ccbuddy/contracts";
+import { remoteWorkspaceTrustIdentity } from "@ccbuddy/shared";
 import {
   buildWorkspaceHookBundleSnapshot,
+  readWorkspaceHookScriptStates,
   resolveWorkspaceHookRuntimeRoot,
+  type WorkspaceHookScriptState,
   type WorkspaceHookRuntimeRoot,
 } from "@ccbuddy/shared/workspace-hook-discovery";
+import {
+  parseManagedWorktreePath,
+  resolveManagedWorktreeRoot,
+  resolveWorkspaceHookTrustIdentity,
+  type WorkspaceHookTrustIdentityFs,
+} from "@ccbuddy/shared/managed-worktree";
 import { createConfigPort } from "./index.js";
-import { loadFileConfig, getDefaultConfigPath, type LoadedConfig } from "./file-config.adapter.js";
+import {
+  loadFileConfig,
+  getDefaultConfigPath,
+  migrateVisualizeDefaultOffInFileConfig,
+  VISUALIZE_PLUGIN_ID,
+  type LoadedConfig,
+} from "./file-config.adapter.js";
 import { parseEnvConfig } from "./env-config.adapter.js";
 import { mergeConfigs, createPrioritizedConfig } from "./config-merger.js";
 import { createNodeLoggerFactory } from "../logging/index.js";
@@ -42,6 +59,12 @@ export interface ConfigFactoryOptions {
   workingDirectory?: string;
   /** Opaque workspace identity supplied by the existing Host resolver; local callers fall back to workspacePath. */
   workspaceIdentity?: string;
+  /**
+   * Hook Trust identity（D23），由调用方经 resolveWorkspaceHookTrustIdentityForWorkspace 预先算好。
+   * createConfig 是同步函数，而 resolver 需要异步读取 .git 链接，所以不在这里解析。
+   * 缺省时沿用旧规则（远程 identity 优先，否则工作目录）。
+   */
+  workspaceHookTrustIdentity?: string;
   /** Environment variables (default: process.env) */
   env?: Record<string, string | undefined>;
   /** CLI overrides (highest priority) */
@@ -110,10 +133,92 @@ export interface PluginConfigSources {
   enabled: Record<string, PluginConfigScope>;
   marketplaces: Record<string, PluginConfigScope>;
   options: Record<string, Record<string, PluginConfigScope>>;
+  /**
+   * 插件选项的原始配置层，按优先级从低到高（user，再按发现顺序的项目配置文件）。
+   * 合并后的 options 分不出值来自哪一层；敏感选项要按层叠加私有文件，所以保留原始层。
+   */
+  optionLayers: PluginOptionLayer[];
   paths: {
     user: string;
     workspace: string | undefined;
   };
+}
+
+export interface PluginOptionLayer {
+  scope: PluginConfigScope;
+  path: string;
+  /** workspace 层配置文件的 baseDir；私有文件按它找 workspace 条目。user 层没有。 */
+  workspaceRoot?: string;
+  options: Record<string, Record<string, string | number | boolean>>;
+}
+
+interface LoadedConfigSources {
+  userConfigResult: LoadedConfig;
+  discoveredProjectConfigs: ProjectConfigDiscovery;
+}
+
+function loadConfigSources(options: ConfigFactoryOptions): LoadedConfigSources {
+  const userConfigResult: LoadedConfig = options.skipUserConfig
+    ? { config: {}, diagnostics: [], path: getDefaultConfigPath(), loaded: false }
+    : loadFileConfig(options.userConfigPath);
+  const discoveredProjectConfigs: ProjectConfigDiscovery = options.workingDirectory
+    ? loadProjectConfigs(options.workingDirectory, options.projectConfigPath)
+    : options.projectConfigPath
+      ? summarizeProjectConfigs([
+          loadProjectConfigFile(options.projectConfigPath, {
+            discoveryOrder: 0,
+            explicitProjectConfig: true,
+          }),
+        ])
+      : summarizeProjectConfigs([]);
+  return { userConfigResult, discoveredProjectConfigs };
+}
+
+/** 复用一次读取的配置层；可选迁移失败只影响该层，不能阻断会话装配。 */
+export async function createConfigWithPluginMigrations(
+  options: ConfigFactoryOptions = {},
+): Promise<ConfigResult> {
+  const sources = loadConfigSources(options);
+  const migrationResults = new Map<string, boolean | undefined>();
+  for (const file of [sources.userConfigResult, ...sources.discoveredProjectConfigs.files]) {
+    if (!file.pendingVisualizeMigration) continue;
+    let enabled: boolean | undefined;
+    if (migrationResults.has(file.path)) {
+      // 同一文件可能同时用于用户层和显式项目层；每次装载只迁移、告警一次。
+      enabled = migrationResults.get(file.path);
+    } else {
+      try {
+        enabled = await migrateVisualizeDefaultOffInFileConfig(file.path);
+      } catch (error) {
+        // 旧实现让只读仓库或文件锁失败连带阻断 App/技能查询。仅在本次配置层关闭，
+        // 不写完成标记；合并仍遵循原有优先级，不能盖掉较高层之后明确开启的值。
+        enabled = false;
+        const failure = error as NodeJS.ErrnoException & { cause?: NodeJS.ErrnoException };
+        const loggerFactory =
+          options.loggerFactory ?? createNodeLoggerFactory({ env: options.env });
+        loggerFactory
+          .createLogger("ccbuddy")
+          .child({ module: "adapters.config" })
+          .warn("Visualize config migration deferred", {
+            event: "config.visualize_migration.deferred",
+            configPath: file.path,
+            errorCode: failure?.code ?? failure?.cause?.code ?? "UNKNOWN",
+          });
+      }
+      migrationResults.set(file.path, enabled);
+    }
+    const enabledPlugins = { ...file.config.plugins?.enabledPlugins };
+    if (enabled === undefined) delete enabledPlugins[VISUALIZE_PLUGIN_ID];
+    else enabledPlugins[VISUALIZE_PLUGIN_ID] = enabled;
+    file.config = { ...file.config, plugins: { ...file.config.plugins, enabledPlugins } };
+  }
+  // Hook Trust 绑定入口脚本内容（docs/specs/workspace-hook-trust.md D24）：读文件是异步 IO，
+  // 只能在这个异步入口完成。Runtime 会话只走本入口；同步 createConfig 的入口记为 unverifiable。
+  const workspaceHookScriptStates = await readWorkspaceHookScriptStates({
+    workspacePath: resolve(options.workingDirectory ?? process.cwd()),
+    sources: sources.discoveredProjectConfigs.hookCandidates,
+  });
+  return assembleConfig(options, sources, workspaceHookScriptStates);
 }
 
 /**
@@ -127,16 +232,21 @@ export interface PluginConfigSources {
  * 5. CLI overrides
  */
 export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
+  return assembleConfig(options, loadConfigSources(options));
+}
+
+function assembleConfig(
+  options: ConfigFactoryOptions,
+  sources: LoadedConfigSources,
+  workspaceHookScriptStates?: ReadonlyMap<string, WorkspaceHookScriptState>,
+): ConfigResult {
+  const { userConfigResult, discoveredProjectConfigs } = sources;
   // 1. System defaults
   const configs: ReturnType<typeof createPrioritizedConfig>[] = [
     createPrioritizedConfig(DefaultRuntimeConfig, ConfigScope.System),
   ];
 
   // 2. User config file
-  const userConfigResult: LoadedConfig = options.skipUserConfig
-    ? { config: {}, diagnostics: [], path: getDefaultConfigPath(), loaded: false }
-    : loadFileConfig(options.userConfigPath);
-
   if (userConfigResult.loaded) {
     configs.push(
       createPrioritizedConfig(
@@ -150,16 +260,6 @@ export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
   }
 
   // 3. Project config files
-  const discoveredProjectConfigs: ProjectConfigDiscovery = options.workingDirectory
-    ? loadProjectConfigs(options.workingDirectory, options.projectConfigPath, options.workspaceIdentity)
-    : options.projectConfigPath
-      ? summarizeProjectConfigs([
-          loadProjectConfigFile(options.projectConfigPath, {
-            discoveryOrder: 0,
-            explicitProjectConfig: true,
-          }),
-        ])
-      : summarizeProjectConfigs([]);
   // explicit 配置曾在 auto-discovery 之后手工追加并自行编号，绕过 shared
   // canonical-path dedup；同一文件会进入 snapshot 两次并使既有 Trust 全部 stale。
   // 修法：有 workspace 时由 loadProjectConfigs 统一走 discoverWorkspaceHookConfigPaths，
@@ -217,11 +317,18 @@ export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
     options.cliOverrides?.hooks,
   ]);
   const workspacePath = resolve(options.workingDirectory ?? process.cwd());
+  const fallbackIdentity = options.workspaceIdentity?.trim();
   const workspaceHookSnapshotData = buildWorkspaceHookBundleSnapshot({
-    workspaceIdentity: options.workspaceIdentity?.trim() || workspacePath,
+    // 未经解析的 identity 与共享 resolver 同一规则：远程保留 host 命名空间、路径取执行目录，
+    // 其他自报 identity 忽略。
+    workspaceIdentity:
+      options.workspaceHookTrustIdentity?.trim() ||
+      (fallbackIdentity && remoteWorkspaceTrustIdentity(fallbackIdentity, workspacePath)) ||
+      workspacePath,
     workspacePath,
     sources: projectSummary.hookCandidates,
     runtimeRoot: workspaceHookRuntimeRoot,
+    ...(workspaceHookScriptStates ? { scriptStates: workspaceHookScriptStates } : {}),
   });
   const workspaceHookSnapshot = workspaceHookSnapshotData
     ? createWorkspaceHookBundleSnapshot(workspaceHookSnapshotData)
@@ -232,7 +339,9 @@ export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
   const merged = mergeConfigs(...configs);
   const pluginConfigSources = resolvePluginConfigSources({
     projectConfig: projectConfigResult.config,
+    projectFiles: projectConfigFiles,
     projectPath: projectConfigResult.path,
+    skipUserConfig: options.skipUserConfig === true,
     userConfig: userConfigResult.config,
     userPath: userConfigResult.path,
   });
@@ -289,7 +398,9 @@ export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
 
 function resolvePluginConfigSources(input: {
   projectConfig: RuntimeConfigPatch;
+  projectFiles: readonly ProjectConfigFile[];
   projectPath: string | undefined;
+  skipUserConfig: boolean;
   userConfig: RuntimeConfigPatch;
   userPath: string;
 }): PluginConfigSources {
@@ -321,11 +432,29 @@ function resolvePluginConfigSources(input: {
   return {
     dirs: {
       user: input.userConfig.plugins?.dirs ?? [],
-      workspace: input.projectConfig.plugins?.dirs ?? [],
+      // 项目目录只是待信任候选；config.plugins.dirs 不含它们，发现时按信任记录准入。
+      workspace: [...new Set(input.projectFiles.flatMap((file) => file.pluginDirCandidates ?? []))],
     },
     enabled,
     marketplaces,
     options,
+    optionLayers: [
+      ...(input.skipUserConfig
+        ? []
+        : [
+            {
+              scope: "user" as const,
+              path: input.userPath,
+              options: input.userConfig.plugins?.options ?? {},
+            },
+          ]),
+      ...input.projectFiles.map((file) => ({
+        scope: "workspace" as const,
+        path: file.path,
+        workspaceRoot: file.baseDir,
+        options: file.config.plugins?.options ?? {},
+      })),
+    ],
     paths: {
       user: input.userPath,
       workspace: input.projectPath,
@@ -388,6 +517,9 @@ function resolveEffectiveMcpServers(input: {
   };
 
   apply("system", DefaultRuntimeConfig);
+  // 会话的动态 MCP 加载器（mcp/config-loader.ts）只重读 project、user 文件层与显式 server map，
+  // 二者由一致性测试锁定。env 或 CLI 层将来提供 mcp.servers 时，必须同步加载器，
+  // 否则配置热更新会丢掉这一层。
   // MCP server discovery has an extension-specific rule: user config shadows project config.
   // This does not change the global config precedence for model/permission/UI fields.
   apply("project", input.projectConfig);
@@ -463,4 +595,102 @@ function summarizeOptionalProjectConfig(files: ProjectConfigFile[]): OptionalPat
     path,
     loaded: true,
   };
+}
+
+// ── Hook Trust identity（docs/specs/workspace-hook-trust.md D23）──
+// 唯一 resolver 在 @ccbuddy/shared/managed-worktree；这里只提供 Node 只读文件端口与数据根目录。
+
+const CCBUDDY_DATA_BASE_DIR_ENV_KEY = "CCBUDDY_DATA_BASE_DIR";
+
+/** 与 Host getDataBaseDir 同规则：CCBUDDY_DATA_BASE_DIR 优先，空值回落 homedir。 */
+export function resolveCCbuddyDataBaseDir(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return env[CCBUDDY_DATA_BASE_DIR_ENV_KEY]?.trim() || homedir();
+}
+
+const nodeTrustIdentityFs: WorkspaceHookTrustIdentityFs = {
+  readFile: (path) => readFile(path, "utf8"),
+  realpath: (path) => realpath(path),
+  stat: async (path) => {
+    try {
+      const info = await stat(path);
+      return { isFile: info.isFile(), isDirectory: info.isDirectory() };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  },
+};
+
+/**
+ * 计算 workspace 的 Hook Trust identity。远程 identity 保留 host 命名空间、路径取执行目录；本地受管 worktree 严格校验通过后
+ * 归一为源仓库对应路径；其余情况返回 workspacePath（调用方负责传入已规范化的路径）。
+ */
+export function resolveWorkspaceHookTrustIdentityForWorkspace(input: {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  env?: Record<string, string | undefined>;
+}): Promise<string> {
+  return resolveWorkspaceHookTrustIdentity(
+    {
+      workspacePath: input.workspacePath,
+      ...(input.workspaceIdentity ? { workspaceIdentity: input.workspaceIdentity } : {}),
+      dataBaseDir: resolveCCbuddyDataBaseDir(input.env),
+    },
+    nodeTrustIdentityFs,
+  );
+}
+
+/** 本地会话目录相对 workspace 目录的文件系统关系，见 classifyLocalSessionDirectory。 */
+export type LocalSessionDirectoryRelation = "same" | "worktree" | "removed-worktree" | "other";
+
+/**
+ * 本地会话目录与 workspace 目录的文件系统关系（docs/git/worktree.md §9.3 归属判定）：
+ * - same：同一个真实目录（realpath 比较，吸收 Host key 保留的输入大小写与磁盘真实大小写的差异）；
+ * - worktree：目录是受管 worktree，严格 resolver 映射回该真实目录；
+ * - removed-worktree：目录位于受管 worktree 布局内但已不存在，文件系统无法证明归属，调用方只能用
+ *   创建时持久化的身份兜底；
+ * - other：不属于。
+ * 只做文件系统判定，不使用 projectID：projectID 是有损 slug（转小写、替换字符、截断），
+ * 不同项目可能相同，不能作为会执行代码的冷恢复/激活路径的归属证明。
+ */
+export async function classifyLocalSessionDirectory(input: {
+  directory: string;
+  workspacePath: string;
+  env?: Record<string, string | undefined>;
+}): Promise<LocalSessionDirectoryRelation> {
+  const directory = resolve(input.directory);
+  const workspacePath = resolve(input.workspacePath);
+  if (directory === workspacePath) return "same";
+  const [realDirectory, realWorkspace] = await Promise.all([
+    realpathOrNull(directory),
+    realpathOrNull(workspacePath),
+  ]);
+  if (realDirectory !== null && realDirectory === realWorkspace) return "same";
+  const dataBaseDir = resolveCCbuddyDataBaseDir(input.env);
+  if (realDirectory === null) {
+    // 会话 cwd 落盘时就是 realpath；受管根目录本身可能经过软链，两种形态都认。
+    const managedRoot = resolveManagedWorktreeRoot(dataBaseDir);
+    const realManagedRoot = (await realpathOrNull(managedRoot)) ?? managedRoot;
+    return parseManagedWorktreePath(realManagedRoot, directory) ||
+      parseManagedWorktreePath(managedRoot, directory)
+      ? "removed-worktree"
+      : "other";
+  }
+  if (realWorkspace === null) return "other";
+  const mapped = await resolveWorkspaceHookTrustIdentity(
+    { workspacePath: directory, dataBaseDir },
+    nodeTrustIdentityFs,
+  );
+  if (mapped === directory) return "other";
+  return (await realpathOrNull(mapped)) === realWorkspace ? "worktree" : "other";
+}
+
+async function realpathOrNull(path: string): Promise<string | null> {
+  try {
+    return await realpath(path);
+  } catch {
+    return null;
+  }
 }

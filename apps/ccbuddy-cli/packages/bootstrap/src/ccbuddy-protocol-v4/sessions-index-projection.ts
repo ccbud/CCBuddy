@@ -15,6 +15,7 @@ export interface SessionSummaryDeriveExtra {
   workspaceId: string;
   createdAt: number;
   lastActivityAt: number;
+  lastOutcome?: SessionSummary["lastOutcome"];
   parentSessionId?: string;
 }
 
@@ -27,6 +28,7 @@ export function deriveSessionSummary(
 ): SessionSummary {
   // 最后一条 assistantText row 的文本作预览（≤120 字符）。
   let lastAssistantPreview: string | undefined;
+  const lastOutcome = extra.lastOutcome;
   const rows = snapshot.rows.window;
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i];
@@ -49,26 +51,36 @@ export function deriveSessionSummary(
   });
   // workspaceHookReview 由 Hooks Settings 呈现，不降级成 permission/userInput 侧栏徽标。
   const pending = snapshot.pendingInteractions.find(
-    (interaction) => interaction.kind === "permission" || interaction.kind === "userInput",
+    (interaction) =>
+      interaction.kind === "permission" ||
+      interaction.kind === "userInput" ||
+      interaction.kind === "pluginInstall",
   );
   const permissionCount = snapshot.pendingInteractions.filter(
     (interaction) => interaction.kind === "permission",
   ).length;
   const userInputCount = snapshot.pendingInteractions.filter(
-    (interaction) => interaction.kind === "userInput",
+    (interaction) => interaction.kind === "userInput" || interaction.kind === "pluginInstall",
   ).length;
   // 兼容恢复迁移或归约测试构造的裁剪快照：不能因新增轻量 toolName 投影，
   // 在旧 pending interaction 暂缺 payload 时阻断整个任务列表。
   const pendingPayload = pending?.payload;
   const pendingToolName =
-    pendingPayload && "toolName" in pendingPayload ? pendingPayload.toolName : undefined;
+    pendingPayload?.kind === "pluginInstall"
+      ? "SuggestPluginInstall"
+      : pendingPayload && "toolName" in pendingPayload
+        ? pendingPayload.toolName
+        : undefined;
   const pendingInteraction =
     pending &&
     pendingPayload &&
-    (pendingPayload.kind === "permission" || pendingPayload.kind === "userInput")
+    (pendingPayload.kind === "permission" ||
+      pendingPayload.kind === "userInput" ||
+      pendingPayload.kind === "pluginInstall")
       ? {
           interactionId: pending.interactionId,
-          kind: pendingPayload.kind,
+          kind:
+            pendingPayload.kind === "pluginInstall" ? ("userInput" as const) : pendingPayload.kind,
           ...(pendingToolName ? { toolName: pendingToolName } : {}),
           ...(pending.autoResolution ? { autoResolution: pending.autoResolution } : {}),
         }
@@ -79,10 +91,12 @@ export function deriveSessionSummary(
     ...(extra.parentSessionId ? { parentSessionId: extra.parentSessionId } : {}),
     title: snapshot.meta.title,
     titleSource: snapshot.meta.titleSource,
+    ...(lastOutcome ? { lastOutcome } : {}),
     phase: snapshot.control.phase,
     // 忠实透传 control.sessionEnded（语义：成功轮收口后即 true，不代表已删除）。
     sessionEnded: snapshot.control.sessionEnded,
     hasBackgroundWork,
+    hasCompactWork: snapshot.control.activeWorks.some((work) => work.kind === "compact"),
     ...(workflowActivity === undefined ? {} : { workflowActivity }),
     ...(pendingInteraction ? { pendingInteraction } : {}),
     ...(permissionCount > 0 || userInputCount > 0
@@ -108,9 +122,12 @@ function summariesEqual(a: SessionSummary, b: SessionSummary): boolean {
     a.parentSessionId === b.parentSessionId &&
     a.title === b.title &&
     a.titleSource === b.titleSource &&
+    a.lastOutcome === b.lastOutcome &&
     a.phase === b.phase &&
     a.sessionEnded === b.sessionEnded &&
     a.hasBackgroundWork === b.hasBackgroundWork &&
+    // compact 不翻转 phase，必须单独判等，避免开始或结束被合流丢弃；旧帧缺失等同 false。
+    Boolean(a.hasCompactWork) === Boolean(b.hasCompactWork) &&
     // phase 翻转 / 结算 / 在跑子代理数变化永不被 conflation 吃掉；反之只改 node 的事件在这里判等
     // （真实系统里它仍会因 lastActivityAt 推进而产帧——那是活动事实，语义不变）。
     JSON.stringify(a.workflowActivity ?? null) === JSON.stringify(b.workflowActivity ?? null) &&

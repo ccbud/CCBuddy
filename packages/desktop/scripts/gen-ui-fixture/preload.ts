@@ -3,11 +3,8 @@ import { PlatformChannels } from "@ccbuddy/shared";
 import { installPluginSandboxHostBridge } from "../../src/preload/pluginSandbox/hostBridge.js";
 installPluginSandboxHostBridge();
 contextBridge.exposeInMainWorld("harness", {
-  config: () => ipcRenderer.invoke("fixture-config"),
-  project: (method: string, input: unknown) => ipcRenderer.invoke("fixture-project", method, input),
-  projectDirectories: () => ipcRenderer.invoke("fixture-project-directories"),
-  remoteProject: (method: string, input: unknown, legacy: boolean) =>
-    ipcRenderer.invoke("fixture-remote-project", method, input, legacy),
+  config: (remote = false) => ipcRenderer.invoke("fixture-config", remote),
+  remoteRead: (input: unknown) => ipcRenderer.invoke("fixture-remote-read", input),
   bridge: (method: string, input: unknown) => ipcRenderer.invoke("fixture-service", method, input),
   owner: () => ipcRenderer.invoke(PlatformChannels.PluginSandboxOwnerWebContentsId),
   dispose: (id: string, init: number) =>

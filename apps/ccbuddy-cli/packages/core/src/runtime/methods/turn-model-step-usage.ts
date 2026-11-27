@@ -1,3 +1,4 @@
+import { createModelUsageSummaryFromEvents } from "../deps.js";
 import type { MessageId, MessageWithParts, Model, ModelUsage, TraceContext } from "../deps.js";
 import type { MainTurnCacheHitAggregate, RuntimeModelTextResult } from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
@@ -7,6 +8,7 @@ import {
   persistedTokenUsageBaseline,
   type PersistedTokenUsageBaseline,
 } from "../../agent/message-history-usage.js";
+import { SUBAGENT_QUERY_SOURCE } from "../../subagent/runner.js";
 import { recordModelUsageFact } from "./usage-observability.js";
 
 interface RecordMainTurnModelUsageInput {
@@ -26,6 +28,12 @@ export async function recordMainTurnModelUsage(
   state: RegularTurnLoopState,
   input: RecordMainTurnModelUsageInput,
 ): Promise<void> {
+  // 失败请求的已报告消耗在恢复前结算，成功路径仍使用原有计数。
+  if (!input.result) {
+    state.tokenCount +=
+      createModelUsageSummaryFromEvents(state.events.slice(input.networkEventStartIndex))
+        ?.totalTokens ?? 0;
+  }
   await recordModelUsageFact(runtime, {
     assistantMessageId: input.assistantMessageId,
     error: input.error,
@@ -45,7 +53,7 @@ export async function recordMainTurnModelUsage(
 }
 
 export function querySourceForTask(taskType: AgentRuntimeInternal["config"]["taskType"]): string {
-  if (taskType === "subagent_child") return "subagent";
+  if (taskType === "subagent_child") return SUBAGENT_QUERY_SOURCE;
   if (taskType === "workflow_child" || taskType === "nested_workflow_child")
     return "workflow_child";
   return "main_turn";
@@ -61,6 +69,12 @@ export function findLatestCommittedAssistantUsage(
     if (baseline) return { messageIndex, baseline };
   }
   return undefined;
+}
+
+/** 当前窗口的上下文量：最近一条带 usage 的 assistant 的 input + output；没有时为 0。 */
+export function latestContextTokens(entries: readonly (RuntimeMessageEntry | undefined)[]): number {
+  const baseline = findLatestCommittedAssistantUsage(entries)?.baseline;
+  return baseline ? (baseline.contextUsageTokens ?? baseline.inputTokens) : 0;
 }
 
 export function mainTurnCacheHitAggregateFromMessages(input: {

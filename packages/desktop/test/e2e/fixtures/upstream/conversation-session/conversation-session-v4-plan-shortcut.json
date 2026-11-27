@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-v4-plan-shortcut",
+  "spec": "./test/e2e/conversation-session/planning/conversation-session-v4-plan-shortcut.test.ts",
+  "fixtures": [
+    {
+      "id": "v4-plan-shortcut-title",
+      "description": "E2E_V4_PLAN_SHORTCUT_SEED 首发的 case-local 标题生成响应。",
+      "metadata": {
+        "kind": "common",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "为列表操作测试建立已有会话，固定 seed 标题响应。"
+      },
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["Generate a concise title", "E2E_V4_PLAN_SHORTCUT_SEED"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "v4-plan-shortcut-title",
+          "inputTokens": 64,
+          "outputTokens": 8,
+          "text": "{\"title\":\"V4 Plan Shortcut E2E\"}"
+        }
+      }
+    },
+    {
+      "id": "v4-plan-shortcut-seed",
+      "description": "Plan shortcut seed：建立可发送普通 follow-up 的已有 session。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "为点击选择和窄屏原文发送提供稳定的已有会话。"
+      },
+      "maxMatches": 2,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_V4_PLAN_SHORTCUT_SEED"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "v4-plan-shortcut-seed",
+          "inputTokens": 80,
+          "outputTokens": 8,
+          "text": "V4_PLAN_SHORTCUT_SEED_OK"
+        }
+      }
+    },
+    {
+      "id": "v4-plan-shortcut-task-one",
+      "description": "选择计划模式后，正文和附件走标准 Plan 发送。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "验证选中不发送，另行发送时保留附件并携带标准 Plan 指令。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_V4_PLAN_SHORTCUT_TASK_ONE", "e2e-plan-picker.png"],
+        "lastUserMessageExcludes": ["/plan"],
+        "bodyExcludes": ["Generate a concise title", "CRITICAL: Respond with TEXT ONLY"],
+        "bodyIncludes": ["Plan mode is active."]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "v4-plan-shortcut-task-one",
+          "inputTokens": 96,
+          "outputTokens": 8,
+          "text": "V4_PLAN_SHORTCUT_TASK_ONE_OK"
+        }
+      }
+    },
+    {
+      "id": "v4-plan-shortcut-task-two",
+      "description": "关闭 Plan 后发送原始 /plan 文本，不发生隐式模式切换。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "验证发送层不再剥离 /plan，也不再启用 Plan。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["/plan E2E_V4_PLAN_SHORTCUT_TASK_TWO"],
+        "bodyExcludes": [
+          "Generate a concise title",
+          "CRITICAL: Respond with TEXT ONLY",
+          "Plan mode is active."
+        ]
+      },
+      "response": {
+        "statusCode": 200,
+        "text": {
+          "id": "v4-plan-shortcut-task-two",
+          "inputTokens": 112,
+          "outputTokens": 8,
+          "text": "V4_PLAN_SHORTCUT_TASK_TWO_OK"
+        }
+      }
+    }
+  ]
+}

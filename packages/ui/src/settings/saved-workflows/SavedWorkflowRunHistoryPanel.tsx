@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import { Ban, ChevronRight, CircleCheck, Loader2, TriangleAlert } from "lucide-react";
-import { TID_WORKFLOW_RUN_ROW, testId, type CCbuddySavedWorkflowRun } from "@ccbuddy/shared";
+import { Ban, ChevronRight, CircleCheck, LoaderCircle, TriangleAlert } from "lucide-react";
+import { TID_WORKFLOW_RUN_ROW, type CCbuddySavedWorkflowRun } from "@ccbuddy/shared";
+import { testId } from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/components/lib/utils.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
@@ -95,7 +96,11 @@ export function SavedWorkflowRunHistory({
               break;
             case "running":
               icon = (
-                <Loader2 className="size-4 animate-spin" strokeWidth={1.33} aria-hidden="true" />
+                <LoaderCircle
+                  className="size-4 animate-spin"
+                  strokeWidth={1.33}
+                  aria-hidden="true"
+                />
               );
               statusClass = "text-warning";
               break;

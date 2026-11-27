@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { workspaceHookPolicySchema } from "@ccbuddy/contracts";
+import { resolveWorkspaceHookTrustIdentityForWorkspace } from "@ccbuddy/adapters/config";
 import type { WorkspaceHookPolicyProvider } from "@ccbuddy/core";
 import {
   ccbuddyWorkspaceHookTrustGrantParamsSchema,
@@ -31,8 +32,14 @@ export async function grantWorkspaceHookTrustForProtocol(
 ): Promise<CCbuddyWorkspaceHookTrustGrantResult> {
   const params = ccbuddyWorkspaceHookTrustGrantParamsSchema.parse(rawParams);
   const grant = dependencies.grant ?? grantWorkspaceHookTrust;
-  const workspaceIdentity =
-    params.workspace.workspaceIdentity?.trim() || resolve(params.workspace.workspacePath);
+  // 企业 policy 按 Trust identity 评估（D23）：受管 worktree 与源仓库共用同一 policy 判定，
+  // 与随后 grant 写入的 record 键一致。
+  const workspaceIdentity = await resolveWorkspaceHookTrustIdentityForWorkspace({
+    workspacePath: resolve(params.workspace.workspacePath),
+    ...(params.workspace.workspaceIdentity?.trim()
+      ? { workspaceIdentity: params.workspace.workspaceIdentity.trim() }
+      : {}),
+  });
   const policyRejection = getPolicyRejectionReason(
     dependencies.policyProvider,
     workspaceIdentity,

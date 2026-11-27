@@ -1,6 +1,6 @@
 {
   "name": "@ccbuddy/visualize-plugin",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "description": "CCbuddy Gen UI authoring skill and examples",
   "license": "SEE LICENSE IN skills/visualize/LICENSE.md",

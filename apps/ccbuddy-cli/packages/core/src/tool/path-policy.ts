@@ -13,10 +13,7 @@ interface ToolWorkspacePathOptions {
 }
 
 export function resolveWorkspacePath(options: ToolWorkspacePathOptions): string {
-  const workingDirectory = normalizeAbsoluteDirectory(
-    options.workingDirectory,
-    "workingDirectory",
-  );
+  const workingDirectory = normalizeAbsoluteDirectory(options.workingDirectory, "workingDirectory");
   normalizeAbsoluteDirectory(options.workspaceRoot, "workspaceRoot");
   const requestedPath = options.inputPath;
 

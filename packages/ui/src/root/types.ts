@@ -1,7 +1,6 @@
 import type { IPlatformService, UserInfo } from "@ccbuddy/shared";
 import type { IServiceAccessor } from "@ccbuddy/services";
-import type { CreateTaskRequest } from "@/app-shell/types.js";
-
+import type { CreateTaskOptions, CreateTaskRequest } from "@/app-shell/types.js";
 export interface RootProps {
   services: IServiceAccessor;
   platform: IPlatformService;
@@ -15,6 +14,11 @@ export interface RootProps {
   initialWorkspaceIdentity?: string;
   /** 初始要打开的 task，从全局 task 列表进入时透传 */
   initialTaskId?: string;
+  /** 手机目录 admission 完成后，在 prewarm 前接收项目和输入草稿。 */
+  initialTaskDraft?: CreateTaskOptions;
+  /** 本客户端连接目标的稳定身份，不同客户端之间必须隔离草稿和 Recent。 */
+  composerClientNamespace?: string;
+  terminalOwnerId?: string;
   /** Electron renderer 传 true，用于启用自绘标题栏 */
   isDesktop?: boolean;
   /** macOS 桌面端需要给红绿灯按钮预留安全区 */
@@ -33,7 +37,7 @@ export interface RootProps {
   supportsEmbeddedBrowser?: boolean;
   /** 是否启用远程工作区能力，Web 普通模式先只支持本地 server 工作区 */
   allowRemoteWorkspace?: boolean;
-
+  initialSidebarFileTreeOpen?: boolean;
   /** Assistant code-comment 卡片灰度；默认关闭，关闭时保留原始 directive。 */
   assistantCodeCommentCardsEnabled?: boolean;
 }
@@ -47,8 +51,10 @@ export interface WorkspaceSettingsLayerProps {
   windowsWindowControlsRightPaddingPx?: number;
   captionWorkspacePath?: string | null;
   onBack?: () => void;
+  /** 设置页分享管理「跳转对话」；与 Root 层 SettingsPage 使用同一导航入口。 */
   onCreateTask?: (request?: CreateTaskRequest) => void;
   onOpenWorkspace?: () => void;
+  onOpenRemoteWorkspace?: () => void;
   allowOpenWorkspace?: RootProps["allowOpenWorkspace"];
   onLogin?: () => void;
   onLogout?: () => void;

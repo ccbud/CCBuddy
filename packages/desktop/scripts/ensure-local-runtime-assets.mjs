@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isRuntimeHostReady } from "../../../scripts/build-windows-runtime-host.mjs";
 
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -70,6 +71,15 @@ function isNativeSearchReady() {
 }
 
 const REQUIRED_LOCAL_RUNTIME_ASSETS = [
+  ...(target.os === "win32"
+    ? [
+        {
+          label: "Windows runtime host",
+          script: "prepare:windows-runtime-host",
+          isReady: () => isRuntimeHostReady(join(bundledToolsRoot, "runtime-host"), target.arch),
+        },
+      ]
+    : []),
   ...(nativeSearchReleasePlan.enabled
     ? [
         {
@@ -87,6 +97,23 @@ const REQUIRED_LOCAL_RUNTIME_ASSETS = [
           isReady: () =>
             existsSync(
               join(bundledToolsRoot, "browser-import", "ccbuddy-browser-import-helper.exe"),
+            ),
+        },
+      ]
+    : []),
+  ...(target.os === "win32"
+    ? [
+        {
+          // 预装工具的 Windows 入口都由这个 shim 提供；缺失时入口无法写入。
+          label: "Windows preinstalled entry shim",
+          script: "prepare:preinstalled-entry-shim",
+          isReady: () =>
+            existsSync(
+              join(
+                bundledToolsRoot,
+                "preinstalled-entry-shim",
+                "ccbuddy-preinstalled-entry-shim.exe",
+              ),
             ),
         },
       ]

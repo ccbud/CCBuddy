@@ -1,10 +1,5 @@
 import { traceContextToLogContext } from "../deps.js";
-import type {
-  Logger,
-  ModelInputMessage,
-  ModelMessageContentBlock,
-  TraceContext,
-} from "../deps.js";
+import type { Logger, ModelInputMessage, ModelMessageContentBlock, TraceContext } from "../deps.js";
 import type { MediaBudgetProjection } from "./media-budget.js";
 import type { ResolvedTurnAttachment } from "../types.js";
 
@@ -44,8 +39,7 @@ export function logResolvedTurnAttachments(
     attachmentContentBlockCounts: countBy(summaries, "contentBlockType"),
     attachments: summaries,
     event: TURN_ATTACHMENTS_RESOLVED_EVENT,
-    fileAttachmentCount: summaries.filter((summary) => summary.contentBlockType === "file")
-      .length,
+    fileAttachmentCount: summaries.filter((summary) => summary.contentBlockType === "file").length,
     imageAttachmentCount: summaries.filter((summary) => summary.contentBlockType === "image")
       .length,
     module: "core.runtime",
@@ -115,9 +109,7 @@ function summarizeResolvedTurnAttachment(attachment: ResolvedTurnAttachment, ind
   };
 }
 
-function collectMediaBlockSummaries(
-  messages: readonly ModelInputMessage[],
-): MediaBlockSummary[] {
+function collectMediaBlockSummaries(messages: readonly ModelInputMessage[]): MediaBlockSummary[] {
   const summaries: MediaBlockSummary[] = [];
 
   messages.forEach((message, messageIndex) => {

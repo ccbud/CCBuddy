@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
+import { CUA_SEA_TARGETS, collectCuaRuntimeFiles } from "./sea-cua-runtime-assets.mjs";
 
 export const seaOfficialPluginAssetPrefix = "ccbuddy-official-plugins/";
 export const seaOfficialPluginManifestAssetKey = `${seaOfficialPluginAssetPrefix}manifest.json`;
@@ -17,7 +18,19 @@ const browserUseRequiredRuntimePaths = [
   "skills/web-gui-tester/SKILL.md",
 ];
 
-// 修复原因：SEA 对资产进行严格校验，不能登记已移除的上游插件，否则正常构建也会因缺包失败。
+// 文档插件查看面板的构建产物（office-runtime 输出到各插件 dist/）。
+const officeInvocationPaths = [
+  "scripts/ccbuddy_libreoffice.py",
+  "scripts/libreoffice-profile/user/registrymodifications.xcu",
+  "scripts/libreoffice-profile/user/basic/script.xlc",
+  "scripts/libreoffice-profile/user/basic/dialog.xlc",
+  "scripts/libreoffice-profile/user/basic/Standard/script.xlb",
+  "scripts/libreoffice-profile/user/basic/Standard/dialog.xlb",
+  "scripts/libreoffice-profile/user/basic/Standard/CCbuddy.xba",
+];
+
+const officeViewerRuntimePaths = ["dist/server.mjs", "dist/ui/assets.json", "dist/ui/panel.html"];
+
 export const officialSeaPlugins = [
   {
     marketplace: "ccbuddy-plugins-official",
@@ -51,7 +64,7 @@ export const officialSeaPlugins = [
       "skills/visualize/assets/standalone-shell.js",
     ],
     rootPath: join("packages", "visualize-plugin"),
-    version: "0.1.0",
+    version: "0.1.2",
   },
   {
     // node_repl 宿主：Browser Use 与 Computer Use 共用的运行时产物，自己不是面向用户的插件
@@ -62,7 +75,80 @@ export const officialSeaPlugins = [
     requiresRuntime: true,
     requiredRuntimePaths: ["dist/mcp/server.js"],
     rootPath: join("packages", "node-repl-host"),
-    version: "0.6.1",
+    version: "0.7.1",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "android-emulator",
+    packageName: "@ccbuddy/android-emulator-plugin",
+    requiresRuntime: true,
+    requiredRuntimePaths: ["dist/mcp/server.js"],
+    rootPath: join("packages", "android-emulator-plugin"),
+    version: "0.1.3",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "documents",
+    packageName: "@ccbuddy/documents-plugin",
+    // 0.2.0 起带查看面板：SEA 必须在嵌入前校验 office-runtime 构建出的 server 与面板资源。
+    requiresRuntime: true,
+    requiredRuntimePaths: officeViewerRuntimePaths,
+    requiredSeedPaths: [
+      "skills/docx/SKILL.md",
+      "skills/docx-viewer/SKILL.md",
+      ...officeInvocationPaths,
+    ],
+    rootPath: join("packages", "documents-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.2.10",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "pdf",
+    packageName: "@ccbuddy/pdf-plugin",
+    // 0.2.0 起带查看面板：SEA 必须在嵌入前校验 office-runtime 构建出的 server 与面板资源。
+    requiresRuntime: true,
+    requiredRuntimePaths: officeViewerRuntimePaths,
+    requiredSeedPaths: [
+      "skills/pdf/SKILL.md",
+      "skills/pdf-viewer/SKILL.md",
+      ...officeInvocationPaths,
+    ],
+    rootPath: join("packages", "pdf-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.2.11",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "presentations",
+    packageName: "@ccbuddy/presentations-plugin",
+    // 0.2.0 起带查看面板：SEA 必须在嵌入前校验 office-runtime 构建出的 server 与面板资源。
+    requiresRuntime: true,
+    requiredRuntimePaths: officeViewerRuntimePaths,
+    requiredSeedPaths: [
+      "skills/pptx/SKILL.md",
+      "skills/pptx-viewer/SKILL.md",
+      ...officeInvocationPaths,
+    ],
+    rootPath: join("packages", "presentations-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.2.10",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "spreadsheets",
+    packageName: "@ccbuddy/spreadsheets-plugin",
+    // 0.2.0 起带查看面板：SEA 必须在嵌入前校验 office-runtime 构建出的 server 与面板资源。
+    requiresRuntime: true,
+    requiredRuntimePaths: officeViewerRuntimePaths,
+    requiredSeedPaths: [
+      "skills/xlsx/SKILL.md",
+      "skills/xlsx-viewer/SKILL.md",
+      ...officeInvocationPaths,
+    ],
+    rootPath: join("packages", "spreadsheets-plugin"),
+    // 修复原因：SEA manifest 必须与 package、plugin manifest 和官方 definition 同步，避免发布产物嵌入旧版本。
+    version: "0.2.10",
   },
   {
     // browser-use 使用真实 node_repl MCP runtime，SEA 必须校验并嵌入 server.js。
@@ -76,14 +162,116 @@ export const officialSeaPlugins = [
     rootPath: join("packages", "browser-use-plugin"),
     // SEA 清单仍指向旧版时，runtime 会与官方 definition 精确匹配失败，
     // 导致发布产物不 seed browser-use，进而无法装配宿主 node_repl MCP。
-    version: "0.5.1",
+    version: "0.5.2",
   },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "ios-simulator",
+    packageName: "@ccbuddy/ios-simulator-plugin",
+    requiresRuntime: true,
+    requiredRuntimePaths: ["dist/mcp/server.js"],
+    rootPath: join("packages", "ios-simulator-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "restore-legacy-sessions",
+    packageName: "@ccbuddy/restore-legacy-sessions-plugin",
+    requiresRuntime: false,
+    rootPath: join("packages", "restore-legacy-sessions-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "skill-creator",
+    packageName: "@ccbuddy/skill-creator-plugin",
+    requiresRuntime: false,
+    rootPath: join("packages", "skill-creator-plugin"),
+    version: "0.1.0",
+  },
+  {
+    marketplace: "ccbuddy-plugins-official",
+    name: "plugin-creator",
+    packageName: "@ccbuddy/plugin-creator-plugin",
+    requiresRuntime: false,
+    rootPath: join("packages", "plugin-creator-plugin"),
+    version: "0.1.1",
+  },
+  {
+    // 纯内容型（只提供 skills）：requiresRuntime:false，SEA 构建不校验 dist/mcp/server.js。
+    // 版本必须与 package.json / plugin.json / official-plugin-definitions.ts 同步 bump——
+    // runtime 按 (name, version) 精确匹配 SEA 资产，这里落后会让整个插件在 SEA 下不 seed
+    // （browser-use 0.3.1 的既有教训，build-sea.test.mjs:564 钉住四处对齐）。
+    // 0.3.0：`/workflow` 与 dynamic-workflows 技能移出本插件（见 sea-bundled-skill-assets.mjs）。
+    marketplace: "ccbuddy-plugins-official",
+    name: "ccbuddy-guide",
+    packageName: "@ccbuddy/ccbuddy-guide-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: ["skills/ccbuddy-configuration-guide/SKILL.md"],
+    rootPath: join("packages", "ccbuddy-guide-plugin"),
+    version: "0.3.0",
+  },
+  {
+    // design：纯内容型（技能 + 设计资源 + SessionStart hook），requiresRuntime:false。
+    // requiredSeedPaths 与 official-plugin-definitions.ts 的 OFFICIAL_DESIGN_REQUIRED_SEED_PATHS 一致；
+    // 版本与 package.json / plugin.json / definitions 同步 bump。
+    marketplace: "ccbuddy-plugins-official",
+    name: "design",
+    packageName: "@ccbuddy/design-plugin",
+    requiresRuntime: false,
+    requiredSeedPaths: [
+      "skills/design/SKILL.md",
+      "skills/design/references/app.md",
+      "skills/design/references/catalog.md",
+      "skills/design/references/check.md",
+      "skills/design/references/create.md",
+      "skills/design/references/deck.md",
+      "skills/design/references/design-system.md",
+      "skills/design/references/image.md",
+      "skills/design/references/interact.md",
+      "skills/design/references/motion.md",
+      "skills/design/references/page.md",
+      "skills/design/references/redesign.md",
+      "skills/design/scripts/adapt-canvas.mjs",
+      "skills/design/scripts/audit-page.js",
+      "skills/design/scripts/audit.mjs",
+      "skills/design/scripts/design-lint.mjs",
+      "skills/design/scripts/design-tokens.mjs",
+      "skills/design/scripts/import-design-system.mjs",
+      "skills/design/scripts/probe.js",
+      "hooks/hooks.json",
+      "hooks/run-hook.cmd",
+      "hooks/design-rules",
+    ],
+    rootPath: join("packages", "design-plugin"),
+    version: "0.8.0",
+  },
+  {
+    // 只在 darwin / win SEA 内置：进程内 broker 需要随插件 seed 的 ax_native.node 与 sharp 运行时，
+    // 见 apps/ccbuddy-cli/docs/design/v2/cua-standalone-in-process-broker.md「发布物（SEA）」。
+    collectRuntimeFiles: collectCuaRuntimeFiles,
+    marketplace: "ccbuddy-plugins-official",
+    name: "computer-use",
+    packageName: "@ccbuddy/ccbuddy-cua-plugin",
+    requiredSeedPaths: [
+      "docs/computer-use.md",
+      "scripts/computer-use-client.mjs",
+      "skills/computer-use/SKILL.md",
+    ],
+    requiresRuntime: false,
+    rootPath: join("packages", "ccbuddy-cua-plugin"),
+    targets: CUA_SEA_TARGETS,
+    version: "0.6.6",
+  },
+  // superpowers 已从内置插件下线，改走 UI 推荐区按需安装；这里不再打入 SEA 资源清单。
 ];
 
 export const collectSeaOfficialPluginAssets = async ({
+  cuaRuntime,
   requireRuntime = false,
   root,
   stagingDirectory,
+  target,
 } = {}) => {
   const files = [];
   const assets = {};
@@ -95,6 +283,16 @@ export const collectSeaOfficialPluginAssets = async ({
   });
 
   for (const plugin of officialSeaPlugins) {
+    if (plugin.targets && !plugin.targets.includes(target)) continue;
+    const runtimeFiles = plugin.collectRuntimeFiles
+      ? await plugin.collectRuntimeFiles({
+          ...cuaRuntime,
+          root,
+          stagingDirectory: join(stagingDirectory, plugin.name),
+          target,
+        })
+      : [];
+    if (runtimeFiles === null) continue;
     const pluginRoot = resolve(root, plugin.rootPath);
     assertPluginRoot(pluginRoot, plugin);
     assertPluginRequiredSeedAssets(pluginRoot, plugin);
@@ -103,10 +301,15 @@ export const collectSeaOfficialPluginAssets = async ({
     if (requireRuntime && plugin.requiresRuntime !== false) assertPluginRuntime(pluginRoot, plugin);
 
     const pluginFiles = [];
+    const pluginSources = [];
     for await (const sourcePath of walkFiles(pluginRoot)) {
       const relativePath = relative(pluginRoot, sourcePath);
-      if (!shouldIncludePluginFile(relativePath)) continue;
-
+      if (shouldIncludePluginFile(relativePath)) pluginSources.push({ relativePath, sourcePath });
+    }
+    for (const file of runtimeFiles) {
+      pluginSources.push({ relativePath: file.path.split("/").join(sep), sourcePath: file.sourcePath });
+    }
+    for (const { relativePath, sourcePath } of pluginSources) {
       const bytes = await readFile(sourcePath);
       const sourceStats = await stat(sourcePath);
       const assetPath = toPosixPath(

@@ -1,0 +1,113 @@
+Unicode true
+Name "CCbuddy installer.nsh smoke"
+OutFile "${OUTPUT_FILE}"
+InstallDir "$TEMP\ccbuddy-installer-nsh-smoke"
+RequestExecutionLevel user
+SilentInstall silent
+
+!addincludedir "${NSIS_INCLUDE_DIR}"
+!addincludedir "${ELECTRON_BUILDER_NSIS_INCLUDE_DIR}"
+
+!include "LogicLib.nsh"
+!ifndef BUILD_UNINSTALLER
+  !include "MUI2.nsh"
+  !include "StrContains.nsh"
+!endif
+
+!define APP_DESCRIPTION "CCbuddy NSIS smoke fixture"
+!define APP_FILENAME "CCbuddy"
+!define APP_ID "dev.ccbuddy.installer-nsh-smoke"
+!define UNINSTALL_REGISTRY_KEY "Software\\CCbuddyInstallerSmoke\\{7C2A992D-72BB-4F8C-8DF0-0EA8A7B1F1C3}"
+; This fixture invokes the cleanup macro from a normal section; electron-builder's real uninstaller uses un.*.
+!ifdef BUILD_UNINSTALLER
+  !define CCBUDDY_UNINSTALLER_FUNCTION_PREFIX ""
+!endif
+; Simulate a manually launched overwrite installer without --updated.
+!define isUpdated `1 == 0`
+!define allowToChangeInstallationDirectory
+!define CCBUDDY_INSTALLER_DEFAULT_LOG_PATH "${DEFAULT_LOG_PATH}"
+!define CCBUDDY_INSTALLER_ELEVATED_LOG_PATH "${ELEVATED_LOG_PATH}"
+!ifdef FORCE_ELEVATED_INNER
+  !define CCBUDDY_INSTALLER_IS_ELEVATED_INNER `1 == 1`
+!endif
+
+Var appExe
+Var launchLink
+Var newStartMenuLink
+Var newDesktopLink
+Var keepShortcuts
+
+!include "${CCBUDDY_INSTALLER_NSH}"
+; 与正式构建保持顺序：common.nsh 的常量在自定义 include 之后才可用。
+!define UNINSTALL_FILENAME "uninstaller.exe"
+; 回归原因：electron-builder 异步生成 header 时，自定义 include 可能先于插件目录注册。
+; 普通场景使用真实 UAC 判据，避免恒假替身掩盖插件尚未可用的编译错误。
+!addplugindir /x86-unicode "${NSIS_PLUGIN_DIR}"
+!ifndef BUILD_UNINSTALLER
+  !insertmacro customHeader
+  !ifdef allowToChangeInstallationDirectory
+    !error "customHeader must enable shortcut preservation for manual overwrite"
+  !endif
+  !insertmacro customPageAfterChangeDir
+
+  Function .onInit
+    !insertmacro preInit
+  FunctionEnd
+!endif
+
+Section
+  SetOutPath "$INSTDIR"
+  File /oname=CCbuddy.exe "${FIXTURE_EXE}"
+  StrCpy $appExe "$INSTDIR\CCbuddy.exe"
+  StrCpy $launchLink "$INSTDIR\stale-target.exe"
+  StrCpy $newStartMenuLink "$INSTDIR\start-menu.lnk"
+  StrCpy $newDesktopLink "$INSTDIR\desktop.lnk"
+  StrCpy $keepShortcuts "true"
+
+  !ifdef PRECREATE_SHORTCUTS
+    !ifdef STALE_SHORTCUTS
+      CreateShortCut "$newStartMenuLink" "$INSTDIR\stale-target.exe" "--stale"
+      CreateShortCut "$newDesktopLink" "$INSTDIR\stale-target.exe" "--stale"
+    !else
+      CreateShortCut "$newStartMenuLink" "$appExe" "--preserved"
+      CreateShortCut "$newDesktopLink" "$appExe" "--preserved"
+    !endif
+
+    !ifndef BUILD_UNINSTALLER
+      Push "$newStartMenuLink"
+      Call CCbuddyReadShortcutTarget
+      Pop $R8
+      FileOpen $0 "$INSTDIR\read-shortcut-target.txt" w
+      FileWrite $0 "$R8"
+      FileClose $0
+    !endif
+  !endif
+
+  !ifndef BUILD_UNINSTALLER
+    SetDetailsPrint none
+    !insertmacro customInit
+    ; The real electron-builder template invokes these hooks at the same points.
+    !insertmacro customInstallSectionStarted
+    !insertmacro customInstallCleanupStarted
+    !insertmacro customInstallCleanupCompleted
+    !insertmacro customInstallExtractStarted
+    !insertmacro customInstallExtractCompleted
+    !insertmacro customInstallShortcutsStarted
+    !insertmacro customInstallShortcutsCompleted
+    !insertmacro customInstall
+  !endif
+
+  FileOpen $0 "$INSTDIR\launch-link.txt" w
+  FileWrite $0 "$launchLink"
+  FileClose $0
+
+  ; Expand cleanup diagnostics in the uninstaller smoke fixture so /WX checks the reference.
+  !ifdef BUILD_UNINSTALLER
+    !insertmacro customRemoveFiles
+  !endif
+
+  ; customInstall 会向夹具专属注册表键写入 InstallLocation，运行后必须清理，
+  ; 不能在测试机上留下残留（spec：夹具不得写入真实注册表）。
+  DeleteRegKey HKCU "Software\CCbuddyInstallerSmoke"
+
+SectionEnd

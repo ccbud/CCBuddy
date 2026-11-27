@@ -5,19 +5,28 @@ export type MentionCategory =
   | "subagents"
   | "whiteboards"
   | "sessions"
-  | "plugins";
+  | "plugins"
+  /** 插件 composer.mention 条目给的候选项（docs/plugins/extension-host.md §16.6）：序列化为 insertText 原文。 */
+  | "extensions"
+  /** 内置浏览器设计模式点选的页面元素（不进 @ 候选面板，只由点选插入） */
+  | "elements";
 
 export interface MentionItemData {
   kind?: "file" | "directory" | "whiteboard";
   path?: string;
   relativePath?: string;
+  /** 只用于候选展示；执行路径与 canonical 链接不依赖 root 名。 */
+  rootName?: string;
   boardId?: string;
   scope?: "built-in" | "workspace" | "user" | "plugin";
   source?: "built-in" | "user" | "plugin";
   model?: string;
   /** Plugin 引用的稳定身份（`name@marketplace`），canonical 链接目标；label 不参与身份。 */
   pluginId?: string;
-  /** Plugin 商店 listing 原始图标；仅用于 UI，必须经 HTTPS 校验后加载。 */
+  /**
+   * plugins：商店 listing 原始图标，仅用于 UI，必须经 HTTPS 校验后加载。
+   * extensions：候选项给的 Lucide 图标名，只渲染扩展图标白名单里的（其余显示通用插件图标）。
+   */
   icon?: string;
 }
 
@@ -44,6 +53,7 @@ export interface MentionItem {
 
 export interface MentionCategoryResult {
   items: MentionItem[];
+  groups?: Array<{ id: string; title: string; items: MentionItem[] }>;
   loading: boolean;
   error: Error | null;
   emptyText: string;

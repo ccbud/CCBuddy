@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-status-panel-inline-layout",
+  "spec": "./test/e2e/conversation-session/presentation/conversation-session-status-panel-inline-layout.test.ts",
+  "fixtures": [
+    {
+      "id": "conversation-session-status-panel-inline-layout-title-sidecar",
+      "description": "本例标题旁路响应。",
+      "metadata": {
+        "kind": "common",
+        "source": "synthetic",
+        "timingPolicy": "fast-text",
+        "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+      },
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["Generate a concise title"]
+      },
+      "response": {
+        "statusCode": 200,
+        "statusMessage": "OK",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{\"id\":\"upstream-e2e-title-fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-flash\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"title\\\":\\\"Upstream E2E Fixture\\\"}\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":125,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":24,\"service_tier\":\"standard\"}}"
+      }
+    },
+    {
+      "id": "status-panel-inline-layout-empty-task-response",
+      "description": "SP02: 普通 completed task 没有 goal/todo/running 内容时，不应挂载 status panel 或预留 inline offset。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "该 case 验证 renderer 布局合同；主回复只需要稳定完成并避免引入 goal/todo/running 内容。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["E2E_STATUS_PANEL_EMPTY"],
+        "lastUserMessageIncludes": ["E2E_STATUS_PANEL_EMPTY"]
+      },
+      "response": {
+        "statusCode": 200,
+        "statusMessage": "OK",
+        "text": {
+          "id": "upstream-e2e-status-panel-empty-task",
+          "inputTokens": 96,
+          "outputTokens": 8,
+          "text": "upstream-e2e-ok"
+        }
+      }
+    },
+    {
+      "id": "status-panel-inline-layout-goal-response",
+      "description": "SP03-SP07: goal target 为 status panel 提供内容，用于验证 inline offset、宽度收敛、手动收起/展开和 resize 切换。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "该 case 只需要稳定制造带 target 的 task；模型正文内容不参与断言。"
+      },
+      "maxMatches": 1,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "bodyIncludes": ["E2E_STATUS_PANEL_GOAL"],
+        "lastUserMessageIncludes": ["E2E_STATUS_PANEL_GOAL"]
+      },
+      "response": {
+        "statusCode": 200,
+        "statusMessage": "OK",
+        "text": {
+          "id": "upstream-e2e-status-panel-goal-task",
+          "inputTokens": 128,
+          "outputTokens": 8,
+          "text": "upstream-e2e-ok"
+        }
+      }
+    }
+  ]
+}

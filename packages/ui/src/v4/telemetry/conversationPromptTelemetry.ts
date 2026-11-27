@@ -1,14 +1,13 @@
 import {
+  normalizeTelemetryUiMode,
   CCBUDDY_AGENT_PROVIDER,
+  type TelemetryUiMode,
   type PlanIdentitySnapshot,
   type CCbuddyProvider,
 } from "@ccbuddy/shared";
 import { buildPromptTelemetryExtraDetail } from "@/lib/messageTelemetry.js";
 import { encodeCustomModelValue } from "@/lib/ccbuddyCustomModelValue.js";
-import {
-  legacyTelemetryModelValue,
-  legacyTelemetryProviderId,
-} from "@/lib/providerTelemetryIdentity.js";
+import { legacyTelemetryProviderId } from "@/lib/providerTelemetryIdentity.js";
 
 export function resolveLegacyConversationModelValue(params: {
   configProvider?: string | null;
@@ -24,21 +23,11 @@ export function resolveLegacyConversationModelValue(params: {
   return encodeCustomModelValue(legacyTelemetryProviderId(configProvider), modelName);
 }
 
-export function resolveLegacyRuntimeModelValue(params: {
-  configProvider?: string | null;
-  modelName?: string | null;
-}): string | null | undefined {
-  const configProvider = params.configProvider?.trim();
-  const modelName = params.modelName?.trim();
-  if (!configProvider || !modelName || configProvider === CCBUDDY_AGENT_PROVIDER) {
-    return params.modelName;
-  }
-  if (modelName.startsWith(`${configProvider}/`)) return legacyTelemetryModelValue(modelName);
-  return `${legacyTelemetryProviderId(configProvider)}/${modelName}`;
-}
+export { resolveLegacyRuntimeModelValue } from "@ccbuddy/shared/conversation-telemetry";
 
 /** V4 config.provider 是实际模型 provider id；agentProvider 表示 CCbuddy 运行时。 */
 export function buildV4ConversationPromptTelemetryExtraDetail(params: {
+  uiMode?: TelemetryUiMode;
   agentProvider?: CCbuddyProvider;
   configProvider?: string | null;
   modelName?: string | null;
@@ -56,8 +45,11 @@ export function buildV4ConversationPromptTelemetryExtraDetail(params: {
   });
   return {
     ...base,
+    ui_mode: normalizeTelemetryUiMode(params.uiMode),
     message_source: "chat",
     task_trigger: "",
+    // composer 普通发送；编辑重发由 SessionPane.handleEdit 改写为 edit。
+    send_type: "normal",
     model_provider: legacyTelemetryProviderId(
       params.configProvider?.trim() || base.model_provider || "",
     ),

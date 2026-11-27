@@ -5,10 +5,7 @@ import type {
   WorkspaceHookSecurityRevision,
   WorkspaceHookTrustRecord,
 } from "@ccbuddy/contracts";
-import {
-  workspaceHookPolicySchema,
-  workspaceHookTrustRecordSchema,
-} from "@ccbuddy/contracts";
+import { workspaceHookPolicySchema, workspaceHookTrustRecordSchema } from "@ccbuddy/contracts";
 import { evaluateWorkspaceHookEntry, trustKey } from "./workspace-hook-trust-evaluation.js";
 import {
   InMemoryWorkspaceHookPolicyProvider,
@@ -106,7 +103,9 @@ export class WorkspaceHookTrustCoordinator {
     return this.bumpRevision(input.workspaceIdentity);
   }
 
-  evaluateSnapshot(input: { snapshot: WorkspaceHookBundleSnapshot }): WorkspaceHookSnapshotEvaluation {
+  evaluateSnapshot(input: {
+    snapshot: WorkspaceHookBundleSnapshot;
+  }): WorkspaceHookSnapshotEvaluation {
     const workspaceIdentity = input.snapshot.workspaceIdentity;
     this.ensureRevision(workspaceIdentity);
     const policyResult = this.resolvePolicy(workspaceIdentity);

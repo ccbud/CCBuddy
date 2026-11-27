@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-highspeed-card",
+  "spec": "./test/e2e/conversation-session/entitlements/conversation-session-highspeed-card.test.ts",
+  "fixtures": [
+    {
+      "id": "highspeed-card-hit",
+      "description": "HS-E2E-01/07 抽卡命中与调档后发送的固定响应。",
+      "metadata": {
+        "kind": "main",
+        "timingPolicy": "fast-text",
+        "source": "synthetic",
+        "syntheticReason": "固定响应供首次加速发送与调档后的下一轮收口；断言抽卡 UI、配置 ACK 门禁及实际请求档位，经 Coding Plan 数据面代理回放，不调用真实套餐。"
+      },
+      "maxMatches": 2,
+      "match": {
+        "method": "POST",
+        "pathIncludes": "/messages",
+        "lastUserMessageIncludes": ["E2E_HIGHSPEED_CARD_HIT"],
+        "bodyExcludes": ["Generate a concise title"]
+      },
+      "response": {
+        "statusCode": 200,
+        "headers": {
+          "content-type": "text/event-stream; charset=utf-8"
+        },
+        "body": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"highspeed-card-hit\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-e2e\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":128,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hs-card-hit-done\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":12}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+      }
+    }
+  ]
+}

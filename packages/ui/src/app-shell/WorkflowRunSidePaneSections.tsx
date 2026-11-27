@@ -7,7 +7,7 @@
 
 import { workflowRunStopReasonMessageId } from "@/components/workflow-graph/run-status-presentation.js";
 import { memo, type ReactNode } from "react";
-import type { WorkflowRunSaveSlots } from "@/components/workflow-timeline/WorkflowRunSaveControls.js";
+import type { WorkflowRunSaveSlots } from "@/project-workflow/WorkflowRunSaveControls.js";
 import {
   ArrowUpRightIcon,
   ListIcon,
@@ -122,7 +122,7 @@ export const WorkflowRunStatusHeader = memo(function WorkflowRunStatusHeader({
   title: string;
   usage: WorkflowRunUsage | undefined;
 }) {
-  const { intl } = useCCbuddyIntl();
+  const { intl, locale } = useCCbuddyIntl();
   const saveChip = saveSlots?.leading ?? null;
   const saveVerb = saveSlots?.trailing ?? null;
   const cancelLabel = intl.formatMessage({ id: "chat.toolCall.workflow.run.cancel" });
@@ -238,7 +238,7 @@ export const WorkflowRunStatusHeader = memo(function WorkflowRunStatusHeader({
                 ? null
                 : ` · ${intl.formatMessage(
                     { id: "chat.toolCall.workflow.run.concurrency.cooldown" },
-                    { time: new Date(concurrency.cooldownUntil).toLocaleTimeString() },
+                    { time: new Date(concurrency.cooldownUntil).toLocaleTimeString(locale) },
                   )}`}
             </span>
           )}

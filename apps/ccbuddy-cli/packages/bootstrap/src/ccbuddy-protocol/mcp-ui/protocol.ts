@@ -21,6 +21,7 @@ import {
   requireSession,
   type CCbuddyProtocolAgentServerContext,
 } from "../server-types.js";
+import { getSessionLifecycle } from "../session-residency.js";
 import { getMcpUiAppToolRegistry } from "./appToolsProtocol.js";
 import {
   McpUiNotSupportedError,
@@ -218,9 +219,27 @@ export async function openMcpUiInstance(
   rawParams: unknown,
 ) {
   const params = parseParams(ccbuddyMcpUiOpenInstanceParamsSchema, rawParams);
+  // 冷打开时历史订阅已建立，但 session 可能仍在恢复；直接 requireSession 会让面板停在错误页。
+  // 复用生命周期 owner 的恢复 Promise，等 ready 后再签发实例，不靠延时或重复初始化。
+  await getSessionLifecycle(context).ensureReady(params.sessionId);
   const record = requireSession(context, params.sessionId, { operation: "mcp/uiOpenInstance" });
-  const source = record.app.getMcpAppConnectionSnapshot(params.serverName);
-  if (!source) throw new ProtocolRequestError(-32001, "MCP App connection is unavailable");
+  // session ready 不代表目标 MCP ready；首次签发等待连接，已有凭证校验仍保持同步拒绝失效来源。
+  let source = await record.app.waitForMcpAppConnection(params.serverName);
+  if (!source && context.sessions.get(params.sessionId) === record) {
+    // 订阅恢复由宿主负责：换代时关闭实例，用户重试时重开。stdio 崩溃后的连接停在 failed，
+    // 不会自行恢复；等待已有连接后仍不可用时重连一次，预算内仍不可用才报错。打开请求没有取消通道（协议无
+    // operationId），等待只受重连预算约束。
+    await record.app.reconnectMcpAppConnection(params.serverName);
+    source = record.app.getMcpAppConnectionSnapshot(params.serverName);
+  }
+  const current = record.app.getMcpAppConnectionSnapshot(params.serverName);
+  if (
+    context.sessions.get(params.sessionId) !== record ||
+    !source ||
+    current?.identity !== source.identity ||
+    current.generation !== source.generation
+  )
+    throw new ProtocolRequestError(-32001, "MCP App connection is unavailable");
   const lease = mcpUiInstances.open(
     {
       workspace: params.workspace.workspaceIdentity?.trim() || params.workspace.workspacePath,

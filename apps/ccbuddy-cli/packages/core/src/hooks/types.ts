@@ -5,6 +5,7 @@ import type {
   HookInput,
   HookJSONOutput,
   HookPermissionDecision,
+  HookOnError,
   HookSourceKind,
   HooksRuntimeConfig,
   WorkspaceHookBundleSnapshot,
@@ -53,11 +54,21 @@ export interface HookRunAdmissionDecision {
 
 export interface HookRegistration {
   admission?: (input: HookInput) => HookRunAdmissionDecision;
+  /**
+   * admission 允许后、HookRunStarted 前的异步复核（D24：项目 Hook 入口脚本）。
+   * 截止时间等于 timeoutMs，不占用执行计时；返回后 runner 会再次同步执行 admission。
+   */
+  verifyBeforeDispatch?: (
+    input: HookInput,
+    signal: AbortSignal,
+  ) => Promise<HookRunAdmissionDecision>;
   async?: boolean;
   callback: HookCallback;
   descriptor?: HookExecutionDescriptor | ((input: HookInput) => HookExecutionDescriptor);
   event: HookEventName;
   matcher?: string;
+  /** hook 自身出错时的处置（contracts 的 HookOnError）；缺席 = allow。 */
+  onError?: HookOnError;
   source?: string;
   sourceKind?: HookSourceKind;
   timeoutMs?: number;

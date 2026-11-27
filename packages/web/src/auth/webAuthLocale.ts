@@ -1,6 +1,14 @@
+import type { WebOAuthProviderId } from "./browserOAuthCredentialRepo.js";
+
 type WebAuthLocale = "zh-CN" | "en-US";
 
 interface WebAuthPageCopy {
+  defaultRegion: "zai_cn" | "zai";
+  regionLabel: string;
+  authorizeAction: string;
+  waiting: string;
+  authorizationHint: string;
+  cancelAction: string;
   brand: string;
 
   callbackTitle: string;
@@ -12,6 +20,12 @@ interface WebAuthPageCopy {
 
 const WEB_AUTH_COPY = {
   "zh-CN": {
+    defaultRegion: "zai_cn",
+    regionLabel: "账号区域",
+    authorizeAction: "通过浏览器授权登录",
+    waiting: "等待授权完成",
+    authorizationHint: "正在前往授权页面，授权完成后会自动返回。",
+    cancelAction: "取消",
     brand: "CCbuddy",
 
     callbackTitle: "正在完成登录",
@@ -21,6 +35,13 @@ const WEB_AUTH_COPY = {
     retryAction: "重新登录",
   },
   "en-US": {
+    defaultRegion: "zai",
+    regionLabel: "Account region",
+    authorizeAction: "Authorize in browser",
+    waiting: "Waiting for authorization",
+    authorizationHint:
+      "Opening the authorization page. You will return here automatically after authorizing.",
+    cancelAction: "Cancel",
     brand: "CCbuddy",
 
     callbackTitle: "Finishing Sign-In",

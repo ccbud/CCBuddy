@@ -11,18 +11,20 @@
 
 以下命令从仓库根目录执行：
 
-| 用途             | 命令                                      |
-| ---------------- | ----------------------------------------- |
-| 类型检查         | `pnpm typecheck`                          |
-| Lint             | `pnpm lint` / `pnpm lint:fix`             |
-| 格式检查         | `pnpm fmt:check`                          |
-| 桌面开发         | `pnpm dev:desktop`                        |
-| Web 开发         | `pnpm dev:web`                            |
-| 提交前检查       | `pnpm verify:pre-push`（Lint 与架构检查） |
-| 架构检查         | `pnpm architecture:check --changed`       |
-| 模块阅读包       | `pnpm architecture:context <module-id>`   |
-| 未使用依赖与导出 | `pnpm knip`                               |
-| 导出引用查询     | `pnpm dep:refs --list-exports <file>`     |
+| 用途             | 命令                                                      |
+| ---------------- | --------------------------------------------------------- |
+| 类型检查         | `pnpm typecheck`                                          |
+| Lint             | `pnpm lint` / `pnpm lint:fix`                             |
+| 格式检查         | `pnpm fmt:check`                                          |
+| 桌面开发         | `pnpm dev:desktop`                                        |
+| Web 开发         | `pnpm dev:web`                                            |
+| 提交前检查       | `pnpm verify:pre-push`（工作区、Lint、schema 与架构检查） |
+| 架构检查         | `pnpm architecture:check --changed`                       |
+| 模块阅读包       | `pnpm architecture:context <module-id>`                   |
+| 未使用依赖与导出 | `pnpm knip`                                               |
+| 导出引用查询     | `pnpm dep:refs --list-exports <file>`                     |
+
+App 业务单测已退役，不新增或恢复 App 业务单测 test/spec 或 `contract.test.ts`；保留 CLI、CUA、E2E、浏览器验收和工程门禁测试。工程 Vitest 使用 `pnpm test:engineering <文件>`，push 自动运行 `pnpm test:engineering:affected --scope push`，CLI/CUA 使用各包独立入口，不默认全量。范围见 [测试规格](docs/testing/unit-test-quality.md)，推送合同见 [pre-push 说明](docs/testing/pre-push-hook.md)。
 
 测试入口以目标包当前的 `package.json` 和实际测试文件为准，不假定存在统一的单测或 E2E 命令。
 
@@ -39,10 +41,12 @@
 
 - 代码改动使用 `.agents/skills/architecture-governance/SKILL.md`，先运行架构检查，再读取目标模块的受控上下文。
 - 避免重复状态和多条写入路径。明确唯一所有者、接口、依赖方向、事件顺序与幂等边界，不能用超时掩盖同步问题。
-- 有行为改动时先补充对应测试；交互改动需要 E2E 场景。检查测试与实现是否一致，并实际执行可用的验证。未执行或环境受限时如实说明。
+- App 行为改动先更新 spec，确定 E2E、浏览器验收或可重复运行时场景；交互改动先维护 E2E 再改实现。工程工具、CLI/CUA 先补其回归测试。实际执行必要验证，未执行或环境受限时如实说明。
 - 修复 bug 时用中文注释说明原因和修复依据。发现设计缺陷时先与用户对齐，不不断增加兜底分支。
+- PR 描述须说明背景、设计意图与修改前后行为；包含 bugfix 时逐项说明触发场景、根因证据、修复机制及回归验证，并尽量关联已有工单链接。未确认的根因或引入提交如实标注，不根据模块或时间接近推断归因。
 - 涉及状态、时序、远端或异步同步的方案，用图展示所有者及事件顺序。
 - 必须执行 `pnpm typecheck` 和 `pnpm lint`，报告真实结果，不将已有失败写成通过。
+- 修改 React 组件或 hooks 后，必须运行 `pnpm lint`（Oxlint），检查 `react/exhaustive-deps` 和 `react/rules-of-hooks`。复核本次改动新增及相关的缺失、多余、不稳定依赖与调用位置诊断，不能因仅告警或退出码为 0 就忽略，也不机械补齐整个对象依赖或禁用规则。被根配置忽略的文件须按 [React Hooks 检查](docs/testing/react-hooks-lint.md) 补做专项扫描；渲染问题仍须运行时验证。
 - 使用异步文件和网络 IO；跨包导入使用公开入口，遵守现有路径别名。
 - 禁止 UI 直接调用 Repo、Service 引用 Runtime 具体实现、跨域导入实现细节及循环依赖。
 

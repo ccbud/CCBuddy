@@ -31,10 +31,16 @@ export type ExecutionShellDialect = "cmd" | "posix" | "git-bash";
 
 export type ExecutionShellSource = "auto-detected" | "user-config" | "legacy-fallback";
 
+/**
+ * 所有 `dialect: "cmd"` selection 的 display.name（手选 CMD 与 Windows 找不到 Git Bash 时的回落）。
+ * 环境公告见到这个 Shell 名时，在 Shell 行括号里加 CMD 命令规则。
+ */
+export const WINDOWS_CMD_SHELL_DISPLAY_NAME = "cmd.exe";
+
 export interface ExecutionShellDisplay {
   /**
    * Stable provider-visible shell name. Never include absolute paths here.
-   * Examples: "bash", "zsh", "Git Bash", "CMD", "system shell".
+   * Examples: "bash", "zsh", "Git Bash", "cmd.exe", "system shell".
    */
   name: string;
 }
@@ -46,7 +52,10 @@ export interface ExecutionShellSelection {
   label?: string;
   /** Executable path when CCbuddy resolved a concrete shell. Omitted for legacy shell fallback. */
   path?: string;
-  /** Shell syntax and cwd capture wrapper semantics. */
+  /**
+   * Shell syntax and cwd capture wrapper semantics.
+   * `legacy-shell` 是 POSIX 找不到 bash/zsh 时的 /bin/sh 回落；Windows 已不再产出，权限代码里的 Windows 分支只作兼容。
+   */
   dialect: ExecutionShellDialect | "legacy-shell";
   /** Why this selection exists. */
   source: ExecutionShellSource;
@@ -130,6 +139,12 @@ export interface ExecutionOutputLimit {
    * 仅控制通用 collector 执行。Bash 的文件软阈值在前后台都生效，不受此开关影响。
    */
   killProcessOnPersistedLimit?: boolean;
+  /**
+   * 通用 collector 执行：额外保留每路最后 tailBytes 字节，结算时放进
+   * {@link ExecutionStreamResult.tail}。与 inline 上限无关——inline 截断照常计数、照常读到退出，
+   * 尾部不受总输出量影响。Bash 合并文件输出不使用此字段。缺席即不保留。
+   */
+  tailBytes?: number;
 }
 
 export interface ExecutionRequest {
@@ -177,6 +192,8 @@ export interface ExecutionStreamResult {
   artifactPath?: string;
   artifactBytes?: number;
   artifactTruncated?: boolean;
+  /** 请求了 {@link ExecutionOutputLimit.tailBytes} 时，该路最后 tailBytes 字节（字节边界切，解码后首字符可能是 U+FFFD）。 */
+  tail?: string;
 }
 
 export interface ExecutionResult {
@@ -275,7 +292,19 @@ export interface BackgroundExecutionSnapshot {
   error?: ExecutionFailure;
 }
 
+export interface AdbExecutableRequest {
+  file: string;
+  cwd: string;
+  workspaceRoot: string;
+}
+
+export type AdbExecutableResolution =
+  | { status: "resolved"; path: string }
+  | { status: "workspace" | "missing" };
+
 export interface ExecutionPort {
+  /** 只解析和校验，不启动子进程；返回可直接执行的工作区外 canonical 绝对路径。 */
+  resolveAdbExecutable?(request: AdbExecutableRequest): Promise<AdbExecutableResolution>;
   run(request: ExecutionRequest, options?: ExecutionRunOptions): Promise<ExecutionResult>;
   start?(
     request: ExecutionRequest,

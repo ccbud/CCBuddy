@@ -2,6 +2,15 @@ import { autoUpdate } from "@floating-ui/dom";
 import type { PluginSandboxHandle } from "@ccbuddy/shared/mcp-apps";
 import type { SandboxPagePlacement } from "../contract.js";
 
+/**
+ * 非主 frame 导航是否指向沙箱文档（插件 frame 自身重载）。webview 的 did-start-navigation 不带 frame 层级；
+ * 插件文档内部的子 frame（srcdoc / about:blank 预览、声明的 frameDomains）不是重载，层级判定由 Main 负责。
+ * 缺少 URL 时按重载处理。
+ */
+export function isSandboxDocumentNavigation(url: string | undefined): boolean {
+  return !url || url.startsWith("ccbuddy-sandbox:");
+}
+
 function parkingRoot(): HTMLElement {
   const existing = document.querySelector<HTMLElement>("[data-sandbox-page-parking]");
   if (existing) return existing;
@@ -28,6 +37,9 @@ export function createPluginUiPagePlane(events: {
   let stopLayout: (() => void) | undefined;
   let stopPreview: (() => void) | undefined;
   let preview: HTMLElement | null = null;
+  let executionActive = false;
+  let allowedDisplayModes: readonly string[] = ["inline", "fullscreen"];
+  let backgroundSize = { width: 640, height: 480 };
   let disposed = false,
     loaded = false,
     pluginLoaded = false,
@@ -87,12 +99,30 @@ export function createPluginUiPagePlane(events: {
       stop();
     };
   };
+  const hasVisibleBounds = (node: HTMLElement) => {
+    const rect = node.getBoundingClientRect();
+    return (
+      node.isConnected &&
+      node.checkVisibility({ visibilityProperty: true }) &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  };
   const layout = () => {
     if (disposed) return;
-    const candidates = [...anchors].filter(([, a]) => a.placement.node.isConnected);
+    // forceMount 的隐藏 tab 仍连接 DOM，但尺寸为零；不能让它夺走后台初始化的承载表面。
+    const candidates = [...anchors].filter(([, a]) => {
+      return (
+        allowedDisplayModes.includes(a.placement.kind === "sidebar" ? "fullscreen" : "inline") &&
+        hasVisibleBounds(a.placement.node)
+      );
+    });
     const chosen = candidates.find(([, a]) => a.placement.kind === "sidebar") ?? candidates.at(-1);
     visibility(Boolean(chosen && (chosen[1].visible || preview)));
     if (chosen && chosen[0] === current) return;
+    const bounds = root.getBoundingClientRect();
+    if (bounds.width > 0 && bounds.height > 0)
+      backgroundSize = { width: bounds.width, height: bounds.height };
     current = chosen?.[0];
     stopLayout?.();
     stopLayout = undefined;
@@ -102,6 +132,18 @@ export function createPluginUiPagePlane(events: {
       move(parkingRoot());
       root.style.display = "none";
       root.inert = true;
+      if (executionActive) {
+        // display:none 会停止编辑器依赖的 rAF；保留的 MCP 页面始终需要可执行且不接收输入的表面。
+        Object.assign(root.style, {
+          display: "block",
+          position: "fixed",
+          top: "0",
+          left: "0",
+          width: `${backgroundSize.width}px`,
+          height: `${backgroundSize.height}px`,
+          opacity: "0.001",
+        });
+      }
       return;
     }
     root.inert = false;
@@ -109,7 +151,14 @@ export function createPluginUiPagePlane(events: {
     const parent = kind === "sidebar" ? parkingRoot() : (container ?? node);
     move(parent);
     if (kind !== "flow" && parent !== node)
-      stopLayout = track(node, () => position(node, parent, kind === "sidebar", layer));
+      stopLayout = track(node, () => {
+        const rect = node.getBoundingClientRect();
+        if (!node.checkVisibility({ visibilityProperty: true }) || !rect.width || !rect.height) {
+          layout();
+          return;
+        }
+        position(node, parent, kind === "sidebar", layer);
+      });
   };
   const intersection = new IntersectionObserver((entries) => {
     for (const entry of entries)
@@ -124,8 +173,12 @@ export function createPluginUiPagePlane(events: {
     if (!(event as Event & { isMainFrame?: boolean }).isMainFrame) pluginLoaded = true;
   };
   const navigation = (event: Event) => {
-    const nav = event as Event & { isMainFrame?: boolean; isInPlace?: boolean };
-    if (!nav.isInPlace && ((loaded && nav.isMainFrame) || (pluginLoaded && !nav.isMainFrame)))
+    const nav = event as Event & { isMainFrame?: boolean; isInPlace?: boolean; url?: string };
+    if (
+      !nav.isInPlace &&
+      ((loaded && nav.isMainFrame) ||
+        (pluginLoaded && !nav.isMainFrame && isSandboxDocumentNavigation(nav.url)))
+    )
       events.onCrash();
   };
   const prepareUnmount = (expectedId?: string) => {
@@ -145,6 +198,21 @@ export function createPluginUiPagePlane(events: {
     handleId = null;
   };
   return {
+    hasVisibleAnchor() {
+      // 回收或隐藏后，恢复意图仍以展示锚点为准，不能从旧 guest 的可见状态反推。
+      return [...anchors.values()].some(
+        ({ placement, visible }) => visible && hasVisibleBounds(placement.node),
+      );
+    },
+    setAllowedDisplayModes(modes: readonly string[]) {
+      allowedDisplayModes = modes;
+      layout();
+    },
+    setExecutionActive(active: boolean) {
+      if (executionActive === active) return;
+      executionActive = active;
+      layout();
+    },
     bind(placement: SandboxPagePlacement) {
       const token = Symbol();
       anchors.set(token, { placement, visible: true });

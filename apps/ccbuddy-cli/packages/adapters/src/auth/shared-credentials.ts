@@ -1,16 +1,37 @@
-import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { OAUTH_SESSION_REVISION_KEY, OAUTH_LINKED_BIGMODEL_KEY } from "@ccbuddy/shared";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { atomicWritePrivateTextFile, backupCorruptFile, withFileLock } from "@ccbuddy/shared/node";
-import { createCCbuddyCredentialCipher, type CCbuddyCredentialCipher } from "./credential-cipher.js";
+import {
+  backupCorruptFile,
+  captureCredentialFileGuard,
+  type CredentialFileGuard,
+  withCredentialFileRead,
+  withCredentialFileMutation,
+  withCredentialGeneration,
+  withFileLock,
+} from "@ccbuddy/shared/node";
+import type { CCbuddyCredentialCipher } from "./credential-cipher.js";
+import {
+  createSystemCredentialCipher,
+  migrateCredentialRecord,
+  readAssignedCredentialsFile,
+  writeCredentialRecordLocked,
+} from "@ccbuddy/shared/credential-security";
 
 const CCBUDDY_DATA_BASE_DIR_ENV_KEY = "CCBUDDY_DATA_BASE_DIR";
 const ZAI_PROVIDER_ID = "zai";
+const WRITE_PROBE_VALUE = "ccbuddy-credential-write-probe";
 const credentialChangeListeners = new Map<string, Set<() => void | Promise<void>>>();
 
 export const SHARED_CCBUDDY_CREDENTIAL_KEYS = {
   activeProvider: "oauth:active_provider",
+  sessionRevision: OAUTH_SESSION_REVISION_KEY,
+  linkedBigModel: OAUTH_LINKED_BIGMODEL_KEY,
+  zaiCnAccessToken: "oauth:zai_cn:access_token",
+  zaiCnRefreshToken: "oauth:zai_cn:refresh_token",
+  zaiCnUserInfo: "oauth:zai_cn:user_info",
   bigmodelAccessToken: "oauth:bigmodel:access_token",
   bigmodelRefreshToken: "oauth:bigmodel:refresh_token",
   bigmodelUserInfo: "oauth:bigmodel:user_info",
@@ -40,8 +61,18 @@ export interface ZaiLoginCredentialPayload {
   user: ZaiLoginCredentialUser;
 }
 
+export interface SharedCredentialRecoveryGuard {
+  readonly run: CredentialFileGuard;
+  /** 仅保护其它文件的最终提交；调用方先取得其它文件锁，回调不能再次写凭据库。 */
+  readonly commit: CredentialFileGuard;
+}
+
 export interface SharedCCbuddyCredentialStore {
   readonly filePath: string;
+  /** 用首次写入的同一密钥路径确认可写；不写凭据文件，不可用时抛出原始安全存储错误。 */
+  assertWritable(): Promise<void>;
+  /** 跨请求流程在启动时捕获，不能等网络返回后领取恢复后的新代次。 */
+  captureRecoveryGuard(): Promise<SharedCredentialRecoveryGuard>;
   clearZaiLoginCredentials(): Promise<void>;
   delete(key: string): Promise<void>;
   deleteIfValue(key: string, expectedValue: string): Promise<boolean>;
@@ -53,13 +84,22 @@ export interface SharedCCbuddyCredentialStore {
     expectedGuardValue: string,
     keysToDelete: readonly string[],
   ): Promise<boolean>;
+  updateMany(
+    changes: Readonly<Record<string, string | null>>,
+    options?: { expected?: Readonly<Record<string, string | null>>; assertCurrent?: () => void },
+  ): Promise<boolean>;
   load(key: string): Promise<string | null>;
   loadMany(keys: readonly string[]): Promise<Record<string, string | null>>;
+  loadOAuthSessionSnapshot(): Promise<Record<string, string | null>>;
   onDidChange?(listener: () => void | Promise<void>): () => void;
   save(key: string, value: string): Promise<void>;
   saveMany(entries: Readonly<Record<string, string>>): Promise<void>;
   saveReplacing(key: string, value: string, replacedKeys: readonly string[]): Promise<void>;
-  saveZaiLoginCredentials(payload: ZaiLoginCredentialPayload): Promise<void>;
+  saveZaiLoginCredentials(
+    payload: ZaiLoginCredentialPayload,
+    expected?: Readonly<Record<string, string | null>>,
+    assertCurrent?: () => void,
+  ): Promise<void>;
 }
 
 export function createSharedCCbuddyCredentialStore(
@@ -67,28 +107,145 @@ export function createSharedCCbuddyCredentialStore(
 ): SharedCCbuddyCredentialStore {
   const env = options.env ?? process.env;
   const filePath = resolveSharedCCbuddyCredentialsPath(options);
-  const cipher = options.cipher ?? createCCbuddyCredentialCipher({ env });
+  const cipher = options.cipher ?? createSystemCredentialCipher({ env, filePath });
+  const readCurrent = async () => {
+    // 普通读取不取得写锁（慢写入曾让登录读取等锁超时），由读取前后的恢复代次校验拒绝旧结果。
+    // 只有仍含旧格式值时才进入变更锁迁移，迁移写入与恢复共用同一代次屏障。
+    const current = await readRawCredentialRecord(filePath);
+    if (!Object.values(current).some((value) => cipher.needsMigration?.(value))) return current;
+    return withCredentialFileMutation(filePath, async () => {
+      const locked = await readRawCredentialRecord(filePath, true);
+      const migrated = await migrateCredentialRecord(locked, cipher);
+      if (migrated) await writeCredentialRecordLocked(filePath, migrated);
+      return migrated ?? locked;
+    });
+  };
+  type RawMutation = (raw: Record<string, string>) => void | boolean | Promise<void | boolean>;
+  const commit = (mutation: RawMutation) =>
+    commitRawCredentialRecord(filePath, async (raw) => {
+      const migrated = await migrateCredentialRecord(raw, cipher);
+      if (migrated) Object.assign(raw, migrated);
+      return mutation(raw);
+    });
+  const mutate = async (mutation: RawMutation) => {
+    if (await commit(mutation)) await notifyCredentialChange(filePath);
+  };
+
+  const loadMany = async (keys: readonly string[]): Promise<Record<string, string | null>> => {
+    const raw = await readCurrent();
+    return Object.fromEntries(
+      await Promise.all(
+        keys.map(async (key) => {
+          const value = raw[validateCredentialKey(key)];
+          return [key, value === undefined ? null : await cipher.decrypt(value)];
+        }),
+      ),
+    );
+  };
+  // Bug 原因：先加密后取文件锁领取代次；经凭据桥由 Main 加密的内置 CLI，加密在自动重置前、
+  // 写盘在重置后时，旧密钥密文会覆盖新登录且返回成功。修复：加密前领取代次，由锁内代次
+  // 屏障保护到写盘；期间发生重置即拒绝，调用方重试。
+  // 代次作用域只覆盖加密与锁内写盘：提交后的变更通知若留在作用域内，监听启动的后台任务
+  // （如账号刷新链）会一直带着本次领取的代次，之后的恢复或重置使其读写被误判为存储已变化。
+  const updateMany: SharedCCbuddyCredentialStore["updateMany"] = async (changes, options) => {
+    const committed = await withCredentialGeneration(filePath, async () => {
+      const entries = await Promise.all(
+        Object.entries(changes).map(
+          async ([key, value]) =>
+            [
+              validateCredentialKey(key),
+              value === null ? null : await cipher.encrypt(validateCredentialValue(value)),
+            ] as const,
+        ),
+      );
+      const expected = Object.entries(options?.expected ?? {}).map(
+        ([key, value]) =>
+          [
+            validateCredentialKey(key),
+            value === null ? null : validateCredentialValue(value),
+          ] as const,
+      );
+      return commit(async (raw) => {
+        for (const [key, value] of expected) {
+          if ((raw[key] === undefined ? null : await cipher.decrypt(raw[key])) !== value)
+            return false;
+        }
+        options?.assertCurrent?.();
+        for (const [key, value] of entries) {
+          if (value === null) delete raw[key];
+          else raw[key] = value;
+        }
+        if (entries.some(([key]) => key === "ccbuddyjwttoken" || key.startsWith("oauth:")))
+          raw[OAUTH_SESSION_REVISION_KEY] = await cipher.encrypt(randomUUID());
+        options?.assertCurrent?.();
+      });
+    });
+    if (committed) await notifyCredentialChange(filePath);
+    return committed;
+  };
+
+  const loadOAuthSessionSnapshot = async (): Promise<Record<string, string | null>> => {
+    const raw = await readCurrent();
+    const activeRaw = raw[SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider];
+    const provider = activeRaw === undefined ? null : await cipher.decrypt(activeRaw);
+    const keys = [
+      SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider,
+      SHARED_CCBUDDY_CREDENTIAL_KEYS.ccbuddyJwtToken,
+      OAUTH_SESSION_REVISION_KEY,
+      ...(provider
+        ? [
+            `oauth:${provider}:access_token`,
+            `oauth:${provider}:refresh_token`,
+            `oauth:${provider}:user_info`,
+          ]
+        : []),
+    ];
+    return Object.fromEntries(
+      await Promise.all(
+        keys.map(async (key) => [
+          key,
+          raw[key] === undefined ? null : await cipher.decrypt(raw[key]),
+        ]),
+      ),
+    );
+  };
 
   return {
     filePath,
+    async assertWritable() {
+      // Bug 原因：空库读取不调用 cipher，首次访问系统库发生在登录授权之后的写入时。
+      // 加密探针值走与首次写入相同的取密钥路径（必要时创建密钥），结果丢弃。
+      await cipher.encrypt(WRITE_PROBE_VALUE);
+    },
+    async captureRecoveryGuard() {
+      const run = await captureCredentialFileGuard(filePath);
+      return { run, commit: (operation) => withFileLock(filePath, () => run(operation)) };
+    },
 
+    updateMany,
+    loadOAuthSessionSnapshot,
     async clearZaiLoginCredentials(): Promise<void> {
-      await mutateRawCredentialRecord(filePath, async (rawCredentials) => {
-        const activeProviderRaw = rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider];
-        const activeProvider = activeProviderRaw ? cipher.decrypt(activeProviderRaw) : null;
-        delete rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiAccessToken];
-        delete rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiRefreshToken];
-        delete rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiUserInfo];
-        delete rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.ccbuddyJwtToken];
-        if (activeProvider === ZAI_PROVIDER_ID) {
-          delete rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider];
-        }
-      });
+      const expected = await loadOAuthSessionSnapshot();
+      await updateMany(
+        {
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiAccessToken]: null,
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiRefreshToken]: null,
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiUserInfo]: null,
+          ...(expected[SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider] === ZAI_PROVIDER_ID
+            ? {
+                [SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider]: null,
+                [SHARED_CCBUDDY_CREDENTIAL_KEYS.ccbuddyJwtToken]: null,
+                [SHARED_CCBUDDY_CREDENTIAL_KEYS.linkedBigModel]: null,
+              }
+            : {}),
+        },
+        { expected },
+      );
     },
 
     async delete(key: string): Promise<void> {
       const validatedKey = validateCredentialKey(key);
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
+      await mutate(async (rawCredentials) => {
         delete rawCredentials[validatedKey];
       });
     },
@@ -97,11 +254,11 @@ export function createSharedCCbuddyCredentialStore(
       const validatedKey = validateCredentialKey(key);
       const validatedExpectedValue = validateCredentialValue(expectedValue);
       let deleted = false;
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
+      await mutate(async (rawCredentials) => {
         const encryptedValue = rawCredentials[validatedKey];
         if (
           encryptedValue === undefined ||
-          cipher.decrypt(encryptedValue) !== validatedExpectedValue
+          (await cipher.decrypt(encryptedValue)) !== validatedExpectedValue
         ) {
           return;
         }
@@ -119,11 +276,12 @@ export function createSharedCCbuddyCredentialStore(
       );
       if (validatedEntries.length === 0) return {};
       const deleted: Record<string, boolean> = {};
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
+      await mutate(async (rawCredentials) => {
         for (const [key, expectedValue] of validatedEntries) {
           const encryptedValue = rawCredentials[key];
           const matches =
-            encryptedValue !== undefined && cipher.decrypt(encryptedValue) === expectedValue;
+            encryptedValue !== undefined &&
+            (await cipher.decrypt(encryptedValue)) === expectedValue;
           deleted[key] = matches;
           if (matches) delete rawCredentials[key];
         }
@@ -147,11 +305,11 @@ export function createSharedCCbuddyCredentialStore(
       const validatedExpectedValue = validateCredentialValue(expectedGuardValue);
       const validatedKeys = keysToDelete.map(validateCredentialKey);
       let deleted = false;
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
+      await mutate(async (rawCredentials) => {
         const encryptedGuard = rawCredentials[validatedGuardKey];
         if (
           encryptedGuard === undefined ||
-          cipher.decrypt(encryptedGuard) !== validatedExpectedValue
+          (await cipher.decrypt(encryptedGuard)) !== validatedExpectedValue
         ) {
           return;
         }
@@ -162,7 +320,7 @@ export function createSharedCCbuddyCredentialStore(
     },
 
     async load(key: string): Promise<string | null> {
-      const rawCredentials = await readRawCredentialRecord(filePath);
+      const rawCredentials = await readCurrent();
       const rawValue = rawCredentials[validateCredentialKey(key)];
       if (rawValue === undefined) {
         return null;
@@ -170,16 +328,7 @@ export function createSharedCCbuddyCredentialStore(
       return cipher.decrypt(rawValue);
     },
 
-    async loadMany(keys: readonly string[]): Promise<Record<string, string | null>> {
-      const validatedKeys = keys.map(validateCredentialKey);
-      const rawCredentials = await readRawCredentialRecord(filePath);
-      return Object.fromEntries(
-        validatedKeys.map((key) => {
-          const rawValue = rawCredentials[key];
-          return [key, rawValue === undefined ? null : cipher.decrypt(rawValue)];
-        }),
-      );
-    },
+    loadMany,
 
     onDidChange(listener: () => void | Promise<void>): () => void {
       let listeners = credentialChangeListeners.get(filePath);
@@ -195,23 +344,11 @@ export function createSharedCCbuddyCredentialStore(
     },
 
     async save(key: string, value: string): Promise<void> {
-      const validatedKey = validateCredentialKey(key);
-      const encryptedValue = cipher.encrypt(validateCredentialValue(value));
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
-        rawCredentials[validatedKey] = encryptedValue;
-      });
+      await updateMany({ [key]: value });
     },
 
     async saveMany(entries: Readonly<Record<string, string>>): Promise<void> {
-      const encryptedEntries = Object.entries(entries).map(
-        ([key, value]) =>
-          [validateCredentialKey(key), cipher.encrypt(validateCredentialValue(value))] as const,
-      );
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
-        for (const [key, encryptedValue] of encryptedEntries) {
-          rawCredentials[key] = encryptedValue;
-        }
-      });
+      await updateMany(entries);
     },
 
     async saveReplacing(
@@ -220,58 +357,46 @@ export function createSharedCCbuddyCredentialStore(
       replacedKeys: readonly string[],
     ): Promise<void> {
       const validatedKey = validateCredentialKey(key);
-      const encryptedValue = cipher.encrypt(validateCredentialValue(value));
       const validatedReplacedKeys = replacedKeys.map(validateCredentialKey);
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
-        rawCredentials[validatedKey] = encryptedValue;
-        for (const replacedKey of validatedReplacedKeys) {
-          if (replacedKey !== validatedKey) delete rawCredentials[replacedKey];
-        }
+      // 与 updateMany 相同：加密前领取代次，避免重置前产生的密文在重置后写盘；通知在作用域外。
+      const committed = await withCredentialGeneration(filePath, async () => {
+        const encryptedValue = await cipher.encrypt(validateCredentialValue(value));
+        return commit(async (rawCredentials) => {
+          rawCredentials[validatedKey] = encryptedValue;
+          for (const replacedKey of validatedReplacedKeys) {
+            if (replacedKey !== validatedKey) delete rawCredentials[replacedKey];
+          }
+        });
       });
+      if (committed) await notifyCredentialChange(filePath);
     },
 
-    async saveZaiLoginCredentials(payload: ZaiLoginCredentialPayload): Promise<void> {
-      const encryptedCredentials = {
-        activeProvider: cipher.encrypt(ZAI_PROVIDER_ID),
-        accessToken: cipher.encrypt(validateCredentialValue(payload.accessToken)),
-        jwtToken: cipher.encrypt(validateCredentialValue(payload.jwtToken)),
-        userInfo: cipher.encrypt(JSON.stringify(payload.user)),
-      };
-      await mutateRawCredentialRecord(filePath, (rawCredentials) => {
-        rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider] =
-          encryptedCredentials.activeProvider;
-        rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiAccessToken] =
-          encryptedCredentials.accessToken;
-        rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.ccbuddyJwtToken] = encryptedCredentials.jwtToken;
-        rawCredentials[SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiUserInfo] = encryptedCredentials.userInfo;
-      });
+    async saveZaiLoginCredentials(payload, expected, assertCurrent): Promise<void> {
+      const snapshot = expected ?? (await loadOAuthSessionSnapshot());
+      const committed = await updateMany(
+        {
+          ...Object.fromEntries(
+            Object.values(SHARED_CCBUDDY_CREDENTIAL_KEYS).map((key) => [key, null]),
+          ),
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider]: ZAI_PROVIDER_ID,
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiAccessToken]: payload.accessToken,
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.ccbuddyJwtToken]: payload.jwtToken,
+          [SHARED_CCBUDDY_CREDENTIAL_KEYS.zaiUserInfo]: JSON.stringify(payload.user),
+        },
+        { expected: snapshot, assertCurrent },
+      );
+      if (!committed) throw new Error("OAuth session changed before login commit");
     },
   };
 }
 
-export function loadSharedCCbuddyCredentialSync(
+/** 所有凭据读取均为异步，避免系统密钥库阻塞 UI 或 CLI 事件循环。 */
+export async function loadSharedCCbuddyCredential(
   key: string,
   options: SharedCCbuddyCredentialStoreOptions = {},
-): string | undefined {
-  const filePath = resolveSharedCCbuddyCredentialsPath(options);
-  if (!existsSync(filePath)) {
-    return undefined;
-  }
-
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    const parsed = JSON.parse(raw);
-    const record = parseCredentialRecord(parsed);
-    const rawValue = record[validateCredentialKey(key)];
-    if (rawValue === undefined) {
-      return undefined;
-    }
-    const cipher = options.cipher ?? createCCbuddyCredentialCipher({ env: options.env });
-    const decrypted = cipher.decrypt(rawValue);
-    return decrypted.trim().length > 0 ? decrypted : undefined;
-  } catch {
-    return undefined;
-  }
+): Promise<string | undefined> {
+  const value = await createSharedCCbuddyCredentialStore(options).load(key);
+  return value?.trim() ? value : undefined;
 }
 
 export function resolveSharedCCbuddyCredentialsPath(
@@ -282,14 +407,28 @@ export function resolveSharedCCbuddyCredentialsPath(
   }
 
   const env = options.env ?? process.env;
+  if (options.baseDir === undefined) {
+    // Source Server Core 使用自有凭据库时经 CCBUDDY_CREDENTIALS_FILE 指定文件（ZCT-2120452663971209216），
+    // 由其拉起的 Agent 必须读写同一文件；显式调用参数仍然优先。
+    const assigned = readAssignedCredentialsFile(env);
+    if (assigned) return assigned;
+  }
   const baseDir = options.baseDir ?? env[CCBUDDY_DATA_BASE_DIR_ENV_KEY] ?? homedir();
   return join(resolveUserPath(baseDir), ".ccbuddy", "v2", "credentials.json");
 }
 
-async function readRawCredentialRecord(filePath: string): Promise<Record<string, string>> {
-  let raw: string;
+async function readRawCredentialRecord(
+  filePath: string,
+  locked = false,
+): Promise<Record<string, string>> {
+  if (locked) return readRawCredentialRecordUnchecked(filePath);
+  return withCredentialFileRead(filePath, () => readRawCredentialRecordUnchecked(filePath));
+}
+
+async function readRawCredentialRecordUnchecked(filePath: string): Promise<Record<string, string>> {
+  let raw: Buffer;
   try {
-    raw = await readFile(filePath, "utf-8");
+    raw = await readFile(filePath);
   } catch (error) {
     if (getErrorCode(error) === "ENOENT") {
       return {};
@@ -298,7 +437,8 @@ async function readRawCredentialRecord(filePath: string): Promise<Record<string,
   }
 
   try {
-    return parseCredentialRecord(JSON.parse(raw));
+    // 宽松 UTF-8 解码会把坏字节替换后继续使用或写回，违背与 Desktop 共用的损坏边界。
+    return parseCredentialRecord(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)));
   } catch (error) {
     // 损坏的凭据文件若被当成空对象继续保存，会一次性抹掉其他进程的全部凭据。
     // 先保留现场再失败，调用方必须显式处理恢复，不能静默覆盖。
@@ -310,17 +450,21 @@ async function readRawCredentialRecord(filePath: string): Promise<Record<string,
   }
 }
 
-async function mutateRawCredentialRecord(
+async function commitRawCredentialRecord(
   filePath: string,
-  mutation: (value: Record<string, string>) => void | Promise<void>,
-): Promise<void> {
+  mutation: (value: Record<string, string>) => void | boolean | Promise<void | boolean>,
+): Promise<boolean> {
   // CLI、设置页和 session 可能位于不同 Node 进程；锁必须覆盖完整的
   // read-modify-write，单独原子 rename 只能防半写，不能防旧快照覆盖新 key。
-  await withFileLock(filePath, async () => {
-    const value = await readRawCredentialRecord(filePath);
-    await mutation(value);
-    await atomicWritePrivateTextFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+  return withCredentialFileMutation(filePath, async () => {
+    const value = await readRawCredentialRecord(filePath, true);
+    if ((await mutation(value)) === false) return false;
+    await writeCredentialRecordLocked(filePath, value);
+    return true;
   });
+}
+
+async function notifyCredentialChange(filePath: string): Promise<void> {
   const listeners = [...(credentialChangeListeners.get(filePath) ?? [])];
   // 同进程的 Registry Source 需要在登录返回前观察到新凭据；单个监听者失败不应
   // 把已经原子落盘的 Credential 伪装成写入失败。

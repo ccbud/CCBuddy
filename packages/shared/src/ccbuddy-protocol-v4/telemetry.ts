@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sanitizeTelemetrySkillName } from "../telemetry.js";
 import { ccbuddySyntheticUserMessageSourceSchema } from "../ccbuddy-protocol-legacy-types.js";
 import { timestampSchema } from "./core.js";
 
@@ -63,6 +64,9 @@ const turnStartedFactSchema = z
   .object({
     ...factBaseFields,
     kind: z.literal("turn.started"),
+    inputOrigin: z.enum(["desktop", "mobile"]).optional(),
+    modelName: z.string().optional(),
+    modelProvider: z.string().optional(),
     executionKind: z.enum(["agent", "controlOnly"]).optional(),
     inputSource: ccbuddySyntheticUserMessageSourceSchema.optional(),
     // `workflow`：dynamic-workflow run 的完成 / 提问通知唤起的独立轮。
@@ -136,8 +140,17 @@ const toolLifecycleFactSchema = z
     agentType: z.string().optional(),
     childSessionId: z.string().min(1).optional(),
     background: z.boolean().optional(),
+    skillName: z
+      .string()
+      .refine(
+        (value) => sanitizeTelemetrySkillName(value) === value,
+        "skillName must be a bounded, safe resolved Skill identifier",
+      )
+      .optional(),
     skillQualifiedName: z.string().min(1).optional(),
     skillPluginId: z.string().min(1).optional(),
+    pluginId: z.string().min(1).max(256).optional(),
+    pluginComponent: z.enum(["skill", "mcp"]).optional(),
     skillSource: z.enum(["agents", "ccbuddy", "bundled", "plugin", "remote"]).optional(),
     performance: toolPerformanceFactSchema.optional(),
     automationId: z.string().min(1).optional(),
@@ -257,6 +270,24 @@ const compactionTerminalFactSchema = z
   .strict();
 
 /**
+ * Agent 插件推荐链路的业务事实，由桌面 Host 单点转成 plugin_discovery / plugin_lifecycle。
+ * 只带可聚合维度；查询词、推荐理由与工具输出正文不得进入。
+ */
+const pluginDiscoveryFactSchema = z
+  .object({
+    ...factBaseFields,
+    kind: z.literal("plugin.discovery"),
+    phase: z.enum(["searched", "card_shown", "card_resolved", "install_settled"]),
+    pluginId: z.string().min(1).max(256).optional(),
+    action: z.enum(["install", "enable"]).optional(),
+    result: z.enum(["success", "failure", "cancelled", "noop"]).optional(),
+    decision: z.enum(["install", "skip", "cancel"]).optional(),
+    resultCount: z.number().int().nonnegative().optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+/**
  * CLI 经 `v4/telemetry/event` 上送的实时会话事实，供桌面埋点与运行中会话统计消费。
  * 每个分支都 strict，避免新增 runtime 字段时把 prompt、工具输入或 provider URL 意外外带。
  */
@@ -272,6 +303,7 @@ const conversationTelemetryFactRuntimeSchema = z
     workflowLifecycleFactSchema,
     turnTerminalFactSchema,
     compactionTerminalFactSchema,
+    pluginDiscoveryFactSchema,
   ])
   .superRefine((fact, context) => {
     if (fact.kind === "turn.started" && fact.automationId && fact.offPeakTaskId) {
@@ -321,3 +353,51 @@ export type ConversationTelemetryFact =
 export const conversationTelemetryFactSchema = conversationTelemetryFactRuntimeSchema.transform(
   (fact): ConversationTelemetryFact => fact as ConversationTelemetryFact,
 );
+
+/**
+ * 模型请求指标：一次成功完成的模型请求的耗时与服务商 usage，供扩展进程算生成速率。
+ * 规格：docs/monitoring/conversation-telemetry-v4.md「模型请求指标」。
+ *
+ * 兼容性：不进 `ConversationTelemetryFact` union，也不加到 `model.request.status`。
+ * 上面每个分支都是 strict，旧 App 解析到未知字段会丢掉整条事实；它走独立通知
+ * `V4_NOTIFICATIONS.modelRequestMetrics`，旧 App 对未知通知方法不做处理。
+ * 只带 id、模型身份、耗时与 token 数，不带正文、header、URL 或 finish reason。
+ */
+export const modelRequestMetricsFactSchema = z
+  .object({
+    ...factBaseFields,
+    kind: z.literal("model.request.metrics"),
+    requestId: z.string().min(1),
+    providerId: z.string(),
+    modelId: z.string(),
+    // 请求用途：main_turn / session_title / compact / subagent …，来自请求 trace 属性。
+    querySource: z.string().optional(),
+    queryId: z.string().min(1).optional(),
+    durationMs: z.number().nonnegative(),
+    timeToFirstContentMs: z.number().nonnegative().optional(),
+    inputTokens: z.number().nonnegative().optional(),
+    outputTokens: z.number().nonnegative().optional(),
+    reasoningTokens: z.number().nonnegative().optional(),
+    cacheReadTokens: z.number().nonnegative().optional(),
+    cacheWriteTokens: z.number().nonnegative().optional(),
+    totalTokens: z.number().nonnegative().optional(),
+  })
+  .strict();
+export type ModelRequestMetricsFact = z.infer<typeof modelRequestMetricsFactSchema>;
+
+/** 独立的接纳归属通知；绝不能扩展旧 strict turn.started 分支。 */
+export const turnAdmissionTelemetrySchema = z
+  .object({
+    ...factBaseFields,
+    kind: z.literal("turn.admission"),
+    isFirstMessage: z.boolean().optional(),
+    sendMode: z.enum(["direct", "queued"]).optional(),
+  })
+  .strict();
+export type TurnAdmissionTelemetry = z.infer<typeof turnAdmissionTelemetrySchema>;
+
+/** App 内部合流类型，不是 conversationTelemetryFact 的 wire union。 */
+export type ConversationTelemetryInput =
+  | ConversationTelemetryFact
+  | ModelRequestMetricsFact
+  | TurnAdmissionTelemetry;

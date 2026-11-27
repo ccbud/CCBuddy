@@ -21,7 +21,7 @@ interface PluginConfigControlsProps {
   onClearOption?: (pluginId: string, key: string, clear: boolean) => void;
   onSave: (plugin: CCbuddyPluginInfo) => void;
   onSetDraft: (pluginId: string, key: string, value: string | number | boolean) => void;
-  operationId: string | null;
+  activeOperations: ReadonlyArray<{ id: string }>;
   plugin: CCbuddyPluginInfo;
   scope: CCbuddyPluginScope;
 }
@@ -32,7 +32,7 @@ export function PluginConfigControls({
   onClearOption,
   onSave,
   onSetDraft,
-  operationId,
+  activeOperations,
   plugin,
   scope,
 }: PluginConfigControlsProps) {
@@ -41,7 +41,9 @@ export function PluginConfigControls({
   const entries = Object.entries(plugin.userConfig ?? {});
   if (entries.length === 0) return null;
 
-  const isSaving = operationId === `plugin:configure:${plugin.id}`;
+  const isSaving = activeOperations.some(
+    (operation) => operation.id === `plugin:configure:${plugin.id}`,
+  );
   return (
     <div
       className="mt-3 border-t border-border pt-3"

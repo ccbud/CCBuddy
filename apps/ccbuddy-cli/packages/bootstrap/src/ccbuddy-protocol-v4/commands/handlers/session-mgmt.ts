@@ -40,6 +40,10 @@ async function createSession(
   if (!host.createSessionRecord) {
     throw new Error("v4 createSession requires host.createSessionRecord capability");
   }
+  // "已创建 worktree" 只描述 cwd 指向的 worktree；缺 cwd 时没有可绑定的目录。
+  if (payload.worktreeCreation && !payload.cwd) {
+    throw new V4InputAdmissionRejectedError("proto.invalidPayload", "worktreeCreation requires cwd");
+  }
   // 完全空的 firstInput 必须在创建 record 前拒绝，避免失败请求遗留无效 deferred session。
   if (
     payload.firstInput &&
@@ -48,15 +52,24 @@ async function createSession(
     throw new V4InputAdmissionRejectedError("proto.invalidPayload", "input must not be empty");
   }
   const { sessionId } = await host.createSessionRecord({
-    sessionId: payload.sessionId,
-    additionalDirectories: payload.additionalDirectories,
+    ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
+    ...(payload.additionalDirectories
+      ? { additionalDirectories: payload.additionalDirectories }
+      : {}),
     workspaceId: payload.workspaceId,
+    ...(payload.cwd ? { cwd: payload.cwd } : {}),
     ...(payload.permissionScope ? { permissionScope: payload.permissionScope } : {}),
     mcpServers: payload.mcpServers,
     offPeakToolEnabled: payload.offPeakToolEnabled,
     dynamicWorkflowEnabled: payload.dynamicWorkflowEnabled,
     dynamicWorkflowMode: payload.dynamicWorkflowMode,
   });
+  if (payload.worktreeCreation) {
+    // 首轮持久化会话后、TurnStarted 之前落盘并投影（docs/git/worktree.md §6.6.4）。
+    requireRecord(host, sessionId).app.runtime.recordPendingWorktreeCreation(
+      payload.worktreeCreation,
+    );
+  }
   // createSession.config 消费——草稿态 UI 的先行选择（模型/思考深度/
   // 模式）在首发之前应用并补发事件，首条 turn 即用所选配置。必须在 firstInput 之前。
   // 普通配置保留既有 warn 降级；Guarded 是明确的授权选择，失败不得用缺省模式执行。
@@ -103,6 +116,8 @@ async function createSession(
         requestedDelivery: "startNow",
         attachmentRefs: payload.firstInput.attachments,
         ...resolveSubmittedExecutionState(record, payload.firstInput),
+        // 首条消息与 sendText 同一来源契约：扩展代建会话时由 Host 注入，随 intent 持久化并投影。
+        ...(payload.firstInput.source ? { source: payload.firstInput.source } : {}),
       });
       const started = await startPromptTurn(host, record, {
         content: payload.firstInput.text,
@@ -163,10 +178,7 @@ async function renameSession(
   return undefined;
 }
 
-/**
- * deleteSession 先持久化软删除，再释放 runtime；历史正文保留。
- * 会话注册表仍归宿主，实际关闭走 host.deleteSession 过渡钩子（归宿：v4 自持会话注册表，见 ../types.ts）。
- */
+/** CLI 先持久化软删除，再关闭运行实例；正文保留，后续冷种子不会复活该会话。 */
 async function deleteSession(
   host: V4CommandCoreHost,
   envelope: CommandEnvelope,

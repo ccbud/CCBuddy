@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { prepareDevElectronAppBundle } from "./devElectronAppBundle.mjs";
+import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const mainBundle = resolve(root, "out/main/index.js");
@@ -14,28 +15,11 @@ const buildReadyMarkers = [
   { name: "main", path: resolve(root, "out/.main-build-ready") },
   { name: "host", path: resolve(root, "out/.host-build-ready") },
   { name: "preload", path: resolve(root, "out/.preload-build-ready") },
+  // 扩展进程是 Main 按需拉起的独立产物；未就绪就启动 Electron 会让首个 Window Host 拉起失败。
+  { name: "extension-host", path: resolve(root, "out/.extension-host-build-ready") },
 ];
 const waitLogIntervalMs = 3_000;
 const require = createRequire(import.meta.url);
-
-function resolveLocalElectronBinary() {
-  const electronPackageJsonPath = require.resolve("electron/package.json");
-  const electronPackageRoot = resolve(electronPackageJsonPath, "..");
-
-  // Windows 下这里之前直接 spawn("electron")，完全依赖 PATH 里恰好能找到本地 bin。
-  // 在 pnpm + PowerShell 场景里，子进程经常只拿到 node 可执行而拿不到 electron 命令，
-  // 导致 dev 脚本卡在 ENOENT，只能手动拆成三个终端绕过。
-  // 这里显式解析当前项目安装的 Electron 二进制，避免跨 shell / 跨平台时 PATH 语义不一致。
-  if (process.platform === "win32") {
-    return resolve(electronPackageRoot, "dist", "electron.exe");
-  }
-
-  if (process.platform === "darwin") {
-    return resolve(electronPackageRoot, "dist", "Electron.app", "Contents", "MacOS", "Electron");
-  }
-
-  return resolve(electronPackageRoot, "dist", "electron");
-}
 
 function probeHttpUrl(url) {
   return new Promise((resolveProbe) => {
@@ -110,8 +94,8 @@ async function waitForReady() {
 const rendererUrl = await waitForReady();
 console.log("[dev] Starting Electron...");
 
-const electronBinary = resolveLocalElectronBinary();
-let electronCommand = existsSync(electronBinary) ? electronBinary : "electron";
+const electronBinary = await ensureElectronRuntime();
+let electronCommand = electronBinary;
 
 if (process.platform === "darwin" && existsSync(electronBinary)) {
   // macOS 命令行启动的 raw Electron 没有 CFBundleURLTypes，LaunchServices 会把

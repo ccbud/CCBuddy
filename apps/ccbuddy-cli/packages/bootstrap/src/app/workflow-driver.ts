@@ -98,10 +98,8 @@ import {
   schemaEpilogue,
   toWorkflowError,
 } from "./workflow-driver-helpers.js";
-import {
-  makeSessionSubmitPort,
-  type SubmitBridgeHost,
-} from "./workflow-driver-submit-bridge.js";
+import { makeSessionSubmitPort, type SubmitBridgeHost } from "./workflow-driver-submit-bridge.js";
+import { makeWebSearchBudgetPort, webSearchLimitOf } from "./workflow-driver-web-search-budget.js";
 import {
   countSessionTranscript,
   journalAskMessageBoundary,
@@ -142,7 +140,7 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
   private readonly stallClock: RunStallClock;
   /**
    * 会话静默账（workflow-driver-quiescence.ts）：dispose 那一刻每个会话还有没有在写的 turn。
-   * 唯一的读者是 amend——接续前驱的在飞 ask 之前它要确认那个会话已经写完了。
+   * amend 查询 turn 静默；App.close 则通过 drain 等待完整的 actor 释放。
    */
   private readonly quiescence: ActorSessionQuiescenceLedger;
 
@@ -203,7 +201,24 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
     }
   }
 
-  async createActorSession(
+  createActorSession(
+    actor: ActorRef,
+    persona: PersonaSpec,
+    seed?: ActorSessionSeed,
+  ): Promise<SessionRef> {
+    if (this.disposed) return Promise.reject(new Error("Workflow driver is closed"));
+    const creation = this.createOwnedActorSession(actor, persona, seed);
+    // 工厂异步持久化时 dispose 也必须看得见它，避免新 actor 落在关闭快照之外。
+    this.quiescence.trackRelease(
+      creation.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return creation;
+  }
+
+  private async createOwnedActorSession(
     actor: ActorRef,
     persona: PersonaSpec,
     seed?: ActorSessionSeed,
@@ -234,6 +249,8 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
     // persona 一并入 closure：有效名是**冻结**的（引擎在 createActor 时定下，此后不变），
     // 所以在这里算一次比每次 escalate 现查便宜，也不会中途换名。
     const escalatePort = this.makeEscalatePort(sessionId, actor, persona);
+    // WebSearch 预算端口同构：按会话 closure 绑定，计数在下面才建的会话状态里（端口按 id 晚查）。
+    const webSearchBudgetPort = makeWebSearchBudgetPort(this.sessions, sessionId);
     // 模型活动面：准入端口随 runtime deps 下传（runner 每次尝试先过闸门），
     // waiting / executing 观察只在有在飞 ask、且它还没被引擎结算/取消时上报——迟到的观察对一个
     // 已完结的 ask 没有意义，引擎侧也会再挡一次。state 在下面才建，所以经 closure 晚绑定。
@@ -284,14 +301,12 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
       submitPort,
       submitProfile,
       escalatePort,
+      webSearchBudgetPort,
       ...(seed === undefined ? {} : { seed }),
       ...(modelActivity.admission === undefined
         ? {}
         : { modelRequestAdmission: modelActivity.admission }),
     });
-    if (seed !== undefined) {
-      await seedActorSession(this.deps, { journaledSessionId: journaled, runtime, seed, sessionId });
-    }
     state = {
       ref,
       sessionId,
@@ -303,14 +318,31 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
       turnGeneration: 0,
       pendingEscalations: new Map(),
       escalationsUsed: 0,
+      webSearchesUsed: 0,
+      webSearchLimit: webSearchLimitOf(persona),
       modelActivity,
       actor,
       actorName: effectiveActorName(persona),
       transientAttempts: 0,
     };
-    modelActivity.observe(runtime, sessionId);
-    this.sessions.set(sessionId, state);
-    return ref;
+    try {
+      if (seed !== undefined) {
+        await seedActorSession(this.deps, {
+          journaledSessionId: journaled,
+          runtime,
+          seed,
+          sessionId,
+        });
+      }
+      if (this.disposed) throw new Error("Workflow driver closed during actor creation");
+      modelActivity.observe(runtime, sessionId);
+      this.sessions.set(sessionId, state);
+      return ref;
+    } catch (error) {
+      // 创建尚未登记时也属于本 driver；种子恢复失败或关闭抢先到达，都必须释放已创建实例。
+      await releaseActorSessions(this.deps, [state], this.quiescence);
+      throw error;
+    }
   }
 
   startAsk(session: SessionRef, instance: InstanceRef, message: AskMessage): void {
@@ -333,6 +365,7 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
     state.pendingSubmit = undefined;
     // per-ask 预算归零（nudge 走的是 runTurn，不经这里——nudge 仍在同一个 ask 里）。
     state.escalationsUsed = 0;
+    state.webSearchesUsed = 0;
     state.abortController = new AbortController();
     // 上一个 ask 的 waiting / executing 相位、工具计数都不能带到这个 ask 上；瞬态重驱计数同理。
     state.modelActivity.reset();
@@ -457,7 +490,15 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
    * 只剩"会话与 turn 的编排"这一件事，而 op 元数、上限执行、git 的固定 argv 集中在一处。
    */
   async executeWorldRead(op: WorldReadOp, args: unknown[]): Promise<unknown> {
-    return await executeWorldRead(this.deps, op, args);
+    if (this.disposed) throw new Error("Workflow driver is closed");
+    const work = executeWorldRead(this.deps, op, args);
+    this.quiescence.trackRelease(
+      work.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return await work;
   }
 
   /**
@@ -470,7 +511,15 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
    * 「方法在不在」这条第二条通道再表达一次（两条通道会给同一件事两种失败形态）。
    */
   async executeArtifactPublish(request: ArtifactPublishRequest): Promise<ArtifactVersionRecord> {
-    return await executeArtifactPublish(this.deps, request);
+    if (this.disposed) throw new Error("Workflow driver is closed");
+    const work = executeArtifactPublish(this.deps, request);
+    this.quiescence.trackRelease(
+      work.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return await work;
   }
 
   // ——————————————————————————————— 内部：turn 编排 ———————————————————————————————

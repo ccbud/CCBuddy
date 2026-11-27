@@ -6,24 +6,21 @@ import type {
   OAuthSessionCallbackResult,
   UserInfo,
 } from "@ccbuddy/shared";
-import {
-  DesktopCommandIds,
-  resolveProviderFamilyDomainFromOAuthProvider,
-  CCBUDDY_JWT_INVALID_BROADCAST_CHANNEL,
-} from "@ccbuddy/shared";
+import { CCBUDDY_JWT_INVALID_BROADCAST_CHANNEL } from "@ccbuddy/shared";
 import type { IServiceAccessor } from "@ccbuddy/services";
 import { useAlertDialog } from "@/hooks/useAlertDialog.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { reportAppTelemetryEvent, resolveProviderTelemetryLabel } from "@/lib/appTelemetry.js";
 import { logger } from "@/logger.js";
-import { setProviderFamilyDomain } from "@/lib/providerFamilyDomainSettings.js";
 import type { ModelProviderFamilyConnectionSelection } from "@/lib/modelProviderFamilyConnectionSelection.js";
 import {
   refreshLatestModelProviderFamilySelectionAfterLogin,
   refreshRestoredOAuthProviderFamilyAfterStartup,
 } from "@/root/oauthProviderFamilySelectionRefresh.js";
-import { applyCachedOAuthSessionRestoreResult } from "@/root/oauthCachedSessionRestore.js";
-import { markCCbuddyJwtInvalidRestart } from "@/root/ccbuddyJwtInvalidRestartMarker.js";
+import {
+  applyCachedOAuthSessionRestoreResult,
+  requestOAuthReauthentication,
+} from "@/root/oauthCachedSessionRestore.js";
 import { shouldApplyOAuthPollingFailure } from "@/root/oauthLoginAttemptGuard.js";
 import { useAccountConnectionLossNotification } from "@/root/useAccountConnectionLossNotification.js";
 
@@ -37,39 +34,22 @@ export async function handleOAuthCallbackSuccess(params: {
   ) => Promise<ModelProviderFamilyConnectionSelection | null>;
   refreshAppSettings?: () => Promise<void>;
   refreshProviderState: () => Promise<void>;
-  setProviderFamilyDomain: (provider: OAuthProviderId) => Promise<void>;
   setUser: (user: UserInfo | null) => void;
   setOAuthError: (error: string | null) => void;
 }) {
   const loginProvider = resolveProviderTelemetryLabel(params.result.provider);
   params.setUser(params.result.userInfo);
   params.setOAuthError(null);
-  await params.setProviderFamilyDomain(params.result.provider);
   if (params.refreshLatestModelProviderFamilySelection) {
-    let selection: ModelProviderFamilyConnectionSelection | null = null;
     try {
-      selection = await params.refreshLatestModelProviderFamilySelection(params.result.provider);
+      await params.refreshLatestModelProviderFamilySelection(params.result.provider);
+      // 没有新选择时也可能已纠正账号用不了的 domain；设置缓存只在显式刷新时更新，所以总是刷新。
+      await params.refreshAppSettings?.();
     } catch (error) {
-      // selectedKey 后台校正失败只影响默认连接方式展示，不能回滚已经成功的 OAuth 登录态。
-      logger.warn("[Root] OAuth 登录后刷新 provider family selectedKey 失败", {
-        provider: params.result.provider,
-        error,
+      // 账号已完成登录；自动初始化冲突或权益查询失败不能回滚主身份。
+      logger.warn("[Root] OAuth 登录后保留既有连接，初始化未完成", {
+        name: error instanceof Error ? error.name : "unknown",
       });
-    }
-    const selectedConnection = selection ? JSON.stringify(selection) : "";
-    if (selection && params.refreshAppSettings) {
-      try {
-        // selectedKey 由 settingService 直接落盘，输入框和 context hover
-        // 读取的是 renderer settings 快照。登录后必须先刷新快照，再按最终套餐刷新
-        // 模型可用态和剩余额度，否则 UI 会一直拿旧 selectedKey，直到打开设置页或重启。
-        await params.refreshAppSettings();
-      } catch (error) {
-        logger.warn("[Root] OAuth 登录后刷新 App settings 快照失败", {
-          provider: params.result.provider,
-          selectedConnection,
-          error,
-        });
-      }
     }
   }
   // selectedKey 与账号状态收敛后统一刷新 Account Source 与 Registry。
@@ -131,9 +111,8 @@ export function useRootOAuthEffects({
       logger.info("[Root] 后台启动 OAuth 本地会话恢复");
       let hasRestoredUser = false;
       try {
-        // zai / bigmodel 的 OAuth token 生命周期较短，启动时如果仍走远端校验，
-        // 用户会在 token 过期后被立刻打回“未登录”，和“已完成登录但未主动退出”的产品语义冲突。
-        // 这里改为只读取登录成功时缓存的 user_info，展示态由“是否主动退出”决定，而不是由短 token 决定。
+        // 启动只读缓存及本地有效期；业务 token 已明确过期时直接重新登录，
+        // 不把无 exp 的历史凭据或暂时断网误判成退出。
         const result = await services.oauthService.restoreCachedSessionState();
 
         if (disposed) {
@@ -145,6 +124,8 @@ export function useRootOAuthEffects({
           setUser,
           requestAlert,
           onReauthenticationRequired,
+          shouldReauthenticate: async () =>
+            !disposed && (await services.oauthService.getActiveProvider()) === null,
           copy: {
             title: intl.formatMessage({ id: "login.expired.title" }),
             description: intl.formatMessage({ id: "login.expired.description" }),
@@ -166,6 +147,13 @@ export function useRootOAuthEffects({
 
       try {
         if (hasRestoredUser) {
+          try {
+            await services.oauthService.refreshAccountProfile();
+          } catch (error) {
+            logger.warn("[Root] 补充账号关联失败，保留当前登录", {
+              name: error instanceof Error ? error.name : "unknown",
+            });
+          }
           const activeProvider = await services.oauthService.getActiveProvider();
           if (disposed) return;
           await refreshRestoredOAuthProviderFamilyAfterStartup({
@@ -202,37 +190,37 @@ export function useRootOAuthEffects({
 
   useEffect(() => {
     let disposed = false;
+    let promptPending = false;
     const disposable = services.broadcastService.onMessage((message) => {
-      if (message.channel !== CCBUDDY_JWT_INVALID_BROADCAST_CHANNEL || disposed) {
+      if (message.channel !== CCBUDDY_JWT_INVALID_BROADCAST_CHANNEL || disposed || promptPending) {
         return;
       }
-      void (async () => {
-        const confirmed = await requestAlert({
+      promptPending = true;
+      // 业务 token 撤销后仍显示头像并要求重启会阻断恢复；与启动过期共用 Welcome 登录入口。
+      void requestOAuthReauthentication({
+        setUser,
+        requestAlert,
+        onReauthenticationRequired: () => {
+          if (!disposed) onReauthenticationRequired();
+        },
+        shouldReauthenticate: async () =>
+          !disposed && (await services.oauthService.getActiveProvider()) === null,
+        copy: {
           title: intl.formatMessage({ id: "login.expired.title" }),
           description: intl.formatMessage({ id: "login.expired.description" }),
-          actionLabel: intl.formatMessage({ id: "login.expired.restart" }),
+          actionLabel: intl.formatMessage({ id: "login.expired.action" }),
+        },
+      })
+        .catch((error) => logger.error("[Root] 登录失效恢复提示失败", { error }))
+        .finally(() => {
+          promptPending = false;
         });
-        if (disposed) {
-          return;
-        }
-        if (!confirmed) {
-          onReauthenticationRequired();
-          return;
-        }
-        markCCbuddyJwtInvalidRestart();
-        if (typeof window !== "undefined" && !("ccbuddy" in window)) {
-          // Web 没有 Electron RelaunchApp；marker 写入后立即刷新，避免停留在僵尸登录态。
-          window.location.reload();
-          return;
-        }
-        await platform.executeDesktopCommand(DesktopCommandIds.RelaunchApp);
-      })();
     });
     return () => {
       disposed = true;
       disposable.dispose();
     };
-  }, [intl, onReauthenticationRequired, platform, requestAlert, services.broadcastService]);
+  }, [intl, onReauthenticationRequired, requestAlert, services.broadcastService, setUser]);
 
   useEffect(() => {
     if (!oauthPollingActive) {
@@ -262,12 +250,6 @@ export function useRootOAuthEffects({
               refreshLatestModelProviderFamilySelectionAfterLogin({ provider, services }),
             refreshAppSettings,
             refreshProviderState,
-            setProviderFamilyDomain: async (provider) => {
-              const domain = resolveProviderFamilyDomainFromOAuthProvider(provider);
-              if (domain) {
-                await setProviderFamilyDomain(services.settingService, domain);
-              }
-            },
             setUser,
             setOAuthError,
           });
@@ -349,13 +331,6 @@ export function useRootOAuthEffects({
             }),
           refreshAppSettings,
           refreshProviderState,
-          setProviderFamilyDomain: async (provider) => {
-            const domain = resolveProviderFamilyDomainFromOAuthProvider(provider);
-            if (!domain) {
-              return;
-            }
-            await setProviderFamilyDomain(services.settingService, domain);
-          },
           setUser,
           setOAuthError,
         });

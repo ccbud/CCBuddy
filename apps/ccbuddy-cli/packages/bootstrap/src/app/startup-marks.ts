@@ -1,42 +1,84 @@
 import type { ConfigResult } from "@ccbuddy/adapters/config";
-import { discoverNodePluginsSync } from "@ccbuddy/adapters/plugins";
+import { discoverNodePlugins } from "@ccbuddy/adapters/plugins";
 import type { AgentRuntimeConfig } from "@ccbuddy/core";
 import type { Logger, McpServerConfig, PluginLoadOutcome } from "@ccbuddy/contracts";
+import { resolvePluginSecretsPath, withPluginSecrets } from "../plugin-secrets.js";
 import type { StartupTimer } from "../startup-logging.js";
 import { resolveOfficialPluginRoots } from "./bundled-plugins.js";
 import { DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS } from "./official-plugin-definitions.js";
 import { getPluginStorageRoot } from "./paths.js";
 import type { CCbuddyAppOptions } from "./types.js";
 import { filterVisualizeSkillRoots } from "./visualize-skill-gate.js";
+import { resolveWorkspacePluginDiscovery } from "../workspace-plugin-trust/index.js";
 
-export function resolveStartupPlugins(input: {
+export async function resolveStartupPlugins(input: {
   cliStorageRoot: string;
   configResult: ConfigResult;
   env?: NodeJS.ProcessEnv;
   logger?: Logger;
-  options: Pick<CCbuddyAppOptions, "officialPluginRoots" | "pluginStorageRoot" | "includeVisualize">;
+  options: Pick<
+    CCbuddyAppOptions,
+    | "officialPluginRoots"
+    | "pluginStorageRoot"
+    | "pluginPreparation"
+    | "pluginDiscovery"
+    | "runtimeConfig"
+    | "includeVisualize"
+  >;
   startupTimer: StartupTimer;
   workingDirectory: string;
-}): PluginLoadOutcome {
+}): Promise<PluginLoadOutcome> {
   const pluginStorageRoot =
     input.options.pluginStorageRoot ?? getPluginStorageRoot(input.cliStorageRoot);
-  const pluginOutcome = discoverNodePluginsSync({
-    config: input.configResult.config.plugins,
-    env: input.env ?? process.env,
-    officialPluginRoots: resolveOfficialPluginRoots({
-      extraRoots: input.options.officialPluginRoots,
-      logger: input.logger,
-      storageRoot: pluginStorageRoot,
-      suppressedBuiltins: new Set(input.configResult.config.plugins.suppressedBuiltins),
-    }),
-    // defaultEnabled 的 official plugin (如 skill-creator) 只有在这里
-    // 把名单传给 discoverNodePluginsSync 才会真正默认开启。CLI 子命令路径
-    // (resolveCCbuddyPlugins) 和应用启动路径都要传，否则 `/skill skill-creator` 在会话里
-    // 报 "Skill not found: skill-creator"，但 `ccbuddy plugins list` 却显示它是 enabled。
-    officialPluginsEnabledByDefault: DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
-    storageRoot: pluginStorageRoot,
-    workingDirectory: input.workingDirectory,
-  });
+  const resolve = async (): Promise<PluginLoadOutcome> => {
+    // 会话运行时的 MCP 展开也要读到私有文件里的敏感值（与 resolveCCbuddyPlugins 同一叠加）。
+    const secrets = await withPluginSecrets(
+      input.configResult,
+      resolvePluginSecretsPath(pluginStorageRoot),
+      input.logger,
+    );
+    const outcome = await (
+      input.options.pluginDiscovery
+        ? input.options.pluginDiscovery.discoverPlugins.bind(input.options.pluginDiscovery)
+        : discoverNodePlugins
+    )(
+      {
+        workspaceIdentity: input.options.runtimeConfig?.memory?.workspaceIdentity,
+        remoteSessionId: input.options.runtimeConfig?.remoteSessionId,
+        config: secrets.configResult.config.plugins,
+        env: input.env ?? process.env,
+        officialPluginRoots: await resolveOfficialPluginRoots({
+          preparation: input.options.pluginPreparation,
+          extraRoots: input.options.officialPluginRoots,
+          logger: input.logger,
+          storageRoot: pluginStorageRoot,
+          suppressedBuiltins: new Set(input.configResult.config.plugins.suppressedBuiltins),
+        }),
+        // defaultEnabled 的 official plugin (如 skill-creator) 只有在这里
+        // 把名单传给 discoverNodePlugins 才会真正默认开启。CLI 子命令路径
+        // (resolveCCbuddyPlugins) 和应用启动路径都要传，否则 `/skill skill-creator` 在会话里
+        // 报 "Skill not found: skill-creator"，但 `ccbuddy plugins list` 却显示它是 enabled。
+        officialPluginsEnabledByDefault: DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
+        storageRoot: pluginStorageRoot,
+        workingDirectory: input.workingDirectory,
+        // 项目目录插件按会话启动时的信任记录准入；会话运行中新增的信任不热加载。
+        workspacePlugins: await resolveWorkspacePluginDiscovery({
+          configResult: secrets.configResult,
+          env: input.env,
+          logger: input.logger,
+          workingDirectory: input.workingDirectory,
+          workspaceIdentity: input.options.runtimeConfig?.memory?.workspaceIdentity,
+        }),
+      },
+      { signal: input.options.pluginPreparation?.signal },
+    );
+    return secrets.diagnostics.length > 0
+      ? { ...outcome, diagnostics: [...outcome.diagnostics, ...secrets.diagnostics] }
+      : outcome;
+  };
+  const pluginOutcome = await (input.options.pluginPreparation
+    ? input.options.pluginPreparation.resolvePlugins(resolve)
+    : resolve());
   pluginOutcome.skillRoots = filterVisualizeSkillRoots(
     pluginOutcome.skillRoots,
     input.options.includeVisualize,

@@ -1,7 +1,4 @@
-import type {
-  BrowserCommand,
-  BrowserCommandResult,
-} from "@ccbuddy/contracts/browser-control";
+import type { BrowserCommand, BrowserCommandResult } from "@ccbuddy/contracts/browser-control";
 
 export class BrowserCommandError extends Error {
   readonly code: string;

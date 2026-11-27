@@ -7,12 +7,7 @@ import {
   createPartId,
   parseWorkspaceCheckpointArtifact,
 } from "../deps.js";
-import type {
-  MessageId,
-  SessionId,
-  TraceContext,
-  WorkspaceCheckpointArtifact,
-} from "../deps.js";
+import type { MessageId, SessionId, TraceContext, WorkspaceCheckpointArtifact } from "../deps.js";
 import {
   selectCheckpointsForMessages,
   formatWorkspaceForkAtMessageNoticeBody,
@@ -199,6 +194,7 @@ export async function forkWorkspaceAtMessage(
   const forkedSessionId = await createForkedSession(this, {
     forkedSessionId: options.forkedSessionId,
     parentSession,
+    traceContext: options.traceContext,
   });
   const forkHistoryMessages = buildForkHistoryMessages(
     parentMessages,

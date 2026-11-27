@@ -1,11 +1,11 @@
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRight, LoaderCircle } from "lucide-react";
+import { type StorageCategoryId } from "@ccbuddy/shared";
 import {
-  type StorageCategoryId,
   TID_RESOURCE_MANAGER_STORAGE_CATEGORY_CLEAN,
   TID_RESOURCE_MANAGER_STORAGE_CATEGORY_ROW,
   TID_RESOURCE_MANAGER_STORAGE_CATEGORY_SIZE,
   testId,
-} from "@ccbuddy/shared";
+} from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { formatBytes } from "@/resource-manager/resourceUsageView.js";
@@ -72,7 +72,9 @@ export function StorageCategoryList({
                 disabled={disabled}
                 onClick={() => onClean(category.id)}
               >
-                {cleaning ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {cleaning ? (
+                  <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                ) : null}
                 {intl.formatMessage({
                   id: cleaning
                     ? "resourceManager.storage.cleaning"

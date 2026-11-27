@@ -19,11 +19,12 @@ import type {
   CompactTimelineStatus,
   CompactTrigger,
 } from "../compact/index.js";
-import type {
-  ModelId,
-  ModelProviderId,
-  ModelSelection,
-  ModelToolSideEffectScope,
+import {
+  isBlockIndex,
+  type ModelId,
+  type ModelProviderId,
+  type ModelSelection,
+  type ModelToolSideEffectScope,
 } from "../model/index.js";
 import type { TodoItem } from "../tools/todo.js";
 import type { SessionGoal, GoalStatus } from "../tools/target.js";
@@ -44,6 +45,8 @@ export type SessionTaskType = (typeof SESSION_TASK_TYPES)[number];
 
 export const SESSION_TITLE_SOURCES = ["default", "first_input", "generated", "custom"] as const;
 export type SessionTitleSource = (typeof SESSION_TITLE_SOURCES)[number];
+
+export type SessionLastOutcome = "completed" | "error" | "interrupted";
 
 export const MESSAGE_VISIBILITIES = ["user-visible", "model-only"] as const;
 export type MessageVisibility = (typeof MESSAGE_VISIBILITIES)[number];
@@ -143,10 +146,7 @@ export interface MessageProjectionAnchor {
   goalBoundary?: StableForkGoalBoundaryMetadata;
 }
 
-export type SessionLastOutcome = "completed" | "error" | "interrupted";
-
 export interface SessionInfo {
-  lastOutcome?: SessionLastOutcome;
   id: SessionId;
   projectID: ProjectId;
   workspaceID?: WorkspaceId;
@@ -160,6 +160,7 @@ export interface SessionInfo {
   titleSource?: SessionTitleSource;
   titleMessageID?: MessageId;
   version: string;
+  lastOutcome?: SessionLastOutcome;
   shareURL?: string;
   summaryAdditions?: number;
   summaryDeletions?: number;
@@ -172,7 +173,6 @@ export interface SessionInfo {
     updated: number;
     titleUpdated?: number;
     compacting?: number;
-    archived?: number;
     deleted?: number;
   };
 }
@@ -220,6 +220,16 @@ export type ForkCommandResult =
   | { type: "editUserQuery"; disposition: "fork"; sessionId: string };
 
 /**
+ * 数据库内 fork 的规划输入。messages 只供选择边界和改写引用：正文、文件 URL、
+ * 工具输入/输出等载荷已省略，不能用于展示或模型请求。隐藏系统提醒保留选型所需文本。
+ * build 必须同步、无 I/O，返回的 copySources 指向该快照；源记录在提交前保持不变。
+ */
+export interface ForkFromSourceInput {
+  sessionID: SessionId;
+  build(source: { session: SessionInfo; messages: MessageWithParts[] }): ForkCommitBundle;
+}
+
+/**
  * conversation fork 的唯一原子提交载荷。core 在内存完成 remap；adapter 不参与业务裁决，
  * 只保证 child/copy/goal/entries/input/parent command fact 全有或全无。
  */
@@ -227,7 +237,7 @@ export interface ForkCommitBundle {
   child: CreateSessionInput;
   messages: MessageWithParts[];
   entries: SessionEntryInfo[];
-  /** 存储复制来源（目标 ID -> 父记录 ID）；只保留旧磁盘快照，不参与模型选择。 */
+  /** 存储复制来源（目标 ID -> 父记录 ID）；用于数据库复制/旧字段保留，不参与模型选择。 */
   copySources?: { messages: Record<string, string>; parts: Record<string, string> };
   goal?: { source: SessionGoal; status: GoalStatus };
   initialInput?: {
@@ -250,9 +260,18 @@ export interface ForkCommitBundle {
   };
 }
 
+/**
+ * 同一 session 的多条消息及其 part 按顺序写入，全有或全无。
+ * 用于 compaction 的请求前公告、summary 与附件，以及空闲整批通知（一条消息多个文本 part）。
+ */
+export interface MessageCommitBundle {
+  sessionID: SessionId;
+  messages: MessageWithParts[];
+}
+
 export interface UpdateSessionInput {
-  lastOutcome?: SessionLastOutcome;
   id: SessionId;
+  lastOutcome?: SessionLastOutcome;
   directory?: string;
   path?: string | null;
   timeUpdated?: number;
@@ -270,7 +289,6 @@ export interface UpdateSessionInput {
   revert?: SessionRevert | null;
   permission?: PermissionRuleset | null;
   timeCompacting?: number | null;
-  timeArchived?: number | null;
 }
 
 export interface FileDiff {
@@ -308,7 +326,6 @@ export interface ListSessionsInput {
   path?: string;
   roots?: boolean;
   taskTypes?: SessionTaskType[];
-  includeArchived?: boolean;
   limit?: number;
 }
 
@@ -432,6 +449,8 @@ export interface TextPart {
   text: string;
   synthetic?: boolean;
   ignored?: boolean;
+  /** assistant 块到达序号，见 docs/design/v2/model/assistant-block-order.md；旧记录缺失。 */
+  blockIndex?: number;
   time?: {
     start: number;
     end?: number;
@@ -445,6 +464,8 @@ export interface ReasoningPart {
   messageID: MessageId;
   type: "reasoning";
   text: string;
+  /** assistant 块到达序号；不放进 metadata，因为 metadata 会原样变成 providerOptions。 */
+  blockIndex?: number;
   metadata?: Record<string, unknown>;
   time: {
     start: number;
@@ -488,6 +509,8 @@ export interface AttachmentStorageMetadata {
   storageKind?: "inline" | "artifact" | "local_ref" | "remote_ref" | "metadata_only";
   artifactUri?: string;
   originalUrl?: string;
+  /** 路径引用首次发送的完整说明；恢复时原样复用，不能用文件内容 preview 代替。 */
+  pathReferenceText?: string;
   recoverability?: "provider_ready" | "rebuildable" | "preview_only" | "metadata_only" | "missing";
   preview?: {
     text?: string;
@@ -555,6 +578,13 @@ export interface CompactionPart {
     start?: number;
     end?: number;
   };
+  /** 不进入 strict 的 compactBoundary 与 App 协议；旧版本按 JSON 读取时忽略。 */
+  metadata?: CompactionPartMetadata;
+}
+
+export interface CompactionPartMetadata {
+  /** summary 之前的请求前公告；冷恢复放回 summary 之前，切片之后的保留段时跳过。 */
+  compactLeadingMessageIds?: MessageId[];
 }
 
 export type TimelinePartDisplay = "separator" | "worklog";
@@ -637,11 +667,29 @@ export interface ModelChangeTimelinePart extends TimelinePartBase {
   toModel?: TimelineModelSelection & { label: string };
 }
 
+/** 受管 worktree 的创建结果（docs/git/worktree.md §6.6.4）；由 Host 创建 worktree 后交给 CLI 落盘。 */
+export interface WorktreeCreationFact {
+  /** worktree 根目录。 */
+  path: string;
+  /** 检出的 commit。 */
+  sha: string;
+  /** 用户选择的起点；null = 源目录当前 HEAD。 */
+  ref: string | null;
+  /** git 与拷贝输出的末尾。 */
+  output: string;
+}
+
+export interface WorktreeCreationTimelinePart extends TimelinePartBase {
+  timelineType: "worktree_creation";
+  worktreeCreation: WorktreeCreationFact;
+}
+
 export type TimelinePart =
   | ContextCompactionTimelinePart
   | GoalVerificationTimelinePart
   | SessionForkTimelinePart
-  | ModelChangeTimelinePart;
+  | ModelChangeTimelinePart
+  | WorktreeCreationTimelinePart;
 
 export type TimelinePartDraft = TimelinePart extends infer Part
   ? Part extends TimelinePart
@@ -761,8 +809,13 @@ export interface ToolPart {
   messageID: MessageId;
   type: "tool";
   callID: string;
-  /** 同一 assistant 内本地工具的声明序号；旧记录可缺失，不能用落盘顺序代替。 */
+  /** 旧记录的本地工具声明序号；新记录改写 blockIndex，读取保留给旧数据。 */
   declarationIndex?: number;
+  /**
+   * assistant 块到达序号，与 text / reasoning part 共用；重试新建的 part 沿用同一序号。
+   * 每次写入都必须带上：savePart 冲突更新整体替换 data，漏写一次这条消息就静默按旧数据排序。
+   */
+  blockIndex?: number;
   tool: string;
   state: ToolState;
   metadata?: Record<string, unknown>;
@@ -782,6 +835,45 @@ export type MessagePart =
   | SnapshotPart
   | PatchPart
   | ToolPart;
+
+/** 浏览器轮尾截图 tool part 的 `state.input.source`。它只用于展示，不是模型块，不带 blockIndex。 */
+export const BROWSER_TURN_SCREENSHOT_SOURCE = "browser_turn_end" as const;
+
+// 返回 boolean 而不是类型谓词：它只认一种 tool part，取反时不能把所有 ToolPart 都收窄掉。
+// 仓库每次读取都会对所有 tool part 调用它；part data 没有 schema 校验，损坏数据可能没有 state 或 input，
+// 按非截图处理，不能让一个坏 part 中断整个会话的读取。
+export function isBrowserTurnScreenshotPart(part: MessagePart): boolean {
+  return part.type === "tool" && part.state?.input?.source === BROWSER_TURN_SCREENSHOT_SOURCE;
+}
+
+type AssistantBlockPart = TextPart | ReasoningPart | ToolPart;
+
+// 类型谓词只按 part 类型判断。截图也是 ToolPart，单独用 isBrowserTurnScreenshotPart 排除：
+// 把截图判断放进类型谓词，false 分支会把所有 ToolPart 都收窄掉。
+function isBlockTypePart(part: MessagePart): part is AssistantBlockPart {
+  return part.type === "reasoning" || part.type === "text" || part.type === "tool";
+}
+
+/** 是否参与 assistant 块顺序：reasoning、text、tool，浏览器轮尾截图除外。 */
+export function isAssistantBlockPart(part: MessagePart): boolean {
+  return isBlockTypePart(part) && !isBrowserTurnScreenshotPart(part);
+}
+
+/** 参与 assistant 块顺序的 part，保持原顺序。 */
+export function assistantBlockParts(parts: readonly MessagePart[]): AssistantBlockPart[] {
+  return parts.filter(isBlockTypePart).filter((part) => !isBrowserTurnScreenshotPart(part));
+}
+
+/**
+ * 有序 assistant 消息：至少有一个块 part，且所有块 part 的 blockIndex 都合法（isBlockIndex）。
+ * 不满足时整条消息按旧数据处理，不存在“部分有序”。要求至少一个块 part：没有块 part 的旧消息
+ * 留在旧路径，空消息的处理不变。
+ * 见 apps/ccbuddy-cli/docs/design/v2/model/assistant-block-order.md。
+ */
+export function hasOrderedAssistantBlocks(parts: readonly MessagePart[]): boolean {
+  const blockParts = assistantBlockParts(parts);
+  return blockParts.length > 0 && blockParts.every((part) => isBlockIndex(part.blockIndex));
+}
 
 export interface MessageWithParts {
   info: MessageInfo;
@@ -808,7 +900,6 @@ export interface SharedContextImportTransition {
 
 export const SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION =
   "target_completion_verification" as const;
-export const SESSION_ENTRY_BASH_SHELL_SELECTION = "runtime/bash_shell_selection" as const;
 export const SESSION_ENTRY_MODEL_SELECTION = "runtime/model_selection" as const;
 export const SESSION_ENTRY_EXECUTION_STATE = "runtime/execution_state" as const;
 export const SESSION_ENTRY_USER_INPUT_AUTO_RESOLUTION =
@@ -818,16 +909,21 @@ export const SESSION_ENTRY_WORKSPACE_FILE_REWIND = "runtime/workspace_file_rewin
 /** 动态工作流工具面已在本会话激活（docs/dynamic-workflow/launch.md「On demand: activation」）。 */
 export const SESSION_ENTRY_DYNAMIC_WORKFLOW_ACTIVATION =
   "runtime/dynamic_workflow_activation" as const;
+/** 本会话用过的能力标签（docs/design/v2/model/session-features-header.md）。 */
+export const SESSION_ENTRY_SESSION_FEATURES = "runtime/session_features" as const;
+/** 主会话发出的 system 与它对应的模型；不含工具定义（docs/design/v2/loop/prompt-snapshot.md）。 */
+export const SESSION_ENTRY_PROMPT_SNAPSHOT = "runtime/prompt_snapshot" as const;
 
 export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
-  SESSION_ENTRY_BASH_SHELL_SELECTION,
   SESSION_ENTRY_MODEL_SELECTION,
   SESSION_ENTRY_EXECUTION_STATE,
   SESSION_ENTRY_USER_INPUT_AUTO_RESOLUTION,
   SESSION_ENTRY_WORKSPACE_CHECKPOINT,
   SESSION_ENTRY_WORKSPACE_FILE_REWIND,
   SESSION_ENTRY_DYNAMIC_WORKFLOW_ACTIVATION,
+  SESSION_ENTRY_SESSION_FEATURES,
+  SESSION_ENTRY_PROMPT_SNAPSHOT,
 ] as const;
 
 export type SessionEntryType = (typeof SESSION_ENTRY_TYPES)[number];
@@ -869,6 +965,7 @@ export interface SessionInputRecord {
   kind: string;
   delivery: SessionInputDelivery;
   payload: { text: string; [key: string]: unknown };
+  /** session 内从 0 开始单调分配；取消、晋升和同 ID 重入不重置。 */
   admittedSequence: number;
   promotedSequence?: number;
   promotedMessageID?: MessageId;
@@ -1082,7 +1179,6 @@ export interface UsageStorePort {
   recordModelUsage(input: ModelUsageRecord): Promise<void>;
   upsertTurnUsage(input: TurnUsageRecord): Promise<void>;
   upsertToolUsage(input: ToolUsageRecord): Promise<void>;
-  pruneUsage(input?: { beforeTime?: number }): Promise<void>;
   queryAppUsage(input: AppUsageQueryInput): Promise<AppUsageQueryResult>;
   queryTaskUsage(input: TaskUsageQueryInput): Promise<TaskUsageQueryResult>;
 }
@@ -1097,7 +1193,53 @@ export interface LocalSettingStorePort {
   }): CollaborationMode | Promise<CollaborationMode>;
 }
 
+/** 永久删除只保留身份与附件引用元数据，不备份会话正文。 */
+export interface SessionDeletionReference {
+  sessionId: SessionId;
+  artifactId: string;
+  referrers: Array<{ sessionId: SessionId; title: string }>;
+}
+export interface SessionDeletionSnapshot {
+  workspacePath?: string;
+  workspaceIdentity?: string;
+  revision: string;
+  sessionIds: SessionId[];
+  forks: Array<{ sessionId: SessionId; title: string }>;
+  references: SessionDeletionReference[];
+  foreignRuntime: boolean;
+  localRuntimeIds: SessionId[];
+  pendingWork: boolean;
+  deleting: boolean;
+  completed: boolean;
+}
+/**
+ * scanArtifactReferences=false：调用方已确认 owned tree 没有 artifact 文件，跳过引用扫描
+ * （删除凭据仍有保留附件时照样扫描）。缺省为 true。预检、执行与写锁内复检必须传同一判定。
+ */
+export interface SessionDeletionInspectOptions {
+  scanArtifactReferences?: boolean;
+}
+
 export interface SessionStorePort {
+  inspectSessionDeletion?(
+    sessionID: SessionId,
+    options?: SessionDeletionInspectOptions,
+  ): Promise<SessionDeletionSnapshot>;
+  /** 一批根共用一次扫描；结果按入参顺序，与逐个 inspectSessionDeletion 一致。 */
+  inspectSessionDeletions?(
+    targets: ReadonlyArray<{ sessionId: SessionId } & SessionDeletionInspectOptions>,
+  ): Promise<SessionDeletionSnapshot[]>;
+  beginSessionDeletion?(
+    sessionID: SessionId,
+    revision: string,
+    operationId: string,
+    retained: Array<{ sessionId: SessionId; artifactId: string }>,
+    options?: SessionDeletionInspectOptions,
+  ): Promise<void>;
+  completeSessionDeletion?(sessionID: SessionId): Promise<void>;
+  registerSessionRuntime?(sessionID: SessionId): Promise<void>;
+  unregisterSessionRuntime?(sessionID: SessionId): Promise<void>;
+  assertSessionNotDeleting?(sessionID: SessionId): Promise<void>;
   createSession(input: CreateSessionInput): Promise<SessionInfo>;
   /** legacy 兼容原语；V4 stable/compact-edit fork 禁止调用，统一走 commitForkBundle。 */
   createForkedSessionWithMetadata?(
@@ -1106,12 +1248,20 @@ export interface SessionStorePort {
   ): Promise<SessionInfo>;
   /** V4 stable/compact-edit fork 的唯一事务入口。legacy workspace fork 不调用。 */
   commitForkBundle?(bundle: ForkCommitBundle): Promise<SessionInfo>;
+  /** 在同一写事务内读取轻量快照、同步规划、批量复制并提交 fork。 */
+  commitForkFromSource?(input: ForkFromSourceInput): Promise<SessionInfo>;
   commitSharedContextImportBundle?(bundle: SharedContextImportCommitBundle): Promise<SessionInfo>;
+  /** 一组消息的唯一事务入口；未实现时调用方逐条写入。 */
+  commitMessageBundle?(bundle: MessageCommitBundle): Promise<void>;
   transitionSharedContextImport?(input: SharedContextImportTransition): Promise<boolean>;
   updateSession(input: UpdateSessionInput): Promise<SessionInfo>;
+  /** 只写一次删除时间；正文保留，普通列表永不返回软删除行。 */
   softDeleteSession?(sessionID: SessionId, timeDeleted?: number): Promise<void>;
+  /** 每个根会话 → 根自身与附属后代（subagent / workflow / 侧边问答，不含 fork）；根不存在为空数组。 */
   listOwnedSessionTrees?(sessionIDs: SessionId[]): Promise<Map<SessionId, SessionId[]>>;
+  /** 每个目标会话 → part 中仍引用其附件（`ccbuddy-artifact://<目标>/…`）的其他未删除会话；无引用的目标不出现。 */
   listArtifactReferrers?(sessionIDs: SessionId[]): Promise<Map<SessionId, SessionId[]>>;
+  /** 彻底删除会话及附属后代的全部行；只用于用户确认的「删除数据」，已不存在的会话是空操作。 */
   purgeSessions?(sessionIDs: SessionId[]): Promise<void>;
   getSession(sessionID: SessionId): Promise<SessionInfo | null>;
   listSessions(input?: ListSessionsInput): Promise<SessionInfo[]>;
@@ -1140,7 +1290,15 @@ export interface SessionStorePort {
     sessionID: SessionId;
     messageID: MessageId;
   }): Promise<MessageWithParts | null>;
-  messages(input: { sessionID: SessionId }): Promise<MessageWithParts[]>;
+  /**
+   * index 仅供索引快照派生：可清空 reasoning.text 和 tool 的 raw/output/error 正文。
+   * 数量、顺序、info、input、metadata 及其它字段保持完整，供待办、用量和状态计算。
+   * 缺省/full 保留全部内容；index 结果不能写回持久层或用于恢复模型上下文。
+   */
+  messages(input: {
+    sessionID: SessionId;
+    contentProfile?: "full" | "index";
+  }): Promise<MessageWithParts[]>;
   saveSessionEntry?(input: SessionEntryInfo): Promise<void>;
   sessionEntries?(input: {
     sessionID: SessionId;

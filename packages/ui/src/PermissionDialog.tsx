@@ -1,3 +1,8 @@
+import { modeTriggerColor } from "@/chat-input-toolbar/display-help.js";
+import { useYoloModeConfirmation } from "@/hooks/useConfirmDialog.js";
+import { useToolPresentationHostCapabilities } from "@/hooks/useToolPresentationHostCapabilities.js";
+import { ToolPresentationCapabilitiesProvider } from "@/ToolCallBlocks/presentationCapabilities.js";
+import { ToolCallBlock } from "@/ToolCallBlocks.js";
 /* eslint-disable max-lines */
 import {
   useCallback,
@@ -15,7 +20,19 @@ import {
   type CCbuddyPermissionRequest,
   type CCbuddyProvider,
 } from "@ccbuddy/shared";
-import { MAX_PERMISSION_FEEDBACK_CHARS } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import { resolveModeOptionIcon } from "@/chat-input-toolbar/display.js";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from "@/components/ui/dropdown-menu.js";
+import {
+  MAX_PERMISSION_FEEDBACK_CHARS,
+  PERMISSION_FULL_ACCESS_OPTION_ID,
+  PERMISSION_GUARDED_OPTION_ID,
+} from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/components/lib/utils.js";
 import { Textarea } from "@/components/ui/textarea.js";
@@ -42,6 +59,7 @@ import { ToolLayout } from "@/ToolCallBlocks/ToolLayout.js";
 import { EditToolCallBlock } from "@/ToolCallBlocks/renderers/edit.js";
 import { ExecuteToolCallBlock } from "@/ToolCallBlocks/renderers/execute.js";
 import { FallbackToolCallBlock } from "@/ToolCallBlocks/renderers/fallback.js";
+import { WebFetchToolCallBlock } from "@/ToolCallBlocks/renderers/web-fetch.js";
 import { SearchToolCallBlock } from "@/ToolCallBlocks/renderers/search.js";
 import { SkillToolCallBlock } from "@/ToolCallBlocks/renderers/skill.js";
 import { resolveToolCallIdentity } from "@/lib/toolIdentity.js";
@@ -58,7 +76,7 @@ import { isSaveWorkflowToolCall } from "@/lib/workflowToolNames.js";
 import { useCCbuddyStoreWithDefault } from "@/store/StoreProvider.js";
 import { DEFAULT_CODE_PREVIEW_SETTINGS } from "@/lib/codePreviewSettings.js";
 import { useCCbuddyIntl } from "./i18n/IntlProvider.js";
-import { Info, LoaderIcon, WrenchIcon } from "lucide-react";
+import { ChevronDownIcon, Info, LoaderCircle, WrenchIcon } from "lucide-react";
 
 const MCP_PERMISSION_TOOL_ICON = <WrenchIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
@@ -66,6 +84,7 @@ type PermissionBlockKind =
   | "edit"
   | "execute"
   | "mcp"
+  | "web-fetch"
   | "search"
   | "skill"
   | "workflow"
@@ -309,6 +328,7 @@ function resolvePermissionBlockKind(
     return "workflow";
   }
 
+  if (identity.family === "web-fetch") return "web-fetch";
   if (identity.family === "search") {
     // WebFetch/WebSearch 权限请求以前落到 fallback，会把整包 toolCall JSON 打出来。
     // 这里和聊天区一样走 search renderer，只展示用户关心的 URL/query 摘要。
@@ -331,6 +351,7 @@ function getPermissionBlockInteraction(blockKind: PermissionBlockKind): Permissi
       };
     case "mcp":
     case "skill":
+    case "web-fetch":
     case "search":
     case "execute":
     case "workflow":
@@ -374,6 +395,7 @@ function buildPermissionBlockContext(
   const { canToggle, forceOpen } = getPermissionBlockInteraction(blockKind);
 
   return {
+    nestedToolRenderer: ToolCallBlock,
     toolCallNode: {
       toolCall,
       childToolCalls: [],
@@ -439,6 +461,20 @@ function McpPermissionBlock(context: ToolCallBlockRenderContext) {
   );
 }
 
+/**
+ * 保存确认窗：聚焦滚动区里最后一个控件（区内只有展开钮与脚本开关）。区不在或没有控件即返回 false，
+ * 交回选项列表自己的循环。
+ */
+function focusLastSaveWorkflowControl(root: HTMLElement | null): boolean {
+  const controls = root?.querySelectorAll<HTMLElement>(
+    "[data-permission-dialog-scroll] button:not([disabled])",
+  );
+  const last = controls === undefined ? undefined : controls[controls.length - 1];
+  if (last === undefined) return false;
+  last.focus();
+  return true;
+}
+
 export function PermissionDialog({
   request,
   onRespond,
@@ -449,9 +485,15 @@ export function PermissionDialog({
   provider,
   responding = false,
   responseError,
+  permissionMode,
+  committedMode,
+  modeSwitch,
 }: {
   request: CCbuddyPermissionRequest;
   responding?: boolean;
+  permissionMode?: string;
+  committedMode?: "guarded" | "yolo";
+  modeSwitch?: "choose" | "fullAccessOnly";
   responseError?: string;
   /**
    * `content` 只在工作流确认窗的放行应答上出现：用户在窗里改过的设置（docs/dynamic-workflow/launch.md
@@ -471,6 +513,36 @@ export function PermissionDialog({
   provider?: CCbuddyProvider;
 }) {
   const { intl } = useCCbuddyIntl();
+  const [pickedMode, setPickedMode] = useState<"guarded" | "yolo">("guarded");
+  const canPickMode =
+    !committedMode &&
+    modeSwitch === "choose" &&
+    permissionMode !== "guarded" &&
+    permissionMode !== "yolo";
+  const targetMode = committedMode ?? (canPickMode ? pickedMode : "yolo");
+  const modeLabel = (mode: "guarded" | "yolo") =>
+    intl.formatMessage({
+      id: mode === "guarded" ? "mode.label.glm.guarded" : "mode.label.glm.yolo",
+    });
+  const switchLabel = (mode: string) =>
+    intl.formatMessage({ id: "chat.permission.allowAndSwitch" }, { mode });
+  // 可选模式是独立控件；固定模式在完整句子的占位位置显示带颜色的徽标。
+  const [switchBeforeMode, switchAfterMode] = intl
+    .formatMessage({ id: "chat.permission.allowAndSwitch" })
+    .split("{mode}");
+  const TargetIcon = resolveModeOptionIcon(targetMode);
+  const confirmMode = useYoloModeConfirmation(
+    JSON.stringify([
+      workspacePath,
+      workspaceIdentity,
+      remoteSessionId,
+      request.taskId,
+      request.requestId,
+      responding,
+    ]),
+    modeSwitch === "fullAccessOnly" ? "guarded" : permissionMode,
+  );
+  const presentationCapabilities = useToolPresentationHostCapabilities(workspacePath);
   const isMobileTextInputViewport = useIsMobileTextInputViewport();
   // 与 composer 复用同一套视口判断和 16px 兼容 token，桌面视口保持原有字号。
   const avoidIosInputFocusZoom = shouldAvoidIosInputFocusZoom({
@@ -560,6 +632,7 @@ export function PermissionDialog({
 
   useEffect(() => {
     setSelectedIndex(0);
+    setPickedMode("guarded");
     // 草稿按 requestId 归零，避免一个请求的反馈（或工作流修改意见）泄漏进下一个确认窗。
     setFeedback("");
   }, [request.requestId]);
@@ -614,13 +687,20 @@ export function PermissionDialog({
         workflowSettingsContent !== undefined && isWorkflowSettingsCarrier(option)
           ? { ...workflowSettingsContent }
           : undefined;
-      if (content === undefined) {
-        onRespond(request.requestId, option, trimmedFeedback || undefined);
-      } else {
-        onRespond(request.requestId, option, trimmedFeedback || undefined, content);
-      }
+      const switchMode = option.optionId === PERMISSION_FULL_ACCESS_OPTION_ID;
+      if (switchMode && targetMode === "guarded")
+        option = { ...option, optionId: PERMISSION_GUARDED_OPTION_ID };
+      confirmMode(switchMode ? targetMode : "unchanged", () => {
+        if (content === undefined) {
+          onRespond(request.requestId, option, trimmedFeedback || undefined);
+        } else {
+          onRespond(request.requestId, option, trimmedFeedback || undefined, content);
+        }
+      });
     },
     [
+      confirmMode,
+      targetMode,
       feedback,
       isOptionBlocked,
       onRespond,
@@ -710,6 +790,16 @@ export function PermissionDialog({
           moveSelection(1);
           return;
         case "Tab":
+          if (!event.shiftKey && event.currentTarget.dataset.testid === "permission-allow-switch") {
+            const picker = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(
+              '[data-testid="permission-target-picker"]',
+            );
+            if (picker) {
+              event.preventDefault();
+              picker.focus();
+              return;
+            }
+          }
           // 长命令新增了阅读按钮，旧的选项循环会困住焦点；第一项反向 Tab 交还浏览器，
           // 按 DOM 顺序进入上方命令按钮，其正向 Tab 自然回到当前第一项，不触发授权。
           if (
@@ -730,6 +820,18 @@ export function PermissionDialog({
             event.preventDefault();
             return;
           }
+          // 保存确认窗同理：第一个选项上的 Shift+Tab 回到上方滚动区的最后一个控件，正向 Tab 再按 DOM
+          // 次序走回当前选项。Bugfix：这里原先没有出口，选项循环困住焦点，折叠起来的说明、参数与脚本
+          // 只能用鼠标展开。
+          if (
+            event.shiftKey &&
+            optionRefs.current.indexOf(event.currentTarget) === 0 &&
+            blockKind === "saveWorkflow" &&
+            focusLastSaveWorkflowControl(rootRef.current)
+          ) {
+            event.preventDefault();
+            return;
+          }
           event.preventDefault();
           moveSelection(event.shiftKey ? -1 : 1);
           return;
@@ -742,6 +844,7 @@ export function PermissionDialog({
       }
     },
     [
+      blockKind,
       confirmSelection,
       feedbackIndex,
       hasFeedbackInput,
@@ -759,11 +862,13 @@ export function PermissionDialog({
         ? McpPermissionBlock
         : blockKind === "skill"
           ? SkillToolCallBlock
-          : blockKind === "search"
-            ? SearchToolCallBlock
-            : blockKind === "execute"
-              ? ExecuteToolCallBlock
-              : FallbackToolCallBlock;
+          : blockKind === "web-fetch"
+            ? WebFetchToolCallBlock
+            : blockKind === "search"
+              ? SearchToolCallBlock
+              : blockKind === "execute"
+                ? ExecuteToolCallBlock
+                : FallbackToolCallBlock;
   // 当前 CCbuddy Agent 的 ExitPlanMode 权限请求不再传 legacy switch_mode。
   // 这里复用 tool identity，避免审批弹窗和聊天区的计划模式工具分流再次漂移。
   const shouldUseSwitchModePlaceholder = resolveToolCallIdentity(toolCall).family === "switch-mode";
@@ -771,11 +876,40 @@ export function PermissionDialog({
   const shouldUseWorkflowBlock = isWorkflowAsk;
   // 保存确认窗同理，但问句、内容与选项都不同：没有图、没有 Refine，主体是落点 + 元数据 + 脚本。
   const shouldUseSaveWorkflowBlock = blockKind === "saveWorkflow";
+  // 限高布局目前只给保存确认窗（docs/dynamic-workflow/launch.md「`SaveWorkflow`」第 4 步）：窗口上限与
+  // 问答窗（ElicitationDialog）相同；选项以上全部内容是**唯一**的纵向滚动区，选项、反馈行与确认
+  // 隔一条细线钉在下面。滚动区用负外边距铺满窗宽，滚动条贴窗口边缘、细线横贯整窗。
+  // Bugfix：上一版问句钉顶、中段滚动、段内三块各自滚动、窗口再兜底滚动，最多五层滚动容器叠在
+  // 一起，一次滚轮手势的去向取决于指针恰好在哪个框上；块内的长内容改为折叠后，这里只剩一层。
+  // 钉底只在屏幕够高（≥36rem）时成立：选项、最多 5 行的反馈、错误行与确认栏本身就有约 320px，
+  // 矮屏（如横屏手机）上它们会高过上限、被窗口裁掉，确认按钮跟着消失。所以基础布局是整窗一个
+  // 滚动区（选项随内容滚动），够高才切到「选项以上滚、选项钉底」；两种高度下都只有一个滚动容器。
+  const bounded = shouldUseSaveWorkflowBlock;
   return (
     <div ref={rootRef} className="w-full shrink-0 relative z-1">
-      <div className="w-full overflow-hidden rounded-2xl border border-border bg-popover shadow-xs">
-        <div className="flex flex-col gap-3 p-3">
-          <div className="space-y-4">
+      <div
+        className={cn(
+          "w-full rounded-2xl border border-border bg-popover shadow-xs",
+          bounded
+            ? "max-h-[min(72dvh,42rem)] overflow-y-auto overscroll-contain [@media(min-height:36rem)]:flex [@media(min-height:36rem)]:flex-col [@media(min-height:36rem)]:overflow-hidden"
+            : "overflow-hidden",
+        )}
+        {...(bounded ? { "data-permission-dialog-bounded": "true" } : {})}
+      >
+        <div
+          className={cn(
+            "flex flex-col gap-3 p-3",
+            bounded && "[@media(min-height:36rem)]:min-h-0 [@media(min-height:36rem)]:flex-1",
+          )}
+        >
+          <div
+            className={cn(
+              "space-y-4",
+              bounded &&
+                "-mx-3 -mt-3 border-b border-border p-3 [@media(min-height:36rem)]:min-h-0 [@media(min-height:36rem)]:overflow-y-auto [@media(min-height:36rem)]:overscroll-contain",
+            )}
+            {...(bounded ? { "data-permission-dialog-scroll": "true" } : {})}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-ui-base font-medium leading-tight text-foreground-subtle">
                 {intl.formatMessage({ id: "chat.permission.title" })}
@@ -790,7 +924,7 @@ export function PermissionDialog({
             ) : null}
             {shouldUseSwitchModePlaceholder ? (
               <div className="flex items-center gap-2 text-ui-base text-foreground">
-                <LoaderIcon className="size-4 shrink-0 animate-spin text-foreground-subtle" />
+                <LoaderCircle className="size-4 shrink-0 animate-spin text-foreground-subtle" />
                 <span className="animated-gradient-text font-medium">
                   {intl.formatMessage({
                     id: "chat.permission.switchMode.placeholder",
@@ -816,12 +950,15 @@ export function PermissionDialog({
               // 同上：保存 gate 的问句（保存 / 覆盖两句）由块自己给出，不复用协议 reason。
               <SaveWorkflowPermissionBlock request={request} />
             ) : (
-              <PermissionBlock {...blockContext} />
+              // 审批直接使用 renderer，绕过 ToolCallBlock 时也必须提供宿主展示能力。
+              <ToolPresentationCapabilitiesProvider value={presentationCapabilities}>
+                <PermissionBlock {...blockContext} />
+              </ToolPresentationCapabilitiesProvider>
             )}
           </div>
 
           {/* 反馈行曾被外层 gap-3 隔开；用同一 4px 视觉分组，保留 listbox 的权限选项边界。 */}
-          <div className="space-y-1">
+          <div className="shrink-0 space-y-1">
             <div
               role="listbox"
               aria-label={intl.formatMessage({ id: "chat.permission.title" })}
@@ -874,9 +1011,22 @@ export function PermissionDialog({
                     ? readPermissionRuleScopes(option)
                     : [];
 
-                return (
+                const switchRow =
+                  modeSwitch !== undefined && option.optionId === PERMISSION_FULL_ACCESS_OPTION_ID;
+                const indexLabel = (
+                  <span
+                    className={cn(
+                      "w-5 shrink-0 text-ui-base font-medium self-center",
+                      isSelected ? "text-foreground" : "text-foreground-subtlest",
+                    )}
+                  >
+                    {index + 1}.
+                  </span>
+                );
+                const button = (
                   <button
                     key={option.optionId}
+                    data-testid={switchRow ? "permission-allow-switch" : undefined}
                     // exact rule 按产品语义不展示后，E2E 不能再靠可见规则文本猜 option；
                     // 暴露规范化语义供无障碍自动化稳定选择，不泄露原始命令内容。
                     data-permission-option-kind={getPermissionOptionDisplayKind(option.kind)}
@@ -885,12 +1035,12 @@ export function PermissionDialog({
                     }}
                     type="button"
                     role="option"
-                    aria-label={label}
+                    aria-label={switchRow ? switchLabel(modeLabel(targetMode)) : label}
                     aria-selected={isSelected}
                     {...(blocked ? { "aria-disabled": true } : {})}
                     tabIndex={isSelected ? 0 : -1}
                     onClick={() => {
-                      if (isSelected) {
+                      if (isSelected || switchRow) {
                         respondWithOption(option);
                       } else {
                         setSelectedIndex(index);
@@ -899,32 +1049,139 @@ export function PermissionDialog({
                     onFocus={() => setSelectedIndex(index)}
                     onKeyDown={handleOptionKeyDown}
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left outline-none transition-colors focus-visible:bg-selected",
-                      isSelected ? "bg-selected" : "hover:bg-hover",
-                      blocked && "cursor-not-allowed opacity-50",
+                      switchRow
+                        ? "inline-flex items-center gap-1 text-left text-ui-base font-medium text-foreground outline-none after:absolute after:inset-0 after:rounded-xl"
+                        : "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left outline-none transition-colors focus-visible:bg-selected",
+                      !switchRow && (isSelected ? "bg-selected" : "hover:bg-hover"),
+                      blocked && "cursor-not-allowed",
+                      blocked && !switchRow && "opacity-50",
                     )}
                   >
-                    <span
-                      className={cn(
-                        "w-5 shrink-0 text-ui-base font-medium self-center",
-                        isSelected ? "text-foreground" : "text-foreground-subtlest",
-                      )}
-                    >
-                      {index + 1}.
-                    </span>
-                    <span className="min-w-0 flex flex-1 flex-col">
-                      <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-                        <span className="text-ui-base font-medium text-foreground">{label}</span>
-                        {ruleScopes.length > 0 ? (
-                          <InlinePermissionPrefixScopes scopes={ruleScopes} />
-                        ) : description ? (
-                          <span className="text-ui-base leading-4 text-foreground-subtle">
-                            {description}
+                    {switchRow ? (
+                      canPickMode ? (
+                        intl.formatMessage({ id: "chat.permission.switchAction" })
+                      ) : (
+                        <>
+                          {switchBeforeMode}
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1",
+                              modeTriggerColor(targetMode),
+                            )}
+                          >
+                            <TargetIcon className="size-4" />
+                            {modeLabel(targetMode)}
                           </span>
-                        ) : null}
+                          {switchAfterMode}
+                        </>
+                      )
+                    ) : (
+                      <>
+                        {indexLabel}
+                        <span className="min-w-0 flex flex-1 flex-col">
+                          <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+                            <span className="inline-flex items-center gap-1 text-ui-base font-medium text-foreground">
+                              {label}
+                            </span>
+                            {ruleScopes.length > 0 ? (
+                              <InlinePermissionPrefixScopes scopes={ruleScopes} />
+                            ) : description ? (
+                              <span className="text-ui-base leading-4 text-foreground-subtle">
+                                {description}
+                              </span>
+                            ) : null}
+                          </span>
+                        </span>
+                      </>
+                    )}
+                  </button>
+                );
+                if (!switchRow) return button;
+                // Bugfix: 模式菜单是独立按钮，不能嵌进提交按钮。旧实现的提交 button 只包住「3. 允许，并切换为」，
+                // 外层 div 和它各画一层 bg-selected，叠出一块更亮的胶囊，hover 也只亮半行；说明另起一行。
+                // 现在背景只由外层画，提交按钮用 after 覆盖整行作为点击区，菜单抬到覆盖层之上；
+                // 序号、文案和说明沿用其他选项的两列布局，窄屏换行时说明与文案左对齐。
+                return (
+                  <div
+                    key={option.optionId}
+                    className={cn(
+                      "relative flex w-full items-center gap-3 rounded-xl px-3 py-2 transition-colors",
+                      isSelected ? "bg-selected" : "hover:bg-hover",
+                      blocked && "opacity-50",
+                    )}
+                  >
+                    {indexLabel}
+                    <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="inline-flex items-center gap-1">
+                        {button}
+                        {canPickMode && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                disabled={responding}
+                                data-testid="permission-target-picker"
+                                data-mode={targetMode}
+                                aria-label={intl.formatMessage({ id: "chat.toolbar.mode.label" })}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Tab") {
+                                    event.preventDefault();
+                                    optionRefs.current[event.shiftKey ? index : index + 1]?.focus();
+                                  }
+                                }}
+                                className={cn(
+                                  "relative z-1 h-7 gap-1 rounded-lg px-2 text-ui-base",
+                                  modeTriggerColor(targetMode),
+                                )}
+                              >
+                                <TargetIcon className="size-4" />
+                                {modeLabel(targetMode)}
+                                <ChevronDownIcon className="size-3.5" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent side="top" align="start">
+                              <DropdownMenuRadioGroup
+                                value={targetMode}
+                                onValueChange={(value) => {
+                                  if (value === "guarded" || value === "yolo") {
+                                    setPickedMode(value);
+                                    // 菜单只选目标；底部确认键应提交本行，而不是先前高亮的允许一次。
+                                    setSelectedIndex(index);
+                                  }
+                                }}
+                              >
+                                {(["guarded", "yolo"] as const).map((mode) => {
+                                  const Icon = resolveModeOptionIcon(mode);
+                                  return (
+                                    <DropdownMenuRadioItem
+                                      key={mode}
+                                      value={mode}
+                                      data-testid={`permission-target-${mode}`}
+                                    >
+                                      <span
+                                        className={cn(
+                                          "inline-flex items-center gap-1",
+                                          modeTriggerColor(mode),
+                                        )}
+                                      >
+                                        <Icon className="size-4" />
+                                        {modeLabel(mode)}
+                                      </span>
+                                    </DropdownMenuRadioItem>
+                                  );
+                                })}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </span>
+                      <span className="text-ui-base leading-4 text-foreground-subtle">
+                        {intl.formatMessage({ id: "chat.permission.switchProjectHint" })}
                       </span>
                     </span>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -997,11 +1254,11 @@ export function PermissionDialog({
           </div>
 
           {responseError ? (
-            <p role="alert" className="text-ui-base text-destructive">
+            <p role="alert" className="shrink-0 text-ui-base text-destructive">
               {responseError}
             </p>
           ) : null}
-          <div className="flex items-center justify-between gap-2 px-1">
+          <div className="flex shrink-0 items-center justify-between gap-2 px-1">
             <p className="flex gap-2 text-ui-base items-center text-foreground-subtle">
               <Info className="text-foreground size-4 shrink-0" />
               {intl.formatMessage({ id: "chat.permission.keyboardHint" })}

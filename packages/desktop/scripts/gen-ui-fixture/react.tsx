@@ -1,9 +1,6 @@
 import { createRoot } from "react-dom/client";
-import { ConfirmDialogHost } from "../../../ui/src/ConfirmDialog.js";
-import { ProjectSidebar } from "../../../ui/src/ProjectSidebar.js";
 import { flushSync } from "react-dom";
-import { ToolSearchModeSetting } from "../../../ui/src/settings/ToolSearchModeSetting.js";
-import type { AppToolSearchMode } from "@ccbuddy/shared";
+import { FileSummaryFixture } from "./file-summary.js";
 import { GenUiMessageResponse } from "../../../ui/src/gen-ui/components/GenUiMessageResponse.js";
 import { ServiceProvider } from "../../../ui/src/hooks/useServices.js";
 import { PlatformProvider } from "../../../ui/src/hooks/usePlatform.js";
@@ -14,12 +11,17 @@ import { registerPluginUiSessionActions } from "../../../ui/src/plugin-ui/hostPr
 import type { IServiceAccessor } from "@ccbuddy/services";
 import type { GenUiStateChange } from "@ccbuddy/shared/gen-ui";
 import type { PluginSandboxPortsEvent } from "@ccbuddy/shared/mcp-apps";
+import { buildRemoteWorkspaceSessionServicesForRegistration } from "@desktop/renderer/src/remoteWorkspaceSessionServices.js";
 const harness = (window as any).harness;
 const ports = new Set<(event: PluginSandboxPortsEvent) => void>();
 const states = new Set<(event: GenUiStateChange) => void>();
 let reads = 0,
   preparations = 0;
 const messages: unknown[] = [];
+const opened: string[] = [];
+let gestureGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+let gesturePending = false;
+let rejectOpen = false;
 const taskListeners = new Set<(event: unknown) => void>();
 let activeSession = "fixture";
 let documentGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
@@ -37,7 +39,7 @@ window.addEventListener("message", (event) => {
     for (const handler of states) handler(event.data.payload);
 });
 void (async () => {
-  const config = await harness.config();
+  const config = await harness.config(true);
   const target = {
     workspacePath: config.root,
     workspaceIdentity: "ssh:fixture:/workspace",
@@ -56,8 +58,6 @@ void (async () => {
             return { dispose: () => states.delete(handler) };
           };
         return (input: unknown) => {
-          if (method === "readDocument")
-            throw new Error("Remote file incorrectly read from desktop");
           if (method === "prepareSandbox") preparations++;
           return harness.bridge(method, input);
         };
@@ -66,10 +66,6 @@ void (async () => {
   );
   const base = {
     genUiService: service,
-    projectService: new Proxy(
-      {},
-      { get: (_, method) => (input: unknown) => harness.project(method, input) },
-    ),
     ccbuddyTaskService: {
       onDynamicWorkspaceEvent: () => (listener: (event: unknown) => void) => {
         taskListeners.add(listener);
@@ -77,15 +73,28 @@ void (async () => {
       },
     },
   } as unknown as IServiceAccessor;
-  const remote = {
+  const remoteServices = {
+    fileService: {
+      async checkFilesExist({ paths }: { paths: string[] }) {
+        return paths.map((path) => ({ path, exists: true }));
+      },
+    },
     genUiService: {
       async readDocument(input: unknown) {
         reads++;
         await documentGate?.promise;
-        return harness.bridge("readDocument", input);
+        return harness.remoteRead(input);
       },
     },
   } as unknown as IServiceAccessor;
+  const remote = buildRemoteWorkspaceSessionServicesForRegistration({
+    baseServices: base,
+    remoteServices,
+    targetKind: "ssh",
+    sourceServerId: new URLSearchParams(location.search).has("source")
+      ? "fixture-source"
+      : undefined,
+  });
   useRemoteWorkspaceSessionStore.setState({
     baseServices: base,
     sessionsById: { "remote-1": { sessionId: "remote-1", services: remote } },
@@ -97,12 +106,22 @@ void (async () => {
     },
   });
   const platform = {
+    openExternal(url: string) {
+      if (rejectOpen) throw new Error("Fixture opener failed");
+      opened.push(url);
+    },
     pluginSandbox: {
       supportsRetainedMove: window.ccbuddyPluginSandbox?.supportsRetainedMove,
       copyImage: (request) => window.ccbuddyPluginSandbox!.copyImage!(request),
       getOwnerWebContentsId: () => harness.owner(),
       disposeSandbox: (id: string, init: number) => harness.dispose(id, init),
-      consumeUserGesture: () => harness.gesture(),
+      async consumeUserGesture(sandboxId: string) {
+        const allowed = await window.ccbuddyPluginSandbox!.consumeUserGesture(sandboxId);
+        gesturePending = true;
+        await gestureGate?.promise;
+        gesturePending = false;
+        return allowed;
+      },
       onPorts(handler: (event: PluginSandboxPortsEvent) => void) {
         ports.add(handler);
         return () => {
@@ -112,29 +131,18 @@ void (async () => {
     },
   };
   const reactRoot = createRoot(document.getElementById("root")!);
-  let toolSearchMode: AppToolSearchMode = "off";
-  const showToolSearchSetting = () =>
-    flushSync(() =>
-      reactRoot.render(
-        <CCbuddyIntlProvider initialLocale="en-US">
-          <ToolSearchModeSetting
-            value={toolSearchMode}
-            onChange={async (mode) => {
-              toolSearchMode = mode;
-              showToolSearchSetting();
-            }}
-          />
-        </CCbuddyIntlProvider>,
-      ),
-    );
+  const mobilePlatform = { ...platform, pluginSandbox: undefined };
+  let mobile = false;
   // 回归真实模型输出：从正文解析进入卡片，直接挂 GenUiCard 无法发现 directive 未识别。
   let mode: "normal" | "wide" = "wide";
+  let summaryMode: "only" | "mixed" | "ordinary" | null = null;
+  let compact = false;
   const renderReply = (phase: "streaming" | "complete" | "hidden") =>
     reactRoot.render(
       <CCbuddyIntlProvider initialLocale="en-US">
         <TabStoreProvider>
           <ServiceProvider services={remote}>
-            <PlatformProvider platform={platform as never}>
+            <PlatformProvider platform={(mobile ? mobilePlatform : platform) as never}>
               <div id="gen-ui-scroll" style={{ height: 650, overflow: "auto" }}>
                 <div className="w-full" style={{ padding: 5 }} data-conversation-selectable="true">
                   {phase !== "hidden" && (
@@ -150,6 +158,15 @@ void (async () => {
                       {`Before view\n\n::visualize${JSON.stringify({ path: config.paths[activeSession], title: viewTitle, ...(mode === "wide" ? { mode } : {}) })}\n\nAfter view`}
                     </GenUiMessageResponse>
                   )}
+                  {summaryMode && (
+                    <FileSummaryFixture
+                      key={summaryMode}
+                      path={config.path}
+                      root={config.root}
+                      mode={summaryMode}
+                      compact={compact}
+                    />
+                  )}
                   <div style={{ height: 1000 }} />
                 </div>
               </div>
@@ -159,77 +176,11 @@ void (async () => {
       </CCbuddyIntlProvider>,
     );
   flushSync(() => renderReply("streaming"));
-  let projectTask: unknown = null;
-  let remoteBindingGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
-  let remoteBindingCalls = 0;
-  const remoteProjectConfig = await harness.remoteProject("config");
-  const showRemoteProjectManager = (legacy = false) => {
-    projectTask = null;
-    remoteBindingCalls = 0;
-    remoteBindingGate = Promise.withResolvers<void>();
-    const projectServices = {
-      projectService: new Proxy(
-        {},
-        { get: (_, method) => (input: unknown) => harness.remoteProject(method, input, legacy) },
-      ),
-      ccbuddyTaskService: base.ccbuddyTaskService,
-    } as IServiceAccessor;
-    useRemoteWorkspaceSessionStore
-      .getState()
-      .registerSession({ sessionId: "project-remote", services: projectServices });
-    useRemoteWorkspaceSessionStore.getState().unbindWorkspaceIdentity(remoteProjectConfig.identity);
-    flushSync(() =>
-      reactRoot.render(
-        <CCbuddyIntlProvider initialLocale="en-US">
-          <ServiceProvider services={base}>
-            <ProjectSidebar
-              key={legacy ? "legacy-remote" : "current-remote"}
-              remoteSessionId="project-remote"
-              onSelectRemoteProject={async () => {
-                remoteBindingCalls++;
-                await remoteBindingGate?.promise;
-                useRemoteWorkspaceSessionStore
-                  .getState()
-                  .bindWorkspaceIdentity(remoteProjectConfig.identity, "project-remote");
-              }}
-              onSelectTask={() => {}}
-              onCreateTask={(request) => {
-                projectTask = request;
-              }}
-            />
-            <ConfirmDialogHost />
-          </ServiceProvider>
-        </CCbuddyIntlProvider>,
-      ),
-    );
-  };
   Object.assign(window, {
-    showRemoteProjectManager,
-    inspectRemoteProject: () => ({
-      ...remoteProjectConfig,
-      bindingCalls: remoteBindingCalls,
-      task: projectTask,
-    }),
-    releaseRemoteBinding: () => remoteBindingGate?.resolve(),
-    showProjectManager: () =>
-      flushSync(() =>
-        reactRoot.render(
-          <CCbuddyIntlProvider initialLocale="en-US">
-            <ServiceProvider services={base}>
-              <ProjectSidebar
-                onSelectTask={() => {}}
-                onCreateTask={(request) => {
-                  projectTask = request;
-                }}
-              />
-              <ConfirmDialogHost />
-            </ServiceProvider>
-          </CCbuddyIntlProvider>,
-        ),
-      ),
-    inspectProjectTask: () => projectTask,
-    showToolSearchSetting,
-    inspectToolSearchSetting: () => toolSearchMode,
+    showMobile: () => {
+      mobile = true;
+      flushSync(() => renderReply("complete"));
+    },
     holdDocument: () => {
       documentGate = Promise.withResolvers<void>();
     },
@@ -240,6 +191,21 @@ void (async () => {
     setViewTitle: (value: string) => {
       viewTitle = value;
       flushSync(() => renderReply("complete"));
+    },
+    showFileSummary: (value: typeof summaryMode, mobile = false) => {
+      summaryMode = value;
+      compact = mobile;
+      flushSync(() => renderReply("complete"));
+    },
+    holdGesture: () => {
+      gestureGate = Promise.withResolvers<void>();
+    },
+    releaseGesture: () => {
+      gestureGate?.resolve();
+      gestureGate = undefined;
+    },
+    rejectExternalOpen: (value: boolean) => {
+      rejectOpen = value;
     },
     setInlineMode: (value: "normal" | "wide") => {
       mode = value;
@@ -257,16 +223,14 @@ void (async () => {
     },
     deleteTask: (session: string) => {
       for (const listener of taskListeners)
-        listener({
-          type: "workspace_task_list_changed",
-          reason: "task_deleted",
-          taskId: session,
-        });
+        listener({ type: "workspace_task_list_changed", reason: "task_deleted", taskId: session });
     },
     inspectReact: () => ({
       reads,
       preparations,
       messages,
+      opened,
+      gesturePending,
       ports: ports.size,
       states: states.size,
       tasks: taskListeners.size,

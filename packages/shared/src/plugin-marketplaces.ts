@@ -16,12 +16,21 @@ export const CCBUDDY_OFFICIAL_PLUGIN_MARKETPLACE_ID = "ccbuddy-plugins-official"
 export const CLAUDE_OFFICIAL_PLUGIN_MARKETPLACE_ID = "claude-plugins-official";
 
 /** Settings 三类资源发现共用；Bootstrap 单测与官方 definition 的 defaultEnabled 机械对照。 */
-// 内置默认启用集合与 CLI/SEA 实际随包发布清单一致，不为已移除的上游插件声明默认状态。
+// 内置默认启用集合与 CLI/SEA 实际随包发布清单一致。
 export const DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS: ReadonlySet<string> = new Set([
   "browser-use@ccbuddy-plugins-official",
+  "documents@ccbuddy-plugins-official",
+  "pdf@ccbuddy-plugins-official",
+  "presentations@ccbuddy-plugins-official",
+  "spreadsheets@ccbuddy-plugins-official",
   // node_repl 宿主无商店 listing，默认启用保证 Browser Use 有可执行宿主。
   "node-repl-host@ccbuddy-plugins-official",
-  "visualize@ccbuddy-plugins-official",
+  "skill-creator@ccbuddy-plugins-official",
+  "plugin-creator@ccbuddy-plugins-official",
+  "ccbuddy-guide@ccbuddy-plugins-official",
+  // 电脑控制和交互视图默认关闭，故 computer-use、visualize 不在此名单内。
+  // 该集合必须与 official-plugin-definitions.ts 里标了 defaultEnabled 的插件逐一对应，
+  // bootstrap 的「Settings 默认启用集合与 CLI 的官方插件声明一致」单测机械对照两者。
 ]);
 
 export const DEFAULT_PLUGIN_MARKETPLACES: DefaultPluginMarketplace[] = [

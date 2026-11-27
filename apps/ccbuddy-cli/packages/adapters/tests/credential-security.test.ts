@@ -1,0 +1,798 @@
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  createSystemCredentialCipher,
+  createServerCredentialCipher,
+  createLegacyServerCredentialCipher,
+  prepareServerCredentialStorage,
+  createLegacyCredentialCipher,
+  migrateCredentialRecord,
+} from "@ccbuddy/shared/credential-security";
+import { createSharedCCbuddyCredentialStore } from "../src/auth/shared-credentials.js";
+
+const dirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+async function setup() {
+  const dir = await mkdtemp(join(tmpdir(), "ccbuddy-secure-credentials-"));
+  dirs.push(dir);
+  const file = join(dir, "credentials.json");
+  let saved: string | null = null;
+  let writes = 0;
+  const keyStore = {
+    get: async () => saved,
+    set: async (key: string) => {
+      writes++;
+      saved = key;
+    },
+  };
+  return {
+    file,
+    keyStore,
+    writes: () => writes,
+    forget: () => {
+      saved = null;
+    },
+  };
+}
+
+describe("system credential security", () => {
+  it.each([false, true])(
+    "preserves the historical file key throughout legacy owner handoff (explicit=%s)",
+    async (explicit) => {
+      const fixture = await setup();
+      const secret = " historical-file-secret-0123456789 \n";
+      const path = explicit ? fixture.file + ".key" : join(fixture.file, "..", "credential-secret");
+      await writeFile(path, secret, { mode: 0o600 });
+      const old = createLegacyCredentialCipher({ CCBUDDY_CREDENTIAL_SECRET: secret });
+      await writeFile(fixture.file, JSON.stringify({ token: old.encrypt("old-file-identity") }));
+      const env = explicit ? { CCBUDDY_CREDENTIAL_SECRET_FILE: path } : {};
+      const cipher = await createLegacyServerCredentialCipher({ filePath: fixture.file, env });
+      const candidate = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher });
+      expect(await candidate.load("token")).toBe("old-file-identity");
+      await candidate.save("token", "still-readable-by-old-owner");
+      expect(old.decrypt(JSON.parse(await readFile(fixture.file, "utf8")).token)).toBe(
+        "still-readable-by-old-owner",
+      );
+      const current = createSharedCCbuddyCredentialStore({
+        filePath: fixture.file,
+        cipher: await createServerCredentialCipher({ filePath: fixture.file, env }),
+      });
+      expect(await current.load("token")).toBe("still-readable-by-old-owner");
+      expect(JSON.parse(await readFile(fixture.file, "utf8")).token).toMatch(/^enc:v2:env:/);
+      await expect(
+        createLegacyServerCredentialCipher({
+          filePath: fixture.file,
+          env: { CCBUDDY_CREDENTIAL_SECRET: secret, CCBUDDY_CREDENTIAL_SECRET_FILE: path },
+        }),
+      ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+    },
+  );
+  it("keeps a candidate Core readable by its legacy Supervisor until the runtime handoff", async () => {
+    const fixture = await setup();
+    const options = { filePath: fixture.file, env: {} };
+    const legacy = createLegacyCredentialCipher({});
+    await writeFile(fixture.file, JSON.stringify({ token: legacy.encrypt("before-update") }));
+    await prepareServerCredentialStorage(options);
+    const cipher = await createLegacyServerCredentialCipher(options);
+    const candidate = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher });
+    expect(await candidate.load("token")).toBe("before-update");
+    await candidate.save("token", "candidate-update");
+    expect(legacy.decrypt(JSON.parse(await readFile(fixture.file, "utf8")).token)).toBe(
+      "candidate-update",
+    );
+    const modern = createSharedCCbuddyCredentialStore({
+      filePath: fixture.file,
+      cipher: await createServerCredentialCipher(options),
+    });
+    expect(await modern.load("token")).toBe("candidate-update");
+    const retained = await readFile(fixture.file, "utf8");
+    await expect(createLegacyServerCredentialCipher(options)).rejects.toHaveProperty(
+      "code",
+      "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+    );
+    expect(await readFile(fixture.file, "utf8")).toBe(retained);
+  });
+  it("keeps the OS source when preparation races after initialization but before the first write", async () => {
+    const fixture = await setup();
+    const options = { filePath: fixture.file, env: {}, keyStore: fixture.keyStore };
+    const first = await createServerCredentialCipher(options);
+    await prepareServerCredentialStorage(options);
+    await expect(stat(join(fixture.file, "..", "credential-secret"))).rejects.toHaveProperty(
+      "code",
+      "ENOENT",
+    );
+    // 另一程序迟到放入文件时，也不能改变已经固定的 OS 来源。
+    await writeFile(join(fixture.file, "..", "credential-secret"), "x".repeat(40), { mode: 0o600 });
+    const store = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher: first });
+    await store.save("token", "os-before-first-write");
+    const reopened = await createServerCredentialCipher({
+      ...options,
+      keyStore: { ...fixture.keyStore },
+    });
+    expect(
+      await createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher: reopened }).load(
+        "token",
+      ),
+    ).toBe("os-before-first-write");
+    expect(await readFile(join(fixture.file, "..", "credential-source"), "utf8")).toBe("os\n");
+  });
+  it("lets an independent CLI discover the same private Server key without configuring env", async () => {
+    const fixture = await setup();
+    await prepareServerCredentialStorage({ filePath: fixture.file, env: {} });
+    const cipher = await createServerCredentialCipher({ filePath: fixture.file, env: {} });
+    await createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher }).save(
+      "token",
+      "shared-remote-value",
+    );
+    const cli = createSharedCCbuddyCredentialStore({ filePath: fixture.file, env: {} });
+    expect(await cli.load("token")).toBe("shared-remote-value");
+    // 新 KeyStore 模拟冷进程，不能复用 Server 的进程内缓存来掩盖默认文件发现缺口。
+    let systemReads = 0;
+    const cold = createSharedCCbuddyCredentialStore({
+      filePath: fixture.file,
+      cipher: createSystemCredentialCipher({
+        filePath: fixture.file,
+        env: {},
+        keyStore: {
+          get: async () => {
+            systemReads++;
+            throw new Error("Secret Service unavailable");
+          },
+          set: async () => {
+            throw new Error("Secret Service unavailable");
+          },
+        },
+      }),
+    });
+    expect(await cold.load("token")).toBe("shared-remote-value");
+    expect(systemReads).toBe(0);
+    await cli.save("token", "cli-updated-value");
+    expect(
+      await createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher }).load("token"),
+    ).toBe("cli-updated-value");
+  });
+  it("prepares one private remote key concurrently and migrates fallback v1 without losing identity", async () => {
+    const fixture = await setup();
+    const legacy = createLegacyCredentialCipher({});
+    const original = { ccbuddyjwttoken: "old-token", "oauth:session_revision": "old-revision" };
+    await writeFile(
+      fixture.file,
+      JSON.stringify(
+        Object.fromEntries(
+          Object.entries(original).map(([key, value]) => [key, legacy.encrypt(value)]),
+        ),
+      ),
+    );
+    const options = { filePath: fixture.file, env: {} };
+    await Promise.all(Array.from({ length: 8 }, () => prepareServerCredentialStorage(options)));
+    const secretPath = join(fixture.file, "..", "credential-secret");
+    const secret = await readFile(secretPath, "utf8");
+    expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    if (process.platform !== "win32") expect((await stat(secretPath)).mode & 0o777).toBe(0o600);
+    const keyStore = {
+      get: async () => {
+        throw new Error("no Secret Service");
+      },
+      set: async () => {
+        throw new Error("must not write");
+      },
+    };
+    const cipher = await createServerCredentialCipher({ ...options, keyStore });
+    const store = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher });
+    for (const [key, value] of Object.entries(original)) expect(await store.load(key)).toBe(value);
+    const migrated = JSON.parse(await readFile(fixture.file, "utf8"));
+    expect(Object.values(migrated).every((value) => String(value).startsWith("enc:v2:env:"))).toBe(
+      true,
+    );
+    await prepareServerCredentialStorage(options);
+    expect(await readFile(secretPath, "utf8")).toBe(secret);
+    const reopened = createSharedCCbuddyCredentialStore({
+      filePath: fixture.file,
+      cipher: await createServerCredentialCipher({ ...options, keyStore }),
+    });
+    expect(await reopened.load("ccbuddyjwttoken")).toBe(original.ccbuddyjwttoken);
+    expect(await readdir(join(fixture.file, ".."))).toEqual(
+      expect.arrayContaining(["credentials.json", "credential-secret"]),
+    );
+    expect((await readdir(join(fixture.file, ".."))).some((name) => name.endsWith(".tmp"))).toBe(
+      false,
+    );
+  });
+  it("preserves existing keys, explicit configuration and v2 data when preparing a remote", async () => {
+    const fixture = await setup();
+    const secretPath = join(fixture.file, "..", "credential-secret");
+    const options = { filePath: fixture.file, env: {} };
+    await writeFile(secretPath, "existing-key-bytes\n", { mode: 0o600 });
+    await prepareServerCredentialStorage(options);
+    expect(await readFile(secretPath, "utf8")).toBe("existing-key-bytes\n");
+    await rm(secretPath);
+    for (const env of [
+      { CCBUDDY_CREDENTIAL_SECRET: "explicit" },
+      { CCBUDDY_CREDENTIAL_SECRET_FILE: secretPath },
+    ]) {
+      await prepareServerCredentialStorage({ ...options, env });
+      await expect(stat(secretPath)).rejects.toHaveProperty("code", "ENOENT");
+    }
+    for (const source of ["os", "env"]) {
+      const data = JSON.stringify({ token: `enc:v2:${source}:retained` });
+      await writeFile(fixture.file, data);
+      await prepareServerCredentialStorage(options);
+      expect(await readFile(fixture.file, "utf8")).toBe(data);
+      await expect(stat(secretPath)).rejects.toHaveProperty("code", "ENOENT");
+    }
+  });
+  it("opens an administrator-created Server key without relying on a login shell", async () => {
+    const fixture = await setup();
+    const path = join(fixture.file, "..", "credential-secret");
+    await writeFile(path, "s".repeat(40), { mode: 0o600 });
+    const keyStore = {
+      get: async (): Promise<string | null> => {
+        throw new Error("no Secret Service");
+      },
+      set: async () => {
+        throw new Error("unexpected system write");
+      },
+    };
+    const first = await createServerCredentialCipher({ filePath: fixture.file, env: {}, keyStore });
+    const store = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher: first });
+    await store.updateMany({ "oauth:session_revision": "server-session", token: "server-token" });
+    const second = await createServerCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore,
+    });
+    expect(
+      await createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher: second }).load(
+        "token",
+      ),
+    ).toBe("server-token");
+  });
+  it("gives actionable Server guidance without creating a file key or masking explicit configuration", async () => {
+    const fixture = await setup();
+    const keyStore = {
+      get: async (): Promise<string | null> => {
+        throw new Error("no Secret Service");
+      },
+      set: async () => {
+        throw new Error("unexpected write");
+      },
+    };
+    await expect(
+      createServerCredentialCipher({ filePath: fixture.file, env: {}, keyStore }),
+    ).rejects.toMatchObject({
+      code: "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+      message: expect.stringContaining("credential-secret"),
+    });
+    await expect(readFile(join(fixture.file, "..", "credential-secret"))).rejects.toHaveProperty(
+      "code",
+      "ENOENT",
+    );
+    await writeFile(join(fixture.file, "..", "credential-secret"), "s".repeat(40), { mode: 0o600 });
+    await expect(
+      createServerCredentialCipher({
+        filePath: fixture.file,
+        env: { CCBUDDY_CREDENTIAL_SECRET_FILE: fixture.file + ".missing" },
+        keyStore,
+      }),
+    ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+    if (process.platform !== "win32") {
+      await chmod(join(fixture.file, "..", "credential-secret"), 0o644);
+      await expect(
+        createServerCredentialCipher({ filePath: fixture.file, env: {}, keyStore }),
+      ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+    }
+  });
+  it("preserves both Desktop and CLI v1 whitespace key rules during migration", async () => {
+    for (const secret of ["ordinary-key", " padded-key ", "   "]) {
+      for (const source of ["desktop", "cli"]) {
+        const fixture = await setup();
+        const old = createLegacyCredentialCipher({
+          CCBUDDY_CREDENTIAL_SECRET: source === "cli" ? secret.trim() : secret,
+        });
+        await writeFile(fixture.file, JSON.stringify({ token: old.encrypt("legacy-value") }));
+        const env = { CCBUDDY_CREDENTIAL_SECRET: secret };
+        const store = createSharedCCbuddyCredentialStore({ filePath: fixture.file, env });
+        expect(await store.load("token"), `${source}/${secret.length}`).toBe("legacy-value");
+        expect(JSON.parse(await readFile(fixture.file, "utf8")).token).toMatch(/^enc:v2:env:/);
+        expect(
+          await createSharedCCbuddyCredentialStore({ filePath: fixture.file, env }).load("token"),
+        ).toBe("legacy-value");
+      }
+    }
+  });
+  it("uses an explicit managed secret file without a system store and survives reopening", async () => {
+    const fixture = await setup();
+    const secretPath = fixture.file + ".secret";
+    await writeFile(secretPath, "a".repeat(32) + "\n", { mode: 0o600 });
+    const env = { CCBUDDY_CREDENTIAL_SECRET_FILE: secretPath };
+    const cipher = createSystemCredentialCipher({ filePath: fixture.file, env });
+    await cipher.initialize();
+    const store = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher });
+    await store.updateMany({
+      "oauth:session_revision": "headless-revision",
+      token: "headless-value",
+    });
+    expect(
+      await createSharedCCbuddyCredentialStore({ filePath: fixture.file, env }).load("token"),
+    ).toBe("headless-value");
+    expect(JSON.parse(await readFile(fixture.file, "utf8")).token).toMatch(/^enc:v2:env:/);
+  });
+  it("rejects missing, short or ambiguous managed secret configuration before startup", async () => {
+    const fixture = await setup();
+    const secretPath = fixture.file + ".secret";
+    for (const env of [
+      { CCBUDDY_CREDENTIAL_SECRET_FILE: secretPath },
+      { CCBUDDY_CREDENTIAL_SECRET_FILE: secretPath, CCBUDDY_CREDENTIAL_SECRET: "another" },
+    ]) {
+      await expect(
+        createSystemCredentialCipher({ filePath: fixture.file, env }).initialize(),
+      ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+    }
+    await writeFile(secretPath, "short");
+    await expect(
+      createSystemCredentialCipher({
+        filePath: fixture.file,
+        env: { CCBUDDY_CREDENTIAL_SECRET_FILE: secretPath },
+      }).initialize(),
+    ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+  });
+  it("uses one system key for concurrent factories, supports empty values, and never persists the key", async () => {
+    const fixture = await setup();
+    const a = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: fixture.keyStore,
+    });
+    const b = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: fixture.keyStore,
+    });
+    const [first, second] = await Promise.all([a.encrypt("secret-a"), b.encrypt("")]);
+    expect(first).toMatch(/^enc:v2:os:/);
+    expect(await b.decrypt(first)).toBe("secret-a");
+    expect(await a.decrypt(second)).toBe("");
+    expect(fixture.writes()).toBe(1);
+    await expect(readFile(fixture.file, "utf8")).rejects.toHaveProperty("code", "ENOENT");
+  });
+  it("does not recreate a missing system key or accept corruption as plaintext", async () => {
+    const fixture = await setup();
+    const cipher = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: fixture.keyStore,
+    });
+    const encrypted = await cipher.encrypt("token");
+    fixture.forget();
+    // 用新的注入适配器模拟重启；同一进程的既有适配器会继续复用已解锁密钥。
+    const reopened = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: { ...fixture.keyStore },
+    });
+    await expect(reopened.decrypt(encrypted)).rejects.toHaveProperty(
+      "code",
+      "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+    );
+    expect(fixture.writes()).toBe(1);
+    await expect(reopened.decrypt("enc:v9:broken")).rejects.toHaveProperty(
+      "code",
+      "CCBUDDY_CREDENTIAL_DECRYPT_FAILED",
+    );
+  });
+  it("preserves records when the system key store is locked and does not treat it as a logout", async () => {
+    const fixture = await setup();
+    const keyStore = {
+      get: async (): Promise<string | null> => {
+        throw new Error("locked");
+      },
+      set: async () => {
+        throw new Error("must not write");
+      },
+    };
+    const cipher = createSystemCredentialCipher({ filePath: fixture.file, env: {}, keyStore });
+    const raw = { ccbuddyjwttoken: "legacy-token" };
+    await writeFile(fixture.file, JSON.stringify(raw));
+    await expect(migrateCredentialRecord(raw, cipher)).rejects.toHaveProperty(
+      "code",
+      "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+    );
+    expect(JSON.parse(await readFile(fixture.file, "utf8"))).toEqual(raw);
+  });
+  it("retries the system key after another process held the keyring lock past the wait limit", async () => {
+    const fixture = await setup();
+    let reads = 0;
+    const keyStore = {
+      get: async () => {
+        reads++;
+        return Buffer.alloc(32, 7).toString("base64url");
+      },
+      set: async () => {
+        throw new Error("must not write");
+      },
+    };
+    // 另一存活进程持锁等待系统授权；同进程持锁只会在进程内排队，不会触发等待超时。
+    const lock = `${fixture.file}.keyring.lock`;
+    await mkdir(lock);
+    await writeFile(
+      join(lock, `owner-${process.pid}-foreign.json`),
+      `${JSON.stringify({ pid: process.pid, createdAt: Date.now(), token: `${process.pid}-foreign` })}\n`,
+    );
+    const cipher = createSystemCredentialCipher({ filePath: fixture.file, env: {}, keyStore });
+    await expect(cipher.encrypt("token")).rejects.toHaveProperty("code", "CCBUDDY_FILE_LOCK_TIMEOUT");
+    expect(reads).toBe(0);
+    await rm(lock, { recursive: true });
+    const encrypted = await cipher.encrypt("token");
+    const reopened = createSystemCredentialCipher({ filePath: fixture.file, env: {}, keyStore });
+    expect(await reopened.decrypt(encrypted)).toBe("token");
+    expect(reads).toBe(1);
+  }, 20_000);
+  it("migrates old values, preserves an unrelated broken legacy field, and retains atomic session CAS", async () => {
+    const fixture = await setup();
+    const legacy = createLegacyCredentialCipher({ CCBUDDY_CREDENTIAL_SECRET: "migration-test" });
+    const cipher = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: { CCBUDDY_CREDENTIAL_SECRET: "migration-test" },
+      keyStore: fixture.keyStore,
+    });
+    await writeFile(
+      fixture.file,
+      JSON.stringify({
+        ccbuddyjwttoken: legacy.encrypt("old-token"),
+        "oauth:active_provider": "zai",
+        unused: "enc:v1:broken",
+      }),
+    );
+    const store = createSharedCCbuddyCredentialStore({ filePath: fixture.file, cipher });
+    const snapshot = await store.loadMany(["ccbuddyjwttoken", "oauth:active_provider"]);
+    expect(snapshot.ccbuddyjwttoken).toBe("old-token");
+    const disk = JSON.parse(await readFile(fixture.file, "utf8"));
+    expect(disk.ccbuddyjwttoken).toMatch(/^enc:v2:env:/);
+    expect(disk.unused).toBe("enc:v1:broken");
+    if (process.platform !== "win32") expect((await stat(fixture.file)).mode & 0o777).toBe(0o600);
+    await store.save("ccbuddyjwttoken", "new-token");
+    expect(await store.updateMany({ ccbuddyjwttoken: null }, { expected: snapshot })).toBe(false);
+    expect(await store.load("ccbuddyjwttoken")).toBe("new-token");
+  });
+  it("refuses new writes after the system key was lost", async () => {
+    const fixture = await setup();
+    const first = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: fixture.keyStore,
+    });
+    const token = await first.encrypt("old");
+    await writeFile(fixture.file, JSON.stringify({ ccbuddyjwttoken: token }));
+    fixture.forget();
+    const next = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: { ...fixture.keyStore },
+    });
+    await expect(next.encrypt("new")).rejects.toHaveProperty(
+      "code",
+      "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+    );
+    expect(fixture.writes()).toBe(1);
+    expect(JSON.parse(await readFile(fixture.file, "utf8")).ccbuddyjwttoken).toBe(token);
+  });
+  it("rejects authentication-tag tampering and reads an empty legacy value", async () => {
+    const fixture = await setup();
+    const env = { CCBUDDY_CREDENTIAL_SECRET: "empty-legacy-test" };
+    const legacy = createLegacyCredentialCipher(env);
+    const cipher = createSystemCredentialCipher({ filePath: fixture.file, env });
+    expect(await cipher.decrypt(legacy.encrypt(""))).toBe("");
+    const encrypted = await cipher.encrypt("private-value");
+    const offset = encrypted.lastIndexOf(":") + 1;
+    const tampered =
+      encrypted.slice(0, offset) +
+      (encrypted[offset] === "A" ? "B" : "A") +
+      encrypted.slice(offset + 1);
+    await expect(cipher.decrypt(tampered)).rejects.toHaveProperty(
+      "code",
+      "CCBUDDY_CREDENTIAL_DECRYPT_FAILED",
+    );
+  });
+  it("does not partially migrate when an existing v2 credential belongs to another key source", async () => {
+    const fixture = await setup();
+    const configured = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: { CCBUDDY_CREDENTIAL_SECRET: "old-managed-key" },
+    });
+    const record = { existing: await configured.encrypt("preserve"), legacy: "legacy-value" };
+    await writeFile(fixture.file, JSON.stringify(record));
+    const next = createSystemCredentialCipher({
+      filePath: fixture.file,
+      env: {},
+      keyStore: fixture.keyStore,
+    });
+    await expect(migrateCredentialRecord(record, next)).rejects.toHaveProperty(
+      "code",
+      "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+    );
+    expect(fixture.writes()).toBe(0);
+    expect(JSON.parse(await readFile(fixture.file, "utf8"))).toEqual(record);
+  });
+});
+
+// ZCT-2120723935487688704：系统条目按凭据文件路径区分，切换数据存储路径只复制文件时，
+// 新根启动后解不开原凭据，来源已固定为 os 又不能生成新密钥，用户掉登录且无法重新登录。
+describe("system credential key sharing for a copied data root", () => {
+  function countingKeyStore(initial: string | null = null) {
+    let saved = initial;
+    const calls = { get: 0, set: 0 };
+    return {
+      calls,
+      saved: () => saved,
+      store: {
+        get: async () => {
+          calls.get++;
+          return saved;
+        },
+        set: async (key: string) => {
+          calls.set++;
+          saved = key;
+        },
+      },
+    };
+  }
+  async function copiedRoots() {
+    const source = await setup();
+    const target = await setup();
+    await rm(dirname(target.file), { recursive: true, force: true });
+    return { source, target };
+  }
+  // 与 copyDataDirectory 相同的复制语义：整目录复制，不覆盖目标已有文件。
+  const copyRoot = (from: string, to: string) =>
+    cp(dirname(from), dirname(to), { recursive: true, force: false });
+
+  it("registers the source key for the copied credentials so the new root can read and log in", async () => {
+    const { source, target } = await copiedRoots();
+    const sourceCipher = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: source.keyStore,
+    });
+    const token = await sourceCipher.encrypt("source-login");
+    await writeFile(source.file, JSON.stringify({ token }));
+    await copyRoot(source.file, target.file);
+    const targetKeys = countingKeyStore();
+
+    await sourceCipher.shareKeyWithCopiedCredentials(target.file, targetKeys.store);
+    await sourceCipher.shareKeyWithCopiedCredentials(target.file, targetKeys.store);
+
+    const targetCipher = createSystemCredentialCipher({
+      filePath: target.file,
+      env: {},
+      keyStore: targetKeys.store,
+    });
+    expect(await targetCipher.decrypt(token)).toBe("source-login");
+    expect(await targetCipher.decrypt(await targetCipher.encrypt("relogin"))).toBe("relogin");
+    // 第二次登记发现条目已相同，不重复写入。
+    expect(targetKeys.calls.set).toBe(1);
+    expect(await sourceCipher.decrypt(token)).toBe("source-login");
+  });
+
+  it.each([
+    ["the source never logged in", "none"],
+    ["the credentials use a managed secret", "managed"],
+    ["the target keeps its own credentials", "own-target"],
+  ] as const)("does not touch any key store when %s", async (_label, kind) => {
+    const { source, target } = await copiedRoots();
+    const sourceKeys = countingKeyStore();
+    const targetKeys = countingKeyStore(Buffer.alloc(32, 9).toString("base64url"));
+    const env: Record<string, string> =
+      kind === "managed" ? { CCBUDDY_CREDENTIAL_SECRET: "managed-secret-for-copy-test" } : {};
+    const sourceCipher = createSystemCredentialCipher({
+      filePath: source.file,
+      env,
+      keyStore: sourceKeys.store,
+    });
+    if (kind !== "none") {
+      await writeFile(source.file, JSON.stringify({ token: await sourceCipher.encrypt("source") }));
+    } else {
+      await mkdir(dirname(source.file), { recursive: true });
+      await writeFile(join(dirname(source.file), "other.json"), "{}");
+    }
+    let targetCipher: ReturnType<typeof createSystemCredentialCipher> | undefined;
+    if (kind === "own-target") {
+      targetCipher = createSystemCredentialCipher({
+        filePath: target.file,
+        env: {},
+        keyStore: targetKeys.store,
+      });
+      await mkdir(dirname(target.file), { recursive: true });
+      await writeFile(target.file, JSON.stringify({ token: await targetCipher.encrypt("target") }));
+    }
+    await copyRoot(source.file, target.file);
+    const sourceCallsBefore = { ...sourceKeys.calls };
+    const targetCallsBefore = { ...targetKeys.calls };
+
+    await sourceCipher.shareKeyWithCopiedCredentials(target.file, targetKeys.store);
+
+    expect(sourceKeys.calls).toEqual(sourceCallsBefore);
+    expect(targetKeys.calls).toEqual(targetCallsBefore);
+    if (kind === "none") {
+      // 没有为空目录加载密钥：之后首次登录仍能正常创建密钥，不被缓存的失败阻断。
+      expect(await sourceCipher.decrypt(await sourceCipher.encrypt("first"))).toBe("first");
+    }
+    if (targetCipher) {
+      const raw = JSON.parse(await readFile(target.file, "utf8")) as { token: string };
+      expect(await targetCipher.decrypt(raw.token)).toBe("target");
+    }
+  });
+
+  it("refuses to overwrite a different key already registered for the target path", async () => {
+    const { source, target } = await copiedRoots();
+    const sourceCipher = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: source.keyStore,
+    });
+    await writeFile(source.file, JSON.stringify({ token: await sourceCipher.encrypt("source") }));
+    await copyRoot(source.file, target.file);
+    const stale = Buffer.alloc(32, 3).toString("base64url");
+    const targetKeys = countingKeyStore(stale);
+
+    await expect(
+      sourceCipher.shareKeyWithCopiedCredentials(target.file, targetKeys.store),
+    ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+
+    expect(targetKeys.calls.set).toBe(0);
+    expect(targetKeys.saved()).toBe(stale);
+  });
+
+  // 评审修复：3.18.0 已受影响的根没有自己的系统条目。按 spec 补救切回原路径时，
+  // 原路径条目仍能解开原密文；不能因为加载受影响根的密钥失败而拒绝切换。
+  it("lets an affected root switch back when the target already holds the matching key", async () => {
+    const { source: original, target: affected } = await copiedRoots();
+    const originalCipher = createSystemCredentialCipher({
+      filePath: original.file,
+      env: {},
+      keyStore: original.keyStore,
+    });
+    const token = await originalCipher.encrypt("original-login");
+    await writeFile(original.file, JSON.stringify({ token }));
+    await copyRoot(original.file, affected.file);
+    const affectedCipher = createSystemCredentialCipher({
+      filePath: affected.file,
+      env: {},
+      keyStore: countingKeyStore().store,
+    });
+    await expect(affectedCipher.decrypt(token)).rejects.toHaveProperty(
+      "code",
+      "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE",
+    );
+    // 切回原路径：复制不覆盖原路径已有文件，原路径仍是同一份密文。
+    await copyRoot(affected.file, original.file);
+    const originalKeys = countingKeyStore(await original.keyStore.get());
+
+    await affectedCipher.shareKeyWithCopiedCredentials(original.file, originalKeys.store);
+
+    expect(originalKeys.calls.set).toBe(0);
+    const restarted = createSystemCredentialCipher({
+      filePath: original.file,
+      env: {},
+      keyStore: originalKeys.store,
+    });
+    expect(await restarted.decrypt(token)).toBe("original-login");
+  });
+
+  // 第二种形态：源已固定 os（有 credential-source 与条目）但没有 os 密文，例如只用过 API Key
+  // 后删光、CLI 登录前的写入探针后中止、恢复凭据存储后。复制把 credential-source 带到新根，
+  // 新根没有条目就不能生成新密钥，重新登录失败。
+  async function pinnedWithoutCiphertext() {
+    const { source, target } = await copiedRoots();
+    const sourceCipher = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: source.keyStore,
+    });
+    // 与 CLI 登录前的写入探针相同：建密钥并固定来源，不写入密文；凭据库为空。
+    await sourceCipher.encrypt("write-probe");
+    await writeFile(source.file, "{}\n");
+    await copyRoot(source.file, target.file);
+    return { source, target, sourceCipher };
+  }
+
+  it("registers the source key when only the os source marker was copied", async () => {
+    const { target, sourceCipher } = await pinnedWithoutCiphertext();
+    expect(await readFile(join(dirname(target.file), "credential-source"), "utf8")).toBe("os\n");
+    const targetKeys = countingKeyStore();
+
+    await sourceCipher.shareKeyWithCopiedCredentials(target.file, targetKeys.store);
+
+    expect(targetKeys.calls.set).toBe(1);
+    const restarted = createSystemCredentialCipher({
+      filePath: target.file,
+      env: {},
+      keyStore: targetKeys.store,
+    });
+    expect(await restarted.decrypt(await restarted.encrypt("relogin"))).toBe("relogin");
+  });
+
+  it("keeps an existing target key for a copied marker without loading the source key", async () => {
+    const { source, target } = await pinnedWithoutCiphertext();
+    // 新进程里源条目缺失：若去加载源密钥会被拒绝，因此成功即证明没有加载。
+    const brokenSource = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: countingKeyStore().store,
+    });
+    const own = Buffer.alloc(32, 7).toString("base64url");
+    const targetKeys = countingKeyStore(own);
+
+    await brokenSource.shareKeyWithCopiedCredentials(target.file, targetKeys.store);
+
+    expect(targetKeys.calls.set).toBe(0);
+    expect(targetKeys.saved()).toBe(own);
+  });
+
+  it("refuses the switch when a copied marker needs a source key that is unavailable", async () => {
+    const { source, target } = await pinnedWithoutCiphertext();
+    const brokenSource = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: countingKeyStore().store,
+    });
+    const targetKeys = countingKeyStore();
+
+    await expect(
+      brokenSource.shareKeyWithCopiedCredentials(target.file, targetKeys.store),
+    ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+
+    expect(targetKeys.calls.set).toBe(0);
+  });
+
+  it("leaves a target-owned marker alone when the source never created a key", async () => {
+    const { source, target } = await copiedRoots();
+    const sourceKeys = countingKeyStore();
+    const targetKeys = countingKeyStore();
+    const sourceCipher = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: sourceKeys.store,
+    });
+    await writeFile(join(dirname(source.file), "other.json"), "{}");
+    // 目标标记来自目标自己的旧数据，不是本次复制带来的：保持原行为，不访问任何系统条目。
+    await mkdir(dirname(target.file), { recursive: true });
+    await writeFile(join(dirname(target.file), "credential-source"), "os\n");
+    await copyRoot(source.file, target.file);
+
+    await sourceCipher.shareKeyWithCopiedCredentials(target.file, targetKeys.store);
+
+    expect(sourceKeys.calls).toEqual({ get: 0, set: 0 });
+    expect(targetKeys.calls).toEqual({ get: 0, set: 0 });
+    // 没有为空目录加载并缓存失败：源之后的首次登录仍能创建密钥。
+    expect(await sourceCipher.decrypt(await sourceCipher.encrypt("first"))).toBe("first");
+  });
+
+  it("keeps the source readable and writable when the target key cannot be stored", async () => {
+    const { source, target } = await copiedRoots();
+    const sourceCipher = createSystemCredentialCipher({
+      filePath: source.file,
+      env: {},
+      keyStore: source.keyStore,
+    });
+    const token = await sourceCipher.encrypt("source");
+    await writeFile(source.file, JSON.stringify({ token }));
+    await copyRoot(source.file, target.file);
+    const lockedTarget = {
+      get: async () => null,
+      set: async () => {
+        throw new Error("locked");
+      },
+    };
+
+    await expect(
+      sourceCipher.shareKeyWithCopiedCredentials(target.file, lockedTarget),
+    ).rejects.toHaveProperty("code", "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE");
+
+    expect(await sourceCipher.decrypt(token)).toBe("source");
+    expect(await sourceCipher.decrypt(await sourceCipher.encrypt("after"))).toBe("after");
+  });
+});

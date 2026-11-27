@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- shared node_repl host 的 worker、CUA bridge 和生命周期必须保持同一边界。 */
-import { resolve } from "node:path";
+import { access } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 import { INVALID_PARAMS, Server, type Tool } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -15,8 +16,31 @@ import {
   type NodeReplRunResult,
 } from "@ccbuddy/core/repl";
 import { createComputerUseRuntime, type ComputerUseRuntime } from "@ccbuddy/ccbuddy-cua";
+import {
+  startInProcessComputerUseBroker,
+  type InProcessComputerUseBroker,
+} from "@ccbuddy/ccbuddy-cua/broker/in-process";
+import {
+  BROKER_SOCKET_ENV,
+  IN_PROCESS_BROKER_SOCKET,
+  mintBrokerSocketPath,
+} from "@ccbuddy/ccbuddy-cua/broker/socketPath";
+// 只加载 broker 协议常量；shared 总入口会初始化无关领域的 schema。
+import {
+  NODE_REPL_BROWSER_BROKER_SOCKET_ENV,
+  NODE_REPL_BROWSER_BROKER_TOKEN_ENV,
+} from "@ccbuddy/shared/node-repl-browser-broker";
 import { z } from "zod";
-import { createBrowserBridgeGlobals, type ActiveNodeReplCall } from "./browser-bridge.js";
+import {
+  createBrowserBridgeGlobals,
+  type ActiveNodeReplCall,
+  type NodeReplBrowserBrokerConnection,
+} from "./browser-bridge.js";
+import {
+  createNodeReplBrowserBrokerProxy,
+  createNodeReplCallLedger,
+  type NodeReplBrowserBrokerUpstream,
+} from "./call-ledger/contract.js";
 import {
   createComputerUseBridgeGlobals,
   type ActiveCuaNodeReplCall,
@@ -88,6 +112,7 @@ export interface NodeReplExecuteInput {
   signal: AbortSignal;
   syncTimeoutMs: number;
   cuaBroker?: NodeReplCuaBrokerConnection;
+  browserBroker?: NodeReplBrowserBrokerConnection;
 }
 
 export type NodeReplExecutor = (input: NodeReplExecuteInput) => Promise<NodeReplRunResult>;
@@ -103,6 +128,7 @@ interface WorkerCallData {
   requestMeta: NodeReplRequestMeta;
   syncTimeoutMs: number;
   cuaBroker?: NodeReplCuaBrokerConnection;
+  browserBroker?: NodeReplBrowserBrokerConnection;
 }
 
 export function setNodeReplMcpProcessTitle(target: { title: string } = process): void {
@@ -123,6 +149,7 @@ export function createInProcessNodeReplExecutor(): NodeReplExecutor {
       injectedGlobals: () =>
         ({
           ...createBrowserBridgeGlobals({
+            broker: input.browserBroker,
             documentationRoot: browserDocumentationRoot,
             generation,
             getActiveCall: () => activeCall,
@@ -136,7 +163,7 @@ export function createInProcessNodeReplExecutor(): NodeReplExecutor {
             documentationRoot: cuaDocumentationRoot,
           }),
         }),
-      restrictProcess: true,
+      protectProtocolStdio: true,
     });
     activeCall = {
       generation,
@@ -163,13 +190,29 @@ export function createInProcessNodeReplExecutor(): NodeReplExecutor {
 }
 
 export function createNodeReplMcpRuntime(
-  input: { executeJs?: NodeReplExecutor; cuaRuntime?: ComputerUseRuntime } = {},
+  input: {
+    executeJs?: NodeReplExecutor;
+    cuaRuntime?: ComputerUseRuntime;
+    /** CCbuddy 主进程浏览器 broker 的地址和 token；默认从环境变量读取（测试注入假 broker）。 */
+    browserBrokerUpstream?: NodeReplBrowserBrokerUpstream;
+  } = {},
 ): NodeReplMcpRuntime {
   const executeJs = input.executeJs ?? executeJsInWorker;
   const cuaRuntime =
     input.cuaRuntime ?? captureComputerUseRuntimeFromEnvironment();
+  // 本次调用的可信事实只由主线程的两个 broker 记进账本（20-node-repl-call-ledger.md）。
+  const ledger = createNodeReplCallLedger();
   const cuaBroker = cuaRuntime
-    ? createNodeReplCuaBroker({ runtime: cuaRuntime, platform: process.platform })
+    ? createNodeReplCuaBroker({ runtime: cuaRuntime, ledger, platform: process.platform })
+    : undefined;
+  const browserBrokerUpstream =
+    input.browserBrokerUpstream ?? browserBrokerUpstreamFromEnvironment(process.env);
+  const browserBrokerProxy = browserBrokerUpstream
+    ? createNodeReplBrowserBrokerProxy({
+        ledger,
+        upstream: browserBrokerUpstream,
+        platform: process.platform,
+      })
     : undefined;
   const queues = new Map<string, Promise<void>>();
   const activeCalls = new Set<AbortController>();
@@ -215,6 +258,7 @@ export function createNodeReplMcpRuntime(
         activeCalls.add(callController);
         const timeoutMs = args.timeout_ms ?? NODE_REPL_DEFAULT_TIMEOUT_MS;
         const callMeta = { ...requestMeta, ...(args.title ? { title: args.title } : {}) };
+        const call = ledger.open(callMeta);
         try {
           const signal = AbortSignal.any([
             extra.mcpReq.signal,
@@ -226,10 +270,21 @@ export function createNodeReplMcpRuntime(
             requestMeta: callMeta,
             signal,
             syncTimeoutMs: Math.min(timeoutMs, MAX_SYNC_TIMEOUT_MS),
-            cuaBroker: cuaBroker?.connection,
+            ...(cuaBroker
+              ? { cuaBroker: { socketPath: cuaBroker.connection.socketPath, token: call.token } }
+              : {}),
+            ...(browserBrokerProxy
+              ? {
+                  browserBroker: {
+                    socketPath: browserBrokerProxy.connection.socketPath,
+                    token: call.token,
+                  },
+                }
+              : {}),
           });
-          return toMcpRunResult(run);
+          return toMcpRunResult(run, call.facts);
         } finally {
+          call.close();
           activeCalls.delete(callController);
         }
       });
@@ -245,6 +300,7 @@ export function createNodeReplMcpRuntime(
       activeCalls.clear();
       queues.clear();
       void cuaBroker?.close();
+      void browserBrokerProxy?.close();
       void cuaRuntime?.dispose();
     },
   };
@@ -258,8 +314,9 @@ async function executeJsInWorker(input: NodeReplExecuteInput): Promise<NodeReplR
     requestMeta: input.requestMeta,
     syncTimeoutMs: input.syncTimeoutMs,
     cuaBroker: input.cuaBroker,
+    browserBroker: input.browserBroker,
   };
-  const worker = new Worker(new URL(import.meta.url), { workerData: data });
+  const worker = new Worker(new URL(import.meta.url), { workerData: data, env: workerEnvironment() });
   return await new Promise<NodeReplRunResult>((resolveRun, rejectRun) => {
     let settled = false;
     const cleanup = () => {
@@ -285,6 +342,26 @@ async function executeJsInWorker(input: NodeReplExecuteInput): Promise<NodeReplR
     });
     if (input.signal.aborted) onAbort();
   });
+}
+
+function browserBrokerUpstreamFromEnvironment(
+  env: NodeJS.ProcessEnv,
+): NodeReplBrowserBrokerUpstream | undefined {
+  const socketPath = env[NODE_REPL_BROWSER_BROKER_SOCKET_ENV]?.trim();
+  const token = env[NODE_REPL_BROWSER_BROKER_TOKEN_ENV]?.trim();
+  return socketPath && token ? { socketPath, token } : undefined;
+}
+
+/**
+ * Worker 的环境去掉上游浏览器 broker 的地址和 token：只有主线程代理需要它们，Worker 只拿本次调用的
+ * token。这只是缩小暴露面，不是可信边界——cell 仍可能从进程的初始环境读到它们，那样绕过代理的调用
+ * 只会少记、不会多记（20-node-repl-call-ledger.md「可信边界」）。
+ */
+function workerEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env[NODE_REPL_BROWSER_BROKER_SOCKET_ENV];
+  delete env[NODE_REPL_BROWSER_BROKER_TOKEN_ENV];
+  return env;
 }
 
 function parseToolInput<T>(schema: z.ZodType<T>, input: unknown, toolName: string): T {
@@ -356,6 +433,7 @@ if (!isMainThread && isWorkerCallData(workerData)) {
     signal: controller.signal,
     syncTimeoutMs: workerData.syncTimeoutMs,
     cuaBroker: workerData.cuaBroker,
+    browserBroker: workerData.browserBroker,
   })
     .then((result) => parentPort?.postMessage(result))
     .catch((error) => {
@@ -372,12 +450,80 @@ if (!isMainThread && isWorkerCallData(workerData)) {
 export function captureComputerUseRuntimeFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): ComputerUseRuntime | undefined {
-  const socketPath = env.CCBUDDY_CUA_PERMISSION_BROKER_SOCKET?.trim();
+  const socketPath = env[BROKER_SOCKET_ENV]?.trim();
   if (!socketPath) return undefined;
+  if (socketPath === IN_PROCESS_BROKER_SOCKET) {
+    return createInProcessComputerUseRuntime(env);
+  }
   return createComputerUseRuntime({
     brokerSocketPath: socketPath,
     refreshMarkerPath: env.CCBUDDY_CUA_PERMISSION_BROKER_REFRESH_MARKER?.trim(),
   });
+}
+
+/**
+ * 独立 CLI 形态：broker 跑在本进程，首次 CUA 调用才加载 native addon 并监听。
+ * 启动失败直接抛给本次调用（模型能看到真实原因），不缓存失败，下次调用重试。
+ * ensureBrokerAvailable 置空，避免 SDK 默认的 standalone 懒启动去 open 外部 Helper。
+ */
+export function createInProcessComputerUseRuntime(
+  env: NodeJS.ProcessEnv,
+  start: (socketPath: string, env: NodeJS.ProcessEnv) => Promise<InProcessComputerUseBroker> = async (
+    socketPath,
+    brokerEnv,
+  ) =>
+    startInProcessComputerUseBroker({
+      socketPath,
+      env: brokerEnv,
+      addonPath: await findSeededCuaAddon(brokerEnv.CCBUDDY_CUA_PLUGIN_ROOT),
+    }),
+): ComputerUseRuntime {
+  const brokerEnv = { ...env };
+  delete brokerEnv[BROKER_SOCKET_ENV];
+  const socketPath = mintBrokerSocketPath({ env: brokerEnv });
+  let broker: Promise<InProcessComputerUseBroker> | undefined;
+  const ensureBroker = (): Promise<InProcessComputerUseBroker> => {
+    if (broker) return broker;
+    const starting = start(socketPath, brokerEnv);
+    broker = starting;
+    starting.catch(() => {
+      if (broker === starting) broker = undefined;
+    });
+    return starting;
+  };
+  const runtime = createComputerUseRuntime({
+    brokerSocketPath: socketPath,
+    ensureBrokerAvailable: async () => {},
+    env: brokerEnv,
+  });
+  return {
+    execute: async (input) => {
+      await ensureBroker();
+      return runtime.execute(input);
+    },
+    closeSession: (context) => runtime.closeSession(context),
+    dispose: async () => {
+      await runtime.dispose();
+      const running = broker;
+      broker = undefined;
+      const started = await running?.catch(() => undefined);
+      await started?.stop();
+    },
+  };
+}
+
+const SEEDED_CUA_ADDON_PATH = ["native", "ax_native.node"] as const;
+
+/** SEA 发布物把 addon seed 到插件根。源码运行没有这份文件，需要用 CCBUDDY_CUA_HELPER_ADDON 指定。 */
+export async function findSeededCuaAddon(pluginRoot: string | undefined): Promise<string | undefined> {
+  if (!pluginRoot) return undefined;
+  const candidate = join(pluginRoot, ...SEEDED_CUA_ADDON_PATH);
+  try {
+    await access(candidate);
+    return candidate;
+  } catch {
+    return undefined;
+  }
 }
 
 function isWorkerCallData(value: unknown): value is WorkerCallData {

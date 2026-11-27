@@ -150,7 +150,23 @@ function stripViteRequestQuery(id: string) {
   return id.split("?")[0] ?? id;
 }
 
-export default defineConfig(({ mode }) => {
+function createReactScanDevPlugin(): Plugin {
+  const scriptPath = normalizePathForVite(desktopRequire.resolve("react-scan/dist/auto.global.js"));
+  return {
+    name: "ccbuddy:react-scan",
+    apply: "serve",
+    transformIndexHtml: {
+      order: "post",
+      handler(_html, context) {
+        if (context.path !== "/index.html") return [];
+        // Scan 必须先安装 hook，再加载 React；普通 head script 保证顺序，避免异步导入漏掉首次挂载。
+        return [{ tag: "script", attrs: { src: `/@fs/${scriptPath}` }, injectTo: "head-prepend" }];
+      },
+    },
+  };
+}
+
+export default defineConfig(({ command, mode }) => {
   // `.env*` 只提供链接常量；当前产品环境由启动脚本或 CI 注入 CCBUDDY_ENV。
   const env = loadEnv(mode, "../..", "");
   const repoRoot = resolve(__dirname, "../..");
@@ -175,6 +191,10 @@ export default defineConfig(({ mode }) => {
   const codingPlanWebviewOrigin =
     env.VITE_CODING_PLAN_WEBVIEW_ORIGIN ?? process.env.VITE_CODING_PLAN_WEBVIEW_ORIGIN ?? "";
   const plugins = [
+    // 仅开发服务器装配，所有 build 都不注入；后端 CCBUDDY_ENV 不决定是否开启开发工具。
+    ...(command === "serve" && mode !== "production" && env.CCBUDDY_REACT_SCAN !== "0"
+      ? [createReactScanDevPlugin()]
+      : []),
     ...(e2eCoverageEnabled ? [createE2EUIRendererCoveragePlugin(repoRoot)] : []),
     pdfJsCMapsPlugin(),
     react(),
@@ -202,6 +222,7 @@ export default defineConfig(({ mode }) => {
     server: { port: 5174, strictPort: true },
     define: {
       __CCBUDDY_VERSION__: JSON.stringify(buildMetadata.appVersion),
+      __CCBUDDY_MIN_COMPATIBLE_VERSION__: JSON.stringify(buildMetadata.minCompatibleVersion),
       __CCBUDDY_COMMIT__: JSON.stringify(buildMetadata.buildCommitId),
       __CCBUDDY_BUILD_TIME__: JSON.stringify(buildMetadata.buildTime),
       __CCBUDDY_ENV__: JSON.stringify(ccbuddyEnv),

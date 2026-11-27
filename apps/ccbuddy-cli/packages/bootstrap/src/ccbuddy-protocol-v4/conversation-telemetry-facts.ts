@@ -19,12 +19,23 @@ import type {
   TurnErrorPayload,
   TurnStartedPayload,
 } from "@ccbuddy/contracts";
-import { getModelUsageTotalTokens, SessionEventType } from "@ccbuddy/contracts";
-import { parseAutomationRunId } from "@ccbuddy/shared";
+import {
+  getModelUsageTotalTokens,
+  SEARCH_PLUGINS_TOOL_NAME,
+  SearchPluginsOutputSchema,
+  SessionEventType,
+  SUGGEST_PLUGIN_INSTALL_TOOL_NAME,
+  SuggestPluginInstallOutputSchema,
+} from "@ccbuddy/contracts";
+import { parseAutomationRunId, sanitizeTelemetrySkillName } from "@ccbuddy/shared";
 import { workflowLifecycleFactFromProgress } from "./conversation-telemetry-workflow-facts.js";
 import {
   conversationTelemetryFactSchema,
+  modelRequestMetricsFactSchema,
+  turnAdmissionTelemetrySchema,
+  type TurnAdmissionTelemetry,
   type ConversationTelemetryFact,
+  type ModelRequestMetricsFact,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 
 const MAX_TRACKED_LIFECYCLE_KEYS = 2_000;
@@ -108,7 +119,11 @@ function skillTelemetryFactFields(
   const qualifiedName = optionalString(value.qualifiedName);
   const pluginId = optionalString(value.pluginId);
   const source = optionalString(value.source);
+  // 仅消费加载结果 metadata；请求参数不证明技能存在，不能进入遥测。
+  const name =
+    source && value.name !== undefined ? sanitizeTelemetrySkillName(value.name) : undefined;
   return {
+    ...(name ? { skillName: name } : {}),
     ...(qualifiedName ? { skillQualifiedName: qualifiedName } : {}),
     ...(pluginId ? { skillPluginId: pluginId } : {}),
     ...(source ? { skillSource: source } : {}),
@@ -157,6 +172,28 @@ function eventTimestamp(event: SessionEvent): number {
   const value =
     event.timestamp instanceof Date ? event.timestamp.getTime() : Number(event.timestamp);
   return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function factBase(
+  sessionId: string,
+  event: SessionEvent,
+  runtimeMetadata: { memoryEnabled?: boolean } | undefined,
+) {
+  const turnId = event.turnId ? String(event.turnId) : undefined;
+  return {
+    turnKey: turnId ? `${sessionId}\0${turnId}` : undefined,
+    base: {
+      ...(runtimeMetadata?.memoryEnabled !== undefined
+        ? { memoryEnabled: runtimeMetadata.memoryEnabled }
+        : {}),
+      version: 1 as const,
+      eventId: String(event.id),
+      eventSeq: Math.max(0, Math.floor(event.sequenceNumber)),
+      occurredAt: eventTimestamp(event),
+      sessionId,
+      ...(turnId ? { turnId } : {}),
+    },
+  };
 }
 
 function automationAdmission(inputId: string | undefined, automationId: string | undefined) {
@@ -300,24 +337,77 @@ export class ConversationTelemetryFactNormalizer {
   }>();
   private readonly completedModelRequests = new BoundedValueMap<CompletedModelRequestIdentity[]>();
 
+  /**
+   * 模型请求指标：只由 `model_request_completed` 产生，供扩展进程算生成速率。
+   * 走独立通知，不进 ConversationTelemetryFact（docs/monitoring/conversation-telemetry-v4.md「模型请求指标」）。
+   * 必须在同一事件的 normalize 之后调用，sourceCommandId 依赖 normalize 记下的轮次输入。
+   */
+  normalizeModelRequestMetrics(
+    sessionId: string,
+    event: SessionEvent,
+    runtimeMetadata?: { memoryEnabled?: boolean },
+  ): ModelRequestMetricsFact | null {
+    if (event.type !== SessionEventType.ModelNetworkStatus) return null;
+    const payload = event.payload as ModelNetworkStatusPayload;
+    if (payload.type !== "model_request_completed") return null;
+    const { base, turnKey } = factBase(sessionId, event, runtimeMetadata);
+    const sourceCommandId = turnKey ? this.sourceCommandByTurn.get(turnKey) : undefined;
+    const usage = recordValue(payload.usage);
+    const token = (value: unknown) => nonNegative(value);
+    const usageFields = {
+      inputTokens: token(usage.inputTokens),
+      outputTokens: token(usage.outputTokens),
+      reasoningTokens: token(usage.reasoningTokens),
+      cacheReadTokens: token(usage.cacheReadTokens) ?? token(usage.cacheTokens),
+      cacheWriteTokens: token(usage.cacheWriteTokens),
+      totalTokens: token(usage.totalTokens),
+    };
+    return modelRequestMetricsFactSchema.parse({
+      ...base,
+      kind: "model.request.metrics",
+      ...(sourceCommandId ? { sourceCommandId } : {}),
+      requestId: String(payload.requestId),
+      providerId: String(payload.providerId),
+      modelId: String(payload.modelId),
+      ...(payload.querySource ? { querySource: payload.querySource } : {}),
+      ...(payload.queryId ? { queryId: String(payload.queryId) } : {}),
+      durationMs: nonNegative(payload.durationMs) ?? 0,
+      ...(nonNegative(payload.timeToFirstContentMs) !== undefined
+        ? { timeToFirstContentMs: payload.timeToFirstContentMs }
+        : {}),
+      ...Object.fromEntries(Object.entries(usageFields).filter(([, value]) => value !== undefined)),
+    });
+  }
+
+  /** 在 normalize 之后调用，沿同一连接在原版 started 后发送。 */
+  normalizeTurnAdmission(sessionId: string, event: SessionEvent): TurnAdmissionTelemetry | null {
+    if (event.type !== SessionEventType.TurnStarted) return null;
+    const payload = event.payload as TurnStartedPayload;
+    const sendMode =
+      payload.intent?.admittedDelivery === "queue"
+        ? "queued"
+        : payload.intent?.admittedDelivery === "startNow"
+          ? "direct"
+          : undefined;
+    if (payload.isFirstMessage === undefined && sendMode === undefined) return null;
+    const { base, turnKey } = factBase(sessionId, event, undefined);
+    const sourceCommandId = turnKey ? this.sourceCommandByTurn.get(turnKey) : undefined;
+    return turnAdmissionTelemetrySchema.parse({
+      ...base,
+      kind: "turn.admission",
+      ...(sourceCommandId ? { sourceCommandId } : {}),
+      ...(payload.isFirstMessage === undefined ? {} : { isFirstMessage: payload.isFirstMessage }),
+      ...(sendMode ? { sendMode } : {}),
+    });
+  }
+
   normalize(
     sessionId: string,
     event: SessionEvent,
     runtimeMetadata?: { modelName?: string; modelProvider?: string; memoryEnabled?: boolean },
   ): ConversationTelemetryFact | null {
     const turnId = event.turnId ? String(event.turnId) : undefined;
-    const turnKey = turnId ? `${sessionId}\0${turnId}` : undefined;
-    const base = {
-      ...(runtimeMetadata?.memoryEnabled !== undefined
-        ? { memoryEnabled: runtimeMetadata.memoryEnabled }
-        : {}),
-      version: 1 as const,
-      eventId: String(event.id),
-      eventSeq: Math.max(0, Math.floor(event.sequenceNumber)),
-      occurredAt: eventTimestamp(event),
-      sessionId,
-      ...(turnId ? { turnId } : {}),
-    };
+    const { base, turnKey } = factBase(sessionId, event, runtimeMetadata);
     const sourceCommandId = turnKey ? this.sourceCommandByTurn.get(turnKey) : undefined;
 
     switch (event.type) {
@@ -335,6 +425,13 @@ export class ConversationTelemetryFactNormalizer {
         return conversationTelemetryFactSchema.parse({
           ...base,
           kind: "turn.started",
+          ...((payload.intent?.inputOrigin ?? payload.inputOrigin)
+            ? { inputOrigin: payload.intent?.inputOrigin ?? payload.inputOrigin }
+            : {}),
+          ...(runtimeMetadata?.modelName ? { modelName: runtimeMetadata.modelName } : {}),
+          ...(runtimeMetadata?.modelProvider
+            ? { modelProvider: runtimeMetadata.modelProvider }
+            : {}),
           ...(inputId ? { sourceCommandId: inputId } : {}),
           ...automationAdmission(inputId, optionalString(payload.automationId)),
           ...(optionalString(payload.offPeakTaskId)
@@ -512,6 +609,9 @@ export class ConversationTelemetryFactNormalizer {
             : {}),
           ...(result?.result.error ? { errorMessage: result.result.error.message } : {}),
           ...skillTelemetryFactFields(toolName, error?.skillMetadata ?? result?.skillMetadata),
+          ...((error?.pluginId ?? result?.pluginId)
+            ? { pluginId: error?.pluginId ?? result?.pluginId, pluginComponent: "mcp" }
+            : {}),
           // subagent mirror 把父子关联放在工具事件 payload 顶层，旧 normalizer
           // 只读取 result.display，导致 agent_id 等字段在进入 agent_step 前被静默丢弃。
           ...mirroredSubagentToolFields(rawPayload, display),
@@ -748,5 +848,128 @@ export class ConversationTelemetryFactNormalizer {
     this.toolNameByCall.deletePrefix(prefix);
     this.modelBySession.delete(sessionId);
     this.completedModelRequests.deletePrefix(prefix);
+  }
+}
+
+// ============================================================
+// Agent 插件推荐链路的业务埋点事实
+// ============================================================
+// SearchPlugins 终态、确认卡片发布/应答、用户确认后的 SuggestPluginInstall 终态 → `plugin.discovery`。
+// 只取可聚合维度，不带查询词、推荐理由或工具输出正文；桌面 Host 据此单点上报。
+
+const MAX_TRACKED_PLUGIN_CALLS = 500;
+const CANCELLED_ERROR_TYPES = new Set(["cancelled", "tool_cancelled", "turn_cancelled"]);
+
+interface TrackedCall {
+  toolName: string;
+  pluginId?: string;
+  action?: "install" | "enable";
+  installDecidedAt?: number;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+export class PluginDiscoveryFactNormalizer {
+  private readonly calls = new Map<string, TrackedCall>();
+
+  normalize(sessionId: string, event: SessionEvent): ConversationTelemetryFact | null {
+    const occurredAt =
+      event.timestamp instanceof Date ? event.timestamp.getTime() : Number(event.timestamp);
+    const base = {
+      version: 1 as const,
+      eventId: String(event.id),
+      eventSeq: Math.max(0, Math.floor(event.sequenceNumber)),
+      occurredAt: Number.isFinite(occurredAt) && occurredAt >= 0 ? occurredAt : 0,
+      sessionId,
+      ...(event.turnId ? { turnId: String(event.turnId) } : {}),
+      kind: "plugin.discovery" as const,
+    };
+    const payload = event.payload as Record<string, unknown>;
+    const key = `${sessionId}\0${String(payload.toolCallId ?? "")}`;
+
+    switch (event.type) {
+      case SessionEventType.ToolCallScheduled: {
+        const { toolName } = event.payload as ToolCallScheduledPayload;
+        if (toolName !== SEARCH_PLUGINS_TOOL_NAME && toolName !== SUGGEST_PLUGIN_INSTALL_TOOL_NAME)
+          return null;
+        this.calls.set(key, { toolName });
+        if (this.calls.size > MAX_TRACKED_PLUGIN_CALLS) this.calls.delete(this.calls.keys().next().value!);
+        return null;
+      }
+      case SessionEventType.PluginInstallRequested: {
+        const request = payload.request as { pluginId: string; action: "install" | "enable"; toolCallId: string };
+        const call = this.calls.get(`${sessionId}\0${request.toolCallId}`);
+        if (call) Object.assign(call, { pluginId: request.pluginId, action: request.action });
+        return conversationTelemetryFactSchema.parse({
+          ...base,
+          phase: "card_shown",
+          pluginId: request.pluginId,
+          action: request.action,
+        });
+      }
+      case SessionEventType.PluginInstallResolved: {
+        const decision = payload.decision as "install" | "skip" | "cancel";
+        const call = this.calls.get(key);
+        if (call && decision === "install") call.installDecidedAt = base.occurredAt;
+        return conversationTelemetryFactSchema.parse({
+          ...base,
+          phase: "card_resolved",
+          pluginId: payload.pluginId,
+          decision,
+        });
+      }
+      case SessionEventType.ToolCallResult:
+      case SessionEventType.ToolCallError: {
+        const call = this.calls.get(key);
+        if (!call) return null;
+        this.calls.delete(key);
+        const result =
+          event.type === SessionEventType.ToolCallResult
+            ? (event.payload as ToolCallResultPayload).result
+            : undefined;
+        const error = result?.error ?? (event.payload as ToolCallErrorPayload).error;
+        const failed = !result || result.success === false;
+        if (call.toolName === SEARCH_PLUGINS_TOOL_NAME) {
+          const output = failed
+            ? undefined
+            : SearchPluginsOutputSchema.safeParse(parseJson(result.content));
+          return conversationTelemetryFactSchema.parse({
+            ...base,
+            phase: "searched",
+            result: failed ? "failure" : "success",
+            ...(output?.success ? { resultCount: output.data.plugins.length } : {}),
+          });
+        }
+        // 只有用户在卡片上确认安装后，工具终态才代表一次安装/启用操作。
+        if (call.installDecidedAt === undefined || !call.pluginId || !call.action) return null;
+        const status = failed
+          ? undefined
+          : SuggestPluginInstallOutputSchema.safeParse(parseJson(result.content)).data?.status;
+        return conversationTelemetryFactSchema.parse({
+          ...base,
+          phase: "install_settled",
+          pluginId: call.pluginId,
+          action: call.action,
+          result: failed
+            ? error && CANCELLED_ERROR_TYPES.has(error.type)
+              ? "cancelled"
+              : "failure"
+            : status === "installed" || status === "enabled"
+              ? "success"
+              : status === "alreadyAvailable"
+                ? "noop"
+                : "failure",
+          durationMs: Math.max(0, Math.round(base.occurredAt - call.installDecidedAt)),
+        });
+      }
+      default:
+        return null;
+    }
   }
 }

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-tool-discovery-card",
+  "spec": "./test/e2e/conversation-session/tools/conversation-session-tool-discovery-card.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-tool-discovery-card.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "tool-discovery-card-title",
+      "description": "卡片测试标题响应",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "固定 ToolSearch 模型输出以验证真实工具执行后的卡片显示；受控流由测试显式释放，不依赖模型响应速度。"
+    },
+    {
+      "id": "tool-discovery-card-done",
+      "description": "工具执行后完成轮次",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "固定 ToolSearch 模型输出以验证真实工具执行后的卡片显示；受控流由测试显式释放，不依赖模型响应速度。"
+    },
+    {
+      "id": "tool-discovery-card-summary",
+      "description": "空输入流式占位及各类完整搜索卡片",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "固定 ToolSearch 模型输出以验证真实工具执行后的卡片显示；受控流由测试显式释放，不依赖模型响应速度。"
+    },
+    {
+      "id": "tool-discovery-card-stop",
+      "description": "参数未完成时由用户停止",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "固定 ToolSearch 模型输出以验证真实工具执行后的卡片显示；受控流由测试显式释放，不依赖模型响应速度。"
+    },
+    {
+      "id": "tool-discovery-card-deferred",
+      "description": "包装参数生成期隐藏临时卡片",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "controlled-stream",
+      "syntheticReason": "受控参数流验证包装卡片可见性；真实 Runtime 执行 TodoRead 并拒绝常驻目标包装调用。"
+    },
+    {
+      "id": "tool-discovery-card-deferred-done",
+      "description": "包装调用结果返回后结束轮次",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "受控参数流验证包装卡片可见性；真实 Runtime 执行 TodoRead 并拒绝常驻目标包装调用。"
+    }
+  ]
+}

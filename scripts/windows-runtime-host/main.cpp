@@ -1,0 +1,213 @@
+#define WIN32_LEAN_AND_MEAN
+#define _WIN32_WINNT 0x0A00
+#include <windows.h>
+#include <cstdio>
+#include <cstring>
+#include <cwchar>
+#include <string>
+#include <vector>
+
+namespace {
+constexpr ULONGLONG kGraceMs = 1800;
+struct ExitDiagnostic {
+  bool enabled = false, running = false, rootExited = false, forced = false, jobEmpty = false;
+  DWORD hostPid = 0, runtimePid = 0, win32Error = 0;
+  const char* reason = "none";
+  const char* stage = "none";
+  void failure(const char* value, DWORD code = GetLastError()) {
+    if (std::strcmp(stage, "none") == 0) { stage = value; win32Error = code; }
+  }
+  ~ExitDiagnostic() {
+    if (!enabled) return;
+    // 管道断开与进程退出可能不同序；只输出首次决策和安全字段，不输出命令或任意正文。
+    std::fprintf(stderr, "[windows-runtime-host:exit] {\"hostPid\":%lu,\"helperPid\":%lu,\"runtimePid\":%lu,\"reason\":\"%s\",\"stage\":\"%s\",\"win32Error\":%lu,\"running\":%s,\"rootExited\":%s,\"forced\":%s,\"jobEmpty\":%s}\n",
+      hostPid, GetCurrentProcessId(), runtimePid, reason, stage, win32Error,
+      running ? "true" : "false", rootExited ? "true" : "false", forced ? "true" : "false", jobEmpty ? "true" : "false");
+  }
+} diagnostic;
+struct Handle {
+  HANDLE value = nullptr;
+  ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+};
+bool send(HANDLE pipe, const std::string& message) {
+  const auto frame = message + "\n";
+  DWORD count;
+  const BOOL written = WriteFile(pipe, frame.data(), static_cast<DWORD>(frame.size()), &count, nullptr);
+  if (!written || count != frame.size()) diagnostic.failure("control_write", written ? ERROR_WRITE_FAULT : GetLastError());
+  return written && count == frame.size();
+}
+std::wstring quote(const std::wstring& arg) {
+  std::wstring result = L"\"";
+  size_t slashes = 0;
+  for (const auto c : arg) {
+    if (c == L'\\') { ++slashes; continue; }
+    result.append(slashes * (c == L'"' ? 2 : 1), L'\\');
+    slashes = 0;
+    if (c == L'"') result += L'\\';
+    result += c;
+  }
+  result.append(slashes * 2, L'\\');
+  return result + L'"';
+}
+int fail(const char* stage) {
+  diagnostic.enabled = true;
+  diagnostic.failure(stage);
+  return 1;
+}
+}
+
+int wmain(int argc, wchar_t** argv) {
+  if (argc == 2 && std::wstring(argv[1]) == L"--version") {
+    std::puts("ccbuddy-runtime-host 1"); return 0;
+  }
+  if (argc == 3 && std::wstring(argv[1]) == L"--check-empty") {
+    Handle previous{OpenJobObjectW(JOB_OBJECT_QUERY, FALSE, argv[2])};
+    // 内核在最后一个句柄关闭且全部成员退出后销毁 Job；不存在是原 Job 已消失的事实。
+    if (!previous.value) return GetLastError() == ERROR_FILE_NOT_FOUND ? 0 : fail("open_previous_job");
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+    if (!QueryInformationJobObject(previous.value, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) return fail("previous_job_membership");
+    return accounting.ActiveProcesses == 0 ? 0 : 2;
+  }
+  if (argc < 5) return fail("arguments");
+  diagnostic.enabled = true;
+  const DWORD parentPid = wcstoul(argv[2], nullptr, 10);
+  diagnostic.hostPid = parentPid;
+  Handle parent{OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, parentPid)};
+  if (!parent.value) return fail("parent_handle");
+  Handle control{CreateFileW(argv[1], GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr)};
+  if (control.value == INVALID_HANDLE_VALUE) return fail("control_pipe");
+  ULONG serverPid = 0;
+  if (!GetNamedPipeServerProcessId(control.value, &serverPid) || serverPid != parentPid ||
+      WaitForSingleObject(parent.value, 0) != WAIT_TIMEOUT) return fail("control_owner");
+
+  Handle job{CreateJobObjectW(nullptr, argv[3])};
+  if (!job.value || GetLastError() == ERROR_ALREADY_EXISTS) return fail("create_job");
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return fail("configure_job");
+
+  // 原因：spawn 后再 attach 有派生窗口，退出后按 PPID 补查又可能误认复用的 PID。
+  // 只传递三条 stdio，并通过创建属性加入 Job，避免 helper 在 create/assign 之间崩溃。
+  // CLI 在 Host 接管前始终保持 suspended；不支持 Job 属性时明确拒绝启动。
+  Handle input, output, error;
+  HANDLE inherited[3];
+  Handle* copies[] = {&input, &output, &error};
+  const DWORD ids[] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+  for (int i = 0; i < 3; ++i) {
+    if (!DuplicateHandle(GetCurrentProcess(), GetStdHandle(ids[i]), GetCurrentProcess(),
+                         &copies[i]->value, 0, TRUE, DUPLICATE_SAME_ACCESS)) return fail("stdio_handles");
+    inherited[i] = copies[i]->value;
+  }
+  SIZE_T size = 0;
+  InitializeProcThreadAttributeList(nullptr, 2, 0, &size);
+  std::vector<unsigned char> storage(size);
+  auto attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+  if (!InitializeProcThreadAttributeList(attributes, 2, 0, &size)) return fail("handle_list");
+  if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                  inherited, sizeof(inherited), nullptr, nullptr)) {
+    diagnostic.failure("inherit_list");
+    DeleteProcThreadAttributeList(attributes); return fail("inherit_list");
+  }
+  if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                                  &job.value, sizeof(job.value), nullptr, nullptr)) {
+    diagnostic.failure("job_attribute");
+    DeleteProcThreadAttributeList(attributes); return fail("job_attribute");
+  }
+  STARTUPINFOEXW si{};
+  si.StartupInfo.cb = sizeof(si);
+  si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  si.StartupInfo.hStdInput = input.value;
+  si.StartupInfo.hStdOutput = output.value;
+  si.StartupInfo.hStdError = error.value;
+  si.lpAttributeList = attributes;
+  std::wstring command;
+  for (int i = 4; i < argc; ++i) {
+    if (i > 4) command += L' ';
+    command += quote(argv[i]);
+  }
+  PROCESS_INFORMATION pi{};
+  const BOOL created = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+      CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+      nullptr, nullptr, &si.StartupInfo, &pi);
+  const DWORD createError = GetLastError();
+  DeleteProcThreadAttributeList(attributes);
+  if (!created) { SetLastError(createError); return fail("create_cli"); }
+  Handle root{pi.hProcess}, primaryThread{pi.hThread};
+  diagnostic.runtimePid = pi.dwProcessId;
+  BOOL assigned = FALSE;
+  if (!IsProcessInJob(root.value, job.value, &assigned) || !assigned) {
+    diagnostic.failure("verify_job");
+    TerminateProcess(root.value, 1);
+    return fail("verify_job");
+  }
+  bool start = false, close = false, lost = false;
+  std::string controlLine;
+  bool& running = diagnostic.running;
+  bool& rootExited = diagnostic.rootExited;
+  bool& forced = diagnostic.forced;
+  ULONGLONG closeAt = 0;
+  const auto startupDeadline = GetTickCount64() + 10000;
+  if (!send(control.value, "ready " + std::to_string(pi.dwProcessId))) lost = true;
+  int result = 0;
+  for (;;) {
+    DWORD available = 0;
+    if (!lost && !PeekNamedPipe(control.value, nullptr, 0, nullptr, &available, nullptr)) {
+      diagnostic.failure("control_peek"); lost = true;
+    }
+    while (!lost && available-- > 0) {
+      char c; DWORD count;
+      const BOOL read = ReadFile(control.value, &c, 1, &count, nullptr);
+      if (!read || count != 1) {
+        diagnostic.failure("control_read", read ? ERROR_BROKEN_PIPE : GetLastError()); lost = true; break;
+      }
+      if (c == '\n') {
+        if (controlLine == "start") start = true;
+        else if (controlLine == "close") close = true;
+        else { diagnostic.failure("control_frame", ERROR_INVALID_DATA); lost = true; }
+        controlLine.clear();
+      } else if (controlLine.size() < 32) controlLine += c;
+      else { diagnostic.failure("control_frame", ERROR_INVALID_DATA); lost = true; }
+    }
+    const auto now = GetTickCount64();
+    const bool abandoned = lost || WaitForSingleObject(parent.value, 0) == WAIT_OBJECT_0;
+    if (!running && start && !close && !abandoned) {
+      if (ResumeThread(primaryThread.value) == static_cast<DWORD>(-1)) { result = fail("resume_cli"); break; }
+      running = true;
+      if (!send(control.value, "started")) lost = true;
+    }
+    if (!rootExited && WaitForSingleObject(root.value, 0) == WAIT_OBJECT_0) {
+      rootExited = true;
+      DWORD code;
+      if (!GetExitCodeProcess(root.value, &code)) { result = fail("root_exit_status"); break; }
+      if (!lost && !send(control.value, "root " + std::to_string(code))) lost = true;
+    }
+    if (close && closeAt == 0) closeAt = now;
+    // 根退出表示它已完成自身收尾；残余成员仍归 Job，不能因根 PID 消失释放所有权。
+    const bool mustTerminate = abandoned || rootExited || (!running && (close || now >= startupDeadline)) ||
+                              (closeAt != 0 && now - closeAt >= kGraceMs);
+    if (mustTerminate && !forced) {
+      // 只在原有终止决策处固定首次原因，后续 root/管道事件不得覆盖它。
+      diagnostic.reason = abandoned ? (lost ? "control_lost" : "parent_exited") :
+        rootExited ? "root_exited" : !running ? (close ? "start_cancelled" : "start_timeout") : "close_grace_elapsed";
+      if (!TerminateJobObject(job.value, 1)) { result = fail("terminate_job"); break; }
+      forced = true;
+    }
+    if (rootExited) {
+      JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+      if (!QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) {
+        result = fail("query_job"); break;
+      }
+      if (accounting.ActiveProcesses == 0 && rootExited) {
+        diagnostic.jobEmpty = true;
+        if (!lost) send(control.value, "empty");
+        break;
+      }
+    }
+    // 等待句柄事件；短轮询只复核内核 Job 计数，不枚举系统进程，也不把超时当清空。
+    HANDLE waits[] = {parent.value, root.value};
+    if (abandoned) Sleep(50);
+    else WaitForMultipleObjects(rootExited ? 1 : 2, waits, FALSE, 50);
+  }
+  // 异常退出仍由最后一个 Job 句柄负责强制回收。
+  return result;
+}

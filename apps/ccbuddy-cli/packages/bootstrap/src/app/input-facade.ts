@@ -17,6 +17,7 @@ import {
   projectInputHistoryAttachments,
 } from "./prompt-input.js";
 import type { PrepareUserExecutionBoundary, SubmitPromptOptions, CCbuddyApp } from "./types.js";
+import type { CliDefaultSelection } from "./cli-default-selection.js";
 
 type InputFacade = Pick<
   CCbuddyApp,
@@ -24,6 +25,8 @@ type InputFacade = Pick<
   | "enqueueDeferredInput"
   | "recordInputHistory"
   | "editQueueItem"
+  | "lockQueueItemEdit"
+  | "releaseQueueItemEdit"
   | "recallPreviousInputHistory"
   | "removeQueueItem"
   | "reserveQueueItem"
@@ -40,6 +43,7 @@ type InputFacade = Pick<
 >;
 
 interface CreateInputFacadeDeps {
+  cliDefaultSelection?: CliDefaultSelection;
   artifactStore?: ToolArtifactStorePort;
   customCommandPromptResolver?: (
     text: string,
@@ -197,13 +201,13 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
         options?.onEvent || options?.onTurnStartedObserved
           ? deps.runtime.subscribeEvents({
               onSessionEvent: async (event) => {
-                await options.onEvent?.(event);
+                await options?.onEvent?.(event);
                 if (
                   event.type === SessionEventType.TurnStarted &&
-                  (event.payload as { inputId?: unknown }).inputId === options.inputId
+                  (event.payload as { inputId?: unknown }).inputId === options?.inputId
                 ) {
                   // TurnStarted 只用于后续关联；admission ACK 不等待 projection commit。
-                  options.onTurnStartedObserved?.(event);
+                  options?.onTurnStartedObserved?.(event);
                 }
               },
             })
@@ -212,6 +216,7 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
         // resume review 属于本次 prompt 生命周期，订阅覆盖 prepare boundary；Core admission
         // 在同一个 session runtime 内完成 start/queue，不在这里读取 activeTurn 做分叉。
         await preparePromptBoundary(options);
+        options = deps.cliDefaultSelection?.prepareInput(options) ?? options;
         const prepared = await prepareRuntimePrompt(promptInput, options);
         const result = await deps.runtime.admitPrompt(prepared.input, prepared.storedAttachments, {
           ...options,
@@ -249,6 +254,7 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
       }
     },
     enqueueDeferredInput: async (input, options) => {
+      options = deps.cliDefaultSelection?.prepareInput(options) ?? options;
       const result = await deps.runtime.enqueueDeferredInput({
         input,
         inputPresentation: "user_steer",
@@ -272,6 +278,7 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
       return result;
     },
     steerTurn: async (input, options) => {
+      options = deps.cliDefaultSelection?.prepareInput(options) ?? options;
       const unsubscribe = options?.onEvent
         ? deps.runtime.subscribeEvents({ onSessionEvent: options.onEvent })
         : undefined;
@@ -330,13 +337,26 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
         traceContext: options?.traceContext ?? deps.traceContext,
       }),
     editQueueItem: async (pendingInputId, newText, options) => {
-      // v4 queue 单项编辑：替换排队输入文本（reducer 同 id 原地更新，保位）。
+      // v4 queue 单项编辑：原地替换排队输入（reducer 同 id 原地更新，保位）。
+      const { traceContext, ...edit } = options ?? {};
       return deps.runtime.editPendingInputById({
+        ...edit,
         pendingInputId,
-        newText,
-        traceContext: options?.traceContext ?? deps.traceContext,
+        ...(newText !== undefined ? { newText } : {}),
+        traceContext: traceContext ?? deps.traceContext,
       });
     },
+    lockQueueItemEdit: async (pendingInputId, editLock, options) =>
+      deps.runtime.lockPendingInputEdit({
+        pendingInputId,
+        editLock,
+        traceContext: options?.traceContext ?? deps.traceContext,
+      }),
+    releaseQueueItemEdit: async (pendingInputId, options) =>
+      deps.runtime.releasePendingInputEdit({
+        pendingInputId,
+        traceContext: options?.traceContext ?? deps.traceContext,
+      }),
     reorderQueueItem: async (pendingInputId, beforePendingInputId, options) => {
       // v4 queue 重排：移动排队项到锚点前（null=队尾）。
       return deps.runtime.reorderPendingInput({
@@ -373,6 +393,7 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
         : undefined;
       try {
         await preparePromptBoundary(options);
+        options = deps.cliDefaultSelection?.prepareInput(options) ?? options;
         return await runPromptTurn(promptInput, options);
       } finally {
         unsubscribe?.();

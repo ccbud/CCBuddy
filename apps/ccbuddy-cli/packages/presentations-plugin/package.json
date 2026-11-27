@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@ccbuddy/presentations-plugin",
+  "version": "0.2.10",
+  "private": true,
+  "description": "PPTX presentation production skills and a PowerPoint viewer panel, published as an official CCbuddy plugin.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ../office-runtime/scripts/build.mjs",
+    "clean": "node ../../scripts/clean-dist.mjs",
+    "smoke": "node ../office-runtime/scripts/smoke.mjs",
+    "test:e2e": "node ../office-runtime/scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "@ccbuddy/office-runtime": "workspace:*"
+  },
+  "office": {
+    "title": {
+      "en": "Presentations",
+      "zh-CN": "演示文稿"
+    },
+    "kinds": [
+      "pptx"
+    ]
+  }
+}

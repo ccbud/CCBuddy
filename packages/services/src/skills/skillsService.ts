@@ -1,15 +1,5 @@
 /* eslint-disable max-lines -- skill 发现 + 校验 + 状态 + 通用目录管理在同一服务里聚合，分层后跳转成本更高 */
-import {
-  access,
-  appendFile,
-  cp,
-  mkdir,
-  realpath,
-  rm,
-  readFile,
-  readdir,
-  writeFile,
-} from "node:fs/promises";
+import { access, appendFile, cp, mkdir, realpath, rm, readFile, readdir } from "node:fs/promises";
 import { existsSync, type Dirent } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -30,6 +20,7 @@ import type { ISkillsService } from "./skills.js";
 import { SKILL_FILE_NAME, walkSkillMarkdownPaths } from "./skillDiscoveryWalk.js";
 import { readInstalledPluginRoots } from "#src/plugins/installedPluginRoots.js";
 import { getAppConfigDir, getWorkspaceAppConfigDir, getCCbuddyDataRootDir } from "../paths.js";
+import { updateJsonObjectFile } from "#src/fs/atomicFileUtils.js";
 
 interface DiscoverResult {
   skills: SkillSummary[];
@@ -224,7 +215,7 @@ async function filterNestedScanRoots(paths: string[]): Promise<string[]> {
 async function dedupeScanRootsByRealpath(paths: string[]): Promise<string[]> {
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const path of await filterNestedScanRoots(paths)) {
+  for (const path of paths) {
     let canonical = normalizeScanRootPath(path);
     if (await exists(path)) {
       canonical = normalizeScanRootPath(await realpath(path).catch(() => path));
@@ -538,6 +529,7 @@ function normalizeSkillConfigPath(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
+// 只用于列表展示：config.json 损坏时按空配置展示技能，不影响浏览。写入走 writeSkillEnabledMap。
 async function readCliConfigFile(): Promise<Record<string, unknown>> {
   try {
     const raw = await readFile(getSkillCliConfigFile(), "utf-8");
@@ -567,29 +559,35 @@ async function readSkillEnabledMap(): Promise<Record<string, boolean>> {
   return readSkillEnabledMapFromConfig(await readCliConfigFile());
 }
 
+/**
+ * 根因：旧实现写入前用 readCliConfigFile 读取，读失败或 JSON 损坏时返回空对象，再用 writeFile
+ * 整文件写回，config.json 里的 MCP、插件等其他配置会被冲掉；writeFile 也不是原子写。
+ * 修法：改用 updateJsonObjectFile——文件损坏时报错不写，写前重读，只改 skills 字段，原子替换。
+ */
 async function writeSkillEnabledMap(next: Record<string, boolean>): Promise<void> {
-  const config = await readCliConfigFile();
-  const skillsConfig = isObjectRecord(config.skills) ? config.skills : {};
-  for (const [path, enable] of Object.entries(next).sort(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
-    // 技能开关之前分散在 workspace/provider/context 状态文件，导致同一技能在不同入口表现不一致。
-    // 现在只按 SKILL.md 路径写入 CLI config 的 skills 字段，避免额外迁移或旧文件副作用。
-    const normalizedPath = normalizeSkillConfigPath(path);
-    if (enable) {
-      // 开启态是默认值，不应落盘成 `{ enable: true }`；删除 override 才能跟随插件/默认配置变化。
-      delete skillsConfig[normalizedPath];
-    } else {
-      skillsConfig[normalizedPath] = { enable };
+  await updateJsonObjectFile(getSkillCliConfigFile(), (current) => {
+    const config = { ...current };
+    const skillsConfig = isObjectRecord(config.skills) ? { ...config.skills } : {};
+    for (const [path, enable] of Object.entries(next).sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      // 技能开关之前分散在 workspace/provider/context 状态文件，导致同一技能在不同入口表现不一致。
+      // 现在只按 SKILL.md 路径写入 CLI config 的 skills 字段，避免额外迁移或旧文件副作用。
+      const normalizedPath = normalizeSkillConfigPath(path);
+      if (enable) {
+        // 开启态是默认值，不应落盘成 `{ enable: true }`；删除 override 才能跟随插件/默认配置变化。
+        delete skillsConfig[normalizedPath];
+      } else {
+        skillsConfig[normalizedPath] = { enable };
+      }
     }
-  }
-  if (Object.keys(skillsConfig).length > 0) {
-    config.skills = skillsConfig;
-  } else {
-    delete config.skills;
-  }
-  await mkdir(getSkillCliSettingsDir(), { recursive: true });
-  await writeFile(getSkillCliConfigFile(), `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+    if (Object.keys(skillsConfig).length > 0) {
+      config.skills = skillsConfig;
+    } else {
+      delete config.skills;
+    }
+    return config;
+  });
 }
 
 interface SkillRootDescriptor {
@@ -879,7 +877,14 @@ async function discoverSkills(params: {
   const userCCbuddySkillNameKeys = params.includeUserSkills
     ? await collectSkillNameKeysInRoot(getUserCCbuddySkillRoot())
     : new Set<string>();
-  const scanRootPaths = await dedupeScanRootsByRealpath(roots.map((root) => root.rootPath));
+  // 插件的父、子声明都是独立入口，不能按递归覆盖关系裁掉父入口。
+  const standaloneRoots = await filterNestedScanRoots(
+    roots.filter((root) => root.scope !== "plugin").map((root) => root.rootPath),
+  );
+  const scanRootPaths = await dedupeScanRootsByRealpath([
+    ...standaloneRoots,
+    ...roots.filter((root) => root.scope === "plugin").map((root) => root.rootPath),
+  ]);
   const rootByPath = new Map(roots.map((root) => [root.rootPath, root]));
 
   for (const rootPath of scanRootPaths) {
@@ -891,7 +896,11 @@ async function discoverSkills(params: {
       continue;
     }
 
-    const skillPaths = await collectSkillMarkdownPaths(root.rootPath, diagnostics);
+    const skillPaths = await collectSkillMarkdownPaths(
+      root.rootPath,
+      diagnostics,
+      root.scope === "plugin",
+    );
     for (const skillPath of skillPaths) {
       if (
         await isUserAgentsSkillCoveredByCCbuddy({
@@ -996,11 +1005,13 @@ async function discoverSkills(params: {
 async function collectSkillMarkdownPaths(
   rootPath: string,
   diagnostics: SkillDiagnostic[],
+  stopAtSkill = false,
 ): Promise<string[]> {
   // 复用共享的有界遍历：支持分组目录，但排除 node_modules 等内容目录、限制深度、对软链按 realpath 去重，
   // 避免 Windows junction / 巨型依赖目录把单次扫描放大到数十秒。
   const discovered = new Set<string>();
   for await (const skillPath of walkSkillMarkdownPaths(rootPath, {
+    stopAtSkill,
     onError: (path, error) => {
       diagnostics.push({
         code: "skill_scan_failed",

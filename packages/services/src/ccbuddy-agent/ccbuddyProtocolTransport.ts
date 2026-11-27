@@ -14,5 +14,5 @@ export interface CCbuddyProtocolTransport extends IDisposable {
   readonly onMessage: Event<CCbuddyProtocolMessage>;
   readonly onClose: Event<CCbuddyProtocolTransportClosedEvent>;
   send(message: CCbuddyProtocolMessage): Promise<void>;
-  disposeAndWait?(): Promise<void>;
+  disposeAndWait?(options?: { deadlineAtMs?: number }): Promise<void>;
 }

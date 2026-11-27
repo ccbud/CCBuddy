@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-model-provider-settings-transition",
+  "spec": "./test/e2e/conversation-session/models/conversation-session-model-provider-settings-transition.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-model-provider-settings-transition.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "model-provider-transition-title",
+      "kind": "common",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "标题生成不属于设置页往返的模型选择语义，但首发后的请求必须完整回放。"
+    },
+    {
+      "id": "model-provider-transition-s01",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "验证切换 BigModel Family 连接后 上游 deferred draft 的首发请求仍使用 上游。"
+    },
+    {
+      "id": "model-provider-transition-s02",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "验证重复选择当前 Team Plan 不改变 上游 draft。"
+    }
+  ]
+}

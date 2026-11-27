@@ -7,8 +7,7 @@
 
 const PLUGIN_REFERENCE_SCHEME = "plugin://";
 // 与 mentionMarkdown 的链接语法保持一致：label 支持 \ 转义，destination 支持 <...> 或裸形式。
-const MARKDOWN_LINK_PATTERN =
-  /\[(?:\\.|[^\\\]])*\]\((?:<((?:\\.|[^>])*?)>|((?:\\.|[^)\s])*))\)/g;
+const MARKDOWN_LINK_PATTERN = /\[(?:\\.|[^\\\]])*\]\((?:<((?:\\.|[^>])*?)>|((?:\\.|[^)\s])*))\)/g;
 const PLUGIN_ID_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const MAX_PLUGIN_REFERENCES_PER_TURN = 8;

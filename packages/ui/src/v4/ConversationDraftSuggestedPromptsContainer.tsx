@@ -289,7 +289,6 @@ export function ConversationDraftSuggestedPromptsContainer({
   const revalidateAndPrependPlugin = useCallback(
     async (current: DraftSuggestedPluginFlow, requestVersion: number) => {
       await invalidateDeferredDraftSessionForSkillChange({
-        ccbuddySessionService: resolution.services.ccbuddySessionService,
         workspacePath,
         workspaceIdentity,
         reason: "suggested-prompt-plugin-change",
@@ -309,7 +308,6 @@ export function ConversationDraftSuggestedPromptsContainer({
     [
       prependResolvedPlugin,
       resolution.services.pluginManagementService,
-      resolution.services.ccbuddySessionService,
       targetParams,
       workspaceIdentity,
       workspacePath,
@@ -427,6 +425,10 @@ export function ConversationDraftSuggestedPromptsContainer({
           let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
           const installRequest = resolution.services.pluginManagementService.installPlugin({
             ...targetParams(),
+            telemetry: {
+              entry: "recommended_prompt",
+              client_kind: "desktop",
+            },
             pluginName: flow.result!.pluginName!,
             marketplace: flow.result!.marketplace!,
             scope: "user",
@@ -470,6 +472,10 @@ export function ConversationDraftSuggestedPromptsContainer({
             operation,
             resolution.services.pluginManagementService.setPluginEnabled({
               ...targetParams(),
+              telemetry: {
+                entry: "recommended_prompt",
+                client_kind: "desktop",
+              },
               pluginId: flow.plugin.stableId,
               enabled: true,
               operationId: flow.operationId,

@@ -3,12 +3,16 @@ import type {
   ConversationShareAccessMode,
   ConversationShareCapabilities,
   ConversationShareContinuation,
+  ConversationShareManagedItem,
+  ConversationShareManagedList,
   ConversationSharePreview,
   ConversationShareRecord,
+  ConversationShareRejection,
+  ConversationShareTtlOptions,
   Locale,
 } from "@ccbuddy/shared";
-import { ServiceChannels } from "@ccbuddy/shared";
-import type { ConversationRow } from "@ccbuddy/shared/ccbuddy-protocol-v4";
+import { conversationShareRejectionSchema, ServiceChannels } from "@ccbuddy/shared";
+import type { WireConversationRow } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { Event as RpcEvent, type Event } from "@ccbuddy/rpc";
 
 import { createServiceDescriptor } from "../descriptors.js";
@@ -26,6 +30,8 @@ export interface PublishTextConversationInput {
   sessionId: string;
   title: string;
   accessMode: ConversationShareAccessMode;
+  /** 分享有效时长；省略时使用服务端默认值。必须落在预检返回的 ttlOptions 范围内。 */
+  ttlMs?: number;
   selection: ConversationShareSelection;
   clientRequestId: string;
   disclosureAcceptedAt: number;
@@ -51,6 +57,15 @@ export interface ConversationShareAllowedArtifact {
 export interface ConversationShareTurnPreflightResult {
   /** 已转换的公开行数；选择变化时可按轮重新聚合，不缓存整组选中项的容量错误。 */
   rowBudget?: { count: number; limit: number };
+  /**
+   * 该轮会上传的文件（不透明去重键 + 字节数）。数量与总大小上限是整组选中项的约束，
+   * 由 UI 按当前选中轮按 key 去重后重算，不作为某一轮的阻断项缓存。
+   */
+  artifactBudget?: {
+    items: readonly { key: string; bytes: number }[];
+    countLimit: number;
+    bytesLimit: number;
+  };
   productTurnId: string;
   turnFingerprint?: string;
   blockingIssues: readonly ConversationShareFailureIssue[];
@@ -66,6 +81,8 @@ export interface ConversationSharePreflightResult {
   skippableWarnings: readonly ConversationShareFailureIssue[];
   deferredIssues: readonly ConversationShareFailureIssue[];
   supportedArtifactTypes: readonly ConversationShareAllowedArtifact[];
+  /** 发布方服务端声明的有效期范围；未声明时省略，UI 不显示有效期选择。 */
+  ttlOptions?: ConversationShareTtlOptions;
   turnResults: readonly ConversationShareTurnPreflightResult[];
 }
 
@@ -92,6 +109,7 @@ export type ConversationShareFailureReasonCode =
   | "artifact_extension_missing"
   | "artifact_outside_workspace"
   | "artifact_changed"
+  | "content_unavailable"
   | "artifact_read_failed"
   // 已知容量超限：附件真实大小超过服务端 max_artifact_bytes 或通道可搬运上限。
   // 与 artifact_read_failed（不确定）不同，它在选择阶段就是确定阻断。
@@ -104,12 +122,33 @@ export type ConversationShareFailureReasonCode =
   | "invalid_conversation";
 
 export type ConversationShareFailureIssueCode =
+  | "authentication_required"
+  | "network"
+  | "service_unavailable"
+  | "rate_limited"
+  | "feature_disabled"
+  | "connection_unavailable"
+  | "invalid_contract"
+  | "disclosure_required"
   | ConversationShareFailureReasonCode
   | "rows_limit"
   | "artifact_count_limit"
   | "artifact_total_size_limit"
   | "payload_size_limit"
   | "upload_incomplete"
+  // 以下由服务端拒绝的 rule 映射而来（见 conversationShareServerRejection.ts）。
+  | "unsupported_content"
+  | "artifact_type_rejected"
+  | "artifact_format_mismatch"
+  | "artifact_dimensions_exceeded"
+  | "artifact_corrupted"
+  | "artifact_encoding_invalid"
+  | "artifact_upload_rejected"
+  | "artifact_upload_missing"
+  | "content_blocks_limit"
+  | "preparation_stale"
+  | "conversation_safety_rejected"
+  | "artifact_safety_rejected"
   | "unknown";
 
 export interface ConversationShareFailureIssue {
@@ -186,6 +225,7 @@ function inferFailureReasonCode(message: string): ConversationShareFailureReason
 
 export interface ConversationShareFailureDetails {
   requestId?: string;
+  clientRequestId?: string;
   status?: number;
   code?: number;
   reasonCode?: ConversationShareFailureReasonCode;
@@ -193,6 +233,8 @@ export interface ConversationShareFailureDetails {
   issues?: readonly ConversationShareFailureIssue[];
   issueCount?: number;
   omittedIssueCount?: number;
+  /** 服务端拒绝的结构化坐标，已由 shared schema 限长校验；原样进入错误详情弹层。 */
+  rejection?: ConversationShareRejection;
   /** 仅用于 host 侧诊断的底层错误；绝不进入发给 Renderer 的 details。 */
   cause?: unknown;
 }
@@ -311,6 +353,8 @@ function sanitizeFailureDiagnostics(
 export class ConversationShareServiceError extends Error {
   readonly kind: ConversationShareServiceErrorKind;
   readonly requestId?: string;
+  readonly clientRequestId?: string;
+  readonly rejection?: ConversationShareRejection;
   readonly status?: number;
   readonly code?: number;
   readonly reasonCode: ConversationShareFailureReasonCode;
@@ -333,6 +377,12 @@ export class ConversationShareServiceError extends Error {
     if (requestId && /^[A-Za-z0-9._:-]{1,128}$/u.test(requestId)) {
       this.requestId = requestId;
     }
+    const clientRequestId = details.clientRequestId?.trim();
+    if (clientRequestId && /^[A-Za-z0-9._:-]{1,128}$/u.test(clientRequestId)) {
+      this.clientRequestId = clientRequestId;
+    }
+    const rejection = conversationShareRejectionSchema.safeParse(details.rejection);
+    if (rejection.success) this.rejection = rejection.data;
     if (Number.isSafeInteger(details.status)) this.status = details.status;
     if (Number.isSafeInteger(details.code)) this.code = details.code;
     this.reasonCode = details.reasonCode ?? inferFailureReasonCode(message);
@@ -348,6 +398,8 @@ export class ConversationShareServiceError extends Error {
     }
     const safeDetails: ConversationShareFailureDetails = {
       ...(this.requestId === undefined ? {} : { requestId: this.requestId }),
+      ...(this.clientRequestId === undefined ? {} : { clientRequestId: this.clientRequestId }),
+      ...(this.rejection === undefined ? {} : { rejection: this.rejection }),
       ...(this.status === undefined ? {} : { status: this.status }),
       ...(this.code === undefined ? {} : { code: this.code }),
       reasonCode: this.reasonCode,
@@ -395,10 +447,11 @@ export interface ImportConversationShareInput {
 
 /** 导入时落盘的公开 rows 副本；会话里的只读块靠它渲染，不回源。 */
 export interface ImportedConversationShare {
+  contentBlocks?: unknown[];
   shareId: string;
   contextId: string;
   title: string;
-  rows: ConversationRow[];
+  rows: WireConversationRow[];
   /**
    * 本端渲染不了、已跳过的行数（副本里有新 row kind，或 formatVersion 比本端新）。
    * >0 时只读块顶部必须出软提示，否则用户会以为内容丢了。
@@ -446,6 +499,13 @@ export interface IConversationShareService {
     shareCode: string;
     clientRequestId: string;
   }): Promise<ConversationShareContinuation>;
+  /** 当前 Host 登录账号的分享管理列表；cursor 原样回传上一页的 next_cursor。 */
+  listManagedShares(input: { cursor?: string }): Promise<ConversationShareManagedList>;
+  /** 停止分享（服务端 revoke）；重复调用幂等。 */
+  revokeManagedShare(shareId: string): Promise<ConversationShareManagedItem>;
+  restoreManagedShare(shareId: string): Promise<ConversationShareManagedItem>;
+  /** 删除分享，不可恢复；重复调用幂等。 */
+  deleteManagedShare(shareId: string): Promise<void>;
 }
 
 export const IConversationShareService = createServiceDescriptor<IConversationShareService>(
@@ -480,5 +540,9 @@ export function createUnsupportedConversationShareService(options: {
     getImportedConversation: async () => null,
     getPreview: reject("getPreview"),
     getContinuation: reject("getContinuation"),
+    listManagedShares: reject("listManagedShares"),
+    revokeManagedShare: reject("revokeManagedShare"),
+    restoreManagedShare: reject("restoreManagedShare"),
+    deleteManagedShare: reject("deleteManagedShare"),
   };
 }

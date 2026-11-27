@@ -1,6 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import type { IMarketingTouchService } from "@ccbuddy/services";
-import type { MarketingAction, MarketingDelivery } from "@ccbuddy/shared";
+import type { Locale, MarketingAction, MarketingDelivery } from "@ccbuddy/shared";
 import type { CloudDialogHero } from "@/components/cloud-content-dialog/cloudContentDialogTypes.js";
 import type { PreparedMarketingHero } from "@/components/marketing-touch/marketingResources.js";
 import { logger } from "@/logger.js";
@@ -54,7 +54,7 @@ export function createMarketingTouchController(options: {
     signal: AbortSignal,
     phase: (phase: MarketingTouchState["phase"]) => void,
   ) => Promise<MarketingActionResult>;
-  locale: "zh-CN" | "en-US";
+  locale: Locale;
   canOpen: () => boolean;
   refresh: () => void;
 }) {
@@ -284,9 +284,8 @@ export function createMarketingTouchController(options: {
           release(state.banner);
         store.setState({ pending: false, phase: "idle", banner: next });
         await showPending();
-        // 新动作不改变领取资格；立即查询会与异步 confirm 竞争，可能用旧投放再次挡住目标页。
-        if (succeeded && action.type !== "copy_text" && action.type !== "navigate" && !disposed)
-          options.refresh();
+        // 只有领取会改变资格；外链等动作立即查询会与异步 confirm 竞争，使已关闭的旧弹窗重开。
+        if (succeeded && action.type === "claim_ccbuddy_plan" && !disposed) options.refresh();
       }
     }
   }

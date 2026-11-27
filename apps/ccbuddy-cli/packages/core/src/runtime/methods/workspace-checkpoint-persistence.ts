@@ -8,13 +8,7 @@ import {
   parseRewindTriggeredPayload,
   traceContextToLogContext,
 } from "../deps.js";
-import type {
-  SessionEntryInfo,
-  SessionEvent,
-  TraceContext,
-  TraceId,
-  TurnId,
-} from "../deps.js";
+import type { SessionEntryInfo, SessionEvent, TraceContext, TraceId, TurnId } from "../deps.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 
 interface PersistedWorkspaceEvent {

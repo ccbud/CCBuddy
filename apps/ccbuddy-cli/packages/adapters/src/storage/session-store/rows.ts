@@ -25,7 +25,7 @@ export interface SessionRow {
   time_compacting: number | null;
   time_archived: number | null;
   time_deleted: number | null;
-  last_outcome: import("@ccbuddy/contracts").SessionLastOutcome | null;
+  last_outcome: "completed" | "error" | "interrupted" | null;
 }
 
 export interface MessageRow {
@@ -75,11 +75,6 @@ export interface PermissionRow {
 
 export interface LocalSettingRow {
   value: string;
-}
-
-export interface SchemaMigrationRow {
-  checksum: string;
-  id: string;
 }
 
 export interface InputHistoryRow {

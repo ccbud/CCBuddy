@@ -1,3 +1,7 @@
+import type {
+  PreinstalledToolsState,
+  PreinstalledToolsCommand,
+} from "@ccbuddy/shared/preinstalled-tools";
 /* eslint-disable max-lines -- 跨端 platform contract 集中声明 renderer 能力；OAuth 与 browser lifecycle 必须保持 desktop/web 类型合同，本 MR 不拆分平台边界。 */
 import type {
   DockerConnectOptions,
@@ -15,7 +19,16 @@ import type {
 } from "./mcp.js";
 import type { OAuthStateRegistration } from "./oauth.js";
 import type { AppSettings, Locale } from "./protocol.js";
-import type { ArmsCustomEventPayload, RendererTelemetryEventPayload } from "./telemetry.js";
+import type {
+  ExtensionNotificationClick,
+  ExtensionNotificationPayload,
+  NotificationsShowResult,
+} from "#src/extension-host/notifications.js";
+import type {
+  ArmsCustomEventPayload,
+  RendererTelemetryEventPayload,
+  TelemetryRendererContext,
+} from "./telemetry.js";
 import type {
   RendererActionTraceBatchV1,
   RendererActionTraceConfigV1,
@@ -37,6 +50,19 @@ export type {
   UpdateCheckResultPayload,
   UpdateStatePayload,
 } from "./update.js";
+
+export interface AppNavigationTarget {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  taskId: string;
+}
+export type AppNavigationResult =
+  | { status: "opened"; uiTarget?: string }
+  | { status: "unavailable"; reason?: string; uiTarget?: string };
+export type AppNavigationHandler = (
+  target: AppNavigationTarget,
+  signal: AbortSignal,
+) => Promise<AppNavigationResult>;
 
 export interface TaskNotificationPayload {
   taskId: string;
@@ -104,7 +130,35 @@ export interface BrowserViewCloseTabRequest {
   sessionId: string;
 }
 
+export const BROWSER_VIEW_DRAFT_SESSION_ID = "unscoped";
+
+export interface BrowserViewPromoteDraftTabsRequest {
+  tabIds: string[];
+  workspaceKey: string;
+  remoteSessionId?: string;
+  sessionId: string;
+}
+
 export const LOCAL_MEDIA_PREVIEW_SCHEME = "ccbuddy-media";
+export const BROWSER_LOCAL_PREVIEW_SCHEME = "ccbuddy-html";
+
+/** 仅还原展示/外部打开地址；目录授权和签名校验始终由 main 执行。 */
+export function browserPreviewSourceUrl(input: string): string {
+  try {
+    const url = new URL(input);
+    if (url.protocol !== `${BROWSER_LOCAL_PREVIEW_SCHEME}:`) return input;
+    const [, directory, ...segments] = url.pathname.split("/");
+    const root = new URL(decodeURIComponent(directory ?? ""));
+    if (root.protocol !== "file:" || root.host || !root.pathname.endsWith("/")) return input;
+    const source = new URL(segments.join("/"), root);
+    if (!source.href.startsWith(root.href)) return input;
+    source.search = url.search;
+    source.hash = url.hash;
+    return source.href;
+  } catch {
+    return input;
+  }
+}
 
 export function buildLocalMediaPreviewUrl(path: string): string {
   const url = new URL(`${LOCAL_MEDIA_PREVIEW_SCHEME}://local/preview`);
@@ -213,6 +267,21 @@ export interface EditorInfo {
   iconDataUrl: string;
 }
 
+/** 系统对当前文件类型注册的应用；id 仅由宿主解析，不能当作命令执行。 */
+export interface FileApplicationInfo {
+  id: string;
+  name: string;
+  iconDataUrl?: string;
+  isDefault: boolean;
+}
+
+export interface FileApplicationTarget {
+  path: string;
+  pathKind: "file" | "directory";
+  workspaceIdentity?: string;
+  remoteTarget?: OpenInEditorRemoteTarget;
+}
+
 export interface ApplicationIconInfo {
   iconDataUrl: string;
 }
@@ -283,6 +352,7 @@ export type SaveFileRequest =
     };
 
 export interface SaveFileResult {
+  /** 桌面表示已写入文件；Web 仅表示已将下载交给浏览器，不确认最终落盘。 */
   canceled?: boolean;
   error?: string;
   path?: string;
@@ -294,6 +364,51 @@ export interface PrintPageToPdfResult {
   /** PDF 字节；success 时存在 */
   data?: ArrayBuffer;
   /** "print_in_progress" | "print_failed" */
+  error?: string;
+}
+
+/**
+ * 系统麦克风权限检查结果（docs/chat/composer-voice-input.md「麦克风权限」）。
+ * - granted：可以调用 getUserMedia
+ * - denied：系统拒绝，需要用户到系统设置开启
+ * - unsupported：系统没有权限接口（Linux），由 getUserMedia 的错误决定
+ */
+export type MicrophoneAccessResult = "granted" | "denied" | "unsupported";
+
+/**
+ * macOS「重新授权」结果（docs/chat/composer-voice-input.md「权限引导浮层」）。
+ * - granted：已获得权限
+ * - denied：重置后系统弹框中用户仍选择拒绝
+ * - restart-required：重置后当前进程仍读到 denied，重启 CCbuddy 后才会弹框
+ * - failed：不能重置（非 macOS、MDM 限制、tccutil 失败），改由系统设置页开启
+ */
+export type MicrophoneAccessResetResult = "granted" | "denied" | "restart-required" | "failed";
+
+/** privacy：系统麦克风隐私页；sound：系统声音输入设备页 */
+export type MicrophoneSettingsTarget = "privacy" | "sound";
+
+/** guest 视口内的裁剪区域，全部是 guest CSS px；视口宽高用于换算实际帧的像素比例。 */
+export interface CaptureBrowserGuestPageClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+export interface CaptureBrowserGuestPageRequest {
+  /** 内置浏览器 `<webview>` 的 guest webContents id（renderer 由 `getWebContentsId()` 取得） */
+  webContentsId: number;
+  /** 只要视口内某一块（选元素截图）；不传时返回整个可见视口 */
+  clip?: CaptureBrowserGuestPageClip;
+}
+
+export interface CaptureBrowserGuestPageResult {
+  success: boolean;
+  /** PNG 字节；success 时存在 */
+  data?: ArrayBuffer;
+  /** "guest_not_found" | "guest_not_owned" | "capture_in_progress" | "capture_timeout" | "capture_failed" | "clip_out_of_view" */
   error?: string;
 }
 
@@ -476,6 +591,21 @@ export interface RemoteSessionClosedEvent {
   reason: "host-exit";
   exitCode: number | null;
   signal: string | null;
+  error?: string;
+  /** true = Source transport 仍在自动恢复预算内，UI 不得做终态失败收口。 */
+  recoverable?: boolean;
+  recoveryAttempt?: number;
+  recoveryLimit?: number;
+  recoveryBudgetExhausted?: boolean;
+  reasonCode?: string;
+  retryable?: boolean;
+}
+
+export interface RemoteSessionReconnectedEvent {
+  previousSessionId: string;
+  sessionId: string;
+  workspacePath: string;
+  workspaceIdentity: string;
 }
 
 export interface EmbeddedBrowserOpenUrlRequest {
@@ -568,19 +698,13 @@ export interface EmbeddedBrowserSitePermissionResetRequest {
   origin: string;
 }
 
-export interface BotRemoteWorkspaceReconnectedEvent {
-  sessionId: string;
-  workspacePath: string;
-  workspaceIdentity: string;
-  target: RemoteTarget;
-}
-
 export interface ConnectRemoteRequest {
   target: RemoteTarget;
   requestId?: string;
   workspacePath?: string;
   workspaceIdentity?: string;
   connectTrigger?: import("./remoteUsageTelemetry.js").RemoteWorkspaceConnectTrigger;
+  confirmSourceServerInstall?: boolean;
 }
 
 export interface CancelPendingRemoteConnectionRequest {
@@ -591,6 +715,41 @@ export interface BindRemoteWorkspaceSessionContextRequest {
   remoteSessionId: string;
   workspacePath: string;
   workspaceIdentity?: string;
+  workspacePurpose?: import("./workspacePurpose.js").WorkspacePurpose;
+}
+
+export interface BindRemoteWorkspaceSessionContextResult {
+  sourceServerId?: string;
+  remoteSessionId: string;
+  workspacePath: string;
+  workspaceIdentity: string;
+  workspacePurpose?: import("./workspacePurpose.js").WorkspacePurpose;
+  /** Desktop 专用的 tab 原地换代提示；不是任务路由身份，手机 replayable 客户端忽略。 */
+  previousWorkspaceIdentity?: string;
+}
+
+export type BindRemoteWorkspaceSessionContextIpcResult =
+  | { success: true; result: BindRemoteWorkspaceSessionContextResult }
+  | {
+      success: false;
+      error: string;
+      reasonCode?: string;
+      retryable?: boolean;
+    };
+
+/**
+ * 把 bind IPC 的结构化结果还原成成功结果，或带 code/retryable 的 Error。
+ * Bug 原因：preload 抛出的 Error 跨 contextBridge 会丢失自定义属性，renderer 只剩 message；
+ * 必须由 preload 原样返回结构化结果，在 renderer 一侧调用本函数。
+ */
+export function unwrapRemoteWorkspaceBindResult(
+  result: BindRemoteWorkspaceSessionContextIpcResult,
+): BindRemoteWorkspaceSessionContextResult {
+  if (result.success) return result.result;
+  const error = new Error(result.error) as Error & { code?: string; retryable?: boolean };
+  if (result.reasonCode) error.code = result.reasonCode;
+  if (result.retryable !== undefined) error.retryable = result.retryable;
+  throw error;
 }
 
 export const DesktopCommandIds = {
@@ -609,9 +768,11 @@ export const DesktopCommandIds = {
   OpenChangelog: "openChangelog",
   CheckForUpdates: "checkForUpdates",
   RelaunchApp: "relaunchApp",
+  RestartAfterCrash: "restartAfterCrash",
   OpenFeedback: "openFeedback",
   OpenCommunity: "openCommunity",
   ExportLogs: "exportLogs",
+  PullMobileLogs: "pullMobileLogs",
   ToggleDevTools: "toggleDevTools",
   OpenResourceManager: "openResourceManager",
   ToggleCCbuddyStdioTapDevProxy: "toggleCCbuddyStdioTapDevProxy",
@@ -650,6 +811,12 @@ export type CuaOsSupport =
  * 业务服务（文件、终端、凭据等）走 IServiceAccessor 的 RPC 通道。
  */
 export interface IPlatformService {
+  getPreinstalledToolsState?(): Promise<PreinstalledToolsState>;
+  executePreinstalledToolsCommand?(command: PreinstalledToolsCommand): Promise<void>;
+  onPreinstalledToolsState?(callback: (state: PreinstalledToolsState) => void): () => void;
+  /** 是否支持当前客户端本机文件的默认应用与目录操作；Web 不具备此能力。 */
+  canOpenLocalFiles?: boolean;
+
   /** 当前平台的文件选择框是否能返回 agent 可访问的本地绝对路径 */
   canSelectFilePath?: boolean;
 
@@ -662,13 +829,16 @@ export interface IPlatformService {
   /** 打开系统目录选择框，返回选中路径或 null */
   selectDirectory(): Promise<string | null>;
 
+  /** 打开系统多目录选择框，返回 Host 可访问的本地路径；取消返回空数组，Web 不提供 */
+  selectDirectories?(): Promise<string[]>;
+
   /** 打开系统文件选择框，返回选中文件路径或 null */
   selectFile(): Promise<string | null>;
 
   /** 打开系统多文件选择框，返回选中的文件路径；取消时返回空数组 */
   selectFiles?(): Promise<string[]>;
 
-  /** 使用宿主原生另存为对话框写入文件；普通 Web 端不实现 */
+  /** 桌面通过原生另存为对话框写入；Web 在当前浏览器发起下载。 */
   saveFile?(payload: SaveFileRequest): Promise<SaveFileResult>;
 
   /**
@@ -676,6 +846,25 @@ export interface IPlatformService {
    * 页面尺寸由 renderer 注入的 @page CSS 决定（preferCSSPageSize）；仅 Desktop 实现。
    */
   printPageToPdf?(): Promise<PrintPageToPdfResult>;
+
+  /**
+   * 麦克风系统权限（仅 Desktop 实现）。macOS 未询问过时弹出系统授权；
+   * openSettings 只打开固定的系统设置地址，返回 false 表示当前系统没有可跳转的页面。
+   */
+  microphone?: {
+    ensureAccess(): Promise<MicrophoneAccessResult>;
+    /** macOS：重置 CCbuddy 自己的麦克风授权记录并重新请求；其他系统返回 failed */
+    resetAccess(): Promise<MicrophoneAccessResetResult>;
+    openSettings(target: MicrophoneSettingsTarget): Promise<boolean>;
+  };
+
+  /**
+   * 在 main 进程截取内置浏览器 guest 当前可见视口为 PNG。renderer 侧 `<webview>.capturePage()`
+   * 会让 renderer 原生崩溃（V8 FATAL），与 Agent 截图一样只能由 main 取帧；仅 Desktop 实现。
+   */
+  captureBrowserGuestPage?(
+    payload: CaptureBrowserGuestPageRequest,
+  ): Promise<CaptureBrowserGuestPageResult>;
 
   /**
    * 从浏览器 File 对象解析宿主本地路径；只有 Desktop preload 能安全实现。
@@ -707,10 +896,8 @@ export interface IPlatformService {
   /** 订阅远程 workspace session 关闭事件，返回 disposer */
   onRemoteSessionClosed(handler: (event: RemoteSessionClosedEvent) => void): () => void;
 
-  /** 订阅 Bot 触发的远程 workspace 重连成功事件，返回 disposer */
-  onBotRemoteWorkspaceReconnected(
-    handler: (event: BotRemoteWorkspaceReconnectedEvent) => void,
-  ): () => void;
+  /** 订阅 Source transport 自动重连后的 logical session 换代事件。 */
+  onRemoteSessionReconnected?(handler: (event: RemoteSessionReconnectedEvent) => void): () => void;
 
   /** 检查目录是否已在其他窗口打开；如果是则激活该窗口并切到对应 tab */
   activateOrSetWorkspace(path: string): Promise<{ activated: boolean }>;
@@ -720,11 +907,27 @@ export interface IPlatformService {
     options: RemoteTarget,
     requestId?: string,
     context?: {
-      workspacePath: string;
+      workspacePath?: string;
       workspaceIdentity?: string;
       connectTrigger?: import("./remoteUsageTelemetry.js").RemoteWorkspaceConnectTrigger;
+      confirmSourceServerInstall?: boolean;
     },
-  ): Promise<{ success: boolean; error?: string; sessionId?: string }>;
+  ): Promise<{
+    success: boolean;
+    error?: string;
+    reasonCode?: string;
+    retryable?: boolean;
+    sessionId?: string;
+    /** 本次直接复用的在线连接目标，凭据不参与认证也不得持久化。 */
+    reusedConnectionTarget?: RemoteTarget;
+    /** 安装/升级等待时由 Host 确认的实际连接线路。 */
+    profileId?: string;
+    /** WSL 安装/升级等待使用本次已解析身份；预览失败也不能重新选择系统默认值。 */
+    resolvedWslTarget?: Required<WSLConnectOptions>;
+  }>;
+
+  /** Desktop-only：请求在线 Source 的无 workspace 配置 attachment。 */
+  requestSourceSettingsAttachment?(sourceServerId: string): Promise<{ attachmentId: string }>;
 
   /** 取消当前窗口尚未建立完成的远程连接（可选：Web 平台可忽略） */
   cancelPendingRemoteConnection?(requestId?: string): Promise<void>;
@@ -732,7 +935,7 @@ export interface IPlatformService {
   /** 将 canonical workspace 身份绑定到已创建的远程 logical session。 */
   bindRemoteWorkspaceSessionContext?(
     context: BindRemoteWorkspaceSessionContextRequest,
-  ): Promise<void>;
+  ): Promise<BindRemoteWorkspaceSessionContextResult>;
 
   /** 释放当前窗口里已创建的远程 session */
   disposeRemoteSession(sessionId: string): Promise<void>;
@@ -832,6 +1035,20 @@ export interface IPlatformService {
   /** 触发任务状态对应的系统通知，由宿主环境决定是否真正展示 */
   showTaskNotification(payload: TaskNotificationPayload): void;
 
+  /**
+   * 扩展的系统通知（docs/plugins/extension-host.md §18.1 H8）：Main 判断窗口焦点与平台支持后弹出，
+   * 返回是否弹出与原因。Web 与手机远控不实现。
+   */
+  showExtensionNotification?(
+    payload: ExtensionNotificationPayload,
+  ): Promise<NotificationsShowResult>;
+
+  /** 用户点了扩展通知：Main 恢复并聚焦窗口后回调，带要打开的视图。返回 disposer。 */
+  onExtensionNotificationClick?(handler: (click: ExtensionNotificationClick) => void): () => void;
+
+  /** 同步当前 UI 上下文，供宿主启动/日活事件使用；Web 可不实现。 */
+  syncTelemetryContext?(context: TelemetryRendererContext): void;
+
   /** 通过宿主环境统一上报 UI 侧 telemetry 事件 */
   reportTelemetryEvent(payload: RendererTelemetryEventPayload): Promise<void>;
 
@@ -846,7 +1063,7 @@ export interface IPlatformService {
   ): () => void;
   /** Renderer → Main：发送已结束的 ui_action batch；严格旁路、fire-and-forget。 */
   reportRendererActionTraceBatch?(batch: RendererActionTraceBatchV1): void;
-  reportLocalTtftBatch?(batch: import("./localTtft.js").LocalTtftBatch): void;
+  reportLocalTtftBatch?(batch: import("./local-ttft/contract.js").LocalTtftBatch): void;
 
   /**
    * Renderer → Main：主窗口 renderer 每 60 秒的 heap 读数，进 `renderer_main` 角色事件。单向 send、fire-and-forget；
@@ -907,6 +1124,9 @@ export interface IPlatformService {
     request: EmbeddedBrowserSitePermissionResetRequest,
   ): Promise<EmbeddedBrowserSitePermissionsSnapshot>;
   /** 注册 agent 首次 browser 命令建好受控 view 的回调（自动开 browser-use tab），返回 disposer */
+  onBrowserViewDownloadStarted?(
+    handler: (payload: { webContentsId: number; urls: string[] }) => void,
+  ): () => void;
   onBrowserViewReady?(
     handler: (payload: {
       workspaceKey: string;
@@ -1001,11 +1221,17 @@ export interface IPlatformService {
   /** 注册用户点击系统通知后跳转到对应任务的回调，返回 disposer */
   onTaskNotificationClick(handler: (taskId: string) => void): () => void;
 
+  /** 显式 App 导航能力：只在桌面导航 owner 挂载时注册，返回真实导航提交结果。 */
+  onAppControlNavigation?(handler: AppNavigationHandler): () => void;
+
   /** 导出日志：打包 ~/.ccbuddy/v2 及外部 agent 日志为 zip 并在系统文件浏览器中显示 */
   exportLogs(): Promise<{ success: boolean; path?: string; error?: string }>;
 
   /** 截取当前窗口，用于错误反馈携带现场画面；Web fallback 可返回 null */
   captureWindowScreenshot?(): Promise<WindowScreenshotResult | null>;
+
+  /** 可信宿主导航自己承载的 guest；main 负责本地 HTML 的目录授权。 */
+  browserViewLoadUrl?(payload: { webContentsId: number; url: string }): Promise<void>;
 
   /** `<webview>` guest 上报；active=true 表示 agent 无 tabId 命令优先读取当前可见页。 */
   browserViewAttachGuest?(payload: {
@@ -1027,6 +1253,9 @@ export interface IPlatformService {
 
   /** 上报 selected/visible/loading 与恢复元数据。 */
   browserViewReportResidency?(payload: BrowserViewResidencyReportPayload): Promise<void>;
+
+  /** 草稿首发：把草稿 human tab 的 main owner 从 unscoped 升级为新会话；返回已升级的 tabId。 */
+  browserViewPromoteDraftTabs?(payload: BrowserViewPromoteDraftTabsRequest): Promise<string[]>;
 
   /** renderer 已按指定 generation 卸载 guest。 */
   browserViewSuspendReady?(payload: { tabId: string; generation: number }): Promise<void>;
@@ -1126,8 +1355,17 @@ export interface IPlatformService {
   /** 用户确认重启安装更新 */
   quitAndInstallUpdate(): Promise<void>;
 
-  /** 获取系统中已安装的编辑器/终端列表（含图标） */
-  getInstalledEditors(): Promise<EditorInfo[]>;
+  /** 获取已安装编辑器/终端；传文件路径时追加匹配类型的本机应用（含图标）。 */
+  getInstalledEditors(filePath?: string): Promise<EditorInfo[]>;
+
+  /** 本机文件的系统关联应用；Web/远端/目录不提供本机应用。 */
+  getFileApplications?(target: FileApplicationTarget): Promise<FileApplicationInfo[]>;
+
+  /** 重新确认系统关联后，使用该应用打开本机文件。 */
+  openFileWithApplication?(
+    applicationId: string,
+    target: FileApplicationTarget,
+  ): Promise<{ success: boolean; error?: string }>;
 
   /** 用指定编辑器打开路径 */
   openInEditor(
@@ -1143,6 +1381,12 @@ export interface IPlatformService {
 
   /** 同步应用菜单语言，驱动 main 进程重建原生菜单 */
   setApplicationLocale(locale: Locale): Promise<void>;
+
+  /**
+   * 保存 Agent 回复语言（空串清除）；Main 写盘后推送给各窗口 Host。
+   * 只有桌面端实现：Web 远控不写本机设置，设置页按方法缺失显示本机提示。
+   */
+  setReplyLanguage?(language: string): Promise<void>;
 
   /** 同步桌面标题栏亮/暗色，驱动原生窗口控制按钮配色 */
   setTitleBarTheme(theme: DesktopTitleBarTheme): Promise<void>;

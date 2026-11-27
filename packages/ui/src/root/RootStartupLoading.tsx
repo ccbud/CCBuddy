@@ -26,9 +26,21 @@ export function RootStartupLoading({ label, children, busy = true }: RootStartup
 }
 
 /** 初始化与引导共用品牌图标，保持底色、描边、圆角和标志比例一致。 */
-export function CCbuddyStartupLogoBadge({ animated = true }: { animated?: boolean }) {
+export function CCbuddyStartupLogoBadge({
+  animated = true,
+  size = "default",
+}: {
+  animated?: boolean;
+  size?: "default" | "titlebar";
+}) {
   return (
-    <div className="relative size-24 overflow-hidden rounded-3xl bg-[#2b2d2c] shadow-xl/20 before:pointer-events-none before:absolute before:inset-0 before:rounded-[inherit] before:border before:border-[rgba(255,255,255,0.1)] before:content-['']">
+    <div
+      data-desktop-logo-badge={size === "titlebar" ? "true" : undefined}
+      className={cn(
+        "relative overflow-hidden bg-[#2b2d2c] before:pointer-events-none before:absolute before:inset-0 before:rounded-[inherit] before:border before:border-[rgba(255,255,255,0.1)] before:content-['']",
+        size === "titlebar" ? "size-5 rounded shadow-sm/20" : "size-24 rounded-3xl shadow-xl/20",
+      )}
+    >
       <CCbuddyStartupLogo className="size-full object-cover" animated={animated} />
     </div>
   );

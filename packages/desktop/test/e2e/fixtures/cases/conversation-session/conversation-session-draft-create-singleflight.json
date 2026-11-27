@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-draft-create-singleflight",
+  "spec": "./test/e2e/conversation-session/composer/conversation-session-draft-create-singleflight.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-draft-create-singleflight.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-draft-create-singleflight-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "draft-singleflight",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "验证预热创建在途的首发竞态；模型只用于完成真实发送与详情绑定。"
+    }
+  ]
+}

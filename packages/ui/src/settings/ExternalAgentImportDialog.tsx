@@ -5,7 +5,7 @@ import {
   CheckIcon,
   ChevronDown,
   ChevronRight,
-  Loader2Icon,
+  LoaderCircle,
   MinusIcon,
   RefreshCw,
   XIcon,
@@ -635,7 +635,7 @@ function ExternalAgentImportDialog({
 
                 {loading ? (
                   <div className="flex h-full min-h-48 items-center justify-center gap-2 rounded-lg bg-surface px-4 py-10 text-ui-base text-foreground-subtle">
-                    <Loader2Icon className="size-4 animate-spin" />
+                    <LoaderCircle className="size-4 animate-spin" />
                     {intl.formatMessage({ id: `settings.${category}.import.scanning` })}
                   </div>
                 ) : step === "importing" ? (
@@ -769,7 +769,7 @@ export function ExternalAgentImportSelectionPanel({
           ) : null}
           {state.loading ? (
             <div className="flex h-full min-h-48 items-center justify-center gap-2 rounded-lg bg-surface px-4 py-10 text-ui-base text-foreground-subtle">
-              <Loader2Icon className="size-4 animate-spin" />
+              <LoaderCircle className="size-4 animate-spin" />
               {intl.formatMessage({ id: `settings.${category}.import.scanning` })}
             </div>
           ) : state.discovery && state.discovery.agents.length > 0 ? (

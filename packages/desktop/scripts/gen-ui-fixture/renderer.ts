@@ -72,6 +72,9 @@ void (async () => {
       target,
       files: service,
       state: service,
+      openExternal: () => {
+        throw new Error("External links belong to the React fixture");
+      },
       confirm: async (prompt) => {
         confirmations++;
         return prompt;

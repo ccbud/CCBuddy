@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "caseName": "oauth-completion-race",
+  "spec": "./test/e2e/auth-config/login/oauth-completion-race.test.ts",
+  "providerRequestPolicy": "none",
+  "noProviderRequests": true,
+  "providerFixtures": [],
+  "fileFixtures": [],
+  "requests": []
+}

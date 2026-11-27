@@ -54,7 +54,8 @@ export function registerRuntimeBackgroundTask(
   const taskType = runtimeTaskTypeForToolCall(toolCall);
   if (!taskType || !deps.runtimeTaskRegistry) return;
   const existing = deps.runtimeTaskRegistry.get(taskId);
-  const description = runtimeTaskDescription(toolCall, output) ?? defaultRuntimeTaskDescription(taskType);
+  const description =
+    runtimeTaskDescription(toolCall, output) ?? defaultRuntimeTaskDescription(taskType);
   const outputFile = backgroundTaskOutputMetadata(output).outputFile;
   // 同进程 cancel 终态 → 未重启即 resume（dwf 的 resume 重臂，
   // v4 命令路径与工具路径在 trackBackgroundTask 汇合同病）时，既有条目携带上一轮 claim 的
@@ -86,6 +87,12 @@ export function registerRuntimeBackgroundTask(
     ...existing,
     agentId: existing?.agentId ?? taskId,
     agentType: existing?.agentType ?? taskType,
+    // 后台命令的原文：compaction 补回运行中的后台命令时用（rewind-compact.md「后台任务状态」）。
+    ...(taskType === "local_bash" &&
+    isRecord(toolCall.input) &&
+    typeof toolCall.input.command === "string"
+      ? { command: existing?.command ?? toolCall.input.command }
+      : {}),
     description: existing?.description ?? description,
     isBackgrounded: true,
     outputFile: outputFile ?? existing?.outputFile,
@@ -130,8 +137,7 @@ export function updateRuntimeBackgroundTask(
       : {
           ...current,
           completedAt: runtimeTaskCompletedAt(status, snapshot) ?? current.completedAt,
-          description:
-            runtimeTaskDescription(toolCall, undefined, snapshot) ?? current.description,
+          description: runtimeTaskDescription(toolCall, undefined, snapshot) ?? current.description,
           error: runtimeTaskError(snapshot) ?? current.error,
           exitCode: runtimeTaskExitCode(snapshot) ?? current.exitCode,
           isBackgrounded: true,

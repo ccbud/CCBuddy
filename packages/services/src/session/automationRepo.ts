@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   isTasksStorageMigrated,
   isTasksStoragePrepared,
@@ -34,6 +35,21 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
 type DatabaseSyncInstance = InstanceType<typeof DatabaseSync>;
 
+/** 在调用方的归档事务内暂停全部绑定任务，不撤销已认领轮次或改变终态。 */
+export function pauseAutomationsForArchivedTask(
+  db: DatabaseSyncInstance,
+  workspaceKey: string,
+  taskId: string,
+): void {
+  // 只写归档会留下仍可调度的任务；共用原连接使归档与暂停一起提交或回滚。
+  db.prepare(`UPDATE automations SET enabled=0, lifecycle_status='paused', updated_at=?
+    WHERE workspace_key=? AND target_task_id=? AND enabled=1 AND lifecycle_status='active'`).run(
+    Date.now(),
+    workspaceKey,
+    taskId,
+  );
+}
+
 /** 派发失败退避常量。 */
 export const DISPATCH_RETRY_BASE_MS = 30_000;
 export const DISPATCH_RETRY_CAP_MS = 15 * 60_000;
@@ -66,6 +82,9 @@ interface AutomationRow {
   workspace_key: string;
   workspace_path: string;
   workspace_identity: string | null;
+  project_id?: string | null;
+  host_id?: string | null;
+  additional_directories?: string | null;
   target_task_id: string | null;
   bot_delivery_target: string | null;
   location_kind: string;
@@ -125,6 +144,16 @@ function rowToAutomation(row: AutomationRow): CCbuddyAutomation {
     workspaceKey: row.workspace_key,
     workspacePath: row.workspace_path,
     workspaceIdentity: row.workspace_identity ?? undefined,
+    ...(row.project_id == null ? {} : { projectId: row.project_id }),
+    ...(row.host_id == null ? {} : { hostId: row.host_id }),
+    ...(row.additional_directories == null
+      ? {}
+      : {
+          additionalDirectories: z
+            .array(z.string().min(1))
+            .max(256)
+            .parse(JSON.parse(row.additional_directories)),
+        }),
     targetTaskId: row.target_task_id ?? undefined,
     locationKind: row.location_kind === "remote" ? "remote" : "local",
     recurring: row.recurring === 1,
@@ -225,6 +254,7 @@ export function computeRetryAt(now: number, attempts: number): number {
  * 用 cron 库算好后传入，仓库不感知 cron 语义。
  */
 export class AutomationRepo {
+  migrationBackupSkipped = false;
   private db: DatabaseSyncInstance | null = null;
   private dbPath: string | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -283,9 +313,9 @@ export class AutomationRepo {
       this.db.exec("PRAGMA journal_mode = WAL");
       this.db.exec("PRAGMA synchronous = NORMAL");
     }
-    // Worker 已完成该路径的原始准备，业务连接不再重复全表修复。
     if (isTasksStoragePrepared(path, this.db)) return;
-    if (!isTasksStorageMigrated(path, this.db)) runTasksDatabaseMigrations(this.db);
+    if (!isTasksStorageMigrated(path, this.db))
+      this.migrationBackupSkipped = (await runTasksDatabaseMigrations(this.db, path)).backupSkipped;
   }
 
   private getDatabase(): DatabaseSyncInstance {
@@ -336,7 +366,7 @@ export class AutomationRepo {
       db.prepare(
         `INSERT INTO automations (
           automation_id, title, cron_expr, prompt, model, provider, model_selection,
-          workspace_key, workspace_path, workspace_identity, target_task_id, bot_delivery_target, location_kind,
+          workspace_key, workspace_path, workspace_identity, project_id, host_id, additional_directories, target_task_id, bot_delivery_target, location_kind,
           recurring, max_runs, end_at, schedule_rule, schedule_edited_by_user,
           run_count, enabled, lifecycle_status,
           next_run_at, last_run_at, running, claimed_at,
@@ -345,7 +375,7 @@ export class AutomationRepo {
           created_at, updated_at
         ) VALUES (
           @automation_id, @title, @cron_expr, @prompt, @model, @provider, @model_selection,
-          @workspace_key, @workspace_path, @workspace_identity, @target_task_id, @bot_delivery_target, 'local',
+          @workspace_key, @workspace_path, @workspace_identity, @project_id, @host_id, @additional_directories, @target_task_id, @bot_delivery_target, 'local',
           @recurring, @max_runs, @end_at, @schedule_rule, 0,
           0, @enabled, @lifecycle_status,
           @next_run_at, NULL, 0, NULL,
@@ -367,6 +397,14 @@ export class AutomationRepo {
         workspace_key: workspaceKey,
         workspace_path: params.workspacePath,
         workspace_identity: params.workspaceIdentity ?? null,
+        project_id: params.projectId ?? null,
+        host_id: params.hostId ?? null,
+        additional_directories:
+          params.additionalDirectories === undefined
+            ? null
+            : JSON.stringify(
+                z.array(z.string().min(1)).max(256).parse(params.additionalDirectories),
+              ),
         target_task_id: params.targetTaskId ?? null,
         bot_delivery_target: params.botDeliveryTarget
           ? JSON.stringify(params.botDeliveryTarget)
@@ -577,6 +615,28 @@ export class AutomationRepo {
         now: Date.now(),
         workspace_key: workspaceKey ?? null,
       });
+  }
+
+  /**
+   * 执行轮自暂停（CronPauseSelf）：只有 active 且 enabled 的任务才转 paused，返回是否真的改了状态。
+   * paused / completed / failed / 已删除都返回 false，避免把终态任务改写成 paused。
+   * 保留 next_run_at / run_count，恢复仍走 setEnabled(true)。
+   */
+  async pause(automationId: string, workspaceKey?: string): Promise<boolean> {
+    await this.ensureReady();
+    const result = this.getDatabase()
+      .prepare(
+        `UPDATE automations
+        SET enabled = 0,
+            lifecycle_status = 'paused',
+            updated_at = @now
+        WHERE automation_id = @id
+          AND (@workspace_key IS NULL OR workspace_key = @workspace_key)
+          AND lifecycle_status = 'active'
+          AND enabled = 1`,
+      )
+      .run({ id: automationId, now: Date.now(), workspace_key: workspaceKey ?? null });
+    return result.changes > 0;
   }
 
   /** 终态任务手动重跑：回 active、清计数与重试态，nextRunAt 由调用方重算传入。 */
@@ -802,6 +862,9 @@ export class AutomationRepo {
             a.workspace_key AS a_workspace_key,
             a.workspace_path AS a_workspace_path,
             a.workspace_identity AS a_workspace_identity,
+            a.project_id AS a_project_id,
+            a.host_id AS a_host_id,
+            a.additional_directories AS a_additional_directories,
             a.target_task_id AS a_target_task_id,
             a.location_kind AS a_location_kind,
             a.recurring AS a_recurring,
@@ -879,6 +942,9 @@ export class AutomationRepo {
             workspace_key: row["a_workspace_key"] as string,
             workspace_path: row["a_workspace_path"] as string,
             workspace_identity: (row["a_workspace_identity"] as string | null) ?? null,
+            project_id: row["a_project_id"] as string | null,
+            host_id: row["a_host_id"] as string | null,
+            additional_directories: row["a_additional_directories"] as string | null,
             target_task_id: (row["a_target_task_id"] as string | null) ?? null,
             location_kind: row["a_location_kind"] as string,
             recurring: row["a_recurring"] as number,
@@ -930,7 +996,8 @@ export class AutomationRepo {
   /**
    * 派发成功结算：展示总数与定时派发数各 +1、写 last_run_at、清重试态、复位 running；
    * 循环任务回 active（nextRunAt 由调用方按实际派发时间重算传入）；
-   * 有限次任务达 max_runs 转 completed（enabled=0、next_run_at=NULL）。
+   * 有限次任务达 max_runs 转 completed（enabled=0、next_run_at=NULL）；
+   * 派发窗口内已被暂停（CronPauseSelf / UI 暂停）的任务保持 paused，只记录本次派发。
    */
   async markDispatched(
     automationId: string,
@@ -946,6 +1013,12 @@ export class AutomationRepo {
     // scheduled_run_count；run_count 还包含 manual run，只能用于 Card 累计展示。
     const reachedMax = row.recurring === 0 && scheduledRunCount >= (row.max_runs ?? 1);
     const reachedEnd = row.end_at !== null && (options.nextRunAt ?? Infinity) > row.end_at;
+    const completed = reachedMax || reachedEnd ? 1 : 0;
+    // 修复原因：scheduler 回写与 Host 侧暂停（CronPauseSelf / UI setEnabled(false)）跑在两个
+    // 独立连接上，旧实现在这里无条件写 lifecycle_status='active'、enabled=1，会把派发窗口内
+    // 刚落下的 paused 复活成 active。改为在同一条 UPDATE 里按行的当前值判定（SQLite SET 表达式
+    // 读取的是更新前的旧值）：completed 优先收口；否则 enabled=0 的行保持原 lifecycle / enabled，
+    // 只记录本次派发；其余仍回 active。不引入二次读取或重试，避免再开新的竞态窗口。
     this.getDatabase()
       .prepare(
         `UPDATE automations
@@ -958,9 +1031,13 @@ export class AutomationRepo {
             last_error = NULL,
             running = 0,
             claimed_at = NULL,
-            lifecycle_status = @lifecycle_status,
-            enabled = @enabled,
-            next_run_at = @next_run_at,
+            lifecycle_status = CASE
+              WHEN @completed = 1 THEN 'completed'
+              WHEN enabled = 0 THEN lifecycle_status
+              ELSE 'active'
+            END,
+            enabled = CASE WHEN @completed = 1 THEN 0 ELSE enabled END,
+            next_run_at = CASE WHEN @completed = 1 THEN NULL ELSE @next_run_at END,
             updated_at = @now
         WHERE automation_id = @id`,
       )
@@ -969,9 +1046,8 @@ export class AutomationRepo {
         run_count: runCount,
         scheduled_run_count: scheduledRunCount,
         dispatched_at: options.dispatchedAt,
-        lifecycle_status: reachedMax || reachedEnd ? "completed" : "active",
-        enabled: reachedMax || reachedEnd ? 0 : 1,
-        next_run_at: reachedMax || reachedEnd ? null : options.nextRunAt,
+        completed,
+        next_run_at: options.nextRunAt,
         now: options.dispatchedAt,
       });
   }

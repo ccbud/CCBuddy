@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-plan-mode-capabilities",
+  "spec": "./test/e2e/conversation-session/planning/conversation-session-plan-mode-capabilities.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-plan-mode-capabilities.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "conversation-session-plan-mode-capabilities-title-sidecar",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "运行时证据显示标题旁路缺少响应；在本例显式登记固定标题，避免依赖 legacy fixture 或触发后台网络重试。"
+    },
+    {
+      "id": "upstream-plan-mode-deny-enter-plan-call",
+      "description": "首轮请求返回 EnterPlanMode，进入 plan mode。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "需要稳定制造 plan mode 状态，避免依赖真实模型是否选择 EnterPlanMode。"
+    },
+    {
+      "id": "upstream-plan-mode-deny-exit-plan-call",
+      "description": "plan mode 内返回 ExitPlanMode，触发审批弹窗。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "需要稳定触发 ExitPlanMode 审批弹窗，避免模型输出文本而跳过工具。"
+    },
+    {
+      "id": "upstream-plan-mode-deny-follow-up-final",
+      "description": "无反馈拒绝后，下一条普通用户输入仍处于 plan mode。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "需要断言 deny without feedback 停止当前 turn，但不退出 plan mode。"
+    },
+    {
+      "id": "upstream-plan-mode-boundary-enter-plan-call",
+      "description": "工具边界 case 首轮请求进入 plan mode。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "需要稳定制造 plan mode 状态，避免依赖真实模型是否选择 EnterPlanMode。"
+    },
+    {
+      "id": "upstream-plan-mode-boundary-mixed-tools-call",
+      "description": "同一 assistant message 返回 Write 和 Read 两个 tool_use。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "需要稳定制造同一回复内先写后读的工具组，证明普通拒绝不阻断后续只读工具。"
+    },
+    {
+      "id": "upstream-plan-mode-boundary-final",
+      "description": "工具结果回到 provider-visible 请求后返回固定文本。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "核心合同是同一 continuation 中同时出现写拒绝 tool_result 与真实 Read tool_result。"
+    }
+  ]
+}

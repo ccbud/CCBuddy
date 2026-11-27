@@ -253,6 +253,11 @@ export type DynamicWorkflowRunSnapshot = Omit<WorkflowTaskSnapshot, "output"> & 
   stopReason?: DynamicWorkflowRunStopReason;
   /** 发起这个 run 的会话（journal 的 parent_session_id；注册表条目在场时取它的）。 */
   parentSessionId?: string;
+  /**
+   * 引擎是不是在本进程手里，只对未终态的 run 在场。为假时 journal 说它在跑，引擎却在别的进程
+   * （或死进程）：这里补不了它的留白，也修订不了它，FillWorkflowHole 与 AmendWorkflow 据此在开窗前拒绝。
+   */
+  liveInThisProcess?: boolean;
   /** 本 run 修订自哪个 run；不是修订则缺席。 */
   resumedFrom?: string;
   /** 本 run 被哪次修订停下并替代；未被替代则缺席。 */
@@ -735,6 +740,7 @@ export interface DynamicWorkflowRunPort {
    * 会话等于开一个跨会话读洞。可选成员的理由同 {@link resume}。
    */
   listRunsForSession?(limit?: number): Promise<DynamicWorkflowRunSessionSummary[]>;
+  getActivityHistory?(): Promise<DynamicWorkflowActivityHistory>;
   /**
    * 冷回放：把**本服务父会话**名下、本进程
    * 没跑过的 run 从 journal 回放成进度事件载荷——与 live 时 `onRunEvent` 交出的是**同一种**
@@ -1144,4 +1150,10 @@ export interface DynamicWorkflowRunSessionSummary {
    * 重新推导，两处谓词总有一天不一致——按钮亮着但命令被拒。
    */
   resumable: boolean;
+}
+
+/** 冷恢复完整 Activity 索引；只含身份、状态与事件水位，不携带脚本或结果。 */
+export interface DynamicWorkflowActivityHistory {
+  runs: Array<{ runId: string; status: string; sequence: number }>;
+  childSessionIds: string[];
 }

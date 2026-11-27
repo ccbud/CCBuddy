@@ -25,7 +25,12 @@ import {
   type RemoteWorkspaceSessionTarget,
   type WindowControlsOverlayReadyPayload,
 } from "@ccbuddy/shared";
-import { getInstalledEditors } from "./editors.js";
+import { getAppIconDataUrl, getInstalledEditors } from "./editors.js";
+import {
+  createFileApplicationService,
+  type ConfirmExecutableFileOpen,
+} from "@desktop/main/file-open-apps/index.js";
+import type { FileApplicationTarget } from "@ccbuddy/shared";
 import { getApplicationIcon } from "./applicationIcons.js";
 import { exportLogs } from "./exportLogs.js";
 import { resolveCommunityUrl } from "./desktopCommandHandlers.js";
@@ -60,6 +65,9 @@ import { createTempTextAttachment } from "./tempTextAttachment.js";
 import { materializeWorkflowArtifactFile } from "./workflowArtifactFile.js";
 import { registerDesktopSaveFileIpcHandler } from "./desktopSaveFile.js";
 import { registerDesktopPrintToPdfIpcHandler } from "./desktopPrintToPdf.js";
+import { registerDesktopMicrophoneIpcHandlers } from "./microphone-access/index.js";
+import { registerDesktopCaptureBrowserGuestPageIpcHandler } from "./desktopCaptureBrowserGuestPage.js";
+import { registerDesktopCommandIpcHandler } from "./desktopCommandIpc.js";
 import { registerCuaPipActiveSessionIpc } from "./desktopCuaPipIpc.js";
 
 export function registerPlatformIpcHandlers(options: {
@@ -69,6 +77,10 @@ export function registerPlatformIpcHandlers(options: {
     warn: (...args: unknown[]) => void;
   };
   applyApplicationLocale: (locale: Locale) => Promise<void>;
+  /** 系统关联应用打开可执行类文件前的用户确认（见 file-open-apps/executableOpenGuard）。 */
+  confirmExecutableFileOpen: ConfirmExecutableFileOpen;
+  /** 保存 Agent 回复语言并推送给各窗口 Host；写盘失败时抛出。 */
+  applyReplyLanguage: (language: string) => Promise<void>;
   resolveSystemLocale: () => Locale;
   focusWorkspaceInExistingWindow: (
     path: string,
@@ -97,7 +109,6 @@ export function registerPlatformIpcHandlers(options: {
     autoDownloadAndInstallUpdates: boolean;
   }>;
   setAutoDownloadAndInstallUpdates: (enabled: boolean) => Promise<void>;
-  // IPC 已通过 appSettingsPatchSchema 校验；装配接口传递受校验的设置 patch。
   syncAppSettings: (patch: ReturnType<typeof appSettingsPatchSchema.parse>) => void;
   /** 关闭驻留托盘能力查询（spec：docs/desktop/linux-close-to-tray.md）；传入 monitor 的 refresh */
   refreshCloseToTrayCapability: () => Promise<
@@ -126,6 +137,13 @@ export function registerPlatformIpcHandlers(options: {
     return result.filePaths[0];
   });
 
+  ipcMain.handle(PlatformChannels.SelectDirectories, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory", "multiSelections"],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+
   ipcMain.handle(PlatformChannels.SelectFile, async () => {
     const result = await dialog.showOpenDialog({
       properties: ["openFile"],
@@ -148,6 +166,8 @@ export function registerPlatformIpcHandlers(options: {
 
   registerDesktopSaveFileIpcHandler(options.logger);
   registerDesktopPrintToPdfIpcHandler(options.logger);
+  registerDesktopMicrophoneIpcHandlers(options.logger);
+  registerDesktopCaptureBrowserGuestPageIpcHandler(options.logger);
 
   ipcMain.handle(
     PlatformChannels.CreateTempTextAttachment,
@@ -264,6 +284,12 @@ export function registerPlatformIpcHandlers(options: {
     return options.applyApplicationLocale(result.data);
   });
 
+  ipcMain.handle(PlatformChannels.SetReplyLanguage, (_event, language: unknown) => {
+    // 空串表示清除；长度由 applyReplyLanguage 按 schema 校验。非法值要让设置页收到失败并恢复原值。
+    if (typeof language !== "string") throw new Error("Invalid reply language");
+    return options.applyReplyLanguage(language);
+  });
+
   ipcMain.handle(PlatformChannels.GetSystemLocale, () => options.resolveSystemLocale());
 
   ipcMain.on(PlatformChannels.SyncWindowTabs, (event, paths: string[]) => {
@@ -276,6 +302,7 @@ export function registerPlatformIpcHandlers(options: {
     if (win) {
       options.windowWorkspaceMap.set(win.id, new Set(result.data));
       options.syncTaskRealtimeWorkspaceKeys(win.id, result.data);
+      // 远控恢复统一由 SyncWebRemoteControlWorkspaces 的完整快照驱动。
     }
   });
 
@@ -422,7 +449,22 @@ export function registerPlatformIpcHandlers(options: {
     const senderWindow = BrowserWindow.fromWebContents(event.sender);
     return resolveDesktopWindowChromeState(senderWindow?.isMaximized() ?? false);
   });
-  ipcMain.handle(PlatformChannels.GetInstalledEditors, () => getInstalledEditors());
+  ipcMain.handle(PlatformChannels.GetInstalledEditors, (_event, filePath?: string) =>
+    getInstalledEditors(typeof filePath === "string" ? filePath : undefined),
+  );
+  const fileApplications = createFileApplicationService({
+    confirmExecutableOpen: options.confirmExecutableFileOpen,
+    getIcon: (id, path) => getAppIconDataUrl(id, path),
+    logger: options.logger,
+  });
+  ipcMain.handle(PlatformChannels.GetFileApplications, (_event, target: FileApplicationTarget) =>
+    fileApplications.getFileApplications(target),
+  );
+  ipcMain.handle(
+    PlatformChannels.OpenFileWithApplication,
+    (_event, payload: { applicationId: string; target: FileApplicationTarget }) =>
+      fileApplications.openFileWithApplication(payload?.applicationId, payload?.target),
+  );
   ipcMain.handle(
     PlatformChannels.GetApplicationIcon,
     (_event, request: string | ApplicationIconRequest) => getApplicationIcon(request),
@@ -439,15 +481,8 @@ export function registerPlatformIpcHandlers(options: {
       openInEditor(payload.editorId, payload.path, payload.options),
   );
 
-  ipcMain.handle(PlatformChannels.ExecuteDesktopCommand, async (event, command: string) => {
-    const senderWindow = BrowserWindow.fromWebContents(event.sender);
-    const isKnownCommand = (Object.values(DesktopCommandIds) as string[]).includes(command);
-    if (!isKnownCommand) {
-      options.logger.warn("[desktop-command] invalid command:", command);
-      return;
-    }
-
-    // 返回值直通 renderer 的 executeDesktopCommand promise（GetCuaOsSupport 依赖此行为）。
-    return await options.executeDesktopCommand(command as DesktopCommandId, senderWindow);
+  registerDesktopCommandIpcHandler({
+    executeDesktopCommand: options.executeDesktopCommand,
+    logger: options.logger,
   });
 }

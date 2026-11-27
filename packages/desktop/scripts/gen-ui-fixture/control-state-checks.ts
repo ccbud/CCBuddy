@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+/** CDP 固定伪类验证级联组合；不把后台窗口的焦点当作真实键盘验收。 */
 export async function checkControlStates(
   read: (code: string) => Promise<any>,
   send: (method: string, params?: any) => Promise<any>,

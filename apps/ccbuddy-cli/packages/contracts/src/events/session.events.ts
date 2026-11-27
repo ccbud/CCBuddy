@@ -85,6 +85,8 @@ export const SessionEventType = {
   SessionCreated: "session_created",
   SessionResumed: "session_resumed",
   SessionForked: "session_forked",
+  // 受管 worktree 创建结果（docs/git/worktree.md §6.6.4）；投影为 worktreeCreated 时间线标记。
+  WorktreeCreated: "worktree_created",
   SessionCompacted: "session_compacted",
   SessionTitleUpdated: "session_title_updated",
   SessionModeChanged: "session_mode_changed",
@@ -96,6 +98,8 @@ export const SessionEventType = {
   TurnSteerDeliveryChanged: "turn_steer_delivery_changed",
   // sendQueuedNow 原子提升：reservation/promoting/rollback 均进入事件流，投影不本地猜测。
   TurnSteerDispatchChanged: "turn_steer_dispatch_changed",
+  // composer 编辑态冻结排队项：锁只活在 CLI 进程内，投影据此停住自动续跑并隐藏操作。
+  TurnSteerEditLockChanged: "turn_steer_edit_lock_changed",
   TurnSteerDrained: "turn_steer_drained",
   TurnSteerRejected: "turn_steer_rejected",
   TurnSteerDiscarded: "turn_steer_discarded",
@@ -147,6 +151,8 @@ export const SessionEventType = {
   // workflow_completed，script-workflow-runtime.ts）是另一套日志，同名会真的混淆。
   DynamicWorkflowRunProgress: "dynamic_workflow_run_progress",
   PermissionRequested: "permission_requested",
+  PluginInstallRequested: "plugin_install_requested",
+  PluginInstallResolved: "plugin_install_resolved",
   PermissionResolved: "permission_resolved",
   PermissionDenied: "permission_denied",
   // 插件 UI 订阅的 MCP 资源变化。只进 live 投影（v4Gateway.ingest，seq 0），不落盘、不进冷恢复。
@@ -161,6 +167,7 @@ export const SessionEventType = {
   WorkspaceHookReviewSuperseded: "workspace_hook_review_superseded",
   // 软门禁:准入状态变化时发射,pendingCount=0 时投影层清空 snapshot 字段。
   WorkspaceHookAdmissionUpdated: "workspace_hook_admission_updated",
+  WorkspaceMcpAdmissionUpdated: "workspace_mcp_admission_updated",
   HookRunStarted: "hook_run_started",
   HookRunProgress: "hook_run_progress",
   HookRunCompleted: "hook_run_completed",
@@ -216,6 +223,14 @@ export interface SessionForkedPayload {
   targetMessageId?: MessageId;
   /** @deprecated Use targetMessageId for message-level forks. */
   forkPoint: number;
+}
+
+/** 与 WorktreeCreationFact 同形；事件层不依赖 session-store 端口类型。 */
+export interface WorktreeCreatedPayload {
+  path: string;
+  sha: string;
+  ref: string | null;
+  output: string;
 }
 
 export interface SessionCompactedPayload {
@@ -315,6 +330,26 @@ export type WorkflowNotificationMeta =
       cap?: number;
     };
 
+/**
+ * 主代理闲着、run 还欠着决定时的提醒：每个 run 一条，带发出那一刻开着的问题数、等着的留白数与
+ * 其中最久的等待。不是 run 事件——由父会话的空闲钟发出。
+ *
+ * 它是 originMeta 上独立的键，不是 WorkflowNotificationMeta 的成员：那个 union 在线上是闭集，多一个
+ * kind 会让不认识它的客户端拒掉整帧、打不开会话；不认识的键只是被剥掉
+ * （docs/dynamic-workflow/transcript-and-notifications.md「The payload」）。
+ */
+export interface WorkflowBlockedMeta {
+  questions: number;
+  holes: number;
+  sinceMs: number;
+}
+
+/** 后台 Agent 的终态；产品状态读它，不解析通知文本。error 只在 failed 时出现，与 summary 里的原因相同。 */
+export interface SubagentResultMeta {
+  status: "completed" | "failed" | "killed";
+  error?: string;
+}
+
 /** 独立后台结果轮的展示元信息；批量轮可复用代表任务身份并合成 title，不从通知文本反向解析。 */
 export interface BackgroundResultOriginMeta {
   /** `workflow` 是 dynamic-workflow run（workId ≡ runId），复用整条后台通知管线。 */
@@ -323,6 +358,21 @@ export interface BackgroundResultOriginMeta {
   title: string;
   /** 只在 backgroundSource === "workflow" 的单条通知轮上在场；manifest 渲染的唯一数据源。 */
   workflowNotification?: WorkflowNotificationMeta;
+  /** 空闲提醒的载荷；与 workflowNotification 至多在场一个。 */
+  workflowBlocked?: WorkflowBlockedMeta;
+  /** 只在 backgroundSource === "subagent" 的单条通知轮上在场；合并轮不带。 */
+  subagentResult?: SubagentResultMeta;
+  /**
+   * 后台 Agent 无进展提醒（不是结果）。App 的 schema 会剥掉它，界面按普通后台结果轮显示标题；
+   * CLI 用它把提醒排除在「消费了后台 Agent 结果」的埋点之外。
+   */
+  subagentStall?: {
+    noProgressForMs: number;
+    /** 生成提醒时 Agent 的最后进展时间；出队时已有新进展就丢弃（内容已不成立）。 */
+    lastProgressAt?: number;
+    /** 生成提醒时的执行；同一 agentId 经 SendMessage 恢复成新执行后，旧提醒丢弃。 */
+    executionId?: string;
+  };
 }
 
 /**
@@ -464,6 +514,10 @@ export function boundWorkflowLaunchMeta(input: WorkflowLaunchMeta): WorkflowLaun
 }
 
 export interface TurnStartedPayloadBase {
+  /** 由持久化接纳历史确认；旧历史无法确认时缺省。 */
+  isFirstMessage?: boolean;
+  /** 当前输入/后台因果链的客户端来源，仅用于统计。 */
+  inputOrigin?: "desktop" | "mobile";
   /** 执行入口的单调 epoch 毫秒；hooks/持久化发生在 TurnStarted 发布前，不能据发布时间反推执行开始。 */
   executionStartedAt?: number;
   turnNumber: number;
@@ -521,6 +575,8 @@ export interface TurnSteerQueuedPayload {
   commandKind?: TurnSteerCommandKind;
   source?: TurnSteerSource;
   inputPresentation?: RuntimeInputPresentation;
+  /** Host 准入注入的可信 automation 身份；禁止从追踪字段恢复。 */
+  automationId?: string;
   /** 当前排队输入消费时不向 provider 暴露的工具名。 */
   toolDisallowlist?: readonly string[];
   /** 投递语义：queue=消费时切新 product turn；guide=内联当前轮。 */
@@ -550,6 +606,20 @@ export interface TurnSteerDispatchChangedPayload {
   reservationId?: string;
   state: "queued" | "reserved" | "promoting";
   targetTurnId: TurnId;
+}
+
+/** editorId = 单个窗口/标签页的编辑器实例；clientId 同设备多窗口共享，不能单独作为归属。 */
+export interface PendingInputEditLock {
+  editorId: string;
+  clientId: string;
+  inputOrigin?: "desktop" | "mobile";
+}
+
+export interface TurnSteerEditLockChangedPayload {
+  pendingInputId: string;
+  targetTurnId: TurnId;
+  /** 缺省 = 已释放。 */
+  editLock?: PendingInputEditLock;
 }
 
 export interface QueueAutoDrainChangedPayload {
@@ -732,7 +802,10 @@ export interface ModelSelectedPayload {
  * 执行 Selection 退回会话 Selection 的原因，与 @ccbuddy/shared 的 selectionFallback 规则同值域：
  * 卡过期由声明的 provider 错误码命中，其余任何加速请求失败归为 request_failed。
  */
-export type TurnExecutionModelFallbackReason = "highspeed_card_expired" | "highspeed_request_failed";
+export type TurnExecutionModelFallbackReason =
+  | "highspeed_card_expired"
+  | "highspeed_request_failed"
+  | "highspeed_selection_unavailable";
 
 export interface TurnExecutionModelFallbackPayload {
   inputId?: string;
@@ -920,6 +993,8 @@ export interface ToolCallResultPayload {
   duration: number;
   /** Skill metadata 仅用于 telemetry，不进入模型可见的 result.content。 */
   skillMetadata?: SkillTelemetryMetadata;
+  /** 执行时 ToolEntry 的插件归属，不从工具名称推断。 */
+  pluginId?: string;
 }
 
 export interface ToolCallErrorPayload {
@@ -927,6 +1002,8 @@ export interface ToolCallErrorPayload {
   error: ErrorPayload;
   /** Skill metadata 仅用于 telemetry，不进入模型可见的错误正文。 */
   skillMetadata?: SkillTelemetryMetadata;
+  /** 执行时 ToolEntry 的插件归属，不从工具名称推断。 */
+  pluginId?: string;
 }
 
 export interface ToolBatchCompletePayload {
@@ -994,6 +1071,8 @@ export interface DynamicWorkflowRunProgressPayload {
   runId: string;
   /** 发起这次 run 的 CreateWorkflow 工具调用（工具卡 → 详情页的关联键）。 */
   toolCallId?: ToolCallId | string;
+  /** 冷恢复按 run 行补出的结算，不占用真实 journal 事件水位。 */
+  syntheticSettlement?: boolean;
   /** journal sequence（`appendEvent` 单调分配）；事件日志的 cursor 与它同一把尺。 */
   sequence: number;
   /** 引擎事件种类：run-started / actor-created / node-* / usage-updated / log / report / phase-entered / run-settled。 */
@@ -1115,6 +1194,13 @@ export interface WorkspaceHookAdmissionUpdatedPayload {
   workspaceIdentity?: string;
 }
 
+/** MCP 的声明集合摘要仅供提示去重；逐条授权仍使用各自的 declarationDigest。 */
+export interface WorkspaceMcpAdmissionUpdatedPayload {
+  pendingCount: number;
+  bundleDigest: string;
+  workspaceIdentity?: string;
+}
+
 export type PermissionDecision = "allow" | "deny" | "escalate" | "modify";
 
 export type TargetChangedAction =
@@ -1212,6 +1298,13 @@ export interface ErrorAttribution {
   statusCode?: number;
   providerErrorCode?: string;
   retryable?: boolean;
+  /** string=使用该 Highspeed 卡，null=明确未使用，undefined=旧 Agent 未发布。 */
+  highspeedCardId?: string | null;
+  /**
+   * true=本轮 Highspeed 创建期或请求期失败已命中退回声明，但所有退回目标都无法创建，整轮按真实错误
+   * 结束。Renderer 据此作废匹配卡；不再按错误码推断，请求期 3402/网络失败的 code 是 provider 错误码。
+   */
+  highspeedFallbackUnavailable?: boolean;
 }
 
 // CollaborationMode and RiskLevel are re-exported from ports
@@ -1248,6 +1341,11 @@ export function createModelUsageSummaryFromEvents(
   const usages: ModelUsage[] = [];
 
   for (const event of events) {
+    if (event.type === SessionEventType.ModelNetworkStatus) {
+      const payload = event.payload as ModelNetworkStatusEvent;
+      // 成功请求由 ModelComplete 计入；只补充失败请求的已报告用量，避免双计。
+      if (payload.type === "model_request_failed" && payload.usage) usages.push(payload.usage);
+    }
     if (event.type !== SessionEventType.ModelComplete) continue;
     const payload = event.payload as Partial<ModelCompletePayload>;
     if (payload.usage) {
@@ -1262,6 +1360,7 @@ export type SessionEventPayload =
   | SessionCreatedPayload
   | SessionResumedPayload
   | SessionForkedPayload
+  | WorktreeCreatedPayload
   | SessionCompactedPayload
   | SessionTitleUpdatedPayload
   | SessionModeChangedPayload
@@ -1270,6 +1369,7 @@ export type SessionEventPayload =
   | TurnSteerQueuedPayload
   | TurnSteerDeliveryChangedPayload
   | TurnSteerDispatchChangedPayload
+  | TurnSteerEditLockChangedPayload
   | TurnSteerDrainedPayload
   | TurnSteerReorderedPayload
   | QueueAutoDrainChangedPayload
@@ -1320,6 +1420,7 @@ export type SessionEventPayload =
   | WorkspaceHookReviewSettledPayload
   | WorkspaceHookReviewSupersededPayload
   | WorkspaceHookAdmissionUpdatedPayload
+  | WorkspaceMcpAdmissionUpdatedPayload
   | HookRunLifecyclePayload
   | CompactLifecyclePayload
   | MicrocompactBoundaryEventPayload

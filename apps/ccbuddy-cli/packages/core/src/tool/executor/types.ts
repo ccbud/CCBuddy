@@ -1,4 +1,5 @@
 import type { ToolSearchExecutionContext } from "@ccbuddy/contracts";
+import type { SessionControlBinding } from "../session-control/contract.js";
 import type {
   AgentExecutionTelemetryPort,
   AgentTelemetryActorKind,
@@ -12,6 +13,7 @@ import type {
   EmbeddedSearchBackend,
   ExecutionPort,
   ExecutionShellSelection,
+  PluginDiscoveryPort,
   FileSystemPort,
   HttpClientPort,
   ImageProcessorPort,
@@ -33,6 +35,7 @@ import type {
   TraceContext,
   TurnId,
   WorkflowEscalatePort,
+  WorkflowWebSearchBudgetPort,
   WorkflowPort,
   WorkflowSubmitPort,
 } from "@ccbuddy/contracts";
@@ -43,9 +46,12 @@ import type { ToolRegistry } from "../registry.js";
 import type { ToolSchedule } from "../scheduler.js";
 import type {
   BackgroundTaskControlPort,
+  DynamicWorkflowToolSurfaceDeferral,
   ExecutableToolCall,
+  McpServerWaitPort,
   ReadFileStateMap,
   ToolBatchEvent,
+  ToolEntry,
   ToolExecutionResult,
   ToolRuntimeScope,
 } from "../types.js";
@@ -81,6 +87,8 @@ export interface ToolExecutorOptions {
   permissionService: PermissionService;
   permissionBroker?: PermissionBrokerPort;
   emitEvent: (event: SessionEvent) => Promise<void>;
+  /** 后台跟踪的真实完成链（含终态写入）属于 runtime，不能随工具返回丢失。 */
+  registerResidencyBlockingWork?: (work: Promise<void>) => void;
   enqueueBackgroundTaskNotification?: EnqueueBackgroundTaskNotification;
   shouldEnqueueBackgroundTaskNotification?: ShouldEnqueueBackgroundTaskNotification;
   sessionId: SessionId;
@@ -105,10 +113,14 @@ export interface ToolExecutorOptions {
   workflowSubmitPort?: WorkflowSubmitPort;
   /** actor 的升级端口；存在即为该会话注册 escalate。 */
   workflowEscalatePort?: WorkflowEscalatePort;
+  /** actor 每个 ask 的 WebSearch 预算；缺席即无上限。 */
+  webSearchBudget?: WorkflowWebSearchBudgetPort;
   artifactStore?: ToolArtifactStorePort;
+  sessionControl?: SessionControlBinding;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
   topicResourcePort?: TopicResourcePort;
+  pluginDiscoveryPort?: PluginDiscoveryPort;
   sessionStore?: SessionStorePort;
   sessionModePort?: SessionModePort;
   workflowPort?: WorkflowPort;
@@ -121,16 +133,27 @@ export interface ToolExecutorOptions {
   readFileState?: ReadFileStateMap;
   /** 技能门的探针（ToolInputResolutionContext.hasLoadedSkill）；runtime 按 provider 可见历史回答。 */
   hasLoadedSkill?: (skillName: string) => boolean;
+  /** Skill 未激活提示的探针（ToolExecutionContext.getDynamicWorkflowToolSurfaceDeferral）；runtime 读自己的激活态。 */
+  getDynamicWorkflowToolSurfaceDeferral?: () => DynamicWorkflowToolSurfaceDeferral;
+  /** WaitForMcpServers 的端口；runtime 只在持有 MCP 会话时提供。 */
+  mcpServerWaitPort?: McpServerWaitPort;
+  /** 未注册工具报错的原因后缀（以 ". " 开头）；runtime 只对 MCP 工具给出说明。 */
+  describeUnavailableTool?: (toolName: string, model?: Model) => string;
+  /** 本 step registry 没有的 MCP 工具：按最新会话视图构造 entry，必要时等首次连接。 */
+  resolveUnregisteredTool?: ResolveUnregisteredTool;
   subagentBackgroundBashMaxMs?: number;
   bashShellSelection?: ExecutionShellSelection;
   getBashShellSelection?: () => ExecutionShellSelection | undefined;
   workingDirectory?: string;
   workspaceRoot?: string;
   workspaceIdentity?: string;
+  workspaceKey?: string;
   remoteSessionId?: string;
   clientMode?: "desktop-continuous" | "web-remote-replayable";
   deliveryKind?: "desktop-continuous" | "web-remote-replayable";
   runtimeScope?: ToolRuntimeScope;
+  /** 本 runtime 是前台启动的子代理（见 RuntimeConfig.subagents.startedInForeground）。 */
+  syncSubagent?: boolean;
   getWorkingDirectory?: () => string;
   setWorkingDirectory?: (cwd: string) => Promise<void> | void;
   getWorkspaceRoot?: () => string;
@@ -143,16 +166,21 @@ export interface ToolExecutorOptions {
 }
 
 export interface ToolExecutor {
-  areReadsDeniedWithoutPrompt(
-    filePaths: readonly string[],
-    traceContext: TraceContext,
-  ): Promise<boolean[]>;
   /** 同一权限链供 MCP App 使用；返回审批后的输入，不执行 handler / 不做模型结果投影。 */
   authorizeAppTool?(
     toolCall: ExecutableToolCall,
     entry: import("../types.js").ToolEntry,
     options?: ToolExecuteOptions,
   ): Promise<unknown>;
+
+  /**
+   * 不跑 hook、不弹确认、不发事件：按当前模式与权限规则逐个判定 Read 是否被拒绝（Read 未注册时全部算拒绝）。
+   * 和 Read 工具调用共用同一套静态判定，规则只加载一次；compaction 补回文件用它跳过读权限 deny 的文件。
+   */
+  areReadsDeniedWithoutPrompt(
+    filePaths: readonly string[],
+    traceContext: TraceContext,
+  ): Promise<boolean[]>;
 
   execute(toolCall: ExecutableToolCall, options?: ToolExecuteOptions): Promise<ToolExecutionResult>;
   executeBatch(
@@ -179,8 +207,20 @@ export interface ToolExecutor {
   ): Promise<void>;
 }
 
+/**
+ * 未注册工具的晚到解析。responseId 标识同一条 assistant 回复：回复内的调用共用等待预算。
+ * 等待被取消时以 signal.reason 拒绝。
+ */
+export type ResolveUnregisteredTool = (
+  toolName: string,
+  options: { signal?: AbortSignal; responseId?: string },
+) => Promise<ToolEntry | undefined>;
+
 export interface ToolExecuteOptions {
   toolSearch?: ToolSearchExecutionContext;
+  pluginDiscoveryUi?: boolean;
+  /** 产生这批调用的 assistant 回复；未注册 MCP 工具的等待预算按它共享。 */
+  responseId?: string;
   automationTurn?: boolean;
   automationId?: string;
   offPeakTurn?: boolean;
@@ -195,13 +235,14 @@ export interface ToolBatchExecuteOptions extends ToolExecuteOptions {
 }
 
 export interface ToolExecutorDeps {
-  nextReadFileStateSnapshotIndex: () => number;
   agentTelemetry?: AgentExecutionTelemetryPort;
   agentTelemetryActorKind?: AgentTelemetryActorKind;
   registry: ToolRegistry;
   permissionService: PermissionService;
   permissionBroker: PermissionBrokerPort;
   emitEvent: (event: SessionEvent) => Promise<void>;
+  /** 后台跟踪的真实完成链（含终态写入）属于 runtime，不能随工具返回丢失。 */
+  registerResidencyBlockingWork?: (work: Promise<void>) => void;
   enqueueBackgroundTaskNotification?: EnqueueBackgroundTaskNotification;
   shouldEnqueueBackgroundTaskNotification?: ShouldEnqueueBackgroundTaskNotification;
   sessionId: SessionId;
@@ -226,10 +267,14 @@ export interface ToolExecutorDeps {
   workflowSubmitPort?: WorkflowSubmitPort;
   /** actor 的升级端口；存在即为该会话注册 escalate。 */
   workflowEscalatePort?: WorkflowEscalatePort;
+  /** actor 每个 ask 的 WebSearch 预算；缺席即无上限。 */
+  webSearchBudget?: WorkflowWebSearchBudgetPort;
   artifactStore?: ToolArtifactStorePort;
+  sessionControl?: SessionControlBinding;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
   topicResourcePort?: TopicResourcePort;
+  pluginDiscoveryPort?: PluginDiscoveryPort;
   sessionStore?: SessionStorePort;
   sessionModePort?: SessionModePort;
   workflowPort?: WorkflowPort;
@@ -240,7 +285,13 @@ export interface ToolExecutorDeps {
   modelCatalogPort?: ModelCatalogPort;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
   readFileState: ReadFileStateMap;
+  /** 文件读取快照的下一个序号；执行器持有计数器，只增不减。 */
+  nextReadFileStateSnapshotIndex: () => number;
   hasLoadedSkill?: (skillName: string) => boolean;
+  getDynamicWorkflowToolSurfaceDeferral?: () => DynamicWorkflowToolSurfaceDeferral;
+  mcpServerWaitPort?: McpServerWaitPort;
+  describeUnavailableTool?: (toolName: string, model?: Model) => string;
+  resolveUnregisteredTool?: ResolveUnregisteredTool;
   subagentBackgroundBashMaxMs?: number;
   bashShellSelection?: ExecutionShellSelection;
   getBashShellSelection?: () => ExecutionShellSelection | undefined;
@@ -248,11 +299,13 @@ export interface ToolExecutorDeps {
   setWorkingDirectory?: (cwd: string) => Promise<void> | void;
   getWorkspaceRoot: () => string;
   workspaceIdentity?: string;
+  workspaceKey?: string;
   remoteSessionId?: string;
   clientMode?: "desktop-continuous" | "web-remote-replayable";
   deliveryKind?: "desktop-continuous" | "web-remote-replayable";
   getMemoryRoot?: () => string | undefined;
   runtimeScope: ToolRuntimeScope;
+  syncSubagent?: boolean;
   traceContext?: TraceContext;
   getMode: () => CollaborationMode;
   maxConcurrency: number;

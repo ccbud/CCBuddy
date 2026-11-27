@@ -6,7 +6,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Copy, Loader2, Maximize2, SlidersHorizontal, X } from "lucide-react";
+import { Copy, LoaderCircle, Maximize2, SlidersHorizontal, X } from "lucide-react";
 import type { GenUiReference } from "@ccbuddy/shared/gen-ui";
 import { Button } from "@/components/ui/button.js";
 import {
@@ -50,7 +50,7 @@ function PreviewAnchor({
     page.preview(ref.current);
     return () => page.preview(null);
   }, [page, suspended]);
-  // top-layer 预览不受 Dialog 裁切；锚点向现有承载层传递圆角，面板开启时保持接缝直角。
+  // 预览位于 top layer，外层 Dialog 无法裁切；锚点向承载层传递实际底部圆角。
   return (
     <div
       ref={ref}
@@ -195,7 +195,7 @@ export function GenUiCard({
         {(snapshot.phase !== "ready" || !page) && (
           <div className="space-y-2 py-3 text-ui-base text-foreground-subtle" role="status">
             <p className="flex items-center gap-2">
-              {loading && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+              {loading && <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />}
               {status}
             </p>
             {(snapshot.error || acquisitionError) && (

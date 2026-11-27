@@ -26,6 +26,8 @@ export const runTuiCommand = async (
   forceMcs = false,
   toolsearchMode: ToolSearchMode = "off",
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
+  totalTokensReminder = false,
+  agentAlwaysBackground = true,
 ): Promise<number> => {
   try {
     const modeState = createCliModeState(mode);
@@ -52,6 +54,9 @@ export const runTuiCommand = async (
       options.browserUse,
       options.browserExecutable,
       workflowMode,
+      totalTokensReminder,
+      agentAlwaysBackground,
+      options.browserState,
     );
     const unregisterShutdownHandlers = registerCliShutdownHandlers({
       cleanup: async () => {
@@ -100,6 +105,7 @@ export const runTuiCommand = async (
         listWorkflowRuns: promptHandler.listWorkflowRuns,
         replayWorkflowRuns: promptHandler.replayWorkflowRuns,
         getMainSessionId: promptHandler.getMainSessionId,
+        registerPermissionRequester: promptHandler.registerPermissionRequester,
         writeClipboardText:
           deps.writeClipboardText ?? createNodeClipboardTextWriter({ stdout: ctx.stdout }),
         stderr: ctx.stderr,

@@ -15,8 +15,7 @@ import { estimateTokens } from "./utils.js";
 import { buildCliPrefixSection } from "./sections/cli-prefix.js";
 import { buildIdentitySection } from "./sections/identity.js";
 import { buildWorkflowActorIdentitySection } from "./sections/workflow-actor.js";
-import { buildEnvInfoSection, buildGitSystemContextSection } from "./sections/env-info.js";
-import { buildSkillsSection } from "./sections/skills.js";
+import { buildEnvironmentSections, buildGitSystemContextSection } from "./sections/env-info.js";
 import { buildRequestUserContextSection } from "./sections/request-user-context.js";
 import { buildCurrentDateSection } from "./sections/current-date.js";
 import { buildMemorySection } from "./sections/memory.js";
@@ -25,8 +24,10 @@ import { buildDesktopContextSection } from "./sections/desktop.js";
 import {
   buildContextManagementSection,
   buildDynamicBehaviorSection,
-  buildOutputStyleSection,
+  buildFinishingWorkSection,
+  buildMemoryNotesSection,
   buildSessionGuidanceSection,
+  buildTotalTokensSection,
 } from "./dynamic-sections.js";
 
 // -----------------------------------------------
@@ -34,8 +35,6 @@ import {
 // -----------------------------------------------
 
 const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" as const };
-/** Skill 工具的注册名（与 tool/handlers/skill.ts 的 metadata.name 同字面；contracts 没有常量）。 */
-const SKILL_TOOL_NAME = "Skill";
 
 export class ContextBuilder {
   private config: ContextBuilderConfig;
@@ -85,8 +84,9 @@ export class ContextBuilder {
     const activeOutputStyle = this.config.outputStyle?.prompt.trim()
       ? this.config.outputStyle
       : undefined;
-    const customSystemPrompt = this.config.customSystemPrompt?.trim();
-    const hasCustomSystemPrompt = Boolean(customSystemPrompt);
+    // 自定义 system prompt 原样发送，不 trim；只有全空白时视为未设置。
+    const customSystemPrompt = this.config.customSystemPrompt;
+    const hasCustomSystemPrompt = Boolean(customSystemPrompt?.trim());
     // 工作流子代理身份：第三条路径。与
     // customSystemPrompt 互斥——两者同在只可能是接线错误（persona 该经 workflowActor 进来，
     // 不该再塞 systemPrompt），大声失败而不是默默二选一。
@@ -97,10 +97,10 @@ export class ContextBuilder {
       );
     }
     const isWorkflowActor = workflowActor !== undefined;
+    const midConversationSystem = this.config.midConversationSystem !== false;
 
-    // 1. CLI / product prefix. Keep this as the short leading identity block.
-    // 「You are CCbuddy, an interactive coding agent」对一个
-    // 只对脚本说话、可能连读文件工具都没有的子代理是错的身份，且走在正确身份段前面。
+    // 1. CLI / 产品前缀。工作流子代理只向脚本返回结果，
+    // 不使用面向用户交互的身份前缀，直接以工作流身份开头。
     if (!isWorkflowActor) {
       sections.push(buildCliPrefixSection());
     }
@@ -117,20 +117,27 @@ export class ContextBuilder {
         }),
       );
     } else if (workflowActor !== undefined) {
-      sections.push(buildWorkflowActorIdentitySection(workflowActor));
+      sections.push(buildWorkflowActorIdentitySection(workflowActor, midConversationSystem));
     } else {
-      sections.push(buildIdentitySection(activeOutputStyle));
+      sections.push(buildIdentitySection(activeOutputStyle, midConversationSystem));
     }
 
+    // 环境与模型是运行时公告（meta_user），不进 system；使用自定义 prompt 时也照常发送。
+    const environmentSections = buildEnvironmentSections(
+      this.config.envInfo,
+      this.config.model,
+      this.config.additionalDirectories,
+    );
+
     // 3. Dynamic system context
-    // custom prompt 不是只替换
-    // stable body，而是跳过默认 system prompt 体系和 systemContext；否则用户提供
-    // custom prompt 后仍会混入 Session Guidance / output style 等动态 system 段。
+    // custom prompt 不是只替换 stable body，而是跳过默认 system prompt 的动态段；否则用户
+    // 提供 custom prompt 后仍会混入 Session Guidance 等动态 system 段。
     // 工作流子代理跳过其中面向「与用户对话」的三段（desktop、Dynamic Behavior、session
-    // guidance——契约里已把 Report outcomes faithfully 搬过去），保留 memory 与其后各段。
+    // guidance——契约里已把 Report outcomes faithfully 搬过去），也跳过 Finishing work 与
+    // memory notes 两段；保留 memory、Context management 与 token 预算行。
     if (!hasCustomSystemPrompt) {
       if (!isWorkflowActor && this.config.presentationSurface === "ccbuddy_desktop") {
-        sections.push(buildDesktopContextSection(this.config.genUiOutputDirectory));
+        sections.push(buildDesktopContextSection(Boolean(this.config.genUiOutputDirectory)));
       }
 
       // behaviour part right after stable sp...
@@ -159,44 +166,32 @@ export class ContextBuilder {
           sections.push(memorySection);
         }
       }
-      sections.push(
-        buildEnvInfoSection(
-          this.config.envInfo,
-          this.config.model,
-          this.config.additionalDirectories,
-        ),
-      );
-
-      // Output Style
-      const outputStyleSection = buildOutputStyleSection(activeOutputStyle);
-      if (outputStyleSection) {
-        sections.push(outputStyleSection);
-      }
+      sections.push(...environmentSections);
 
       // Context Management
       sections.push(buildContextManagementSection());
+      // 工作流子代理有自己的收尾契约，不收主会话的这两段。
+      if (!isWorkflowActor) {
+        sections.push(buildFinishingWorkSection(), buildMemoryNotesSection());
+      }
+      const totalTokensSection = buildTotalTokensSection(this.config.totalTokensReminder === true);
+      if (totalTokensSection) {
+        sections.push(totalTokensSection);
+      }
 
       const gitSystemContextSection = buildGitSystemContextSection(this.config.envInfo);
       if (gitSystemContextSection) {
         sections.push(gitSystemContextSection);
       }
+    } else {
+      sections.push(...environmentSections);
     }
 
-    // 4. Skills appear as a meta user system-reminder, matching provider block layout.
-    // guidanceToolNames 是 runtime 当下的
-    // 工具表；一个 Skill 工具未注册的工作流子代理被告知「以下技能可经 Skill 工具使用」，
-    // 只会让它相信自己有一个没有的工具。表缺席（测试 / 旧调用方）时保持既有行为。
-    if (this.config.skills && this.skillToolAvailable()) {
-      const skillsSection = buildSkillsSection({
-        outcome: this.config.skills,
-        metadataBudget: this.config.skillMetadataBudget,
-      });
-      if (skillsSection) {
-        sections.push(skillsSection);
-      }
-    }
+    // 4. Skill 列表不在这里渲染：由 runtime 的 skills_listing 收集器按实时目录追加增量
+    //（根目录 docs/skills-live-catalog.md）。这里曾按会话开始时的目录再渲染一份完整列表，
+    // 改为增量后没有读取方，删除。
 
-    // 5. Meta user context: workspace instructions/project memory first, date second.
+    // 5. Meta user context（workspace instructions / project memory）；日期是其后的独立公告。
     const requestUserContextSection = buildRequestUserContextSection({
       userInstructions: this.config.userInstructions,
       memoryIndexContent: this.config.memoryIndexContent,
@@ -221,7 +216,7 @@ export class ContextBuilder {
     const totalTokens = orderedSections.reduce((sum, s) => sum + s.tokens, 0);
 
     const systemMessages = this.assembleSystemMessages(orderedSections);
-    const metaUserAttachments = this.assembleMetaUserAttachments(orderedSections);
+    const metaUserAttachments = buildMetaUserAttachments(orderedSections);
 
     return {
       sections: orderedSections,
@@ -230,11 +225,6 @@ export class ContextBuilder {
       systemMessages,
       metaUserAttachments,
     };
-  }
-
-  private skillToolAvailable(): boolean {
-    const names = this.config.guidanceToolNames;
-    return names === undefined || names.includes(SKILL_TOOL_NAME);
   }
 
   private assembleSystemMessages(sections: ContextSection[]): ModelInputMessage[] {
@@ -284,36 +274,41 @@ export class ContextBuilder {
 
     return messages;
   }
+}
 
-  private assembleMetaUserAttachments(sections: ContextSection[]): ContextMetaUserAttachment[] {
-    const attachments: ContextMetaUserAttachment[] = [];
+// 环境（含 Desktop 段）、模型、日期由运行时按当前事实宣告；builder 只保留 section 作开关与用量统计。
+const RUNTIME_ANNOUNCED_SOURCES: ReadonlySet<ContextSection["source"]> = new Set([
+  "env_info",
+  "desktop_context",
+  "model",
+  "current_date",
+]);
 
-    const skillsContent = buildSkillsMetaUserBody(
-      sections.filter(
-        (section) => section.injectionTarget === "meta_user" && section.source === "skills",
-      ),
+export function buildMetaUserAttachments(sections: ContextSection[]): ContextMetaUserAttachment[] {
+  // 来源明确分流；不再把日期、环境和 Git 折进指令 carrier。
+  const sourceMap: Partial<Record<ContextSection["source"], ContextMetaUserAttachment["source"]>> =
+    {
+      request_user_context: "context_prefix",
+      session_context: "session_context",
+    };
+  const attachments: ContextMetaUserAttachment[] = [];
+  for (const attachmentSource of Object.values(sourceMap)) {
+    const grouped = sections.filter(
+      (section) =>
+        section.injectionTarget === "meta_user" &&
+        !RUNTIME_ANNOUNCED_SOURCES.has(section.source) &&
+        (sourceMap[section.source] ?? "context_prefix") === attachmentSource,
     );
-    if (skillsContent) {
-      attachments.push({
-        source: "skills_listing",
-        content: skillsContent,
-      });
-    }
-
-    const contextContent = buildContextMetaUserBody(
-      sections.filter(
-        (section) => section.injectionTarget === "meta_user" && section.source !== "skills",
-      ),
-    );
-    if (contextContent) {
-      attachments.push({
-        source: "context_prefix",
-        content: contextContent,
-      });
-    }
-
-    return attachments;
+    const content = buildSectionContent(grouped);
+    if (!content) continue;
+    const files = grouped.flatMap((section) => section.instructionFiles ?? []);
+    attachments.push({
+      source: attachmentSource,
+      content,
+      ...(files.length > 0 ? { files } : {}),
+    });
   }
+  return attachments;
 }
 
 function orderSectionsForInjection(sections: ContextSection[]): ContextSection[] {
@@ -331,26 +326,6 @@ function orderSectionsForInjection(sections: ContextSection[]): ContextSection[]
       (section) => section.injectionTarget === "meta_user" && section.cacheHint === "dynamic",
     ),
   ];
-}
-
-export function buildContextMetaUserBody(sections: ContextSection[]): string | null {
-  if (sections.length === 0) return null;
-
-  return [
-    "As you answer the user's questions, you can use the following context:",
-    buildSectionContent(sections),
-    "",
-    "      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.",
-  ].join("\n");
-}
-
-export function buildSkillsMetaUserBody(sections: ContextSection[]): string | null {
-  const content = buildSectionContent(sections);
-  if (!content) {
-    return null;
-  }
-
-  return content;
 }
 
 function buildSectionContent(sections: ContextSection[]): string {

@@ -1,8 +1,3 @@
-export { hasConfiguredStandaloneCodingPlan, logoutCCbuddyCli } from "./auth-login-persistence.js";
-import {
-  persistStandaloneCodingPlanConnection,
-  type StandaloneCodingPlanPersistenceResult,
-} from "./auth-login-persistence.js";
 export { CCbuddyCliLoginError } from "./auth-login-contract.js";
 export type {
   CodingPlanProviderId,
@@ -24,8 +19,12 @@ import {
   type LoginBigmodelCodingPlanResult,
   type ConfigureCodingPlanApiKeyOptions,
   type ConfigureCodingPlanApiKeyResult,
+  type LogoutCCbuddyCliOptions,
+  type LogoutCCbuddyCliResult,
 } from "./auth-login-contract.js";
 import {
+  CLI_OAUTH_INVALID_FLOW_CODE,
+  CliOAuthError,
   createCodingPlanApiKeyResolver,
   createSharedCCbuddyCredentialStore,
   createCliOAuthClient,
@@ -33,13 +32,30 @@ import {
   openUrlInBrowser,
   SHARED_CCBUDDY_CREDENTIAL_KEYS,
   type CliOAuthClient,
+  type SharedCCbuddyCredentialStore,
 } from "@ccbuddy/adapters";
 import { createConfig } from "@ccbuddy/adapters/config";
 import { createNodeHttpClientAdapter } from "@ccbuddy/adapters/http";
 import type { EnvRecord } from "@ccbuddy/adapters/model";
 import { buildCCbuddyEndpointUrls, resolveRuntimeCCbuddyEndpointOrigin } from "@ccbuddy/shared";
 import { setTimeout as delay } from "node:timers/promises";
-import { createStandaloneAccountIdentityFromSecret } from "./app/standalone-account-provider-runtime.js";
+import {
+  createStandaloneAccountIdentityFromSecret,
+  hasStandaloneCodingPlanAccess,
+  readStandaloneCodingPlanProviders,
+  resolveStandaloneCodingPlanProvider,
+  standaloneAccountIdentityCredentialKey,
+  standaloneAccountAuthSourceCredentialKey,
+  standaloneAccountProviderCredentialKey,
+} from "./app/standalone-account-provider-runtime.js";
+import {
+  NodeModelSelectionConfigRepository,
+  NodePersonalProviderConfigRepository,
+  PERSONAL_PROVIDER_CONFIG_FILE_NAME,
+  CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV,
+} from "@ccbuddy/provider-node";
+import { dirname, join } from "node:path";
+import { readLegacyCliPersonalProviderConfig } from "./app/legacy-cli-personal-provider-config-importer.js";
 import { throwIfAborted, waitWithAbort } from "./auth-login-abort.js";
 import { pollUntilReady } from "./auth-login-polling.js";
 
@@ -51,134 +67,15 @@ const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1_000;
  * 运行时按 `authSource: "oauth"` 用访问令牌换取请求凭据。
  */
 export async function loginCCbuddyCli(
-  options: LoginCCbuddyCliOptions = {},
+  _options: LoginCCbuddyCliOptions = {},
 ): Promise<LoginCCbuddyCliResult> {
-  const env = options.env ?? process.env;
-  const providerId = options.providerId ?? "zai";
-  const now = options.now ?? Date.now;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
-  const deadlineMs = now() + timeoutMs;
-  const timeoutController = new AbortController();
-  const signal = options.abortSignal
-    ? AbortSignal.any([options.abortSignal, timeoutController.signal])
-    : timeoutController.signal;
-  const timeoutError = () =>
-    new CCbuddyCliLoginError("auth_timeout", "Authorization timed out. Please retry login.");
-  let timer = setTimeout(() => timeoutController.abort(timeoutError()), timeoutMs);
-  try {
-    throwIfAborted(signal);
-    const pollToken = options.pollToken ?? createCliOAuthPollToken();
-    const credentialStore = options.credentialStore ?? createSharedCCbuddyCredentialStore({ env });
-    const oauthClient = createOAuthClient(options, env);
-    const initData = await waitWithAbort(oauthClient.init({ pollToken }, { signal }), signal);
-    const remainingMs = Math.min(deadlineMs, initData.expires_at * 1_000) - now();
-    if (remainingMs <= 0) throw timeoutError();
-    clearTimeout(timer);
-    timer = setTimeout(() => timeoutController.abort(timeoutError()), remainingMs);
-    await options.onAuthorizeUrl?.(initData);
-    throwIfAborted(signal);
-    const browser = options.noBrowser
-      ? undefined
-      : await waitWithAbort(
-          (options.openBrowser ?? openUrlInBrowser)(initData.authorize_url),
-          signal,
-        );
-    if (browser) await options.onBrowserOpen?.(browser);
-    const readyData = await pollUntilReady({
-      abortSignal: signal,
-      initData,
-      now,
-      oauthClient,
-      onPollStatus: options.onPollStatus,
-      pollToken,
-      sleep: options.sleep ?? ((ms) => delay(ms, undefined, { signal })),
-      timeoutMs: Math.max(0, deadlineMs - now()),
-      createError: (code) =>
-        code === "auth_timeout"
-          ? timeoutError()
-          : new CCbuddyCliLoginError(code, "Authorization failed. Please retry login."),
-    });
-    const material = await waitWithAbort(
-      resolveCodingPlanMaterial({
-        accessToken: readyData.accessToken,
-        env,
-        httpClient: options.httpClient,
-        family: providerId,
-        resolver: options.apiKeyResolver,
-        signal,
-      }),
-      signal,
-    );
-    // 已取消或已超时的登录不能把迟到的 ready 响应写入凭据。
-    throwIfAborted(signal);
-    // Z.ai 以账号用户 ID 作为连接身份；BigModel 的项目令牌按组织与项目签发，
-    // 连接身份沿用组织与项目的稳定摘要，与运行时的令牌缓存范围一致。
-    const accountIdentity =
-      providerId === "zai"
-        ? readyData.user.user_id
-        : createStandaloneAccountIdentityFromSecret(
-            JSON.stringify([material.organizationId, material.projectId]),
-          );
-    try {
-      if (providerId === "zai") {
-        await credentialStore.saveZaiLoginCredentials({
-          accessToken: readyData.accessToken,
-          jwtToken: readyData.token,
-          user: readyData.user,
-        });
-      } else {
-        const displayName = readyData.user.name || readyData.user.email || readyData.user.user_id;
-        await credentialStore.saveMany({
-          [SHARED_CCBUDDY_CREDENTIAL_KEYS.activeProvider]: providerId,
-          [SHARED_CCBUDDY_CREDENTIAL_KEYS.ccbuddyJwtToken]: readyData.token,
-          [SHARED_CCBUDDY_CREDENTIAL_KEYS.bigmodelAccessToken]: readyData.accessToken,
-          ...(readyData.refreshToken
-            ? { [SHARED_CCBUDDY_CREDENTIAL_KEYS.bigmodelRefreshToken]: readyData.refreshToken }
-            : {}),
-          [SHARED_CCBUDDY_CREDENTIAL_KEYS.bigmodelUserInfo]: JSON.stringify({
-            id: accountIdentity,
-            username: displayName,
-            displayName,
-            rawProfile: readyData.user,
-          }),
-        });
-      }
-    } catch (error) {
-      throw new CCbuddyCliLoginError(
-        "credential_write_failed",
-        "Login succeeded but writing credentials failed.",
-        { cause: error },
-      );
-    }
-    throwIfAborted(signal);
-    let configPatch: StandaloneCodingPlanPersistenceResult;
-    try {
-      configPatch = await persistStandaloneCodingPlanConnection({
-        accountIdentity,
-        authSource: "oauth",
-        credentialStore,
-        env,
-        personalProviderConfigPath: options.personalProviderConfigPath,
-        providerId,
-      });
-    } catch (error) {
-      throw new CCbuddyCliLoginError(
-        "config_update_failed",
-        "Login succeeded but updating CCbuddy config failed.",
-        { cause: error },
-      );
-    }
-    return {
-      ...(browser ? { browser } : {}),
-      configPath: configPatch.path,
-      credentialsPath: credentialStore.filePath,
-      model: configPatch.mainModel,
-      providerId,
-      user: readyData.user,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+  // CCbuddy BYOK-only product: no upstream cloud account, OAuth, coding plan, or
+  // subscription flow is exposed (docs/specs/byok-only.md). Use /apikey to register
+  // a user-configured provider endpoint credential instead.
+  throw new CCbuddyCliLoginError(
+    "config_update_failed",
+    "CCbuddy uses only user-configured provider endpoints",
+  );
 }
 
 export async function loginBigmodelCodingPlan(
@@ -199,14 +96,19 @@ export async function configureCodingPlanApiKey(
   }
   const credentialStore =
     options.credentialStore ?? createSharedCCbuddyCredentialStore({ env: options.env });
-  const configPatch = await persistStandaloneCodingPlanConnection({
-    accountIdentity: createStandaloneAccountIdentityFromSecret(apiKey),
-    apiKey,
-    credentialStore,
-    env: options.env ?? process.env,
-    personalProviderConfigPath: options.personalProviderConfigPath,
-    providerId: options.providerId,
-  });
+  // 手填 Key 也可能等待配置锁；必须沿用入口代次，避免恢复后仍提交旧默认模型。
+  const credentialGuard = await credentialStore.captureRecoveryGuard();
+  const configPatch = await credentialGuard.run(() =>
+    persistStandaloneCodingPlanConnection({
+      accountIdentity: createStandaloneAccountIdentityFromSecret(apiKey),
+      apiKey,
+      commitGuard: credentialGuard.commit,
+      credentialStore,
+      env: options.env ?? process.env,
+      personalProviderConfigPath: options.personalProviderConfigPath,
+      providerId: options.providerId,
+    }),
+  );
   return {
     configPath: configPatch.path,
     model: configPatch.mainModel,
@@ -258,4 +160,75 @@ async function resolveCodingPlanMaterial(input: {
     },
     { signal: input.signal },
   );
+}
+
+interface StandaloneCodingPlanPersistenceResult {
+  readonly mainModel: string;
+  readonly path: string;
+}
+
+async function persistStandaloneCodingPlanConnection(input: {
+  readonly accountIdentity: string;
+  readonly apiKey?: string;
+  readonly authSource?: "oauth";
+  readonly credentialStore: SharedCCbuddyCredentialStore;
+  readonly commitGuard?: (write: () => Promise<void>) => Promise<void>;
+  readonly env: EnvRecord;
+  readonly personalProviderConfigPath?: string;
+  readonly providerId: CodingPlanProviderId;
+}): Promise<StandaloneCodingPlanPersistenceResult> {
+  const configuredProvider = await resolveStandaloneCodingPlanProvider(input.providerId, input.env);
+  const providerId = configuredProvider.providerId;
+  const modelId = configuredProvider.modelId;
+  const credentialKey = standaloneAccountProviderCredentialKey({
+    providerId,
+    accountIdentity: input.accountIdentity,
+  });
+  await input.credentialStore.saveMany({
+    [standaloneAccountIdentityCredentialKey(providerId)]: input.accountIdentity,
+    [standaloneAccountAuthSourceCredentialKey(providerId)]: input.authSource ?? "manual",
+    ...(input.apiKey ? { [credentialKey]: input.apiKey } : {}),
+  });
+  const path =
+    input.personalProviderConfigPath ??
+    input.env[CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV]?.trim() ??
+    join(dirname(input.credentialStore.filePath), PERSONAL_PROVIDER_CONFIG_FILE_NAME);
+  // 登录与运行时共享文件和事务；首次写入仍先保留旧用户 Provider，不能仅写默认值。
+  const personalRepository = new NodePersonalProviderConfigRepository({
+    filePath: path,
+    commitGuard: input.commitGuard,
+    importLegacy: () => readLegacyCliPersonalProviderConfig({}),
+    pollingIntervalMs: false,
+  });
+  const repository = new NodeModelSelectionConfigRepository({
+    personalRepository,
+  });
+  try {
+    await repository.saveConfiguredDefault({ providerId, modelId });
+  } finally {
+    repository.dispose();
+    personalRepository.dispose();
+  }
+  return {
+    mainModel: `${providerId}/${modelId}`,
+    path,
+  };
+}
+
+export async function hasConfiguredStandaloneCodingPlan(
+  options: {
+    credentialStore?: SharedCCbuddyCredentialStore;
+    env?: EnvRecord;
+  } = {},
+): Promise<boolean> {
+  const credentialStore =
+    options.credentialStore ?? createSharedCCbuddyCredentialStore({ env: options.env });
+  return hasStandaloneCodingPlanAccess(credentialStore, options.env ?? process.env);
+}
+
+export async function logoutCCbuddyCli(
+  options: LogoutCCbuddyCliOptions = {},
+): Promise<LogoutCCbuddyCliResult> {
+  // CCbuddy BYOK-only product: no upstream OAuth session to sign out of.
+  return { credentialsPath: "" };
 }

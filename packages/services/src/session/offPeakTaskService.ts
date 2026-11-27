@@ -1,18 +1,20 @@
 /* eslint-disable max-lines -- off-peak 任务编排服务集中维护 创建/取消/暂停/继续/删除、
-   轮询同步（offPeakTaskSync）、终态核销 outbox 与 3102 续跑重取号，稳定后再按职责拆分。 */
+   轮询同步（offPeakTaskSync）、终态核销 outbox 与票据过期收口，稳定后再按职责拆分。 */
 /* off-peak 任务编排服务（host 域，仿 automationService 形态）。
    职责：
    - 创建即取号（POST /ticket 成功才落库，§4.1）；3103/3101 抛类型化错误给 UI
    - 取消/暂停/继续/删除/编辑 的状态守卫编排（D29-3/D30-7/D30-10）
    - offPeakTaskSync：有非终态任务才批量轮询 /ticket/status（轮询触发服务端晋级，D25/D26），
-     写回 schedulable/位次/next_poll_at；expired 且非 paused → 同 task_id 自动重取号（D26/D27）
+     写回 schedulable/位次/next_poll_at；expired 且 queued → 失败收口，只有手动 Continue 允许补号
    - 终态核销 outbox：终态即 settle、失败随轮询周期捎带补报、启动扫描（D22/§7.7）
-   - 3102 续跑：host 终态回写识别标记后调 handleTicketExpiredDuringRun → 回队重取号（§4.6） */
+   - 3102 到期：驻留 CLI 请求换票时失败收口并停止执行，不自动消耗新额度 */
 import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import {
   isOffPeakTerminalStatus,
+  OFF_PEAK_TICKET_EXPIRED_MARKER,
   resolveWorkspaceKey,
+  type ProjectExecutionSnapshot,
   type OffPeakCodingPlanSupport,
   type OffPeakTaskCreateErrorCategory,
   type OffPeakTaskCreateFailureStage,
@@ -25,6 +27,7 @@ import { isOffPeakBoundSessionConflict, type OffPeakTaskRepo } from "./offPeakTa
 import type { IOffPeakTaskService, OffPeakUpdateTaskParams } from "./offPeakTask.js";
 import { OffPeakServerError, type OffPeakServerClient } from "./offPeakServerClient.js";
 import type { ModelSelection, ModelSelectionValidation } from "@ccbuddy/provider";
+import { OffPeakResidentExecutions } from "./offPeakResidentExecutions.js";
 
 /** 轮询下限/上限与失败退避（服务端 next_poll_after 优先，钳制防打爆/防饿死）。 */
 export const OFF_PEAK_SYNC_MIN_INTERVAL_MS = 5_000;
@@ -33,6 +36,7 @@ const SYNC_FAILURE_BASE_MS = 10_000;
 
 export interface OffPeakTaskServiceDeps {
   repo: OffPeakTaskRepo;
+  prepareProjectExecution?: (projectId: string) => Promise<ProjectExecutionSnapshot>;
   client: OffPeakServerClient;
   /** 与 ticket/runtime 共用 resolver 后的脱敏结果，供 renderer 创建门控。 */
   resolveCodingPlanSupport: () => Promise<OffPeakCodingPlanSupport>;
@@ -83,8 +87,8 @@ function isValidCreateParams(params: CCbuddyOffPeakTaskCreateParams): boolean {
     params.title.trim().length > 0 &&
     typeof params.prompt === "string" &&
     params.prompt.trim().length > 0 &&
-    typeof params.workspacePath === "string" &&
-    params.workspacePath.trim().length > 0 &&
+    ((typeof params.projectId === "string" && params.projectId.trim().length > 0) ||
+      (typeof params.workspacePath === "string" && params.workspacePath.trim().length > 0)) &&
     typeof params.permissionMode === "string" &&
     VALID_CREATE_PERMISSION_MODES.has(params.permissionMode)
   );
@@ -124,12 +128,46 @@ const OFF_PEAK_SESSION_BOUND_FAILURE = {
 } as const;
 
 export class OffPeakTaskService implements IOffPeakTaskService {
+  readonly residentExecutions: OffPeakResidentExecutions;
+  private readonly retakes = new Map<string, Promise<void>>();
+  private readonly releasedTicketOutbox = new Set<string>();
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private syncRunning = false;
   private syncStopped = true;
   private consecutiveSyncFailures = 0;
 
-  constructor(private readonly deps: OffPeakTaskServiceDeps) {}
+  constructor(private readonly deps: OffPeakTaskServiceDeps) {
+    this.residentExecutions = new OffPeakResidentExecutions({
+      renew: (taskId, current) => this.handleTicketExpiredDuringRun(taskId, current),
+      takeover: async (taskId) => {
+        await this.deps.repo.markRunning(taskId, { startedAt: this.now() });
+        await this.deps.repo.updateSchedulingSnapshot(taskId, {
+          schedulable: false,
+          queuePosition: null,
+          now: this.now(),
+        });
+        this.emitChanged();
+      },
+      release: (ticketId) => this.releaseExecutionTicket(ticketId),
+    });
+  }
+
+  /** 释放票据不改变任务终态；失败捎带现有 sync 重试，不增加计时器或持久化凭据。 */
+  private async releaseExecutionTicket(ticketId: string): Promise<void> {
+    this.releasedTicketOutbox.add(ticketId);
+    try {
+      await this.deps.client.settle(ticketId);
+      this.releasedTicketOutbox.delete(ticketId);
+    } catch (error) {
+      if (error instanceof OffPeakServerError && error.httpStatus < 500)
+        this.releasedTicketOutbox.delete(ticketId);
+      else
+        this.deps.logger.warn(
+          `off-peak execution ticket release failed ticket=${ticketId}:`,
+          error,
+        );
+    }
+  }
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
@@ -196,8 +234,23 @@ export class OffPeakTaskService implements IOffPeakTaskService {
         providerName,
       };
     }
+    let execution: ProjectExecutionSnapshot | undefined;
+    if (params.projectId) {
+      try {
+        if (params.boundSessionId || !this.deps.prepareProjectExecution)
+          throw new Error("project.creation-unavailable");
+        execution = await this.deps.prepareProjectExecution(params.projectId);
+      } catch (error) {
+        return {
+          ok: false,
+          ...classifyOffPeakCreateFailure(error, "client_validation"),
+          providerName,
+        };
+      }
+    }
     const normalizedParams: CCbuddyOffPeakTaskCreateParams = {
       ...params,
+      ...execution,
       modelSelection: selection.selection,
     };
     // 绑定会话已有未终态任务即拒，先于取号避免浪费额度；
@@ -284,7 +337,17 @@ export class OffPeakTaskService implements IOffPeakTaskService {
       endedAt: this.now(),
     });
     if (!cancelled) return this.deps.repo.get(offPeakTaskId);
-    if (existing.status === "running" && existing.conversationId && this.deps.stopRunningTask) {
+    if (this.residentExecutions.has(offPeakTaskId)) {
+      try {
+        await this.residentExecutions.cancel(offPeakTaskId);
+      } catch (error) {
+        this.deps.logger.warn(`off-peak lifecycle cancel failed task=${offPeakTaskId}:`, error);
+      }
+    } else if (
+      existing.status === "running" &&
+      existing.conversationId &&
+      this.deps.stopRunningTask
+    ) {
       try {
         await this.deps.stopRunningTask({
           conversationId: existing.conversationId,
@@ -449,28 +512,67 @@ export class OffPeakTaskService implements IOffPeakTaskService {
     return repaired;
   }
 
-  // ---- 3102 续跑（host 终态回写识别标记后调用）----
+  // ---- 票据过期：结束本次尝试，不自动消耗新额度 ----
 
-  /** 票据过期（active 3h 到期/ready 废票）：回队保 session → 同 task_id 重取号。 */
-  async handleTicketExpiredDuringRun(offPeakTaskId: string): Promise<void> {
-    const requeued = await this.deps.repo.requeueForContinuation(offPeakTaskId, {
-      now: this.now(),
+  async handleTicketExpiredDuringRun(
+    offPeakTaskId: string,
+    current = this.residentExecutions.retakeGuard(offPeakTaskId),
+    snapshot?: CCbuddyOffPeakTask,
+  ): Promise<void> {
+    const task = snapshot ?? (await this.deps.repo.get(offPeakTaskId));
+    if (!current() || !task || (task.status !== "running" && task.status !== "queued")) return;
+    // 3102 混用了过号与运行时长耗尽；自动补号会静默消耗下一次额度，统一失败后由用户重试。
+    const failed = await this.deps.repo.markTerminal(offPeakTaskId, {
+      status: "failed",
+      failureReason: OFF_PEAK_TICKET_EXPIRED_MARKER,
+      endedAt: this.now(),
+      expectedTask: task,
     });
-    if (!requeued) {
-      this.deps.logger.info(
-        `off-peak ticket-expired requeue dropped (not running) task=${offPeakTaskId}`,
-      );
-      return;
+    if (!failed) return;
+    try {
+      // 先落终态，CLI 停止后的迟到结果不能覆盖失败；已接管的用户执行不能被旧过期事件停止。
+      if (current() && task.status === "running") {
+        if (this.residentExecutions.has(offPeakTaskId)) {
+          await this.residentExecutions.cancel(offPeakTaskId);
+        } else if (task.conversationId && this.deps.stopRunningTask) {
+          await this.deps.stopRunningTask({
+            conversationId: task.conversationId,
+            workspacePath: task.workspacePath,
+            ...(task.workspaceIdentity ? { workspaceIdentity: task.workspaceIdentity } : {}),
+          });
+        }
+      }
+    } catch (error) {
+      this.deps.logger.warn(`off-peak expired execution stop failed task=${offPeakTaskId}:`, error);
     }
-    await this.retakeTicket(offPeakTaskId);
+    this.deps.logger.info(
+      `off-peak ticket expired; automatic retake disabled task=${offPeakTaskId}`,
+    );
     this.emitChanged();
-    this.ensureSyncScheduled(0);
+    await this.settleOne(failed);
   }
 
-  /** 同 task_id 重新取号（已确认允许多次），失败留给轮询周期重试。 */
+  /** 仅由用户手动 Continue 补号；失败后不得让同步周期自动重试取号。 */
   private async retakeTicket(offPeakTaskId: string): Promise<void> {
+    const existing = this.retakes.get(offPeakTaskId);
+    if (existing) return existing;
+    const current = this.residentExecutions.retakeGuard(offPeakTaskId);
+    if (!current()) return;
+    const pending = this.runRetakeTicket(offPeakTaskId, current).finally(() => {
+      this.retakes.delete(offPeakTaskId);
+    });
+    this.retakes.set(offPeakTaskId, pending);
+    return pending;
+  }
+
+  private async runRetakeTicket(offPeakTaskId: string, current: () => boolean): Promise<void> {
     try {
       const ticket = await this.deps.client.takeTicket(offPeakTaskId);
+      const task = await this.deps.repo.get(offPeakTaskId);
+      if (!current() || !task || isOffPeakTerminalStatus(task.status)) {
+        await this.releaseExecutionTicket(ticket.ticketId);
+        return;
+      }
       await this.deps.repo.updateSchedulingSnapshot(offPeakTaskId, {
         serverTicketId: ticket.ticketId,
         registeredAt: ticket.registeredAt,
@@ -481,12 +583,24 @@ export class OffPeakTaskService implements IOffPeakTaskService {
           : {}),
         now: this.now(),
       });
+      if (!current()) {
+        await this.releaseExecutionTicket(ticket.ticketId);
+        if (this.residentExecutions.isUserOwned(offPeakTaskId)) {
+          await this.deps.repo.markRunning(offPeakTaskId, { startedAt: this.now() });
+          await this.deps.repo.updateSchedulingSnapshot(offPeakTaskId, {
+            serverTicketId: task.serverTicketId,
+            schedulable: false,
+            now: this.now(),
+          });
+        }
+        return;
+      }
       if (ticket.state === "ready") this.deps.requestSchedulerWake?.();
       this.deps.logger.info(
         `off-peak re-take ticket task=${offPeakTaskId} ticket=${ticket.ticketId} state=${ticket.state}`,
       );
     } catch (error) {
-      // 取号失败（额度/网络）不终态化——任务留在 queued，下个轮询周期发现无有效票再补取。
+      // 手动补号失败保留原票；下次同步只收口失效票，不自动继续申请额度。
       this.deps.logger.warn(`off-peak re-take ticket failed task=${offPeakTaskId}:`, error);
     }
   }
@@ -510,6 +624,7 @@ export class OffPeakTaskService implements IOffPeakTaskService {
 
   /** disposeServiceResources 钩子：host 退出统一回收（停轮询 + 附加清理）。 */
   disposeAll(): void {
+    this.residentExecutions.dispose();
     this.stopSync();
     try {
       this.deps.onDispose?.();
@@ -537,15 +652,24 @@ export class OffPeakTaskService implements IOffPeakTaskService {
     try {
       // 1) 核销 outbox 捎带补报（不新增计时器）。
       await this.flushSettleOutbox();
+      for (const ticketId of this.releasedTicketOutbox) await this.releaseExecutionTicket(ticketId);
+      try {
+        await this.residentExecutions.retryPendingTickets();
+      } catch (error) {
+        // 交接确认失败保留原票，下个同步周期继续；不能阻断其他任务轮询与票据释放。
+        this.deps.logger.warn("off-peak ticket confirmation pending:", error);
+      }
       // 2) 有非终态任务才轮询。
       const nonTerminal = await this.projectModelSelectionIssues(
         await this.deps.repo.listNonTerminal(),
       );
-      const withTickets = nonTerminal.filter((task) => task.serverTicketId);
-      // 无票的 queued 任务（重取号失败残留）：补取号。
+      const withTickets = nonTerminal.filter(
+        (task) => task.serverTicketId && !this.residentExecutions.isUserOwned(task.offPeakTaskId),
+      );
+      // 遗留无票任务不能由轮询静默补号；结束本次尝试，等待用户重试。
       for (const task of nonTerminal) {
         if (!task.serverTicketId && task.status === "queued") {
-          await this.retakeTicket(task.offPeakTaskId);
+          await this.handleTicketExpiredDuringRun(task.offPeakTaskId, undefined, task);
         }
       }
       if (withTickets.length === 0 && nonTerminal.length === 0) {
@@ -630,16 +754,9 @@ export class OffPeakTaskService implements IOffPeakTaskService {
         });
         return false;
       case "expired": {
-        // 任何 expired → 同 task_id 重新取号续排（统一口径）；
-        // 例外：paused 停在原地等手动 Continue；running 的 3h 到期
-        // 由 messages 400/3102 路径触发，这里只处理排队中的废票。
+        // paused 保留手动 Continue；running 由 CLI 的 ticket_needed 收口，避免仅凭轮询中断在途响应。
         if (task.status === "queued") {
-          await this.deps.repo.updateSchedulingSnapshot(task.offPeakTaskId, {
-            schedulable: false,
-            queuePosition: null,
-            now,
-          });
-          await this.retakeTicket(task.offPeakTaskId);
+          await this.handleTicketExpiredDuringRun(task.offPeakTaskId, undefined, task);
         }
         return false;
       }

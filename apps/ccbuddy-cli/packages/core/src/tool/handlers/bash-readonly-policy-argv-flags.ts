@@ -80,7 +80,6 @@ function flagsAndPositionalsAllowed(
       }
 
       if (flagValue === "optionalString") {
-
         // 只拦截独立 argv 里看起来像 option 的字符串，避免误吞下一段参数。
         index += 1;
         continue;

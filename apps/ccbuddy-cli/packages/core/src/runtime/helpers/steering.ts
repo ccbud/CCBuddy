@@ -22,9 +22,7 @@ export function previewInput(value: string): string {
   return `${normalized.slice(0, TURN_STEER_INPUT_PREVIEW_CHARS)}...`;
 }
 
-export function findLatestUserMessageFromEnd(
-  messages: ModelInputMessage[],
-): number | undefined {
+export function findLatestUserMessageFromEnd(messages: ModelInputMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     if (messages[index]?.role === "user") {
       return messages.length - 1 - index;
@@ -52,9 +50,7 @@ export function cloneMessageForFork(
     sessionId: String(message.sessionID),
     messageId: String(message.id),
   };
-  const anchor = message.anchor
-    ? cloneMessageAnchorForFork(message.anchor, options)
-    : undefined;
+  const anchor = message.anchor ? cloneMessageAnchorForFork(message.anchor, options) : undefined;
   if (message.role === "user") {
     return {
       ...message,
@@ -90,11 +86,7 @@ function cloneMessageAnchorForFork(
     }
     return mapped ?? id;
   };
-  const mapIdentity = (
-    id: string,
-    map: Map<string, string> | undefined,
-    field: string,
-  ): string => {
+  const mapIdentity = (id: string, map: Map<string, string> | undefined, field: string): string => {
     const mapped = map?.get(id);
     if (!mapped && options.strictLocalReferences) {
       throw new Error(`Fork ${field} has no child-local identity: ${id}`);
@@ -126,11 +118,7 @@ function cloneMessageAnchorForFork(
     ...anchor,
     ...(anchor.turnId
       ? {
-          turnId: mapIdentity(
-            String(anchor.turnId),
-            options.turnIdMap,
-            "anchor turn",
-          ) as TurnId,
+          turnId: mapIdentity(String(anchor.turnId), options.turnIdMap, "anchor turn") as TurnId,
         }
       : {}),
     ...(anchor.productTurnId
@@ -151,10 +139,7 @@ function cloneMessageAnchorForFork(
       : {}),
     ...(anchor.boundaryMessageId
       ? {
-          boundaryMessageId: mapMessage(
-            anchor.boundaryMessageId,
-            "anchor boundaryMessageId",
-          ),
+          boundaryMessageId: mapMessage(anchor.boundaryMessageId, "anchor boundaryMessageId"),
         }
       : {}),
     ...(goalBoundary ? { goalBoundary } : {}),
@@ -230,10 +215,7 @@ export function clonePartForFork(
       }
     }
     if (cloned.timelineType === "context_compaction" && cloned.summaryMessageId) {
-      cloned.summaryMessageId = mapMessage(
-        cloned.summaryMessageId,
-        "timeline summaryMessageId",
-      );
+      cloned.summaryMessageId = mapMessage(cloned.summaryMessageId, "timeline summaryMessageId");
     }
     if (cloned.timelineType === "goal_verification") {
       const targetId = options.targetIdMap?.get(cloned.targetId);
@@ -253,6 +235,17 @@ export function clonePartForFork(
     }
     if (cloned.tail_start_id) {
       cloned.tail_start_id = mapMessage(cloned.tail_start_id, "compaction tail_start_id");
+    }
+    const leadingIds: unknown = cloned.metadata?.compactLeadingMessageIds;
+    if (Array.isArray(leadingIds)) {
+      // 旧版本 fork 原样复制 metadata，可能留下父会话 ID；声明只影响公告位置，映射不到的丢弃，不阻断 fork。
+      cloned.metadata = {
+        ...cloned.metadata,
+        compactLeadingMessageIds: leadingIds.flatMap((id) => {
+          const mapped = messageIdMap.get(id);
+          return mapped ? [mapped] : [];
+        }),
+      };
     }
     if (cloned.compactBoundary) {
       const boundary = cloned.compactBoundary;
@@ -301,9 +294,7 @@ export function clonePartForFork(
               },
             }
           : {}),
-        ...(boundary.turnId
-          ? { turnId: mapTurn(boundary.turnId, "compact boundary turnId") }
-          : {}),
+        ...(boundary.turnId ? { turnId: mapTurn(boundary.turnId, "compact boundary turnId") } : {}),
       };
     }
   }

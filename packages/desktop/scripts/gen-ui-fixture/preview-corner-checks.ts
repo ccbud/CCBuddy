@@ -49,7 +49,7 @@ export async function checkLoading(
       const status=document.querySelector('[role=status]');
       return [status.textContent.trim(),getComputedStyle(status).fontSize,status.querySelector('svg').getAttribute('aria-hidden')];
     })()`),
-    ["Loading interactive view…", "14px", "true"],
+    ["Loading…", "14px", "true"],
   );
   await win.webContents.executeJavaScript("window.releaseDocument()");
 }

@@ -5,10 +5,7 @@ import { checkControlStates } from "./control-state-checks.js";
 
 /** 导出资源必须独立工作，不能依赖桌面 preload 或正在运行的 Agent。 */
 export async function checkStandalone(root: string) {
-  const win = new BrowserWindow({
-    show: false,
-    webPreferences: { sandbox: true },
-  });
+  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
   try {
     const load = async () => {
       await win.loadFile(join(root, "standalone.html"));
@@ -50,7 +47,13 @@ export async function checkStandalone(root: string) {
         await frame.executeJavaScript(`document.documentElement.dataset.theme='${theme}'`);
         await checkControlStates((code) => frame.executeJavaScript(code), send, true);
       }
-      await send("Emulation.setTouchEmulationEnabled", { enabled: true });
+      await win.webContents.debugger.sendCommand(
+        "Emulation.setTouchEmulationEnabled",
+        {
+          enabled: true,
+        },
+        sessionId,
+      );
       await win.webContents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", {
         width: 390,
         height: 844,
@@ -73,7 +76,9 @@ export async function checkStandalone(root: string) {
     } finally {
       await win.webContents.debugger.sendCommand(
         "Emulation.setTouchEmulationEnabled",
-        { enabled: false },
+        {
+          enabled: false,
+        },
         sessionId,
       );
       await win.webContents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");

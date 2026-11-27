@@ -1,3 +1,4 @@
+import { committedToolSearchDelivery } from "./turn-output-token-continuation.js";
 import { createPartId } from "../deps.js";
 import type { MessageId, TraceContext } from "../deps.js";
 import { toTokenUsageInfo } from "../helpers/index.js";
@@ -36,9 +37,11 @@ export async function persistToolModelStepFinish(
     state.currentUserMessageId,
     options.assistantCreatedAt,
     {
+      toolSearchDelivery: committedToolSearchDelivery(state.turnRequestState),
       completed: Date.now(),
       finish: options.result.finishReason,
       tokens: toTokenUsageInfo(options.result.usage),
+      signedReasoningReset: options.result.signedReasoningReset,
     },
     options.modelTraceContext,
     model,

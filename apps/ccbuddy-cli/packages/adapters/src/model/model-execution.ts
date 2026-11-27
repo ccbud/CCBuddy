@@ -33,10 +33,12 @@ import { normalizeModelTlsFailure } from "./failure-tls.js";
 import {
   mergeModelRequestHeaders,
   withoutModelAuthHeaders,
-  withoutModelQuerySourceHeader,
+  withoutContextOwnedModelHeaders,
 } from "./model-request-headers.js";
 
 export type AiSdkProviderKind = "openai" | "anthropic" | "openai-compatible";
+
+const OPENAI_ENCRYPTED_REASONING_INCLUDE = "reasoning.encrypted_content";
 
 export type EnvRecord = Record<string, string | undefined>;
 
@@ -62,6 +64,8 @@ export interface AiSdkModelExecutionOptions {
   requestSecurityState?: ModelRequestSecurityState;
   logger?: Logger;
   transport?: ProviderFetch;
+  /** 在代理和 CA 解析之后旁路观测，不替换产品网络策略。 */
+  observeTransport?: (transport: ProviderFetch) => ProviderFetch;
 }
 
 export interface AiSdkNetworkConfig {
@@ -80,6 +84,8 @@ export interface AiSdkResolvedModel {
   providerOptions?: Record<string, unknown>;
   rawRequestBodyCapture?: RawRequestBodyCapture;
   requestObservations?: ModelRequestSecurityPort;
+  /** 每次 resolveRequest 独立持有，不能跨并发请求或重试共享。 */
+  streamTiming?: { firstContentAt?: number };
 }
 
 export interface AiSdkBoundModelResolution {
@@ -100,6 +106,7 @@ export interface ProviderBusinessErrorFetchOptions {
   env?: EnvRecord;
   providerId: string;
   providerKind: AiSdkProviderKind;
+  streamTiming?: { firstContentAt?: number };
   fetch?: ProviderFetch;
   httpProxy?: string;
   noProxy?: string;
@@ -170,6 +177,7 @@ export class AiSdkModelExecution {
   private readonly endpointRoutingPort?: ProviderEndpointRoutingPort;
   private readonly logger?: Logger;
   private readonly baseTransport?: ProviderFetch;
+  private readonly observeTransport?: AiSdkModelExecutionOptions["observeTransport"];
   private readonly providerTransports = new Map<string, ProviderFetch>();
   private readonly requestSecurity: ModelRequestSecurityPort;
 
@@ -180,6 +188,7 @@ export class AiSdkModelExecution {
     this.endpointRoutingPort = config.endpointRoutingPort;
     this.logger = options.logger;
     this.baseTransport = options.transport;
+    this.observeTransport = options.observeTransport;
     this.requestSecurity = (
       options.requestSecurityState ?? createModelRequestSecurityState()
     ).createExecution({ logger: options.logger });
@@ -250,12 +259,14 @@ export class AiSdkModelExecution {
     // Model 创建时的 Provider 事实必须被冻结在当前 binding 中。若按 providerId 缓存
     // factory，配置更新后创建的新 Model 会错误复用旧 Endpoint / Header / API Key。
     const rawRequestBodyCapture: RawRequestBodyCapture = {};
+    const streamTiming: NonNullable<AiSdkResolvedModel["streamTiming"]> = {};
     const factory = this.createFactory(
       snapshot.providerId,
       providerConfig,
       optionMaps,
       optionValues,
       rawRequestBodyCapture,
+      streamTiming,
       snapshot.supportsJsonSchemaOutput,
       snapshot.providerConfig.access?.type === "zhipu-account" ? requestAuth?.apiKeyId : undefined,
     );
@@ -266,9 +277,10 @@ export class AiSdkModelExecution {
       modelId: snapshot.modelId,
       model: factory(snapshot.modelId.toString()),
       providerKind: providerConfig.kind,
-      providerOptions: providerConfig.providerOptions,
+      providerOptions: withOpenAiResponsesReplayOptions(providerConfig, optionMaps, optionValues),
       rawRequestBodyCapture,
       requestObservations: this.requestSecurity,
+      streamTiming,
     };
   }
 
@@ -278,13 +290,18 @@ export class AiSdkModelExecution {
     optionMaps: CompiledModelOptionMaps | undefined,
     optionValues: ModelOptionValues | undefined,
     rawRequestBodyCapture: RawRequestBodyCapture,
+    streamTiming: NonNullable<AiSdkResolvedModel["streamTiming"]>,
     supportsJsonSchemaOutput: boolean,
     apiKeyId?: string,
   ): LanguageModelFactory {
     const apiKey = this.resolveApiKey(providerConfig);
     // SDK 会合并 factory 默认 header；必须在这里去掉静态来源，才能保证缺失时真正省略。
-    const headers = withoutModelQuerySourceHeader(providerConfig.headers);
-    const networkTransport = this.resolveProviderTransport(providerId);
+    const headers = withoutContextOwnedModelHeaders(providerConfig.headers);
+    const networkTransport = observeProviderFetch(
+      this.resolveProviderTransport(providerId),
+      this.logger,
+      providerId,
+    );
     // ID 属于当前 attempt，不能放入按 Provider 缓存的 transport，避免切换账号后串用。
     const providerTransport = this.endpointRoutingPort
       ? createProviderEndpointRoutingFetch({
@@ -302,6 +319,7 @@ export class AiSdkModelExecution {
       fetch: requestTransport,
       providerId,
       providerKind: providerConfig.kind,
+      streamTiming,
     });
     const optionFetch =
       optionMaps && optionValues
@@ -368,8 +386,10 @@ export class AiSdkModelExecution {
       httpProxy: this.network.httpProxy,
       noProxy: this.network.noProxy,
     });
-    this.providerTransports.set(providerId, networkTransport);
-    return networkTransport;
+    // 观测若放在底层 fetch 注入点，配置代理或 CA 时会被网络适配器绕过。
+    const observedTransport = this.observeTransport?.(networkTransport) ?? networkTransport;
+    this.providerTransports.set(providerId, observedTransport);
+    return observedTransport;
   }
 }
 
@@ -402,6 +422,35 @@ function toAiSdkProviderConfig(
       return { kind: "openai-compatible", name: providerId, ...common };
   }
   throw new Error(`Unsupported Provider API type: ${String(config.api.type)}`);
+}
+
+/**
+ * Responses 加密推理回传的请求选项，store 和 include 只在这里写，transform 和 SDK 读同一个对象。
+ * - 根因：不发 store 时上游按 store=true 处理，不返回加密推理；ccbuddy 没有 previousResponseId，
+ *   下一轮只能丢掉 reasoning，所有模型的推理在工具步之间断开。改为无状态，下一轮由 transform
+ *   按 itemId 原样带回密文。
+ * - include 必须自己发：SDK 只给名单内模型（o1/o3/o4-mini/gpt-5*）自动补，gpt-6 等新模型不在名单里。
+ *   但非推理模型带 include 会被上游 400（Encrypted content is not supported with this model）。
+ *   推理映射本来就决定本次请求是否要推理，所以用同一份映射和本次档位求值：写了 reasoning 才补 include。
+ */
+function withOpenAiResponsesReplayOptions(
+  providerConfig: AiSdkProviderConfig,
+  optionMaps: CompiledModelOptionMaps | undefined,
+  optionValues: ModelOptionValues | undefined,
+): Record<string, unknown> | undefined {
+  const providerOptions = providerConfig.providerOptions;
+  if (providerConfig.kind !== "openai") return providerOptions;
+  const optionFragment = optionMaps && optionValues ? optionMaps.apply({}, optionValues) : {};
+  return {
+    ...providerOptions,
+    openai: {
+      ...asRecord(providerOptions?.openai),
+      store: false,
+      ...(asRecord(optionFragment.reasoning)
+        ? { include: [OPENAI_ENCRYPTED_REASONING_INCLUDE] }
+        : {}),
+    },
+  };
 }
 
 function applyModelRequestAuth(
@@ -511,6 +560,55 @@ export function createProviderBusinessErrorFetch(
       throw businessError;
     }
     return response;
+  };
+}
+
+/** 位于请求安全处理以内的网络边界；只读关联头，不记录 URL 或消费响应 body。 */
+export function observeProviderFetch(
+  fetch: ProviderFetch,
+  logger: Logger | undefined,
+  providerId: string,
+): ProviderFetch {
+  if (!logger) return fetch;
+  return async (input, init) => {
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
+    const requestId = headers.get("x-request-id");
+    const querySource = headers.get("x-ccbuddy-query-source");
+    if (!requestId || (querySource !== "main_turn" && querySource !== "compact"))
+      return fetch(input, init);
+    const start = performance.timeOrigin + performance.now();
+    const log = (name: string, statusCode?: number) => {
+      const at = performance.timeOrigin + performance.now();
+      try {
+        logger.info("Model transport diagnostic", {
+          event: `ttft.model.${name}`,
+          requestId,
+          querySource,
+          providerId,
+          queryId: headers.get("x-query-id") ?? undefined,
+          sessionId: headers.get("x-session-id") ?? undefined,
+          traceId: (headers.get("x-ccbuddy-trace-id") ?? undefined) as
+            | import("@ccbuddy/contracts").TraceId
+            | undefined,
+          at,
+          durationMs: at - start,
+          statusCode,
+        });
+      } catch {
+        /* 日志异常不能改变网络返回值。 */
+      }
+    };
+    log("fetch_started");
+    try {
+      const response = await fetch(input, init);
+      log("response_headers", response.status);
+      return response;
+    } catch (error) {
+      log("fetch_failed");
+      throw error;
+    }
   };
 }
 
@@ -864,8 +962,73 @@ function emitProviderBusinessSseFrame(
     return false;
   }
 
+  // 工具参数和部分文本会在后续兼容层/重试层暂存；释放时再计时会把接收耗时压成几毫秒。
+  // 复用接口层已有分帧，在任何内容缓冲前记录首个有效输出，不改变重试提交边界。
+  if (
+    options.streamTiming &&
+    options.streamTiming.firstContentAt === undefined &&
+    providerSseFrameHasContent(frame, options.providerKind)
+  ) {
+    options.streamTiming.firstContentAt = Date.now();
+  }
   controller.enqueue(encoder.encode(`${frame}${separator}`));
   return true;
+}
+
+function providerSseFrameHasContent(frame: string, kind: AiSdkProviderKind): boolean {
+  const data = readSseFrame(frame).data;
+  const body = data ? safeParseRecord(data) : undefined;
+  if (!body) return false;
+  const nonEmpty = (value: unknown): boolean => typeof value === "string" && value.length > 0;
+  if (kind === "anthropic") {
+    if (body.type === "content_block_delta") {
+      const delta = asRecord(body.delta);
+      switch (delta?.type) {
+        case "text_delta":
+          return nonEmpty(delta.text);
+        case "thinking_delta":
+          return nonEmpty(delta.thinking);
+        case "input_json_delta":
+          return nonEmpty(delta.partial_json);
+        default:
+          return false;
+      }
+    }
+    if (body.type === "content_block_start") {
+      const block = asRecord(body.content_block);
+      if (block?.type === "text") return nonEmpty(block.text);
+      if (block?.type === "thinking") return nonEmpty(block.thinking);
+      if (block?.type === "tool_use" || block?.type === "server_tool_use") {
+        const input = asRecord(block.input);
+        return input !== undefined && Object.keys(input).length > 0;
+      }
+    }
+    return false;
+  }
+  if (kind === "openai") {
+    return (
+      (body.type === "response.output_text.delta" ||
+        body.type === "response.reasoning_text.delta" ||
+        body.type === "response.reasoning_summary_text.delta" ||
+        body.type === "response.function_call_arguments.delta") &&
+      nonEmpty(body.delta)
+    );
+  }
+  return (
+    Array.isArray(body.choices) &&
+    body.choices.some((choice) => {
+      const delta = asRecord(asRecord(choice)?.delta);
+      if (!delta) return false;
+      return (
+        nonEmpty(delta.content) ||
+        nonEmpty(delta.reasoning_content) ||
+        nonEmpty(delta.reasoning) ||
+        nonEmpty(asRecord(delta.function_call)?.arguments) ||
+        (Array.isArray(delta.tool_calls) &&
+          delta.tool_calls.some((call) => nonEmpty(asRecord(asRecord(call)?.function)?.arguments)))
+      );
+    })
+  );
 }
 
 function detectProviderBusinessSseFrameFailure(frame: string):
@@ -991,12 +1154,30 @@ function isHttpStatusCode(value: number): boolean {
   return Number.isInteger(value) && value >= 100 && value <= 599;
 }
 
+/**
+ * 上游业务码只可能是数字或短标识符（3007、1113、insufficient_quota 等）。
+ *
+ * 曾出现的问题：某个上游在 HTTP 499 响应体里带了 `code` 字段，内容是一段多行脚本，
+ * 原先只要是非空字符串就当作 providerCode，于是报错详情显示成 `provider_code=<整段脚本>`，
+ * 还会因为“非零码”被误判成业务错误。这里统一按码值形状过滤，不像码值的当作没有码，
+ * 让错误回到按 HTTP 状态码分类的通用路径。
+ */
+const PROVIDER_CODE_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+export function isProviderCodeShaped(value: string): boolean {
+  return PROVIDER_CODE_SHAPE.test(value);
+}
+
 function toProviderCode(value: unknown): ProviderCode | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
   if (typeof value === "string" && value.trim().length > 0) {
     const normalized = value.trim();
+    // 不像码值的字符串（如整段脚本）不能当 providerCode，原因见 model-execution.ts 的 isProviderCodeShaped。
+    if (!isProviderCodeShaped(normalized)) {
+      return undefined;
+    }
     return normalized.toUpperCase() === PROVIDER_BUSINESS_ERROR_WRAPPER_CODE
       ? undefined
       : normalized;

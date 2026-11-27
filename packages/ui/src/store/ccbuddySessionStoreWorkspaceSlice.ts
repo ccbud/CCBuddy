@@ -1,4 +1,5 @@
-import type { SessionCreateSource } from "@ccbuddy/shared";
+import type { DraftPluginUiOpenRequest } from "@/plugin-ui/contract.js";
+import type { ManagedWorktreeCreation, SessionCreateSource } from "@ccbuddy/shared";
 /* eslint-disable max-lines -- workspace 级状态动作集中在同一 slice，先保持收口便于维护。 */
 import {
   buildNativeSupplierKey,
@@ -15,13 +16,14 @@ import { persistLastSelectedAgentProvider } from "@/lib/ccbuddyProviderPreferenc
 import { areConfigOptionsEquivalent } from "@/lib/configOptionsEquality.js";
 import type { CCbuddyUiError } from "@/lib/ccbuddyUiError.js";
 import { pushNavEntry } from "@/lib/taskNavigationHistory.js";
+import { notifyTaskNavigationCommitted } from "@/store/ccbuddySessionStoreNavigation.js";
 import { resolveTaskRestorePreloadConfigOptions } from "@/lib/taskModelRecovery.js";
 import type {
   CCbuddySessionStoreState,
+  ComposerInitialConfig,
+  ComposerInitialization,
   ConfigOptionsStatus,
   ComposerMentionPrefill,
-  GroupedDraftTaskState,
-  GroupedDraftTaskPlacement,
   ModelSwitchStage,
   WorkspaceCCbuddyUIState,
 } from "@/store/ccbuddySessionStoreTypes.js";
@@ -40,13 +42,6 @@ type SetFn = (
         state: CCbuddySessionStoreState,
       ) => CCbuddySessionStoreState | Partial<CCbuddySessionStoreState>),
 ) => void;
-
-let groupedDraftSequence = 0;
-
-function createGroupedDraftId(createdAt: number): string {
-  groupedDraftSequence += 1;
-  return `grouped-draft-${createdAt}-${groupedDraftSequence}`;
-}
 
 function normalizeThoughtLevelConfigOption(option: CCbuddyConfigOption): CCbuddyConfigOption {
   if (
@@ -76,19 +71,6 @@ function cloneConfigOptions(options: readonly CCbuddyConfigOption[]): CCbuddyCon
     ...option,
     options: option.options?.map((entry) => ({ ...entry })),
   }));
-}
-
-function isSameGroupedDraftPlacement(
-  left: GroupedDraftTaskPlacement,
-  right: GroupedDraftTaskPlacement,
-): boolean {
-  if (left.type !== right.type) {
-    return false;
-  }
-  if (left.type === "top") {
-    return true;
-  }
-  return right.type === "group" && left.groupId === right.groupId;
 }
 
 function isModeConfigOption(option: CCbuddyConfigOption): boolean {
@@ -236,7 +218,12 @@ function resolveActiveTaskConfigOptionsOnSwitch(
 
 export function createWorkspaceSlice(set: SetFn) {
   return {
-    setActiveTaskId: (workspacePath: string, id: string | null, workspaceIdentity?: string) => {
+    setActiveTaskId: (
+      workspacePath: string,
+      id: string | null,
+      workspaceIdentity?: string,
+      composerConfig?: ComposerInitialConfig,
+    ) => {
       set((state) => {
         const workspaceUpdate = updateWorkspaceState(
           state,
@@ -267,9 +254,14 @@ export function createWorkspaceSlice(set: SetFn) {
               taskUnreadByTaskId: restTaskUnreadByTaskId,
               optimisticTaskListByTaskId: nextOptimisticTaskListByTaskId,
               activeTaskId: id,
-              // grouped 的 New task 草稿行只是当前草稿态锚点。
-              // 一旦用户选中真实 task，就代表离开这个临时实体，必须立刻清掉，避免侧栏留下不可操作的假行。
-              groupedDraftTask: id ? null : current.groupedDraftTask,
+              // 导航和首发提升共用此入口；配置版本不变也必须取消原草稿的待打开请求。
+              pluginUiOpenRequest: id ? null : current.pluginUiOpenRequest,
+              composerInitialization:
+                id && composerConfig
+                  ? { taskId: id, config: composerConfig }
+                  : current.activeTaskId === id
+                    ? current.composerInitialization
+                    : undefined,
             };
             return activeTaskId && activeTaskConfig
               ? {
@@ -301,107 +293,7 @@ export function createWorkspaceSlice(set: SetFn) {
 
         return { ...workspaceUpdate, ...navUpdate };
       });
-    },
-
-    promoteGroupedDraftTask: (
-      workspacePath: string,
-      taskId: string,
-      draft: GroupedDraftTaskState,
-      workspaceIdentity?: string,
-    ) => {
-      set((state) =>
-        updateWorkspaceState(
-          state,
-          workspacePath,
-          (current) => {
-            const optimisticTask: CCbuddyTaskMeta = {
-              taskId,
-              traceId: `session-${taskId}` as CCbuddyTaskMeta["traceId"],
-              title: "",
-              workspacePath,
-              ...(workspaceIdentity ? { workspaceIdentity } : {}),
-              createdAt: draft.createdAt,
-              // 这是只用于填补 ACK 空档的 renderer 占位行，不是 session 真相。
-              // updatedAt 用最低哨兵值，保证任何 sessions-index 权威 meta 都会在
-              // mergeTaskWithOptimisticMeta 中获胜，避免本地时钟压住 mode/provider/status 等字段。
-              updatedAt: 0,
-              mode: "default",
-              provider: current.selectedProvider,
-            };
-            // task 导航和 draft session 创建是不同状态转换。只有创建成功边界
-            // 才能把发起命令时捕获的 grouped placement 绑定到新 task。ACK 返回期间用户
-            // 可能已进入另一份草稿，因此只在 identity 仍匹配时清除当前草稿。
-            // 过去这里先清除 draft row，却要等 sessions-index 才有真实 task meta，
-            // create/send ACK 与权威投影之间会闪出空档。提升事务同时写最小乐观元数据，
-            // 但不伪造 conversation 状态，后续仍由 desktop continuous / web replayable 权威投影收口。
-            return {
-              ...current,
-              groupedDraftTask:
-                current.groupedDraftTask?.draftId === draft.draftId
-                  ? null
-                  : current.groupedDraftTask,
-              optimisticTaskListByTaskId: {
-                ...current.optimisticTaskListByTaskId,
-                // task_created 可能比 command ACK 更早到 renderer；若已有更完整的乐观元数据，
-                // 不能被这个仅用于补空档的最小行反向降级。
-                [taskId]: current.optimisticTaskListByTaskId[taskId] ?? optimisticTask,
-              },
-              promotedGroupedDraftTaskByTaskId: {
-                ...current.promotedGroupedDraftTaskByTaskId,
-                [taskId]: draft,
-              },
-            };
-          },
-          workspaceIdentity,
-        ),
-      );
-    },
-
-    clearPromotedGroupedDraftTask: (
-      workspacePath: string,
-      taskId: string,
-      workspaceIdentity?: string,
-    ) => {
-      set((state) =>
-        updateWorkspaceState(
-          state,
-          workspacePath,
-          (current) => {
-            if (!current.promotedGroupedDraftTaskByTaskId[taskId]) {
-              return current;
-            }
-            // promoted placement 只负责草稿提升到 SQLite 排序收敛前的单次事务。
-            // 落库后必须消费，避免用户后续手动拖动 task 时被旧 placement 再次拉回原 group。
-            const { [taskId]: _consumedPromotedDraft, ...restPromotedGroupedDraftTaskByTaskId } =
-              current.promotedGroupedDraftTaskByTaskId;
-            return {
-              ...current,
-              promotedGroupedDraftTaskByTaskId: restPromotedGroupedDraftTaskByTaskId,
-            };
-          },
-          workspaceIdentity,
-        ),
-      );
-    },
-
-    setDraftSessionId: (
-      workspacePath: string,
-      sessionId: string | null,
-      workspaceIdentity?: string,
-    ) => {
-      set((state) =>
-        updateWorkspaceState(
-          state,
-          workspacePath,
-          (current) => {
-            if (current.draftSessionId === sessionId) {
-              return current;
-            }
-            return { ...current, draftSessionId: sessionId };
-          },
-          workspaceIdentity,
-        ),
-      );
+      if (id) notifyTaskNavigationCommitted({ workspacePath, workspaceIdentity, taskId: id });
     },
 
     invalidateDraftRuntime: (workspacePath: string, workspaceIdentity?: string) => {
@@ -411,16 +303,50 @@ export function createWorkspaceSlice(set: SetFn) {
           workspacePath,
           (current) => ({
             ...current,
-            // protocol-v4 的草稿预热会话只存在于 SessionPane 内，不能仅清空
-            // legacy draftSessionId。递增版本让 pane 精确回收未提升的预热会话并重建能力快照。
+            // 预热会话只存在于 V4 pane 内；递增版本让 owner 回收并重建能力快照。
             draftRuntimeInvalidationVersion: current.draftRuntimeInvalidationVersion + 1,
-            draftSessionId: null,
+            pluginUiOpenRequest: null,
           }),
           workspaceIdentity,
         ),
       );
     },
 
+    requestPluginUiOpen: (request: DraftPluginUiOpenRequest) => {
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          request.workspacePath,
+          (current) => ({
+            ...current,
+            pluginUiOpenVersion: current.pluginUiOpenVersion + 1,
+            pluginUiOpenRequest: {
+              ...request,
+              requestId: current.pluginUiOpenVersion + 1,
+              invalidationVersion: current.draftRuntimeInvalidationVersion,
+            },
+          }),
+          request.workspaceIdentity,
+        ),
+      );
+    },
+    clearPluginUiOpenRequest: (
+      workspacePath: string,
+      requestId: number,
+      workspaceIdentity?: string,
+    ) => {
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          workspacePath,
+          (current) =>
+            current.pluginUiOpenRequest?.requestId === requestId
+              ? { ...current, pluginUiOpenRequest: null }
+              : current,
+          workspaceIdentity,
+        ),
+      );
+    },
     requestComposerTextInsert: (
       workspacePath: string,
       text: string,
@@ -510,14 +436,115 @@ export function createWorkspaceSlice(set: SetFn) {
       );
     },
 
+    consumeComposerInitialization: (
+      workspacePath: string,
+      initialization: ComposerInitialization,
+      workspaceIdentity?: string,
+    ) => {
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          workspacePath,
+          (current) =>
+            current.composerInitialization === initialization
+              ? { ...current, composerInitialization: undefined }
+              : current,
+          workspaceIdentity,
+        ),
+      );
+    },
+
+    setDraftWorktree: (
+      workspacePath: string,
+      worktree: { ref: string | null } | null,
+      workspaceIdentity?: string,
+    ) => {
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          workspacePath,
+          (current) => ({ ...current, draftWorktree: worktree }),
+          workspaceIdentity,
+        ),
+      );
+    },
+
+    beginWorktreeHandoff: (
+      workspacePath: string,
+      handoff: { sessionId: string; creation: ManagedWorktreeCreation },
+      workspaceIdentity?: string,
+    ) => {
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          workspacePath,
+          (current) => ({ ...current, worktreeHandoff: handoff }),
+          workspaceIdentity,
+        ),
+      );
+    },
+
+    finishWorktreeHandoff: (
+      workspacePath: string,
+      sessionId: string,
+      workspaceIdentity?: string,
+    ) => {
+      // 没有属于该会话的交接时返回原 state，避免 SessionPane 的 effect 引起无效渲染。
+      set((state) =>
+        state.getWorkspaceState(workspacePath, workspaceIdentity).worktreeHandoff?.sessionId !==
+        sessionId
+          ? state
+          : updateWorkspaceState(
+              state,
+              workspacePath,
+              (current) => ({ ...current, worktreeHandoff: null }),
+              workspaceIdentity,
+            ),
+      );
+    },
+
+    viewWorktreeCreation: (
+      workspacePath: string,
+      creationId: string | null,
+      workspaceIdentity?: string,
+    ) => {
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          workspacePath,
+          (current) => ({
+            ...current,
+            ...(creationId ? { activeTaskId: null, draftWorktree: null } : {}),
+            draftWorktreeCreationId: creationId,
+          }),
+          workspaceIdentity,
+        ),
+      );
+    },
+
+    clearDraftTaskGroup: (workspacePath: string, workspaceIdentity?: string) => {
+      // 关闭分组行只撤销组织意图；调用 startDraft 会重置预热、配置和焦点。
+      set((state) =>
+        updateWorkspaceState(
+          state,
+          workspacePath,
+          (current) =>
+            current.draftTaskGroupId === undefined
+              ? current
+              : { ...current, draftTaskGroupId: undefined },
+          workspaceIdentity,
+        ),
+      );
+    },
+
     startDraft: (
       workspacePath: string,
       provider?: CCbuddyProvider,
       workspaceIdentity?: string,
       options?: {
-        groupedDraftPlacement?: GroupedDraftTaskPlacement;
+        projectId?: string | null;
+        taskGroupId?: string | null;
         createSource?: SessionCreateSource;
-        projectId?: string;
       },
     ) => {
       const normalizedProvider = provider
@@ -563,44 +590,22 @@ export function createWorkspaceSlice(set: SetFn) {
               current.activeTaskId && inheritedDraftConfigOptions
                 ? (current.taskConfigOptionsStatusByTaskId[current.activeTaskId] ?? "ready")
                 : current.configOptionsStatus;
-            const nextGroupedDraftTask = (() => {
-              const placement = options?.groupedDraftPlacement;
-              if (!placement) {
-                return null;
-              }
-              if (
-                current.activeTaskId === null &&
-                current.groupedDraftTask &&
-                isSameGroupedDraftPlacement(current.groupedDraftTask.placement, placement)
-              ) {
-                return current.groupedDraftTask;
-              }
-              if (current.activeTaskId === null && current.groupedDraftTask) {
-                // 同一个 grouped 草稿可以被不同 New task 入口重新定位。
-                // 连续点击同入口要复用临时实体，但从全局入口切到 group 入口时，创建位置必须跟随最新入口。
-                return {
-                  ...current.groupedDraftTask,
-                  workspacePath,
-                  ...(workspaceIdentity ? { workspaceIdentity } : {}),
-                  placement,
-                };
-              }
-              const createdAt = Date.now();
-              return {
-                draftId: createGroupedDraftId(createdAt),
-                workspacePath,
-                ...(workspaceIdentity ? { workspaceIdentity } : {}),
-                placement,
-                createdAt,
-              };
-            })();
             return {
               ...current,
               activeTaskId: null,
-              groupedDraftTask: nextGroupedDraftTask,
-              draftProjectId: options?.projectId ?? null,
-              draftCreateSource:
-                options?.createSource ?? (options?.groupedDraftPlacement ? "group" : "session"),
+              // 同项目重入不会递增失效版本；新打开请求由调用方在进入草稿之后投递。
+              pluginUiOpenRequest: null,
+              composerInitialization: undefined,
+              draftProjectId: options?.projectId,
+              draftTaskGroupId: options?.taskGroupId,
+              // 新草稿默认在本地运行，也不再展示之前的 worktree 创建记录（§3.2）。
+              draftWorktree: null,
+              draftWorktreeCreationId: null,
+              // 同 cwd 可属于多个项目；换项目不能复用前一个项目的预热 runtime 目录范围。
+              draftRuntimeInvalidationVersion:
+                current.draftRuntimeInvalidationVersion +
+                Number(current.draftProjectId !== options?.projectId),
+              draftCreateSource: options?.createSource ?? "session",
               draftRuntime: { status: "idle", error: null },
               // 从已有 task 点 New Task 时，草稿输入框必须继承当前 task 的完整配置。
               // 否则后续 workspace prepare 会按 Team Plan / 默认模型重建草稿，把已选的其他模型回弹成 GLM。
@@ -608,9 +613,6 @@ export function createWorkspaceSlice(set: SetFn) {
                 ? {
                     configOptions: inheritedDraftConfigOptions,
                     configOptionsStatus: inheritedConfigOptionsStatus,
-                    // 旧 deferred draft session 可能仍停在上一次默认模型。
-                    // 继承 active task 后必须重新创建 draft session，避免旧 session 回包覆盖新草稿。
-                    draftSessionId: null,
                   }
                 : {}),
               draftError: null,
@@ -642,18 +644,6 @@ export function createWorkspaceSlice(set: SetFn) {
                 : {}),
             };
           },
-          workspaceIdentity,
-        ),
-      );
-    },
-
-    clearGroupedDraftTask: (workspacePath: string, workspaceIdentity?: string) => {
-      set((state) =>
-        updateWorkspaceState(
-          state,
-          workspacePath,
-          (current) =>
-            current.groupedDraftTask ? { ...current, groupedDraftTask: null } : current,
           workspaceIdentity,
         ),
       );

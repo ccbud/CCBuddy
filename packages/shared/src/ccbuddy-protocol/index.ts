@@ -1,8 +1,12 @@
 import { requestVerificationReasons } from "../request-security-edition/verification-policy.js";
 import { ccbuddyProtocolTraceSchema } from "./trace.js";
+export * from "../app-control/contract.js";
+import { appControlProtocol, appControlCancelMethod } from "../app-control/contract.js";
 // Bot 反向回复的名字解析/待澄清结果与 App、CLI 使用同一严格 schema。
 export { channelReplyRequestSchema, channelReplyResultSchema } from "../channel-mention.js";
 export { ccbuddyProtocolTraceSchema, type CCbuddyProtocolTrace } from "./trace.js";
+// 扩展进程 P2 的插件只读查询（plugins/readUserOptions、plugins/mentionItems）。
+export * from "./plugin-host-queries/contract.js";
 import {
   databaseMigrationFactsSchema,
   databaseStartupErrorCodeSchema,
@@ -32,17 +36,19 @@ export { conversationQuoteSchema, conversationQuotesSchema } from "../conversati
 // 上述旧协议 client/server 组删除时，本文件整体删除。
 // 注：外部零消费 schema 多为存活 schema 联合的内部依赖，随宿主文件一起处理，勿单删。
 import { z } from "zod";
-import { appToolSearchModeSchema } from "../app-runtime-preferences.js";
 import { accountProviderUnavailableReasonSchema } from "../account-provider-state.js";
 import { bashOutputDisplaySchema } from "../bash-output-display.js";
 import { ccbuddyAutomationBotDeliveryTargetSchema } from "../bots.js";
 import { executionOutputPreviewSchema } from "../execution-output-preview.js";
 import { completeModelPropertiesDataSchema } from "../model-config.js";
 import { modelExecutionSchema } from "../model-execution.js";
+export type { ModelExecutionSelectionFallback } from "../model-execution.js";
+export * from "../off-peak-execution.js";
 import { modelSelectionSchema } from "../model-selection.js";
 import { APP_USAGE_RANGES, appUsageSnapshotSchema } from "../usage-stats.js";
 import { DYNAMIC_WORKFLOW_MODES } from "../dynamic-workflow-feature.js";
 import { errorAttributionSchema } from "../ccbuddy-protocol-v4/snapshot.js";
+import { workflowLaunchMetaSchema } from "../ccbuddy-protocol-v4/workflow-row-meta.js";
 // 后台详情共享精简的只读响应 schema，不携带命令或计时元数据。
 export * from "../background-bash-output.js";
 export * from "../process-diagnostic.js";
@@ -87,8 +93,16 @@ import {
 } from "../browser-use/backend.js";
 import { browserClientModeSchema, browserCommandSchema } from "../browser-use/commands.js";
 import { browserCommandResultSchema } from "../browser-use/result.js";
-import { OFFICIAL_MCP_AUTH_PORT_FAILURE_REASONS } from "../official-mcp-auth.js";
-import { integratedTerminalShellSelectionSchema } from "../validationAppSettings.js";
+import { appToolSearchModeSchema } from "../app-runtime-preferences.js";
+import {
+  integratedTerminalShellSelectionSchema,
+  replyLanguageSchema,
+} from "../validationAppSettings.js";
+import { ccbuddyTaskModeSchema } from "../ccbuddy-task-mode-schema.js";
+import {
+  OFFICIAL_AUTH_CONSUMER_KINDS,
+  OFFICIAL_MCP_AUTH_PORT_FAILURE_REASONS,
+} from "../official-mcp-auth.js";
 import {
   ccbuddySyntheticUserMessageSourceSchema as legacyCCbuddySyntheticUserMessageSourceSchema,
   ccbuddyDeliveryKindSchema,
@@ -112,9 +126,8 @@ import {
   ccbuddyToolStateSchema,
   ccbuddyWorkspaceRefSchema,
 } from "../ccbuddy-protocol-legacy-types.js";
-import { ccbuddyTaskModeSchema } from "../ccbuddy-task-mode-schema.js";
 
-export * from "../localTtft.js";
+export * from "../local-ttft/contract.js";
 export {
   hookExecutionProjectionSchema,
   hookInvocationRowSchema,
@@ -122,19 +135,61 @@ export {
   type HookInvocationRow,
 } from "../ccbuddy-protocol-v4/rows.js";
 
+export {
+  sessionsIndexReconcileParamsSchema,
+  sessionsIndexReconcileResultSchema,
+  type SessionsIndexReconcileParams,
+  type SessionsIndexReconcileResult,
+} from "../ccbuddy-protocol-v4/sessions-index.js";
+
 export const CCBUDDY_PROTOCOL_NAME = "CCbuddy Protocol" as const;
 export const CCBUDDY_PROTOCOL_VERSION = 1 as const;
 // V4 wire 与 legacy 主协议并存；禁止为了 V4 physical framing 改写 legacy 版本。
 export const CCBUDDY_PROTOCOL_V4_WIRE_VERSION = 3 as const;
 export const ccbuddyRuntimeCapabilitiesSchema = z.object({
   sessionDirectorySource: z.boolean().optional(),
-  independentPlanState: z.boolean().optional(),
+  highspeedCardOwner: z.boolean().optional(),
+  pluginDiscoveryUi: z.boolean().optional(),
+  sessionLifecycleWorkspace: z.boolean().optional(),
+
+  sessionWorkspaceRouting: z.boolean().optional(),
   genUiContext: z.boolean().optional(),
+  historyFirst: z.boolean().optional(),
+  independentPlanState: z.boolean().optional(),
+
+  /** CLI 认识 rowsRange 的 residency 参数；旧 CLI 会剥掉它并冷恢复，Host 据此拒绝转发。 */
+  residentRowsRange: z.boolean().optional(),
+  /**
+   * CLI 支持"会话 cwd 与 workspace 不同"：createSession.cwd / worktreeCreation、
+   * forkAssistant.targetCwd、按 Host 请求的 workspace key 冷恢复（docs/git/worktree.md §9.3）。
+   * 旧 CLI 会静默丢弃这些字段，Host 据此决定是否开放 worktree 入口。
+   */
+  worktreeCwd: z.boolean().optional(),
+  /**
+   * CLI 认识 `{kind:"extension"}` 输入来源（sendText.source、createSession.firstInput.source）。
+   * 旧 CLI 对 sendText 整条拒绝、对 firstInput 静默剥掉来源，Host 据此决定能否代扩展发消息
+   * （apps/ccbuddy-cli/docs/design/v2/conversation-input-source.md §7）。
+   */
+  extensionInputSource: z.boolean().optional(),
+  /**
+   * CLI 认识对话引用上的 comment / agent 字段（选区批注）。旧 CLI 的 quote schema 非 strict，
+   * 会静默剥掉这两个字段：用户看到批注而模型收不到，所以 App 据此决定是否提供“批注”入口。
+   */
+  conversationQuoteComment: z.boolean().optional(),
+  /**
+   * CLI 认识 plugins/overview 的 includeExtensionSummary 参数，并按它在商店信息里带 extensionSummary
+   * （docs/plugins/plugin-publishing.md §4.3）。参数与结果的 schema 都是 strict：旧 CLI 拒绝新参数，
+   * 旧 services 拒绝新字段，所以 services 只在看到这一位时才要这个字段。
+   */
+  pluginExtensionSummary: z.boolean().optional(),
 });
 export const ccbuddyRuntimeCapabilitiesParamsSchema = z
   .object({
     hostCapabilities: z
-      .object({ sessionDirectorySource: z.boolean().optional() })
+      .object({
+        sessionDirectorySource: z.boolean().optional(),
+        sessionWorkspaceRouting: z.boolean().optional(),
+      })
       .strict()
       .optional(),
   })
@@ -474,6 +529,7 @@ export const ccbuddyProtocolMessageSchema = z.union([
 export type CCbuddyProtocolMessage = z.infer<typeof ccbuddyProtocolMessageSchema>;
 
 export const ccbuddyProtocolNotifications = {
+  pluginStartupDegraded: "startup/pluginsDegraded",
   storageStartup: "startup/storageState",
   providerRuntimeHeadersCancelled: "interaction/providerRuntimeHeadersCancelled",
   mcpTelemetry: "process/mcpTelemetry",
@@ -483,6 +539,10 @@ export const ccbuddyProtocolNotifications = {
   processResourceSample: "process/resourceSample",
   processNetworkRequests: "process/networkRequests",
 } as const;
+
+export const ccbuddyPluginStartupDegradedSchema = z
+  .object({ reason: z.literal("timeout") })
+  .strict();
 
 /** 启动控制面独立于 task stream；数据库身份不可携带路径/凭据。 */
 export const ccbuddyStorageStartupStateSchema = z
@@ -776,18 +836,22 @@ export const ccbuddyProtocolMcpServerSchema = z.union([
   z
     .object({
       name: nonEmptyString,
+      scope: z.enum(["user", "workspace"]).optional(),
       command: nonEmptyString,
+      cwd: nonEmptyString.optional(),
       args: z.array(z.string()),
       env: z.array(ccbuddyProtocolMcpEntrySchema),
       alwaysLoad: z.boolean().optional(),
       isolation: z.enum(["session", "workspace"]).optional(),
       protocolVersion: z.enum(["legacy", "auto", "2026-07-28"]).optional(),
+
       timeoutMs: z.number().int().positive().optional(),
     })
     .strict(),
   z
     .object({
       name: nonEmptyString,
+      scope: z.enum(["user", "workspace"]).optional(),
       type: z.enum(["http", "sse"]),
       url: nonEmptyString,
       headers: z.array(ccbuddyProtocolMcpEntrySchema),
@@ -795,6 +859,7 @@ export const ccbuddyProtocolMcpServerSchema = z.union([
       alwaysLoad: z.boolean().optional(),
       isolation: z.enum(["session", "workspace"]).optional(),
       protocolVersion: z.enum(["legacy", "auto", "2026-07-28"]).optional(),
+
       timeoutMs: z.number().int().positive().optional(),
     })
     .strict(),
@@ -832,9 +897,38 @@ export const MCP_SERVER_FAILURE_KINDS = [
 ] as const;
 export const mcpServerFailureKindSchema = z.enum(MCP_SERVER_FAILURE_KINDS);
 export type McpServerFailureKind = z.infer<typeof mcpServerFailureKindSchema>;
+export const workspaceMcpTrustReviewSchema = z
+  .object({
+    declarationDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+    sourcePaths: z.array(nonEmptyString),
+    display: z.string(),
+    trusted: z.boolean(),
+    configuredEnabled: z.boolean(),
+    transport: z.enum(["stdio", "http", "sse"]),
+  })
+  .strict();
+export type WorkspaceMcpTrustReview = z.infer<typeof workspaceMcpTrustReviewSchema>;
+export const ccbuddyWorkspaceMcpTrustParamsSchema = z
+  .object({
+    workspace: ccbuddyWorkspaceRefSchema,
+    serverName: nonEmptyString,
+    declarationDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+    trusted: z.boolean(),
+  })
+  .strict();
+export const ccbuddyWorkspaceMcpTrustResultSchema = z
+  .object({
+    accepted: z.boolean(),
+    reasonCode: z
+      .enum(["workspace_mcp_declaration_changed", "workspace_mcp_trust_unavailable"])
+      .optional(),
+  })
+  .strict();
+export type CCbuddyWorkspaceMcpTrustResult = z.infer<typeof ccbuddyWorkspaceMcpTrustResultSchema>;
 export const ccbuddyMcpServerStatusSnapshotSchema = z
   .object({
     status: ccbuddyMcpServerStatusKindSchema,
+    workspaceTrust: workspaceMcpTrustReviewSchema.optional(),
     transport: z.enum(["stdio", "http", "sse"]),
     toolCount: z.number().int().nonnegative(),
     updatedAt: nonEmptyString,
@@ -1597,13 +1691,28 @@ export const ccbuddySessionTitleUpdatedEventPayloadSchema = z
   .strict();
 export const ccbuddyTurnStartedEventPayloadSchema = z
   .object({
+    // Bugfix（2026-11-17）：8172e49580~148827e6dc 之间的 CLI 会把首条归因原样发到旧 turn.started，
+    // 漏声明时 strict 校验丢弃整条事件（Bot 串轮、运行中会话摘要读取 ZodError）。当前 CLI 已在
+    // mapper 移除该字段；这里只为兼容旧发送方，App 不使用它（docs/ccbuddy-protocol.md「兼容回合开始事件」）。
+    isFirstMessage: z.boolean().optional(),
     // CLI 的高精度执行时间可含小数；漏声明会使 strict 校验丢弃整条开始事件，Bot 因此无法清空上一轮回复。
     executionStartedAt: z.number().nonnegative().optional(),
+    // Bugfix：CLI TurnStartedPayloadBase 新增的统计来源、工作流启动元数据与尾注下标漏声明时，
+    // strict 校验丢弃整条 turn.started，Bot 收不到 task_run_started，上一轮正文会串进下一轮投递。
+    workflowLaunch: workflowLaunchMetaSchema.optional(),
+    epilogueStart: z.number().int().nonnegative().optional(),
     turnNumber: z.number().int().nonnegative(),
     input: z.string(),
     inputId: nonEmptyString.optional(),
     queryId: nonEmptyString.optional(),
+    // Bugfix：CLI 会把 Host 准入的后台执行归因写入 turn.started。这里漏声明时，
+    // strict 校验会丢弃整条开始事件，复用中的 Bot 私聊订阅就无法切换到新轮次。
+    automationId: nonEmptyString.optional(),
+    offPeakTaskId: nonEmptyString.optional(),
+    offPeakRunType: z.enum(["init", "resume"]).optional(),
     inputSource: ccbuddyTurnInputSourceSchema.optional(),
+    // CLI 已在开始事件中携带输入来源；漏声明会使严格校验拒绝会话事件，导致运行中摘要读取失败。
+    inputOrigin: z.enum(["desktop", "mobile"]).optional(),
     inputVisibility: ccbuddyMessageVisibilitySchema.optional(),
     executionKind: z.enum(["agent", "controlOnly"]).optional(),
     targetId: nonEmptyString.optional(),
@@ -1630,6 +1739,11 @@ export const ccbuddyTurnSteerQueuedEventPayloadSchema = z
     inputSize: z.number().int().nonnegative(),
     commandKind: ccbuddyTurnSteerCommandKindSchema.optional(),
     source: ccbuddyTurnSteerSourceSchema.optional(),
+    // Bugfix：CLI TurnSteerQueuedPayload 的字段漏声明会让 strict 校验丢弃整条排队事件。
+    // inputPresentation 的取值由 CLI contracts 定义且 v3 消费方不读取；这里不复制枚举，
+    // 避免 CLI 新增取值时再次整条丢弃。
+    inputPresentation: nonEmptyString.optional(),
+    automationId: nonEmptyString.optional(),
     toolDisallowlist: z.array(nonEmptyString).optional(),
     delivery: ccbuddyTurnSteerDeliverySchema.optional(),
     targetTurnId: nonEmptyString,
@@ -2054,9 +2168,7 @@ export type CCbuddySessionResumeParams = z.infer<typeof ccbuddySessionResumePara
 export const ccbuddySessionListParamsSchema = z
   .object({
     workspace: ccbuddyWorkspaceRefSchema.optional(),
-    // 显式身份查询包含隐藏会话；普通列表仍只返回主任务，避免索引修复激活 runtime。
     sessionIds: z.array(nonEmptyString).min(1).max(64).optional(),
-    includeArchived: z.boolean().default(false),
     limit: z.number().int().positive().optional(),
   })
   .strict();
@@ -2117,6 +2229,8 @@ export const ccbuddySessionMessagesParamsSchema = z
     sessionId: nonEmptyString,
     afterMessageId: nonEmptyString.optional(),
     limit: z.number().int().positive().optional(),
+    // 缺省保留最近历史窗口；forward 从 cursor 后最早消息开始分页。
+    direction: z.enum(["forward", "backward"]).optional(),
   })
   .strict();
 export type CCbuddySessionMessagesParams = z.infer<typeof ccbuddySessionMessagesParamsSchema>;
@@ -2144,7 +2258,17 @@ export {
   type SubagentRuntimeConfig,
 } from "../subagent-runtime-config.js";
 export const ccbuddySubagentsReadRuntimeConfigParamsSchema = z
+  .object({ sessionId: nonEmptyString, workspace: ccbuddyWorkspaceRefSchema.optional() })
+  .strict();
+
+// session/readReplyLanguage：CLI 收集输入附件时读取 Agent 回复语言设置（docs/i18n/agent-reply-language.md）。
+// Host 从内存同步应答；没有设置或不支持该设置的 Host（远端、Web）回答 null。值是 Host 级的，不带 workspace。
+export const CCBUDDY_REPLY_LANGUAGE_REQUEST_TIMEOUT_MS = 2_000;
+export const ccbuddySessionReadReplyLanguageParamsSchema = z
   .object({ sessionId: nonEmptyString })
+  .strict();
+export const ccbuddySessionReadReplyLanguageResultSchema = z
+  .object({ language: replyLanguageSchema.nullable() })
   .strict();
 
 export const CCBUDDY_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS = 15_000;
@@ -2154,6 +2278,8 @@ export const ccbuddySessionRequestRuntimePreferencesParamsSchema = z
     sessionId: nonEmptyString,
     directorySessionId: nonEmptyString.optional(),
     scope: ccbuddySessionRuntimePreferencesScopeSchema,
+    workspace: ccbuddyWorkspaceRefSchema.optional(),
+    // CLI 依据持久化父链给出目录来源；目标 sessionId 仍保留 child 身份。
   })
   .strict();
 export type CCbuddySessionRequestRuntimePreferencesParams = z.infer<
@@ -2173,7 +2299,13 @@ export const ccbuddySessionRuntimePreferencesResultSchema = z
     additionalDirectories: z.array(nonEmptyString).max(256).optional(),
     nativeSearchEnhancementsEnabled: z.boolean(),
     toolSearchMode: appToolSearchModeSchema.default("off"),
+    // 旧 Host 缺席即关闭；CLI 只在创建或冷恢复 runtime 时读取。
+    totalTokensReminderEnabled: z.boolean().default(false),
+    // Agent 是否总在后台运行；旧 Host 缺席即按产品缺省开启。CLI 只在创建或冷恢复 runtime 时读取。
+    agentAlwaysBackgroundEnabled: z.boolean().default(true),
     subagentRuntimeConfigEnabled: z.boolean().optional(),
+    // 旧 Host 缺席即不注册 App 控制工具；只由 Host 装配能力声明。
+    appControlEnabled: z.boolean().optional(),
     memoryEnabled: z.boolean().default(false),
     askUserQuestionAutoResolutionEnabled: z.boolean().default(true),
     integratedTerminalShell: integratedTerminalShellSelectionSchema.optional(),
@@ -2203,6 +2335,7 @@ export const ccbuddySessionSendParamsSchema = z
   .object({
     sessionId: nonEmptyString,
     modelSelection: modelSelectionSchema.optional(),
+    modelSelectionBasis: modelSelectionSchema.optional(),
     modelExecution: modelExecutionSchema.optional(),
     inputId: nonEmptyString.optional(),
     queryId: nonEmptyString.optional(),
@@ -2466,6 +2599,22 @@ export const ccbuddySessionCloseResultSchema = z
   })
   .strict();
 export type CCbuddySessionCloseResult = z.infer<typeof ccbuddySessionCloseResultSchema>;
+/**
+ * 卸载 cwd 位于 directory 内的全部驻留会话；任一会话忙时全部不卸载（docs/git/worktree.md §8.3）。
+ * 随 worktreeCwd 能力提供。
+ */
+export const ccbuddySessionReleaseUnderDirectoryParamsSchema = z
+  .object({ directory: nonEmptyString })
+  .strict();
+export type CCbuddySessionReleaseUnderDirectoryParams = z.infer<
+  typeof ccbuddySessionReleaseUnderDirectoryParamsSchema
+>;
+export const ccbuddySessionReleaseUnderDirectoryResultSchema = z
+  .object({ released: z.array(nonEmptyString), busy: z.array(nonEmptyString) })
+  .strict();
+export type CCbuddySessionReleaseUnderDirectoryResult = z.infer<
+  typeof ccbuddySessionReleaseUnderDirectoryResultSchema
+>;
 export const ccbuddyWorkspaceReadPresentationParamsSchema = z
   .object({ workspace: ccbuddyWorkspaceRefSchema })
   .strict();
@@ -2495,6 +2644,8 @@ export const ccbuddyWorkspaceHookTrustGrantReasonCodeSchema = z.enum([
   "workspace_hooks_policy_requires_pretrust",
   "workspace_hooks_trust_store_corrupt",
   "workspace_hooks_config_unreadable",
+  // 入口脚本不存在或无法读取，没有可审核的内容（docs/specs/workspace-hook-trust.md D24）。
+  "workspace_hook_script_unavailable",
 ]);
 export type CCbuddyWorkspaceHookTrustGrantReasonCode = z.infer<
   typeof ccbuddyWorkspaceHookTrustGrantReasonCodeSchema
@@ -2649,6 +2800,23 @@ export const ccbuddyProviderUpdateAccountConfigResultSchema = z
 export type CCbuddyProviderUpdateAccountConfigResult = z.infer<
   typeof ccbuddyProviderUpdateAccountConfigResultSchema
 >;
+/** Worker 从所属 Environment 的正式 Config Store 重建进程内 Provider Registry。 */
+export const ccbuddyProviderRefreshRegistryParamsSchema = z
+  .object({
+    reason: nonEmptyString,
+  })
+  .strict();
+export const ccbuddyProviderRefreshRegistryResultSchema = z
+  .object({
+    refreshed: z.literal(true),
+  })
+  .strict();
+export type CCbuddyProviderRefreshRegistryParams = z.infer<
+  typeof ccbuddyProviderRefreshRegistryParamsSchema
+>;
+export type CCbuddyProviderRefreshRegistryResult = z.infer<
+  typeof ccbuddyProviderRefreshRegistryResultSchema
+>;
 export const ccbuddyInteractionPreferencesSchema = z
   .object({
     askUserQuestionAutoResolutionEnabled: z.boolean(),
@@ -2787,6 +2955,7 @@ export type CCbuddyBrowserListResult = z.infer<typeof ccbuddyBrowserListResultSc
 /** Agent 把一条 browser-use 命令发送给 app 执行。 */
 export const ccbuddyBrowserExecuteParamsSchema = z
   .object({
+    controlScopeId: nonEmptyString.optional(),
     requestId: nonEmptyString,
     sessionId: nonEmptyString,
     turnId: nonEmptyString.optional(),
@@ -2888,6 +3057,19 @@ export type CCbuddyProviderRuntimeHeadersCancelled = z.infer<
   typeof ccbuddyProviderRuntimeHeadersCancelledSchema
 >;
 
+// 标准 JSON-RPC error 保留旧版 schema 兼容，不向严格校验的 response 增加字段。
+export const CCBUDDY_PROVIDER_CONFIG_NETWORK_ERROR = -32032;
+/**
+ * 无交互账号鉴权换证最终失败为 project_token_network_error / project_token_timeout 时 Host 的应答码；
+ * Agent 据此把本次尝试并入模型 network_error 重试预算。其余换证失败仍以 headersApplied:false 应答。
+ */
+export const CCBUDDY_PROVIDER_PROJECT_TOKEN_NETWORK_ERROR = -32033;
+
+export const ccbuddyProviderRuntimeHeadersErrorCode = {
+  configNetwork: "request_verification_config_network",
+  configInvalid: "request_verification_config_invalid",
+} as const;
+
 export const ccbuddyProviderRuntimeHeadersResponseSchema = z.discriminatedUnion("headersApplied", [
   z
     .object({
@@ -2922,15 +3104,37 @@ export type CCbuddyProviderRuntimeHeadersResponse = z.infer<
 // Agent 进程不是用户身份权威：它把 (pluginId, mcpKey, targetOrigin) 报给 host，由 host
 // 解析当前 Coding Plan 凭证并回传本次请求的身份头。请求侧不含任何秘密。
 // 与 interaction/requestProviderRuntimeHeaders 同类：Agent 发起、host 自动响应、零 UI。
+//
+// `consumer` 缺省为 `mcp-server`（旧版 agent 不带该字段），此时必须带 `mcpKey`；
+// `plugin-command` 是官方插件命令进程经 agent 代理端点发起的请求，没有 MCP，不带 `mcpKey`，
+// host 按「套餐可选」解析：没有套餐时只给 CCbuddy 登录身份（技术方案 5.8）。
 export const ccbuddyOfficialMcpAuthHeadersRequestParamsSchema = z
   .object({
     requestId: nonEmptyString,
     workspace: ccbuddyWorkspaceRefSchema,
     pluginId: nonEmptyString,
-    mcpKey: nonEmptyString,
+    consumer: z.enum(OFFICIAL_AUTH_CONSUMER_KINDS).optional(),
+    mcpKey: nonEmptyString.optional(),
     targetOrigin: nonEmptyString,
   })
-  .strict();
+  .strict()
+  .superRefine((params, ctx) => {
+    const isCommand = params.consumer === "plugin-command";
+    if (isCommand && params.mcpKey !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "plugin-command must not carry mcpKey",
+        path: ["mcpKey"],
+      });
+    }
+    if (!isCommand && params.mcpKey === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "mcpKey is required for mcp-server",
+        path: ["mcpKey"],
+      });
+    }
+  });
 export type CCbuddyOfficialMcpAuthHeadersRequestParams = z.infer<
   typeof ccbuddyOfficialMcpAuthHeadersRequestParamsSchema
 >;
@@ -3024,6 +3228,35 @@ export const ccbuddyPluginComponentGroupSchema = z
   .strict();
 export type CCbuddyPluginComponentGroup = z.infer<typeof ccbuddyPluginComponentGroupSchema>;
 
+export const ccbuddyPluginUiSurfaceSchema = z
+  .object({
+    pluginId: nonEmptyString,
+    pluginName: nonEmptyString,
+    id: nonEmptyString.max(128),
+    title: z.union([nonEmptyString, z.record(z.string(), z.string())]),
+    icon: z.string().optional(),
+    // 运行时 namespaced server 名（plugin:<name>:<server>），可直接用于 mcp/uiReadResource。
+    server: nonEmptyString,
+    resourceUri: nonEmptyString.max(2048),
+    availability: z.literal("session"),
+  })
+  .strict();
+export type CCbuddyPluginUiSurface = z.infer<typeof ccbuddyPluginUiSurfaceSchema>;
+
+/**
+ * 项目 `plugins.dirs` 声明的目录插件的信任状态（docs/plugins/workspace-plugin-dir-trust.md）。
+ * pending 时插件强制停用；trusted 表示本机用户域记录命中当前声明摘要。
+ */
+export const ccbuddyPluginWorkspaceTrustSchema = z
+  .object({
+    state: z.enum(["pending", "trusted"]),
+    // 插件根相对工作区目录的路径（`/` 分隔），也是信任命令的定位键。
+    pluginRoot: nonEmptyString,
+    declarationDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+export type CCbuddyPluginWorkspaceTrust = z.infer<typeof ccbuddyPluginWorkspaceTrustSchema>;
+
 export const ccbuddyPluginInfoSchema = z
   .object({
     id: nonEmptyString,
@@ -3043,11 +3276,15 @@ export const ccbuddyPluginInfoSchema = z
     // 权威组件清单（名称 + 可选描述），由 CLI 对插件根目录枚举得出，与启用态无关。
     // 详情 UI 直接展示，取代旧的「数量取协议、名称靠 UI 侧 join」脆弱方案。optional 兼容旧 payload。
     components: z.array(ccbuddyPluginComponentGroupSchema).optional(),
+    uiSurfaces: z.array(ccbuddyPluginUiSurfaceSchema).optional(),
     declaredMcpServerNames: z.array(z.string()).optional(),
     hostMcpServerNames: z.array(z.string()).optional(),
     mcpServerNames: z.array(z.string()),
     hookDetails: z.array(ccbuddyPluginHookDetailSchema).optional(),
     rootPath: z.string(),
+    // 插件的持久数据目录（CLI 的 PluginMetadata.dataPath，与 ${CCBUDDY_PLUGIN_DATA} 同值）。
+    // 扩展的 ctx.extension.dataPath 只取它，App 不自己拼路径；旧 CLI 不报告时缺省。
+    dataPath: z.string().optional(),
     userConfig: z.record(z.string(), ccbuddyPluginUserConfigOptionSchema).optional(),
     configuredOptions: z.record(z.string(), ccbuddyPluginOptionValueSchema).optional(),
     // 缺省表示 package 可用；missing 用于保留已声明但目标 Host 尚未物化的配置行。
@@ -3055,6 +3292,7 @@ export const ccbuddyPluginInfoSchema = z
     rootSource: ccbuddyPluginScopeSchema.optional(),
     enabledSource: ccbuddyPluginScopeSchema.optional(),
     optionSources: z.record(z.string(), ccbuddyPluginScopeSchema).optional(),
+    workspaceTrust: ccbuddyPluginWorkspaceTrustSchema.optional(),
   })
   .strict();
 export type CCbuddyPluginInfo = z.infer<typeof ccbuddyPluginInfoSchema>;
@@ -3085,20 +3323,6 @@ export type CCbuddyPluginsListResult = z.infer<typeof ccbuddyPluginsListResultSc
 
 // ── 插件 UI 面板入口──
 // 工作区级只读投影：已启用插件清单 `ui.surfaces[]` 的合法条目；插件启停后 host 重新拉取。
-export const ccbuddyPluginUiSurfaceSchema = z
-  .object({
-    pluginId: nonEmptyString,
-    pluginName: nonEmptyString,
-    id: nonEmptyString.max(128),
-    title: z.union([nonEmptyString, z.record(z.string(), z.string())]),
-    icon: z.string().optional(),
-    // 运行时 namespaced server 名（plugin:<name>:<server>），可直接用于 mcp/uiReadResource。
-    server: nonEmptyString,
-    resourceUri: nonEmptyString.max(2048),
-    availability: z.literal("session"),
-  })
-  .strict();
-export type CCbuddyPluginUiSurface = z.infer<typeof ccbuddyPluginUiSurfaceSchema>;
 export const ccbuddyPluginsListUiSurfacesParamsSchema = z
   .object({ workspace: ccbuddyWorkspaceRefSchema })
   .strict();
@@ -3474,7 +3698,7 @@ export type CCbuddyWorkflowsMoveResult = z.infer<typeof ccbuddyWorkflowsMoveResu
 // 完成卡的「直接保存」走这条：**不收脚本，只收 runId**——要写的那份正文是这次 run 实际执行的
 // 脚本，agent 从 journal 记录（`scriptText`）里读。脚本不经 GUI 走一圈有两个后果值得写下来：
 // 修订过的 run 存下的是**结算它的**那一份，而工具行入参被快照裁成预览的老对话也照样存得出
-// 同样的字节。名字合法性、覆盖、遮蔽与类型检查全部复用 SaveWorkflow 的同一套实现（不变式 3）。
+// 同样的字节。名字合法性、覆盖、遮��与类型检查全部复用 SaveWorkflow 的同一套实现（不变式 3）。
 /** 另一档已有同名定义（遮蔽事实）；与 contracts 的 SavedWorkflowShadowing 逐字对齐。 */
 export const ccbuddySavedWorkflowShadowingSchema = z.enum(["hides_global", "hidden_by_project"]);
 export type CCbuddySavedWorkflowShadowing = z.infer<typeof ccbuddySavedWorkflowShadowingSchema>;
@@ -3625,9 +3849,47 @@ export const ccbuddyPluginsSetEnabledResultSchema = z
   .strict();
 export type CCbuddyPluginsSetEnabledResult = z.infer<typeof ccbuddyPluginsSetEnabledResultSchema>;
 
+/** 信任或撤销一个项目目录插件；只写目标 Host 的用户域记录，对新会话生效。 */
+export const ccbuddyPluginsWorkspaceTrustParamsSchema = z
+  .object({
+    workspace: ccbuddyWorkspaceRefSchema,
+    pluginRoot: nonEmptyString,
+    declarationDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+    trusted: z.boolean(),
+  })
+  .strict();
+export const ccbuddyPluginsWorkspaceTrustResultSchema = z
+  .object({
+    accepted: z.boolean(),
+    reasonCode: z
+      .enum(["workspace_plugin_declaration_changed", "workspace_plugin_trust_unavailable"])
+      .optional(),
+  })
+  .strict();
+export type CCbuddyPluginsWorkspaceTrustResult = z.infer<
+  typeof ccbuddyPluginsWorkspaceTrustResultSchema
+>;
+
+/**
+ * 目录条目的扩展摘要（docs/plugins/plugin-publishing.md §4.2–4.3）：插件要求的插件 API 版本范围与
+ * 扩展申请的权限档位。CLI 只透传、只留这两个键；App 用 isExtensionEngineCompatible 判断。
+ * grants 是开放的字符串数组：以后新增的档位不能让旧 App 整页解析失败。
+ */
+export const ccbuddyPluginExtensionSummarySchema = z
+  .object({
+    engines: z.object({ ccbuddy: z.string().min(1) }).strict(),
+    grants: z.array(z.string()),
+  })
+  .strict();
+export type CCbuddyPluginExtensionSummary = z.infer<typeof ccbuddyPluginExtensionSummarySchema>;
+
 // 商店信息（Store Listing）：目录条目携带的展示性元数据（显示名/icon/分类/作者/链接/hero/
 // 示例提示词），全部可选，UI 缺失时按降级矩阵处理（字母头像/隐藏区块/省略信息行）。
 // i18n 采用 `<字段>I18n` map，locale 解析复用 shared 的 plugin-display-name helper。
+/** 插件商店定向展示的区域：`cn` 国内登录入口，`global` 海外登录入口。 */
+export const ccbuddyPluginStoreRegionSchema = z.enum(["cn", "global"]);
+export type CCbuddyPluginStoreRegion = z.infer<typeof ccbuddyPluginStoreRegionSchema>;
+
 export const ccbuddyPluginStoreListingSchema = z
   .object({
     displayName: z.string().optional(),
@@ -3650,6 +3912,16 @@ export const ccbuddyPluginStoreListingSchema = z
      * 不参与安装门禁与计费，命名也不绑定具体套餐商品名。
      */
     requiresPaidPlan: z.boolean().optional(),
+    /**
+     * 带扩展的插件：只在 plugins/overview 带 includeExtensionSummary 时出现（§4.3 能力位）。
+     * 已装插件的 listing 来自目录最新版条目，所以这里是最新版的摘要。
+     */
+    extensionSummary: ccbuddyPluginExtensionSummarySchema.optional(),
+    /**
+     * 目录条目声明的可见区域：`cn` 国内、`global` 海外；缺省表示所有区域可见。
+     * CLI 只透传这两个值（未知值在 CLI 读目录时丢弃），UI 按当前登录区域过滤商店浏览列表。
+     */
+    regions: z.array(ccbuddyPluginStoreRegionSchema).optional(),
   })
   .strict();
 export type CCbuddyPluginStoreListing = z.infer<typeof ccbuddyPluginStoreListingSchema>;
@@ -3743,6 +4015,8 @@ export const ccbuddyPluginsOverviewParamsSchema = z
   .object({
     workspace: ccbuddyWorkspaceRefSchema,
     configScope: ccbuddyPluginScopeSchema.optional(),
+    /** 要商店信息里的 extensionSummary。只发给声明了 pluginExtensionSummary 的 CLI（§4.3）。 */
+    includeExtensionSummary: z.boolean().optional(),
   })
   .strict();
 export const ccbuddyPluginsOverviewResultSchema = z
@@ -4001,6 +4275,7 @@ export type CCbuddyAutomationProtocol = z.infer<typeof ccbuddyAutomationProtocol
 
 export const ccbuddyAutomationCreateParamsSchema = z
   .object({
+    workspace: ccbuddyWorkspaceRefSchema.optional(),
     title: z.string().optional(),
     cronExpr: nonEmptyString,
     relativeDelayMinutes: z.number().int().positive().max(525_600).optional(),
@@ -4048,6 +4323,7 @@ export type CCbuddyAutomationCreateProtocolResult = z.infer<
 
 export const ccbuddyAutomationUpdateParamsSchema = z
   .object({
+    workspace: ccbuddyWorkspaceRefSchema.optional(),
     automationId: nonEmptyString,
     title: nonEmptyString.optional(),
     cronExpr: nonEmptyString.optional(),
@@ -4107,7 +4383,9 @@ export type CCbuddyAutomationUpdateProtocolResult = z.infer<
   typeof ccbuddyAutomationUpdateResultSchema
 >;
 
-export const ccbuddyAutomationListParamsSchema = z.object({}).strict();
+export const ccbuddyAutomationListParamsSchema = z
+  .object({ workspace: ccbuddyWorkspaceRefSchema.optional() })
+  .strict();
 export type CCbuddyAutomationListProtocolParams = z.infer<typeof ccbuddyAutomationListParamsSchema>;
 export const ccbuddyAutomationListResultSchema = z
   .object({ automations: z.array(ccbuddyAutomationProtocolSchema) })
@@ -4115,7 +4393,7 @@ export const ccbuddyAutomationListResultSchema = z
 export type CCbuddyAutomationListProtocolResult = z.infer<typeof ccbuddyAutomationListResultSchema>;
 
 export const ccbuddyAutomationCheckTaskBindingParamsSchema = z
-  .object({ targetTaskId: nonEmptyString })
+  .object({ workspace: ccbuddyWorkspaceRefSchema.optional(), targetTaskId: nonEmptyString })
   .strict();
 export type CCbuddyAutomationCheckTaskBindingProtocolParams = z.infer<
   typeof ccbuddyAutomationCheckTaskBindingParamsSchema
@@ -4128,7 +4406,7 @@ export type CCbuddyAutomationCheckTaskBindingProtocolResult = z.infer<
 >;
 
 export const ccbuddyAutomationDeleteParamsSchema = z
-  .object({ automationId: nonEmptyString })
+  .object({ workspace: ccbuddyWorkspaceRefSchema.optional(), automationId: nonEmptyString })
   .strict();
 export type CCbuddyAutomationDeleteProtocolParams = z.infer<
   typeof ccbuddyAutomationDeleteParamsSchema
@@ -4138,9 +4416,22 @@ export type CCbuddyAutomationDeleteProtocolResult = z.infer<
   typeof ccbuddyAutomationDeleteResultSchema
 >;
 
+// 执行轮自暂停（CronPauseSelf）：automationId 来自 CLI loop state，Host 只在当前 workspace
+// 内做条件暂停（active 且 enabled 才转 paused）并回报是否生效。
+export const ccbuddyAutomationPauseParamsSchema = z
+  .object({ workspace: ccbuddyWorkspaceRefSchema.optional(), automationId: nonEmptyString })
+  .strict();
+export type CCbuddyAutomationPauseProtocolParams = z.infer<
+  typeof ccbuddyAutomationPauseParamsSchema
+>;
+export const ccbuddyAutomationPauseResultSchema = z.object({ paused: z.boolean() }).strict();
+export type CCbuddyAutomationPauseProtocolResult = z.infer<
+  typeof ccbuddyAutomationPauseResultSchema
+>;
+
 // ---- Off-Peak（闲时任务）会话内创建协议----
 // 与 automation 兄弟并列（独立域，禁止互相复用标记/表）。workspace 由 host 端从
-// 当前 session 注入，不进协议参数（对称 automation/create）。permissionMode 只开放产品
+// 当前 session 的已协商 workspace 注入。permissionMode 只开放产品
 // 四档词表（D29-4）；缺省解析在 host 端（D49-4：yolo / allowed_models 末位 / 最高推理档）。
 export const ccbuddyOffPeakPermissionModeSchema = z.enum([
   "build",
@@ -4155,6 +4446,7 @@ export type CCbuddyOffPeakProtocolPermissionMode = z.infer<
 
 export const ccbuddyOffPeakCreateParamsSchema = z
   .object({
+    workspace: ccbuddyWorkspaceRefSchema.optional(),
     title: nonEmptyString,
     prompt: nonEmptyString,
     permissionMode: ccbuddyOffPeakPermissionModeSchema.optional(),
@@ -4203,7 +4495,9 @@ export const ccbuddyOffPeakCreateResultSchema = z.discriminatedUnion("ok", [
 ]);
 export type CCbuddyOffPeakCreateProtocolResult = z.infer<typeof ccbuddyOffPeakCreateResultSchema>;
 
-export const ccbuddyOffPeakListParamsSchema = z.object({}).strict();
+export const ccbuddyOffPeakListParamsSchema = z
+  .object({ workspace: ccbuddyWorkspaceRefSchema.optional() })
+  .strict();
 export type CCbuddyOffPeakListProtocolParams = z.infer<typeof ccbuddyOffPeakListParamsSchema>;
 export const ccbuddyOffPeakListResultSchema = z
   .object({ tasks: z.array(ccbuddyOffPeakTaskSnapshotSchema) })
@@ -4246,6 +4540,19 @@ export type SessionLifecycleFailure = z.infer<typeof sessionLifecycleFailureSche
 export type SessionLifecycleSnapshot = z.infer<typeof sessionLifecycleSnapshotSchema>;
 
 export const ccbuddyProtocolMethods = {
+  appControlListProjects: appControlProtocol.listProjects.method,
+  appControlListSessions: appControlProtocol.listSessions.method,
+  appControlReadSession: appControlProtocol.readSession.method,
+  appControlCreateSession: appControlProtocol.createSession.method,
+  appControlForkSession: appControlProtocol.forkSession.method,
+  appControlSendToSession: appControlProtocol.sendToSession.method,
+  appControlWaitSessions: appControlProtocol.waitSessions.method,
+  appControlInterruptSession: appControlProtocol.interruptSession.method,
+  appControlRenameSession: appControlProtocol.renameSession.method,
+  appControlOpenSession: appControlProtocol.openSession.method,
+  appControlSetSessionArchived: appControlProtocol.setSessionArchived.method,
+  appControlSetSessionPinned: appControlProtocol.setSessionPinned.method,
+  appControlCancel: appControlCancelMethod,
   sessionLifecycleChanged: "session/lifecycle/changed",
   sessionLifecycleGetState: "session/lifecycle/getState",
   sessionLifecycleEnsureReady: "session/lifecycle/ensureReady",
@@ -4259,6 +4566,7 @@ export const ccbuddyProtocolMethods = {
   sessionSubagents: "session/subagents",
   sessionRequestRuntimePreferences: "session/requestRuntimePreferences",
   subagentsReadRuntimeConfig: "subagents/readRuntimeConfig",
+  sessionReadReplyLanguage: "session/readReplyLanguage",
   sessionRead: "session/read",
   sessionMessages: "session/messages",
   sessionEvents: "session/events",
@@ -4280,6 +4588,7 @@ export const ccbuddyProtocolMethods = {
   sessionCompact: "session/compact",
   sessionGoal: "session/goal",
   sessionClose: "session/close",
+  sessionReleaseUnderDirectory: "session/releaseUnderDirectory",
   // setModel 仍被 ccbuddySessionService 的 desktop 旧链路消费；replayable
   // switchModelConfig 已直接由目标 Environment Registry 解析 Selection。
   sessionSetModel: "session/setModel",
@@ -4292,6 +4601,7 @@ export const ccbuddyProtocolMethods = {
   workspaceHookTrustGrant: "workspace/hooks/trustGrant",
   // 进程级 Account Provider Config 与 workspace 运行目录分离。
   providerUpdateAccountConfig: "provider/updateAccountConfig",
+  providerRefreshRegistry: "provider/refreshRegistry",
   workspaceUpdateInteractionPreferences: "workspace/updateInteractionPreferences",
   workspaceUpdateModelIoPreferences: "workspace/updateModelIoPreferences",
   // Off-Peak 工具面门禁是 workspace 级事实（灰度 + 本地/远程），由 host 在 agent 就绪时同步；
@@ -4305,6 +4615,7 @@ export const ccbuddyProtocolMethods = {
   workspaceCancelGenerateText: "workspace/cancelGenerateText",
   providerTestModelConnectivity: "provider/testModelConnectivity",
   mcpList: "mcp/list",
+  workspaceMcpTrust: "workspace/mcp/trust",
   mcpReadResource: "mcp/readResource",
   mcpUiOpenInstance: "mcp/uiOpenInstance",
   mcpUiCloseInstance: "mcp/uiCloseInstance",
@@ -4342,6 +4653,7 @@ export const ccbuddyProtocolMethods = {
   workflowsForRun: "workflows/forRun",
   pluginsResolveSuggestedReference: "plugins/resolveSuggestedReference",
   pluginsSetEnabled: "plugins/setEnabled",
+  pluginsWorkspaceTrust: "plugins/workspaceTrust",
   pluginsOverview: "plugins/overview",
   pluginsMarketplaceAdd: "plugins/marketplace/add",
   pluginsMarketplaceRemove: "plugins/marketplace/remove",
@@ -4355,6 +4667,10 @@ export const ccbuddyProtocolMethods = {
   pluginsResetConfig: "plugins/resetConfig",
   pluginsValidate: "plugins/validate",
   pluginsDescribe: "plugins/describe",
+  // 扩展 settings 能力读本插件 user 层有效值（含敏感值）；旧 CLI method-not-found → App 当作不支持。
+  pluginsReadUserOptions: "plugins/readUserOptions",
+  // 输入框 `@` 面板的 MCP 工具候选项：只在内存里的会话上调插件工具；旧 CLI method-not-found → 不显示这一组。
+  pluginsMentionItems: "plugins/mentionItems",
   automationCreate: "automation/create",
   topicResourceRead: "topic/resource/read",
   channelReply: "bot/channel/reply",
@@ -4363,6 +4679,7 @@ export const ccbuddyProtocolMethods = {
   automationCheckTaskBinding: "automation/checkTaskBinding",
   automationList: "automation/list",
   automationDelete: "automation/delete",
+  automationPause: "automation/pause",
   // Off-Peak 会话内创建：与 automation 兄弟并列的独立方法族。
   offPeakCreate: "offPeak/create",
   offPeakList: "offPeak/list",
@@ -4379,6 +4696,7 @@ export const ccbuddyProtocolMethods = {
   interactionRequestUserInput: "interaction/requestUserInput",
   interactionRequestProviderRuntimeHeaders: "interaction/requestProviderRuntimeHeaders",
   interactionRequestOfficialMcpAuthHeaders: "interaction/requestOfficialMcpAuthHeaders",
+  interactionRequestCredentialCipher: "interaction/requestCredentialCipher",
   // browser-use 反向请求由 agent 发起，host 转给 main 中的 CDP executor。
   interactionBrowserList: "interaction/browserList",
   interactionBrowserExecute: "interaction/browserExecute",
@@ -4407,6 +4725,10 @@ export const ccbuddyProtocolSessionMethodContracts = {
   [ccbuddyProtocolMethods.workspaceHookTrustGrant]: {
     params: ccbuddyWorkspaceHookTrustGrantParamsSchema,
     result: ccbuddyWorkspaceHookTrustGrantResultSchema,
+  },
+  [ccbuddyProtocolMethods.workspaceMcpTrust]: {
+    params: ccbuddyWorkspaceMcpTrustParamsSchema,
+    result: ccbuddyWorkspaceMcpTrustResultSchema,
   },
   [ccbuddyProtocolMethods.mcpList]: {
     params: ccbuddyMcpListParamsSchema,
@@ -4483,6 +4805,12 @@ export const ccbuddyProtocolSessionMethodContracts = {
 export type CCbuddyProtocolSessionMethodContract =
   (typeof ccbuddyProtocolSessionMethodContracts)[keyof typeof ccbuddyProtocolSessionMethodContracts];
 
+// 启动入口的独立存储命令与严格结果 schema，和 CLI 共用一份契约。
+export {
+  STORAGE_MIGRATION_COMMAND,
+  storageMigrationReportSchema,
+} from "../sqlite-migrations/contract.js";
+
 /** 仅存储准备子进程的私有控制帧，原始路径不进入业务事件或遥测。 */
 export const ccbuddyStoragePreparationFrameSchema = z.discriminatedUnion("method", [
   z
@@ -4512,7 +4840,7 @@ export const ccbuddyStoragePathReadySchema = z
   .strict();
 
 // 桌面本地 TTFT 的严格事实合同；检查点不能替代实际内容帧。
-export { localTtftFactsSchema } from "../localTtft.js";
+export { localTtftFactsSchema } from "../local-ttft/contract.js";
 // 群来源由可信 Host 注入，V4 命令与持久化输入使用相同运行时校验。
 export {
   botIdentitySchema,

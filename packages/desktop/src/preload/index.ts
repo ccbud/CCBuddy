@@ -1,4 +1,21 @@
+import {
+  preinstalledToolsStateSchema,
+  preinstalledToolsCommandSchema,
+  type PreinstalledToolsCommand,
+  type PreinstalledToolsState,
+} from "@ccbuddy/shared/preinstalled-tools";
 import { installPluginSandboxHostBridge } from "./pluginSandbox/hostBridge.js";
+import type {
+  ExtensionNotificationClick,
+  ExtensionNotificationPayload,
+  NotificationsShowResult,
+} from "@ccbuddy/shared/extension-host";
+import {
+  APP_NAVIGATION_IPC,
+  appNavigationRendererMessageSchema,
+  appNavigationRendererIpcSchema,
+  type AppNavigationRendererMessage,
+} from "#src/app-control-navigation/contract.js";
 import {
   databaseStartupControlSchema,
   databaseStartupStateSchema,
@@ -37,6 +54,7 @@ import type {
   AppSettings,
   RemoteWorkspaceSessionTarget,
   ApplicationIconRequest,
+  BindRemoteWorkspaceSessionContextIpcResult,
   BrowserViewOperationPayload,
   BrowserGuestAttachResult,
   BrowserViewScreenshotSurfacePreparePayload,
@@ -45,6 +63,7 @@ import type {
   BrowserViewViewportChangedPayload,
   BrowserViewCloseTabNotification,
   BrowserViewCloseTabRequest,
+  BrowserViewPromoteDraftTabsRequest,
   BrowserViewResidencyReportPayload,
   BrowserViewResidencyTransitionPayload,
   BrowserViewRestoredTabShell,
@@ -62,7 +81,9 @@ import type {
   EmbeddedBrowserSitePermissionsSnapshot,
   Locale,
   OAuthStateRegistration,
+  WebRemoteControlAuthStateChange,
   OpenInEditorOptions,
+  FileApplicationTarget,
   RemoteTarget,
   TaskNotificationPayload,
   TelemetryRendererContext,
@@ -71,7 +92,7 @@ import type {
   RendererHeapSample,
   PostUpdateReleaseNotesPayload,
   RemoteSessionClosedEvent,
-  BotRemoteWorkspaceReconnectedEvent,
+  RemoteSessionReconnectedEvent,
   UpdateCheckResultPayload,
   UpdateStatePayload,
   CCbuddyStdioTapDevState,
@@ -81,7 +102,19 @@ import type {
   SaveFileRequest,
   SaveFileResult,
   PrintPageToPdfResult,
+  MicrophoneAccessResetResult,
+  MicrophoneAccessResult,
+  MicrophoneSettingsTarget,
+  CaptureBrowserGuestPageRequest,
+  CaptureBrowserGuestPageResult,
   SSHConfigAliasOption,
+  WebRemoteControlContext,
+  WebRemoteControlReconnectWorkspaceRequest,
+  WebRemoteControlReconnectWorkspaceResult,
+  WebRemoteControlRendererActionRequest,
+  WebRemoteControlRendererActionResult,
+  WebRemoteControlStatus,
+  WebRemoteControlWorkspaceTarget,
   RemoteConnectionRuntimeLog,
   WindowControlsOverlayMetrics,
   WindowControlsOverlayReadyPayload,
@@ -96,6 +129,7 @@ import {
   PlatformChannels,
   HistoryReviewChannels,
   formatCCbuddyRendererProcessName,
+  scopedServicePortPayloadSchema,
   shouldEnableE2ETestBridge,
   type IPlatformService,
 } from "@ccbuddy/shared";
@@ -294,19 +328,42 @@ window.addEventListener("DOMContentLoaded", updateRendererProcessTitle, {
  * 通过 MessagePort RPC 访问，不再经过此 bridge。
  */
 contextBridge.exposeInMainWorld("ccbuddy", {
+  executePreinstalledToolsCommand: async (command: PreinstalledToolsCommand): Promise<void> => {
+    await ipcRenderer.invoke(
+      PlatformChannels.ExecutePreinstalledToolsCommand,
+      preinstalledToolsCommandSchema.parse(command),
+    );
+  },
+  getPreinstalledToolsState: async (): Promise<PreinstalledToolsState> =>
+    preinstalledToolsStateSchema.parse(
+      await ipcRenderer.invoke(PlatformChannels.GetPreinstalledToolsState),
+    ),
+  onPreinstalledToolsState: (callback: (state: PreinstalledToolsState) => void): (() => void) => {
+    const handler = (_event: unknown, value: unknown) => {
+      const parsed = preinstalledToolsStateSchema.safeParse(value);
+      if (parsed.success) callback(parsed.data);
+    };
+    ipcRenderer.on(PlatformChannels.PreinstalledToolsState, handler);
+    return () => ipcRenderer.removeListener(PlatformChannels.PreinstalledToolsState, handler);
+  },
   connectRemote: (
     options: RemoteTarget,
     requestId?: string,
     context?: {
-      workspacePath: string;
+      workspacePath?: string;
       workspaceIdentity?: string;
       connectTrigger?: import("@ccbuddy/shared").RemoteWorkspaceConnectTrigger;
+      confirmSourceServerInstall?: boolean;
     },
   ) =>
     ipcRenderer.invoke(PlatformChannels.ConnectRemote, {
       target: options,
       requestId,
       ...(context ? context : {}),
+    }),
+  requestSourceSettingsAttachment: (sourceServerId: string) =>
+    ipcRenderer.invoke(PlatformChannels.RequestSourceSettingsAttachment, {
+      sourceServerId,
     }),
   cancelPendingRemoteConnection: (requestId?: string): Promise<void> =>
     ipcRenderer.invoke(PlatformChannels.CancelPendingRemoteConnection, {
@@ -316,8 +373,23 @@ contextBridge.exposeInMainWorld("ccbuddy", {
     remoteSessionId: string;
     workspacePath: string;
     workspaceIdentity?: string;
-  }): Promise<void> =>
+    workspacePurpose?: import("@ccbuddy/shared").WorkspacePurpose;
+  }): Promise<BindRemoteWorkspaceSessionContextIpcResult> =>
+    // 原样返回结构化结果：在 preload 抛出的 Error 跨 contextBridge 会丢失 code，由 renderer 还原。
     ipcRenderer.invoke(PlatformChannels.BindRemoteWorkspaceSessionContext, context),
+  startWebRemoteControl: (context: WebRemoteControlContext) =>
+    ipcRenderer.invoke(PlatformChannels.StartWebRemoteControl, context),
+  stopWebRemoteControl: (): Promise<void> =>
+    ipcRenderer.invoke(PlatformChannels.StopWebRemoteControl),
+  getWebRemoteControlStatus: () => ipcRenderer.invoke(PlatformChannels.GetWebRemoteControlStatus),
+  onWebRemoteControlStatusChanged: (
+    callback: (status: WebRemoteControlStatus) => void,
+  ): (() => void) => {
+    const handler = (_event: unknown, payload: WebRemoteControlStatus) => callback(payload);
+    ipcRenderer.on(PlatformChannels.WebRemoteControlStatusChanged, handler);
+    return () =>
+      ipcRenderer.removeListener(PlatformChannels.WebRemoteControlStatusChanged, handler);
+  },
   disposeRemoteSession: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke(PlatformChannels.DisposeRemoteSession, sessionId),
   isDockerAvailable: (): Promise<boolean> => ipcRenderer.invoke(PlatformChannels.IsDockerAvailable),
@@ -337,6 +409,9 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 打开系统目录选择框，返回选中路径或 null */
   selectDirectory: (): Promise<string | null> =>
     ipcRenderer.invoke(PlatformChannels.SelectDirectory),
+  /** 打开系统多目录选择框；取消时返回空数组 */
+  selectDirectories: (): Promise<string[]> =>
+    ipcRenderer.invoke(PlatformChannels.SelectDirectories),
   /** 打开系统文件选择框，返回选中文件路径或 null */
   selectFile: (): Promise<string | null> => ipcRenderer.invoke(PlatformChannels.SelectFile),
   /** 打开系统多文件选择框，返回选中文件路径；取消时返回空数组 */
@@ -347,6 +422,20 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 将当前页面的 print 媒体版面导出为 PDF（Chromium 打印引擎，矢量文本） */
   printPageToPdf: (): Promise<PrintPageToPdfResult> =>
     ipcRenderer.invoke(PlatformChannels.PrintToPdf),
+  /** 语音输入：检查并按需请求系统麦克风权限 */
+  ensureMicrophoneAccess: (): Promise<MicrophoneAccessResult> =>
+    ipcRenderer.invoke(PlatformChannels.MicrophoneAccess),
+  /** 语音输入：macOS 重置本 App 的麦克风授权记录并重新请求 */
+  resetMicrophoneAccess: (): Promise<MicrophoneAccessResetResult> =>
+    ipcRenderer.invoke(PlatformChannels.ResetMicrophoneAccess),
+  /** 语音输入：打开系统麦克风权限 / 声音输入设置页 */
+  openMicrophoneSettings: (target: MicrophoneSettingsTarget): Promise<boolean> =>
+    ipcRenderer.invoke(PlatformChannels.OpenMicrophoneSettings, target),
+  /** 在 main 截取内置浏览器 guest 当前视口为 PNG（renderer 侧 <webview>.capturePage 会崩溃） */
+  captureBrowserGuestPage: (
+    payload: CaptureBrowserGuestPageRequest,
+  ): Promise<CaptureBrowserGuestPageResult> =>
+    ipcRenderer.invoke(PlatformChannels.CaptureBrowserGuestPage, payload),
   /** 从系统拖拽/文件输入得到的 Web File 解析真实本地路径 */
   getPathForFile: (file: File): string | null => {
     // Electron 32 起移除了非标准 File.path，renderer 不能再直接从拖拽 File 上取路径。
@@ -374,15 +463,12 @@ contextBridge.exposeInMainWorld("ccbuddy", {
     ipcRenderer.on(PlatformChannels.RemoteSessionClosed, handler);
     return () => ipcRenderer.removeListener(PlatformChannels.RemoteSessionClosed, handler);
   },
-  /** 订阅 Bot 触发的远程 workspace 重连成功事件，返回 disposer */
-  onBotRemoteWorkspaceReconnected: (
-    callback: (event: BotRemoteWorkspaceReconnectedEvent) => void,
-  ) => {
+  /** 订阅 Source 自动重连后的 logical session 换代事件。 */
+  onRemoteSessionReconnected: (callback: (event: RemoteSessionReconnectedEvent) => void) => {
     const handler = (_event: unknown, payload: unknown) =>
-      callback(payload as BotRemoteWorkspaceReconnectedEvent);
-    ipcRenderer.on(PlatformChannels.BotRemoteWorkspaceReconnected, handler);
-    return () =>
-      ipcRenderer.removeListener(PlatformChannels.BotRemoteWorkspaceReconnected, handler);
+      callback(payload as RemoteSessionReconnectedEvent);
+    ipcRenderer.on(PlatformChannels.RemoteSessionReconnected, handler);
+    return () => ipcRenderer.removeListener(PlatformChannels.RemoteSessionReconnected, handler);
   },
   /** 检查目录是否已在其他窗口打开 */
   activateOrSetWorkspace: (path: string): Promise<{ activated: boolean }> =>
@@ -462,6 +548,16 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   ): Promise<EmbeddedBrowserSitePermissionsSnapshot> =>
     ipcRenderer.invoke(PlatformChannels.ResetEmbeddedBrowserSitePermission, request),
   /** 注册 agent 首次 browser 命令建好受控 view 的回调（自动开 browser-use tab），返回 disposer */
+  onBrowserViewDownloadStarted: (
+    callback: (payload: { webContentsId: number; urls: string[] }) => void,
+  ): (() => void) => {
+    const handler = (_event: unknown, payload: { webContentsId: number; urls: string[] }) =>
+      callback(payload);
+    ipcRenderer.on(PlatformChannels.BrowserViewDownloadStarted, handler);
+    return () => {
+      ipcRenderer.removeListener(PlatformChannels.BrowserViewDownloadStarted, handler);
+    };
+  },
   onBrowserViewReady: (
     callback: (payload: {
       workspaceKey: string;
@@ -659,11 +755,30 @@ contextBridge.exposeInMainWorld("ccbuddy", {
     ipcRenderer.on(PlatformChannels.DesktopZoomLevelChanged, handler);
     return () => ipcRenderer.removeListener(PlatformChannels.DesktopZoomLevelChanged, handler);
   },
+  /** 用户点了扩展通知（§18.1 H8）：Main 已聚焦窗口，带插件 id 与要打开的视图。返回 disposer。 */
+  onExtensionNotificationClick: (
+    callback: (click: ExtensionNotificationClick) => void,
+  ): (() => void) => {
+    const handler = (_event: unknown, click: ExtensionNotificationClick) => callback(click);
+    ipcRenderer.on(PlatformChannels.ExtensionNotificationClick, handler);
+    return () => ipcRenderer.removeListener(PlatformChannels.ExtensionNotificationClick, handler);
+  },
   /** 注册用户点击系统通知后跳转到对应任务的回调，返回 disposer */
   onTaskNotificationClick: (callback: (taskId: string) => void): (() => void) => {
     const handler = (_event: unknown, taskId: string) => callback(taskId);
     ipcRenderer.on(PlatformChannels.TaskNotificationClick, handler);
     return () => ipcRenderer.removeListener(PlatformChannels.TaskNotificationClick, handler);
+  },
+  onAppControlNavigationMessage: (callback: (message: AppNavigationRendererMessage) => void) => {
+    const listener = (_event: unknown, payload: unknown) => {
+      const parsed = appNavigationRendererMessageSchema.safeParse(payload);
+      if (parsed.success) callback(parsed.data);
+    };
+    ipcRenderer.on(APP_NAVIGATION_IPC, listener);
+    return () => ipcRenderer.removeListener(APP_NAVIGATION_IPC, listener);
+  },
+  sendAppControlNavigation: (payload: unknown) => {
+    ipcRenderer.send(APP_NAVIGATION_IPC, appNavigationRendererIpcSchema.parse(payload));
   },
   /** 打开外部 URL（用于 OAuth 跳转浏览器） */
   openExternal: (url: string) => ipcRenderer.send(PlatformChannels.OpenExternal, url),
@@ -688,6 +803,8 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 从权限浮窗拖拽 Helper.app 到 macOS 权限列表。必须是 send —— invoke 的往返会错过手势。 */
   startCuaHelperPermissionDrag: () =>
     ipcRenderer.send(PlatformChannels.StartCuaHelperPermissionDrag),
+  notifyWebRemoteControlAuthStateChanged: (change: WebRemoteControlAuthStateChange) =>
+    ipcRenderer.send(PlatformChannels.WebRemoteControlAuthStateChanged, change),
   /** 上报 OAuth state 用于 deep link 路由 */
   registerOAuthState: (payload: OAuthStateRegistration) =>
     ipcRenderer.send(PlatformChannels.OAuthRegisterState, payload),
@@ -763,6 +880,10 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 通过 main process 触发原生任务通知 */
   showTaskNotification: (payload: TaskNotificationPayload) =>
     ipcRenderer.send(PlatformChannels.ShowTaskNotification, payload),
+  showExtensionNotification: (
+    payload: ExtensionNotificationPayload,
+  ): Promise<NotificationsShowResult> =>
+    ipcRenderer.invoke(PlatformChannels.ShowExtensionNotification, payload),
   /** 导出日志：打包 ~/.ccbuddy/v2 及外部 agent 日志为 zip 并在 Finder 中显示 */
   exportLogs: (): Promise<{
     success: boolean;
@@ -772,6 +893,8 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 截取当前窗口，用于错误反馈携带现场画面 */
   captureWindowScreenshot: () => ipcRenderer.invoke(PlatformChannels.CaptureWindowScreenshot),
   // CDP-on-guest pivot：`<webview>` guest dom-ready 后上报 webContentsId 给 main attach。
+  browserViewLoadUrl: (payload: { webContentsId: number; url: string }): Promise<void> =>
+    ipcRenderer.invoke(PlatformChannels.BrowserViewLoadUrl, payload),
   browserViewAttachGuest: (payload: {
     key: string;
     webContentsId: number;
@@ -789,6 +912,8 @@ contextBridge.exposeInMainWorld("ccbuddy", {
     ipcRenderer.invoke(PlatformChannels.BrowserViewCloseTabFromRenderer, payload),
   browserViewReportResidency: (payload: BrowserViewResidencyReportPayload): Promise<void> =>
     ipcRenderer.invoke(PlatformChannels.BrowserViewReportResidency, payload),
+  browserViewPromoteDraftTabs: (payload: BrowserViewPromoteDraftTabsRequest): Promise<string[]> =>
+    ipcRenderer.invoke(PlatformChannels.BrowserViewPromoteDraftTabs, payload),
   browserViewSuspendReady: (payload: { tabId: string; generation: number }): Promise<void> =>
     ipcRenderer.invoke(PlatformChannels.BrowserViewSuspendReady, payload),
   browserViewEnsureResident: (payload: BrowserViewCloseTabRequest): Promise<void> =>
@@ -894,7 +1019,12 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 用户确认重启安装更新 */
   quitAndInstallUpdate: () => ipcRenderer.invoke(PlatformChannels.QuitAndInstallUpdate),
   /** 获取已安装的编辑器/终端列表（含图标） */
-  getInstalledEditors: () => ipcRenderer.invoke(PlatformChannels.GetInstalledEditors),
+  getInstalledEditors: (filePath?: string) =>
+    ipcRenderer.invoke(PlatformChannels.GetInstalledEditors, filePath),
+  getFileApplications: (target: FileApplicationTarget) =>
+    ipcRenderer.invoke(PlatformChannels.GetFileApplications, target),
+  openFileWithApplication: (applicationId: string, target: FileApplicationTarget) =>
+    ipcRenderer.invoke(PlatformChannels.OpenFileWithApplication, { applicationId, target }),
   getApplicationIcon: (request: string | ApplicationIconRequest) =>
     ipcRenderer.invoke(PlatformChannels.GetApplicationIcon, request),
   /** 用指定编辑器打开路径 */
@@ -910,6 +1040,9 @@ contextBridge.exposeInMainWorld("ccbuddy", {
   /** 同步应用菜单语言 */
   setApplicationLocale: (locale: Locale) =>
     ipcRenderer.invoke(PlatformChannels.SetApplicationLocale, locale),
+  /** 保存 Agent 回复语言（空串清除） */
+  setReplyLanguage: (language: string): Promise<void> =>
+    ipcRenderer.invoke(PlatformChannels.SetReplyLanguage, language),
   /** 读取宿主系统语言 */
   getSystemLocale: (): Promise<Locale> => ipcRenderer.invoke(PlatformChannels.GetSystemLocale),
   /** 同步标题栏亮暗色 */
@@ -952,29 +1085,48 @@ ipcRenderer.on(InternalChannels.ServicePort, (event, payload: unknown) => {
   pendingLocalServicePort = { port, payload: parsed.data };
 });
 
+ipcRenderer.on(InternalChannels.ScopedServicePort, (event, payload: unknown) => {
+  const [port] = event.ports;
+  const parsed = scopedServicePortPayloadSchema.safeParse(payload);
+  if (!port || !parsed.success) return;
+  // Bug 根因：这里曾用手工字段白名单重建 payload；Main 新增 workspace scope 后
+  // Preload 未同步白名单，Renderer 因而把 project logical session 原地绑定成 conversation。
+  window.postMessage(
+    {
+      type: InternalChannels.ScopedServicePort,
+      ...parsed.data,
+    },
+    "*",
+    [port],
+  );
+});
+
+ipcRenderer.on(InternalChannels.ScopedServicePortReleased, (_event, payload: unknown) => {
+  // 与 port 一样交给 renderer world；是否释放由 renderer 按当前登记判断。
+  if (!payload || typeof payload !== "object") return;
+  window.postMessage({ ...payload, type: InternalChannels.ScopedServicePortReleased }, "*");
+});
+
 ipcRenderer.on(
-  InternalChannels.ScopedServicePort,
+  InternalChannels.SourceSettingsServicePort,
   (
     event,
     payload: {
       attachmentId?: string;
-      sessionId?: string;
-      target?: RemoteTarget;
+      sourceServerId?: string;
     },
   ) => {
     const [port] = event.ports;
-    if (port) {
-      window.postMessage(
-        {
-          type: InternalChannels.ScopedServicePort,
-          attachmentId: payload.attachmentId,
-          sessionId: payload.sessionId,
-          target: payload.target,
-        },
-        "*",
-        [port],
-      );
-    }
+    if (!port) return;
+    window.postMessage(
+      {
+        type: InternalChannels.SourceSettingsServicePort,
+        attachmentId: payload.attachmentId,
+        sourceServerId: payload.sourceServerId,
+      },
+      "*",
+      [port],
+    );
   },
 );
 

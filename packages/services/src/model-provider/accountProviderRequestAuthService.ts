@@ -52,7 +52,12 @@ interface AccountProviderRequestAuthServiceOptions {
   loadOAuthTokenSet(providerId: OAuthProviderId): Promise<{
     accessToken?: string | null;
     ccbuddyJwtToken?: string | null;
+    sessionRevision?: string | null;
+    accountIdentity?: string;
+    ccbuddyUserId?: string;
   } | null>;
+  /** Start 只用共享 CCbuddy JWT；不经过付费套餐的家族 token set。 */
+  loadStartPlanCCbuddyJwt(family: ProviderFamilyDomain): Promise<string | null>;
   loadIndividualPlanMaterial(
     providerId: string,
     family: ProviderFamilyDomain,
@@ -81,8 +86,13 @@ class AccountProviderRequestAuthService implements AccountRequestAuthResolver {
     if (!access) throw new AccountRequestCredentialUnavailableError(providerId);
 
     if (access.planKind === "start-plan") {
-      const tokenSet = await this.#options.loadOAuthTokenSet(resolveOAuthProviderId(access.family));
-      return { apiKey: requireApiKey(tokenSet?.ccbuddyJwtToken, providerId) };
+      // Bug 原因：曾从家族 token set 取 JWT，国内无关联账号没有家族材料，Start 调用拿不到凭据。
+      return {
+        apiKey: requireApiKey(
+          await this.#options.loadStartPlanCCbuddyJwt(access.family),
+          providerId,
+        ),
+      };
     }
 
     const scoped = input.reason !== "usage" || input.expectedAccountScope !== undefined;
@@ -129,6 +139,9 @@ class AccountProviderRequestAuthService implements AccountRequestAuthResolver {
             : null,
           login.accessToken.trim(),
           login.ccbuddyJwtToken?.trim() ?? null,
+          login.sessionRevision ?? null,
+          login.accountIdentity ?? null,
+          login.ccbuddyUserId ?? null,
         ]),
       )
       .digest("hex");

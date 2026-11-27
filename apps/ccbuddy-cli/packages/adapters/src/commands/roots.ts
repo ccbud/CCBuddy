@@ -2,15 +2,12 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { CustomCommandRoot, CustomCommandSource } from "@ccbuddy/contracts";
-import {
-  resolveCcBuddyDataRoot,
-  resolveWorkspaceStateRoot,
-} from "@ccbuddy/contracts/workspace-state";
 
 const COMMANDS_DIR = "commands";
 const GIT_MARKER = ".git";
 const HOME_PREFIX = "~/";
 const PRIORITY_STEP = 10;
+const CCBUDDY_DIR = ".ccbuddy";
 const AGENTS_DIR = ".agents";
 
 export interface CustomCommandRootResolutionOptions {
@@ -18,7 +15,6 @@ export interface CustomCommandRootResolutionOptions {
   extraRoots?: string[];
   extraResolvedRoots?: CustomCommandRoot[];
   homeDirectory?: string;
-  workspaceIdentity?: string;
   includeCCbuddyCommands?: boolean;
 }
 
@@ -48,53 +44,28 @@ export async function resolveDefaultCustomCommandRoots(
   }
 
   if (includeCCbuddy) {
-    roots.push(
-      root(
-        join(resolveCcBuddyDataRoot(options.homeDirectory), COMMANDS_DIR),
-        "user",
-        "ccbuddy",
-        nextPriority(),
-      ),
-      root(join(home, AGENTS_DIR, COMMANDS_DIR), "user", "agents", nextPriority()),
-    );
+    roots.push(...commandRootsForBase(home, "user", nextPriority));
   }
 
   const projectDirectories = await resolveProjectDirectories(resolvedWorkingDirectory);
-  if (includeCCbuddy) {
-    roots.push(
-      root(
-        join(
-          resolveWorkspaceStateRoot(resolvedWorkingDirectory, {
-            baseDir: options.homeDirectory,
-            workspaceIdentity: options.workspaceIdentity,
-          }),
-          COMMANDS_DIR,
-        ),
-        "project",
-        "ccbuddy",
-        nextPriority(),
-      ),
-    );
-  }
   for (const directory of projectDirectories) {
     if (includeCCbuddy) {
       roots.push(...commandRootsForBase(directory, "project", nextPriority));
     }
   }
 
-  if (includeCCbuddy) {
-    for (const directory of new Set(
-      (options.additionalDirectories ?? []).map((path) => resolve(path)),
-    )) {
-      if (directory === resolvedWorkingDirectory) continue;
-      roots.push(
-        ...commandRootsForBase(directory, "project", nextPriority).map((item) => ({
-          ...item,
-          namespace: basename(directory),
-        })),
-      );
-    }
+  for (const directory of new Set(
+    (options.additionalDirectories ?? []).map((path) => resolve(path)),
+  )) {
+    if (directory === resolvedWorkingDirectory) continue;
+    roots.push(
+      ...commandRootsForBase(directory, "project", nextPriority).map((item) => ({
+        ...item,
+        namespace: basename(directory),
+      })),
+    );
   }
+
   roots.push(...(options.extraResolvedRoots ?? []));
 
   return roots;
@@ -138,8 +109,12 @@ function commandRootsForBase(
   scope: CustomCommandRoot["scope"],
   nextPriority: () => number,
 ): CustomCommandRoot[] {
-  // 项目内只发现显式的兼容命令目录；CCbuddy 自己的状态位于应用数据根。
-  return [root(join(baseDirectory, AGENTS_DIR, COMMANDS_DIR), scope, "agents", nextPriority())];
+  // 合并而不是 fallback：兼容 `.agents` 命令和原生 `.ccbuddy` 命令需要同时可见。
+  // 同一级别 `.ccbuddy` 先扫描，命令同名时仍按“先到先赢”处理。
+  return [
+    root(join(baseDirectory, CCBUDDY_DIR, COMMANDS_DIR), scope, "ccbuddy", nextPriority()),
+    root(join(baseDirectory, AGENTS_DIR, COMMANDS_DIR), scope, "agents", nextPriority()),
+  ];
 }
 
 function root(

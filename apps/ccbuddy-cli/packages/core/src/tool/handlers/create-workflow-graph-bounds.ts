@@ -166,7 +166,9 @@ export function boundCausalityGraph(
   const boundPhases: CreateWorkflowPhase[] = (declaredPhases ?? []).map((phase) => {
     // 合成阶段 `unphased` 无 name（UI 本地化）；空名同样按「无名」处理而不是让整个输出
     // 解析失败，与车道 name 同一姿态。
-    const name = phase.name ? boundGraphText(phase.name, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS) : undefined;
+    const name = phase.name
+      ? boundGraphText(phase.name, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS)
+      : undefined;
     // `alongside`：进入这个阶段时还在跑的其他阶段（strand 未 join）。与边同一条引用完整性
     // 规则——指向未列出阶段的引用丢掉，自引用丢掉（自己不与自己并行），去重保序，上界同
     // 阶段表。它**不**经过 foldEdges / reduceOrdering：这是节点事实不是边，控制没有从那里
@@ -198,7 +200,9 @@ export function boundCausalityGraph(
 
   const boundLanes: CreateWorkflowLane[] = keptLanes.map((lane) => {
     // 空 name（如 agent("")）会违反契约的 min(1)，按“无名”处理而不是让整个输出解析失败。
-    const name = lane.name ? boundGraphText(lane.name, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS) : undefined;
+    const name = lane.name
+      ? boundGraphText(lane.name, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS)
+      : undefined;
     const namePattern = boundNamePattern(lane.namePattern);
     return {
       id: boundGraphText(lane.id, CREATE_WORKFLOW_GRAPH_MAX_ID_CHARS),
@@ -211,7 +215,9 @@ export function boundCausalityGraph(
   const boundSteps: CreateWorkflowStep[] = steps.map((step) => {
     const lanes = (step.lanes ?? []).filter((lane) => laneIds.has(lane));
     // ask 的 label 来自脚本字面量，可能为空；契约要求 min(1)，退回 step id。
-    const label = step.label ? boundGraphText(step.label, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS) : step.id;
+    const label = step.label
+      ? boundGraphText(step.label, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS)
+      : step.id;
     const labelPattern = boundNamePattern(step.labelPattern);
     return {
       id: boundGraphText(step.id, CREATE_WORKFLOW_GRAPH_MAX_ID_CHARS),
@@ -356,8 +362,12 @@ function boundNamePattern(
   pattern: { head?: string; tail?: string } | undefined,
 ): CreateWorkflowNamePattern | undefined {
   if (pattern === undefined) return undefined;
-  const head = pattern.head ? boundGraphText(pattern.head, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS) : "";
-  const tail = pattern.tail ? boundGraphText(pattern.tail, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS) : "";
+  const head = pattern.head
+    ? boundGraphText(pattern.head, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS)
+    : "";
+  const tail = pattern.tail
+    ? boundGraphText(pattern.tail, CREATE_WORKFLOW_GRAPH_MAX_NAME_CHARS)
+    : "";
   if (head === "" && tail === "") return undefined;
   return {
     ...(head === "" ? {} : { head }),

@@ -82,7 +82,8 @@ export const globHandler: ToolHandler = async (input, context) => {
 };
 
 export const globToolEntry: ToolEntry = {
-  capability: "Find files by glob pattern through the file-system adapter without reading file contents",
+  capability:
+    "Find files by glob pattern through the file-system adapter without reading file contents",
   metadata: {
     name: "Glob",
     description: GLOB_TOOL_DESCRIPTION,

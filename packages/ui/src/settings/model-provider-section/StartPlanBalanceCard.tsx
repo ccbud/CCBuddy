@@ -1,4 +1,4 @@
-import { Loader2Icon } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import type { UsageEntitlementSubscriptionDetail, UsageQuotaLimit } from "@ccbuddy/shared";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { formatStartPlanBucketResetTime } from "@/lib/codingPlanQuotaPresentation.js";
@@ -43,7 +43,7 @@ export function StartPlanBalanceCard({
             })}
           </h4>
           {isChecking ? (
-            <Loader2Icon className="size-3.5 shrink-0 animate-spin text-foreground-subtle" />
+            <LoaderCircle className="size-3.5 shrink-0 animate-spin text-foreground-subtle" />
           ) : null}
         </div>
         {expireTimeLabel ? (

@@ -11,6 +11,15 @@ import type { CliEnv } from "./env.js";
 
 export const SEA_CCBUDDY_BUILTIN_PROVIDER_CONFIG_ASSET_KEY = "ccbuddy-provider/ccbuddy-builtin.json";
 
+export function createCliProviderRefreshReporter(
+  _stderr: Pick<NodeJS.WriteStream, "write"> = process.stderr,
+) {
+  return {
+    onBuiltinRefreshError(_error: unknown) {},
+    onBuiltinRefreshResult(_event: unknown) {},
+  };
+}
+
 type SeaProviderConfigAssets = Pick<typeof import("node:sea"), "getAsset" | "isSea">;
 
 interface PrepareCliProviderRuntimeEnvOptions {
@@ -48,8 +57,8 @@ export async function prepareCliProviderRuntimeEnv(
     }));
   const personalFilePath =
     explicitPersonal ?? join(dataBaseDir, ".ccbuddy", "v2", PERSONAL_PROVIDER_CONFIG_FILE_NAME);
+
   return {
-    // 直接读取随包静态模板；不物化远端可刷新的 active cache。
     [CCBUDDY_BUILTIN_PROVIDER_CONFIG_FILE_ENV]: ccbuddyBuiltinFilePath,
     [CCBUDDY_PERSONAL_PROVIDER_CONFIG_FILE_ENV]: personalFilePath,
   };
@@ -76,7 +85,9 @@ function requiresProviderRuntime(argv: readonly string[]): boolean {
   return (
     command === "tui" ||
     command === "app-server" ||
-    command === "agent-server"
+    command === "agent-server" ||
+    command === "login" ||
+    command === "logout"
   );
 }
 
@@ -94,7 +105,7 @@ async function resolveBundledCCbuddyBuiltinProviderConfig(input: {
   }
 
   const entrypoint = input.entrypoint?.trim();
-  if (!entrypoint) throw new Error("无法定位 CCbuddy 内置模型服务模板：缺少入口路径");
+  if (!entrypoint) throw new Error("无法定位 CLI CCbuddy Built-in Provider Config：缺少入口路径");
   // 全局 bin 可以是软链接，随包配置必须相对真实入口定位。
   const entryDirectory = dirname(realpathSync(resolve(entrypoint)));
   const candidates = [
@@ -103,7 +114,7 @@ async function resolveBundledCCbuddyBuiltinProviderConfig(input: {
   ];
   const candidate = candidates.find((filePath) => existsSync(filePath));
   if (candidate) return candidate;
-  throw new Error(`无法定位 CCbuddy 内置模型服务模板：${candidates.join(", ")}`);
+  throw new Error(`无法定位 CLI CCbuddy Built-in Provider Config：${candidates.join(", ")}`);
 }
 
 function getSeaProviderConfigAssets(): SeaProviderConfigAssets | undefined {

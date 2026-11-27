@@ -1,4 +1,5 @@
 import {
+  BROWSER_TURN_SCREENSHOT_SOURCE,
   SessionEventType,
   createPartId,
   createToolCallId,
@@ -18,15 +19,12 @@ const BROWSER_TURN_SCREENSHOT_MAX_RAW_BYTES = Math.floor(
   (MAX_NODE_REPL_DISPLAY_IMAGE_BASE64_BYTES * 3) / 4,
 );
 
-function createBrowserTurnScreenshotDisplay(image: {
-  base64: string;
-  mimeType: string;
-}) {
+function createBrowserTurnScreenshotDisplay(image: { base64: string; mimeType: string }) {
   const display = createToolResultDisplay(BROWSER_TURN_SCREENSHOT_TOOL_NAME, {
     images: [image],
   });
   if (display?.kind !== "node_repl_images") return undefined;
-  return { ...display, source: "browser_turn_end" };
+  return { ...display, source: BROWSER_TURN_SCREENSHOT_SOURCE };
 }
 
 async function appendScreenshotEvent(
@@ -63,18 +61,13 @@ export async function appendBrowserTurnScreenshot(
       traceContext: state.turnTraceContext,
       signal: state.turnAbortSignal,
     });
-    const activeTab = listed.ok
-      ? listed.tabs?.find((tab) => tab.active === true)
-      : undefined;
+    const activeTab = listed.ok ? listed.tabs?.find((tab) => tab.active === true) : undefined;
     if (!activeTab) {
-      runtime.logger?.debug(
-        "Browser turn screenshot skipped because no active tab is available",
-        {
-          event: "browser.turn_screenshot.skipped_no_active_tab",
-          module: "core.runtime",
-          turnId: String(state.turnId),
-        },
-      );
+      runtime.logger?.debug("Browser turn screenshot skipped because no active tab is available", {
+        event: "browser.turn_screenshot.skipped_no_active_tab",
+        module: "core.runtime",
+        turnId: String(state.turnId),
+      });
       return;
     }
 
@@ -91,8 +84,7 @@ export async function appendBrowserTurnScreenshot(
     if (
       captured.ok &&
       displayImage &&
-      Buffer.byteLength(displayImage.base64, "utf8") >
-        MAX_NODE_REPL_DISPLAY_IMAGE_BASE64_BYTES &&
+      Buffer.byteLength(displayImage.base64, "utf8") > MAX_NODE_REPL_DISPLAY_IMAGE_BASE64_BYTES &&
       runtime.imageProcessorPort
     ) {
       // 复杂页面的原始 PNG 经常超过 Node REPL 的 200 KiB 展示预算；直接
@@ -115,26 +107,21 @@ export async function appendBrowserTurnScreenshot(
       };
     }
     const display =
-      captured.ok && displayImage
-        ? createBrowserTurnScreenshotDisplay(displayImage)
-        : undefined;
+      captured.ok && displayImage ? createBrowserTurnScreenshotDisplay(displayImage) : undefined;
     if (!display) {
-      runtime.logger?.warn(
-        "Browser turn screenshot capture returned no displayable image",
-        {
-          errorCode: captured.error?.code,
-          event: "browser.turn_screenshot.capture_failed",
-          module: "core.runtime",
-          turnId: String(state.turnId),
-        },
-      );
+      runtime.logger?.warn("Browser turn screenshot capture returned no displayable image", {
+        errorCode: captured.error?.code,
+        event: "browser.turn_screenshot.capture_failed",
+        module: "core.runtime",
+        turnId: String(state.turnId),
+      });
       return;
     }
 
     const toolCallId = createToolCallId();
     const partId = createPartId();
     const timestamp = Date.now();
-    const input = { source: "browser_turn_end" };
+    const input = { source: BROWSER_TURN_SCREENSHOT_SOURCE };
     await runtime.persistPart(
       {
         id: partId,
@@ -155,43 +142,28 @@ export async function appendBrowserTurnScreenshot(
       state.turnTraceContext,
     );
 
-    await appendScreenshotEvent(
-      runtime,
-      state,
-      SessionEventType.ToolCallScheduled,
-      {
-        toolCallId,
-        assistantMessageId,
-        toolName: BROWSER_TURN_SCREENSHOT_TOOL_NAME,
-        input,
-        dependencies: [],
-        canRunParallel: false,
-        schedule: {
-          parallelGroups: [[toolCallId]],
-          executionOrder: [toolCallId],
-        },
+    await appendScreenshotEvent(runtime, state, SessionEventType.ToolCallScheduled, {
+      toolCallId,
+      assistantMessageId,
+      toolName: BROWSER_TURN_SCREENSHOT_TOOL_NAME,
+      input,
+      dependencies: [],
+      canRunParallel: false,
+      schedule: {
+        parallelGroups: [[toolCallId]],
+        executionOrder: [toolCallId],
       },
-    );
-    await appendScreenshotEvent(
-      runtime,
-      state,
-      SessionEventType.ToolCallStarted,
-      {
-        toolCallId,
-        toolName: BROWSER_TURN_SCREENSHOT_TOOL_NAME,
-        startedAt: new Date(timestamp),
-      },
-    );
-    await appendScreenshotEvent(
-      runtime,
-      state,
-      SessionEventType.ToolCallResult,
-      {
-        toolCallId,
-        result: { success: true, content: "", display },
-        duration: 0,
-      },
-    );
+    });
+    await appendScreenshotEvent(runtime, state, SessionEventType.ToolCallStarted, {
+      toolCallId,
+      toolName: BROWSER_TURN_SCREENSHOT_TOOL_NAME,
+      startedAt: new Date(timestamp),
+    });
+    await appendScreenshotEvent(runtime, state, SessionEventType.ToolCallResult, {
+      toolCallId,
+      result: { success: true, content: "", display },
+      duration: 0,
+    });
     runtime.logger?.debug("Browser turn screenshot appended", {
       event: "browser.turn_screenshot.appended",
       module: "core.runtime",

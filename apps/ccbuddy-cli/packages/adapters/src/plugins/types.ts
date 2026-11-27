@@ -1,3 +1,4 @@
+import type { PluginMaterialReader } from "./helpers.js";
 import type {
   CustomCommandRoot,
   HookEventName,
@@ -14,9 +15,12 @@ export interface PluginCandidate {
   marketplace: string;
   rootPath: string;
   source: PluginSource;
+  /** 项目 `plugins.dirs` 候选：发现时按声明摘要与信任记录准入。 */
+  workspace?: boolean;
 }
 
 export interface LoadedPlugin {
+  materials?: PluginMaterialReader;
   id: string;
   manifest: PluginManifest;
   manifestPath: string;

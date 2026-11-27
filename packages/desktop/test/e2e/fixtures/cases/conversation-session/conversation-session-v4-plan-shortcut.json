@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-v4-plan-shortcut",
+  "spec": "./test/e2e/conversation-session/planning/conversation-session-v4-plan-shortcut.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-v4-plan-shortcut.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "v4-plan-shortcut-title",
+      "description": "E2E_V4_PLAN_SHORTCUT_SEED 首发的 case-local 标题生成响应。",
+      "kind": "common",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "为列表操作测试建立已有会话，固定 seed 标题响应。"
+    },
+    {
+      "id": "v4-plan-shortcut-seed",
+      "description": "Plan shortcut seed：建立可发送普通 follow-up 的已有 session。",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "为点击选择和窄屏原文发送提供稳定的已有会话。"
+    },
+    {
+      "id": "v4-plan-shortcut-task-one",
+      "description": "选择计划模式后，正文和附件走标准 Plan 发送。",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "验证选中不发送，另行发送时保留附件并携带标准 Plan 指令。"
+    },
+    {
+      "id": "v4-plan-shortcut-task-two",
+      "description": "关闭 Plan 后发送原始 /plan 文本，不发生隐式模式切换。",
+      "kind": "main",
+      "timingPolicy": "fast-text",
+      "source": "synthetic",
+      "syntheticReason": "验证发送层不再剥离 /plan，也不再启用 Plan。"
+    }
+  ]
+}

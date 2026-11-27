@@ -1,19 +1,30 @@
+import type { DraftPluginUiOpenRequest } from "@/plugin-ui/contract.js";
+import { usePaneLayoutStore } from "@/v4/paneLayoutStore.js";
+import { useWorkbenchGroupStore } from "@/v4/workbenchGroupStore.js";
 /* eslint-disable max-lines -- workspace shell 当前集中编排 sidebar、chat、terminal 和 browser pane 的布局联动，先保持单文件收口，避免为满足行数限制打散关键布局状态。*/
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
+  ReactNode,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { TID_APP_HEADER } from "@ccbuddy/shared";
+import type { PanelImperativeHandle } from "react-resizable-panels";
+import { GripHorizontal, LoaderCircle } from "lucide-react";
+import { TID_APP_HEADER } from "@ccbuddy/shared/test-ids";
 // 保活：workspace tab 真正关闭时，按 workspaceKey 回收 side pane terminal 的常驻 PTY/xterm。
 // 对称下侧 Terminal.tsx 的 openWorkspaceKeys 回收。
 import { sidePaneTerminalSessionRegistry } from "@/terminal/sidePaneTerminalSessionRegistry.js";
 import { V4WorkspaceChatArea } from "@/v4/V4WorkspaceChatArea.js";
+import { V4SplitPaneEntryProvider } from "@/v4/splitPaneEntryContext.js";
 import {
-  V4SplitPaneEntryProvider,
-  type V4SplitPaneSessionTarget,
-} from "@/v4/splitPaneEntryContext.js";
+  readFloatingAnchorPreference,
+  SidePaneFullViewConversationHost,
+  writeFloatingAnchorPreference,
+  type FloatingAnchor,
+  type SidePaneFullViewFloating,
+  type SidePaneFullViewHostMode,
+} from "@/side-pane-full-view/index.js";
 import {
   SavedWorkflowHubProvider,
   type SavedWorkflowHubTarget,
@@ -22,21 +33,32 @@ import {
   WorkflowRunOpenProvider,
   type WorkflowRunOpenTarget,
 } from "@/v4/workflowRunOpenContext.js";
-import type { ConversationDropTargetController } from "@/v4/composer/conversationDropTarget.js";
+import { useConversationDropTarget } from "@/v4/composer/conversationDropTarget.js";
 import type { WorkbenchSessionBinding } from "@/v4/workbenchGroupStore.js";
 import {
-  canPlaceWorkbenchSessionInSplit,
-  placeWorkbenchSessionInSplit,
   selectWorkbenchSession,
+  type WorkbenchSessionTarget,
 } from "@/v4/workbenchSessionPlacement.js";
-import { usePaneSessionPersistence } from "@/v4/usePaneSessionPersistence.js";
+import {
+  usePaneSessionPersistence,
+  useRemotePaneSessionLookup,
+} from "@/v4/usePaneSessionPersistence.js";
 import { requestV4ComposerDraftWorkspaceTransfer } from "@/v4/composer/composerDraftWorkspaceTransfer.js";
-import { ChatEmptyWorkspacePreviewMenu } from "@/ChatEmptyState.js";
+import { ProjectComposerMenu, ProjectDirectoryProvider } from "@/project-sidebar/index.js";
 import { DesktopTopOverlay } from "@/DesktopTopOverlay.js";
 import { DesktopWindowFrame } from "@/DesktopWindowFrame.js";
-import { WorkspacePluginPreview } from "@/WorkspacePluginPreview.js";
+import { WorkspacePluginPreview } from "@/workspace-plugin-preview/index.js";
 import { useIsOfficeMode } from "@/hooks/useInterfaceMode.js";
 import { GitBranchSwitcher } from "@/GitBranchSwitcher.js";
+import {
+  ManagedWorktreeCreationView,
+  WorktreeBranchPicker,
+  WorktreeToggle,
+  useManagedWorktreeCreations,
+  useManagedWorktreeSettlements,
+  useWorktreeSupport,
+} from "@/managed-worktrees/index.js";
+import type { ManagedWorktreeCreationSettlement } from "@ccbuddy/shared";
 import { ScopedErrorBoundary } from "@/ErrorBoundary.js";
 
 import { AUTOMATIONS_TOAST_ANCHOR_ID, AutomationsSection } from "@/settings/AutomationsSection.js";
@@ -49,8 +71,7 @@ import { AutomationsMainBreadcrumbFrame } from "@/settings/AutomationsMainBreadc
 import { PluginStorePage } from "@/settings/PluginStorePage.js";
 import { HistoryMainView } from "@/history/HistoryMainView.js";
 import { TaskFindDialog } from "@/quickpick/TaskFindDialog.js";
-
-import { WorkspaceHeader } from "@/WorkspaceHeader.js";
+import { resolveTopOverlayLeadingPaddingClass, WorkspaceHeader } from "@/WorkspaceHeader.js";
 import { WorkspaceSidebar, type SidebarFileTreeOpenRequest } from "@/WorkspaceSidebar.js";
 import { AnimatedSidePanePanel } from "@/app-shell/AnimatedSidePanePanel.js";
 import {
@@ -71,10 +92,14 @@ import {
 import { cn } from "@/components/lib/utils.js";
 import { ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable.js";
 import { toast } from "@/components/ui/toast.js";
-import { getGitDirtyFileCount } from "@/git-branch-switcher/display.js";
+import {
+  getGitDirtyFileCount,
+  resolveGitBranchTriggerLabel,
+} from "@/git-branch-switcher/display.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { getPathLeaf, toFileUrl } from "@/lib/path.js";
+import { buildFileLinkLineFocus } from "@/lib/codeViewer.js";
 import { shouldOpenAssistantHtmlInBrowser } from "@/lib/assistantPreviewCards.js";
 import { setWorkspaceSidebarResizeActive } from "@/lib/workspaceSidebarResizeState.js";
 import { buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
@@ -95,9 +120,14 @@ import {
   isWorkspaceFilePathInside,
 } from "@/workspace-file-tree/model.js";
 import type { WorkspaceShellLayoutProps } from "@/app-shell/types.js";
-import { useTabStoreApi } from "@/store/TabStoreProvider.js";
+import { isWorkspaceTab } from "@/store/tabStore.js";
+import { isSameWorkspaceTab } from "@/store/tabWorkspaceIdentity.js";
+import { useTabStore, useTabStoreApi } from "@/store/TabStoreProvider.js";
 import { useCCbuddySessionStore } from "@/store/ccbuddySessionStore.js";
-import type { ComposerMentionPrefill } from "@/store/ccbuddySessionStoreTypes.js";
+import type {
+  ComposerMentionPrefill,
+  CCbuddySessionStoreState,
+} from "@/store/ccbuddySessionStoreTypes.js";
 
 const WORKSPACE_SIDEBAR_DEFAULT_WIDTH_PX = 264;
 const WORKSPACE_SIDEBAR_MIN_WIDTH_PX = 264;
@@ -109,14 +139,11 @@ const WORKSPACE_SIDEBAR_RESIZE_KEYBOARD_STEP_PX = 16;
 const WORKSPACE_SIDEBAR_PANEL_WIDTH_CSS_VAR = "--workspace-sidebar-panel-width";
 const WORKSPACE_SIDEBAR_WIDTH_CSS_VAR = "--workspace-sidebar-width";
 const CONVERSATION_AUTO_COLLAPSE_SIDE_PANE_WIDTH_PX = 480;
-// WorkspaceShellLayout 是 memo 组件，默认 []/{} 会在缺省调用时每次创建新引用；
-// 入口缺省这些集合时复用常量，避免浅比较误判 props 变化。
-const EMPTY_RECONNECTING_REMOTE_WORKSPACE_LOGS_BY_WORKSPACE_KEY: NonNullable<
-  WorkspaceShellLayoutProps["reconnectingRemoteWorkspaceLogsByWorkspaceKey"]
+// 修复原因：WorkspaceShellLayout 是 memo 组件，默认 []/{} 会在缺省调用时每次创建新引用；
+// 远控/本地入口缺省这些集合时复用常量，避免浅比较误判 props 变化。
+const EMPTY_REMOTE_WORKSPACE_RECOVERY_BY_WORKSPACE_KEY: NonNullable<
+  WorkspaceShellLayoutProps["remoteWorkspaceRecoveryByWorkspaceKey"]
 > = {};
-const EMPTY_REMOTE_WORKSPACE_SESSIONS: NonNullable<
-  WorkspaceShellLayoutProps["remoteWorkspaceSessions"]
-> = [];
 const CONVERSATION_AUTO_COLLAPSE_SIDEBAR_WIDTH_PX = 360;
 const CONVERSATION_AUTO_COLLAPSE_RESIZE_IDLE_MS = 300;
 // 性能修复：ResizablePanelGroup 收到深相等的新 panelIds 数组，
@@ -130,6 +157,20 @@ type WorkspaceSidebarResizeSession = {
   startWidthPx: number;
   startX: number;
 };
+
+// Bug 原因：头部 JSX 的内联回调共享 Shell render 环境，旧头部会串起历次文件链接回调。
+// 在独立作用域创建操作，只保留原 store action 与工作区身份，不改变工作树选择语义。
+function createDraftWorktreeCallbacks(
+  setDraftWorktree: CCbuddySessionStoreState["setDraftWorktree"],
+  workspacePath: string,
+  workspaceIdentity: string | undefined,
+) {
+  return {
+    onSelect: (ref: string | null) => setDraftWorktree(workspacePath, { ref }, workspaceIdentity),
+    onCheckedChange: (checked: boolean) =>
+      setDraftWorktree(workspacePath, checked ? { ref: null } : null, workspaceIdentity),
+  };
+}
 
 function clampWorkspaceSidebarWidth(widthPx: number, containerWidthPx?: number) {
   const maxWidthPx =
@@ -190,7 +231,17 @@ function persistWorkspaceSidebarWidthPx(widthPx: number) {
   }
 }
 
-export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent({
+export const WorkspaceShellLayout = memo(function WorkspaceShellLayout(
+  props: WorkspaceShellLayoutProps,
+) {
+  return (
+    <ProjectDirectoryProvider isDesktop={props.isDesktop}>
+      <WorkspaceShellLayoutContent {...props} />
+    </ProjectDirectoryProvider>
+  );
+});
+
+const WorkspaceShellLayoutContent = memo(function WorkspaceShellLayoutComponent({
   services,
   workspaceReadOnlyReason,
   workspaceMainView,
@@ -204,7 +255,6 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   onOpenAutomationConsumed,
   handleOpenAutomations,
   handleOpenPluginStore,
-  handleManageInstalledPlugins,
   onConnectRemote,
   onSelectRemoteProject,
   onCancelRemoteProject,
@@ -213,18 +263,19 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   onLogin,
   user,
   reconnectingRemoteWorkspaceKeys,
+  remoteWorkspaceRecoveryByWorkspaceKey = EMPTY_REMOTE_WORKSPACE_RECOVERY_BY_WORKSPACE_KEY,
   remoteWorkspaceErrorByWorkspaceKey,
-  reconnectingRemoteWorkspaceLogsByWorkspaceKey = EMPTY_RECONNECTING_REMOTE_WORKSPACE_LOGS_BY_WORKSPACE_KEY,
+
   onCreateTask,
   onCreateConversationTask,
+  onCreateConversationTaskOnSource,
   onResolveConversationWorkspace,
   onOpenWorkspace,
   onOpenFolderFromWorkspaceMenu,
   onOpenRemoteWorkspace,
-  onCreateScratchWorkspace,
   allowOpenWorkspace = true,
+  initialSidebarFileTreeOpen,
   allowRemoteWorkspace = true,
-  remoteWorkspaceSessions = EMPTY_REMOTE_WORKSPACE_SESSIONS,
   workspaceAbsPath,
   workspaceRemoteSessionId,
   workspaceIdentity,
@@ -246,6 +297,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   goBackShortcutLabel,
   goForwardShortcutLabel,
   toggleSidePaneShortcutLabel,
+  toggleSidePaneFullViewShortcutLabel,
   canGoBack,
   canGoForward,
   canTaskNavBack,
@@ -253,16 +305,16 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   isTerminalOpen,
   isSidebarVisible,
   isSidePaneOpen,
+  sidePaneFullView,
   isBrowserOpen,
   supportsEmbeddedBrowser,
-  summaryPanelVariantOverride,
-  onSummaryPanelVariantOverrideChange,
   sidePaneState,
   recentClosedSidePaneTabs,
   projectName,
   workspaceTabs,
   activeTaskId,
   sidePaneOwnerId,
+  handleSidePaneDraftPromotion,
   activeTraceId,
   activeSessionId,
   activeTaskProvider,
@@ -278,7 +330,6 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   providerConfigFile,
   taskNativeSessionLogFile,
   taskSessionFile,
-  testMessages,
   conversationFindActiveIndex,
   conversationFindNavigationRequestId,
   conversationFindQuery,
@@ -307,9 +358,12 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   handleToggleBrowser,
   handleOpenBrowserTab,
   handleOpenBrowserPermissionSettings,
-  handleOpenTreemapping,
   handleOpenWhiteboard,
   handleOpenDeveloperTools,
+  handleOpenFileManager,
+  handleNavigateFileManager,
+  handleCodeViewerFocusRequestApplied,
+  handleOpenPluginMarket,
   handleOpenTerminalTab,
   handleToggleGit,
   handleOpenGitReview,
@@ -331,6 +385,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   handleCloseCodeViewer,
   handleCloseGit,
   handleActivateSidePaneTab,
+  handleOpenNewSidePaneTab,
   handleReorderSidePaneTab,
   handleCloseSidePaneTab,
   handleCloseOtherSidePaneTabs,
@@ -345,6 +400,28 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   const isOfficeMode = useIsOfficeMode();
   const baseServices = useBaseWorkspaceServices();
   const tabStoreApi = useTabStoreApi();
+  useLayoutEffect(
+    () =>
+      tabStoreApi.subscribe((next, previous) => {
+        if (
+          next.activeTabId === previous.activeTabId &&
+          next.activeWorkspacePath === previous.activeWorkspacePath &&
+          next.activeWorkspaceIdentity === previous.activeWorkspaceIdentity
+        )
+          return;
+        // 切工作区不会触发原工作区的 startDraft；在导航提交时取消请求，避免返回后误开新草稿。
+        if (!previous.activeWorkspacePath) return;
+        const store = useCCbuddySessionStore.getState();
+        const identity = previous.activeWorkspaceIdentity ?? undefined;
+        const request = store.getWorkspaceState(
+          previous.activeWorkspacePath,
+          identity,
+        ).pluginUiOpenRequest;
+        if (request)
+          store.clearPluginUiOpenRequest(previous.activeWorkspacePath, request.requestId, identity);
+      }),
+    [tabStoreApi],
+  );
   const isLinuxDesktop = Boolean(isDesktop && !isMacDesktop && !isWindowsDesktop);
 
   // Windows/Linux 原先遗漏外层留白，导致独立面板贴住窗口边缘；桌面统一使用 4px 间距。
@@ -360,31 +437,259 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   const workspaceResizeHandleInsetPx = resolveWorkspaceShellResizeHandleInsetPx(
     workspaceShellRadiusOptions,
   );
-  const collapsedSidebarWidthPx = hasDesktopPanelInset ? 4 : 0;
-
-  const [draftHeaderDropTargetController, setDraftHeaderDropTargetController] =
-    useState<ConversationDropTargetController | null>(null);
+  const collapsedSidebarWidthPx = hasDesktopPanelInset ? (isWindowsDesktop ? 6 : 4) : 0;
+  const [draftHeaderDropTargetController, registerDraftHeaderDropTarget] =
+    useConversationDropTarget();
+  const workspaceKey = workspaceIdentity?.trim() || workspaceAbsPath;
   const fileTreeOpenRequestIdRef = useRef(0);
   const [fileTreeOpenRequest, setFileTreeOpenRequest] = useState<SidebarFileTreeOpenRequest | null>(
-    null,
+    () =>
+      initialSidebarFileTreeOpen
+        ? {
+            id: 0,
+            target: {
+              workspacePath: workspaceAbsPath,
+              workspaceName: getPathLeaf(workspaceAbsPath),
+              workspaceIdentity,
+              workspaceRemoteSessionId,
+            },
+          }
+        : null,
   );
-  const [isSidebarFileTreeOpen, setIsSidebarFileTreeOpen] = useState(false);
-
-  const workspaceKey = workspaceIdentity?.trim() || workspaceAbsPath;
+  const handleOpenSidebarFiles = useCallback(
+    (target: SidebarFileTreeOpenRequest["target"]) => {
+      // 文件入口由右侧标签页承接，消费后清除请求，避免侧栏重新挂载时重复打开。
+      setFileTreeOpenRequest(null);
+      handleOpenFileManager(target);
+    },
+    [handleOpenFileManager],
+  );
   const screenshotSurfaceRequest = useBrowserScreenshotSurfaceRequest(sidePaneState?.tabs ?? []);
   const screenshotSurfaceTab = screenshotSurfaceRequest
     ? findScreenshotSurfaceTabForRender(sidePaneState?.tabs ?? [], screenshotSurfaceRequest)
     : undefined;
-  // v4 pane 绑定持久化（M3 门禁「输出中刷新恢复」）：renderer 刷新后恢复上次选中的
-  // session；CLI/host 进程未死，pane 重订阅即拿 snapshot+续流。
+  const restorePaneSession = useTabStore((state) =>
+    state.tabs.some(
+      (tab) =>
+        isWorkspaceTab(tab) &&
+        tab.restorePaneSession &&
+        (tab.workspaceIdentity?.trim() || tab.workspacePath) === workspaceKey,
+    ),
+  );
+  const lookupPaneSession = useRemotePaneSessionLookup(
+    workspaceAbsPath,
+    workspaceIdentity,
+    workspaceRemoteSessionId,
+  );
+  // 页签决定启动位置，pane 复用既有选择持久化；services ready 前不查询远端。
   usePaneSessionPersistence({
     workspaceKey,
     activeSessionId: activeTaskId,
     draftFocusVersion: workspaceShellCCbuddyState.draftFocusVersion,
     enabled: true,
+    restoreOnStartup: Boolean(isDesktop && restorePaneSession),
     selectSession: (sessionId) => handleSelectTask(workspaceAbsPath, sessionId, workspaceIdentity),
+    lookupSession: isDesktop ? lookupPaneSession : undefined,
+    onSessionMissing: () => handleStartDraftInWorkspace(workspaceAbsPath, workspaceIdentity),
   });
   const workspaceShellRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const shell = workspaceShellRef.current;
+    if (!shell) return;
+    const scope =
+      "[data-project-sidebar-panel], [data-workspace-conversation-frame], [data-workspace-side-frame]";
+    const timers = new Map<HTMLElement, number>();
+    let hovered: HTMLElement | null = null;
+    let dragging = false;
+    const animations = new Map<HTMLElement, Animation>();
+    const setVisible = (element: HTMLElement, visible: boolean) => {
+      if (element.hasAttribute("data-scrollbar-active") === visible) return;
+      const current = getComputedStyle(element).getPropertyValue("--ccbuddy-scrollbar-thumb");
+      animations.get(element)?.cancel();
+      element.toggleAttribute("data-scrollbar-active", visible);
+      const target = visible
+        ? getComputedStyle(element).getPropertyValue("--color-border")
+        : "transparent";
+      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        const animation = element.animate(
+          [{ "--ccbuddy-scrollbar-thumb": current }, { "--ccbuddy-scrollbar-thumb": target }],
+          { duration: 200, easing: "ease" },
+        );
+        animations.set(element, animation);
+        animation.onfinish = () => {
+          animations.delete(element);
+        };
+      }
+    };
+    const hideLater = (element: HTMLElement) => {
+      window.clearTimeout(timers.get(element));
+      timers.set(
+        element,
+        window.setTimeout(() => {
+          timers.delete(element);
+          if (element === hovered || dragging) return;
+          setVisible(element, false);
+        }, 1000),
+      );
+    };
+    const reveal = (element: HTMLElement) => {
+      setVisible(element, true);
+      hideLater(element);
+    };
+    const onScroll = (event: Event) => {
+      const element = event.target;
+      if (element instanceof HTMLElement && element.closest(scope)) {
+        element.setAttribute("data-scrollbar-container", "");
+        reveal(element);
+      }
+    };
+    let thumbHovered: HTMLElement | null = null;
+    const setThumbHovered = (element: HTMLElement | null) => {
+      if (thumbHovered === element) return;
+      thumbHovered?.removeAttribute("data-scrollbar-hover");
+      thumbHovered = element;
+      element?.setAttribute("data-scrollbar-hover", "");
+    };
+    let pointerFrame = 0;
+    let pendingPointer: MouseEvent | null = null;
+    const updatePointer = (event: MouseEvent) => {
+      let element = event.target instanceof HTMLElement ? event.target : null;
+      let next: HTMLElement | null = null;
+      if (!element || !element.closest(scope)) {
+        setThumbHovered(null);
+        if (hovered) hideLater(hovered);
+        hovered = null;
+        return;
+      }
+      while (element && shell.contains(element)) {
+        if (
+          element.scrollHeight <= element.clientHeight &&
+          element.scrollWidth <= element.clientWidth
+        ) {
+          element = element.parentElement;
+          continue;
+        }
+        const rect = element.getBoundingClientRect();
+        const vertical =
+          element.scrollHeight > element.clientHeight &&
+          element.offsetWidth > element.clientWidth &&
+          event.clientX >= rect.right - 10 &&
+          event.clientX <= rect.right;
+        const horizontal =
+          element.scrollWidth > element.clientWidth &&
+          element.offsetHeight > element.clientHeight &&
+          event.clientY >= rect.bottom - 10 &&
+          event.clientY <= rect.bottom;
+        if (vertical || horizontal) {
+          next = element;
+          break;
+        }
+        element = element.parentElement;
+      }
+      if (!next) {
+        // Query mounted nodes instead of retaining removed session/panel DOM in a Set.
+        for (const candidate of shell.querySelectorAll<HTMLElement>("[data-scrollbar-container]")) {
+          const rect = candidate.getBoundingClientRect();
+          if (
+            event.clientX >= rect.right - 14 &&
+            event.clientX <= rect.right &&
+            event.clientY >= rect.top &&
+            event.clientY <= rect.bottom &&
+            candidate.scrollHeight > candidate.clientHeight
+          ) {
+            next = candidate;
+            break;
+          }
+        }
+      }
+      const previous = hovered;
+      hovered = next;
+      if (previous && previous !== next) hideLater(previous);
+      let hitThumb = false;
+      if (next) {
+        reveal(next);
+        const rect = next.getBoundingClientRect();
+        const vertical = event.clientX >= rect.right - 14 && next.scrollHeight > next.clientHeight;
+        const track = vertical ? next.clientHeight : next.clientWidth;
+        const extent = vertical ? next.scrollHeight : next.scrollWidth;
+        const offset = vertical ? next.scrollTop : next.scrollLeft;
+        const length = Math.min(track, Math.max(32, (track * track) / extent));
+        const start = extent > track ? (offset / (extent - track)) * (track - length) : 0;
+        const position = vertical
+          ? event.clientY - rect.top - next.clientTop
+          : event.clientX - rect.left - next.clientLeft;
+        hitThumb = position >= start && position <= start + length;
+      }
+      setThumbHovered(hitThumb ? next : null);
+    };
+    const onPointerMove = (event: MouseEvent) => {
+      pendingPointer = event;
+      if (pointerFrame) return;
+      pointerFrame = requestAnimationFrame(() => {
+        pointerFrame = 0;
+        if (pendingPointer) updatePointer(pendingPointer);
+        pendingPointer = null;
+      });
+    };
+    const onPointerDown = () => {
+      dragging = thumbHovered !== null;
+      if (dragging) thumbHovered?.setAttribute("data-scrollbar-dragging", "");
+    };
+    const onPointerUp = () => {
+      dragging = false;
+      shell
+        .querySelectorAll("[data-scrollbar-dragging]")
+        .forEach((element) => element.removeAttribute("data-scrollbar-dragging"));
+      shell.querySelectorAll<HTMLElement>("[data-scrollbar-active]").forEach(hideLater);
+    };
+    const onPointerLeave = () => {
+      cancelAnimationFrame(pointerFrame);
+      pointerFrame = 0;
+      pendingPointer = null;
+      setThumbHovered(null);
+      const previous = hovered;
+      hovered = null;
+      if (previous) hideLater(previous);
+    };
+    const onBlur = () => {
+      setThumbHovered(null);
+      hovered = null;
+      onPointerUp();
+    };
+    // 捕获真实滚动，不切换 overflow/宽度；每个滚动容器独立计时，避免内容抖动。
+    shell.addEventListener("scroll", onScroll, true);
+    shell.addEventListener("mousemove", onPointerMove, true);
+    shell.addEventListener("mousedown", onPointerDown, true);
+    shell.addEventListener("pointerleave", onPointerLeave);
+    window.addEventListener("mouseup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      shell.removeEventListener("scroll", onScroll, true);
+      shell.removeEventListener("mousemove", onPointerMove, true);
+      shell.removeEventListener("mousedown", onPointerDown, true);
+      shell.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("mouseup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      window.removeEventListener("blur", onBlur);
+      setThumbHovered(null);
+      shell
+        .querySelectorAll("[data-scrollbar-dragging]")
+        .forEach((element) => element.removeAttribute("data-scrollbar-dragging"));
+      cancelAnimationFrame(pointerFrame);
+      timers.forEach(window.clearTimeout);
+      timers.clear();
+      shell
+        .querySelectorAll("[data-scrollbar-container]")
+        .forEach((element) => element.removeAttribute("data-scrollbar-container"));
+      animations.forEach((animation) => animation.cancel());
+      animations.clear();
+      shell
+        .querySelectorAll("[data-scrollbar-active]")
+        .forEach((element) => element.removeAttribute("data-scrollbar-active"));
+    };
+  }, []);
+
   const workspaceSidebarPanelElementRef = useRef<HTMLDivElement | null>(null);
   const conversationPanelElementRef = useRef<HTMLDivElement | null>(null);
   const conversationAutoCollapseStateRef = useRef({
@@ -414,13 +719,46 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       (entry) => Boolean(entry.workspaceKey) && !retained.has(entry.workspaceKey),
     );
   }, [openWorkspaceKeys]);
+  // 完整视图（docs/ui/side-pane-full-view.md）只读派生：不改侧栏、面板宽度等原有状态，退出后自然恢复。
+  const fullViewController = sidePaneFullView;
+  const activeFullView =
+    workspaceMainView === "chat" ? (fullViewController?.fullView ?? null) : null;
+  const isFullView = activeFullView !== null;
+  const fullViewMode: SidePaneFullViewHostMode = !activeFullView
+    ? "normal"
+    : activeFullView.surface === "conversation"
+      ? "conversation"
+      : "floating";
+  const isFloatingFullView = fullViewMode === "floating";
+  const isFullViewRef = useRef(isFullView);
+  isFullViewRef.current = isFullView;
+  const [fullViewSlotElement, setFullViewSlotElement] = useState<HTMLDivElement | null>(null);
+  const [floatingAnchor, setFloatingAnchor] = useState<FloatingAnchor>(
+    readFloatingAnchorPreference,
+  );
+  const handleFloatingAnchorChange = useCallback((anchor: FloatingAnchor) => {
+    setFloatingAnchor(anchor);
+    writeFloatingAnchorPreference(anchor);
+  }, []);
+  const handleFullViewFloatingChange = useCallback(
+    (floating: SidePaneFullViewFloating) => fullViewController?.setFloating(floating),
+    [fullViewController],
+  );
+  const handleOpenFullViewConversation = useCallback(
+    () => fullViewController?.setSurface("conversation"),
+    [fullViewController],
+  );
+  const fullViewConversationTitle =
+    activeTaskTitle?.trim() || intl.formatMessage({ id: "taskList.untitled" });
+  // 完整视图保留左侧任务列表与左上角按钮组，侧栏显隐只由用户开关决定。
   const isSidebarPanelVisible = isSidebarVisible;
   const {
     panelRef: terminalPanelRef,
     panelElementRef: terminalPanelElementRef,
     isVisible: isTerminalVisible,
   } = useAnimatedResizablePanel({
-    open: isTerminalOpen,
+    // 浮窗只承载对话本身；终端只在普通视图和完整视图的对话 tab 中显示，开合状态不变。
+    open: isTerminalOpen && !isFloatingFullView,
     expandedSize: "30%",
     rememberExpandedSize: true,
   });
@@ -436,13 +774,12 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
     expandedSize: SIDE_PANE_DEFAULT_EXPANDED_SIZE,
     rememberExpandedSize: true,
     resizeOnInitialVisibleMount: false,
+    animateWidth: true,
   });
   const workspaceSessionActionDisabled =
     Boolean(workspaceReadOnlyReason) || reloadSessionDisabled || reloadSessionPending;
-
-  // 修复原因：文件树打开时任务列表整屏滑出，侧栏里的 New Task 入口也随之不可见。
-  // 顶部浮层需要临时露出 New Task，关闭文件树后继续沿用侧栏收起态规则。
-  const showTopOverlayNewTaskButton = !isSidebarVisible || isSidebarFileTreeOpen;
+  const simplifyHeaderForNarrowRemote = false;
+  const showTopOverlayNewTaskButton = !isSidebarVisible;
   const workspaceSidebarResizeLabel = intl.formatMessage({
     id: "workspaceSidebar.resizeSidebar",
   });
@@ -502,6 +839,10 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         isSidePaneOpen: latestIsSidePaneOpen,
         workspaceKey: latestWorkspaceKey,
       } = conversationAutoCollapseStateRef.current;
+      // 完整视图中对话由宿主 fixed 定位，对话列宽度不代表可见对话区，不能据此收起面板或侧栏。
+      if (isFullViewRef.current) {
+        return;
+      }
 
       // 功能说明：自动收起只响应用户改变窗口尺寸后的 conversation 实际宽度。
       // 不监听 conversation 自身 ResizeObserver，避免用户手动打开面板时又被策略关回去。
@@ -750,25 +1091,15 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
     // 这里按 path 去重后再统计，避免入口里“未提交更改文件数”被重复计算。
     return getGitDirtyFileCount(gitState.datasets);
   }, [gitState.datasets.staged, gitState.datasets.unstaged]);
-  const workspaceRemoteTarget = useMemo(
+  // Bug 原因：此前本地 workspace 没有 identity 时只按路径取第一个 tab；同路径远程 tab 在前时，
+  // 本地任务的 Header 会显示远程设备与连接状态。与 TabStore 共用匹配规则，未传 identity 只命中本地 tab。
+  const currentWorkspaceTab = useMemo(
     () =>
-      workspaceTabs.find(
-        (tab) =>
-          tab.workspacePath === workspaceAbsPath &&
-          (!workspaceIdentity || tab.workspaceIdentity === workspaceIdentity),
-      )?.remoteTarget,
+      workspaceTabs.find((tab) => isSameWorkspaceTab(tab, workspaceAbsPath, { workspaceIdentity })),
     [workspaceAbsPath, workspaceIdentity, workspaceTabs],
   );
-  const workspaceLocalPathForRemoteMcpSync = useMemo(
-    () =>
-      workspaceTabs.find(
-        (tab) =>
-          tab.workspacePath === workspaceAbsPath &&
-          (!workspaceIdentity || tab.workspaceIdentity === workspaceIdentity),
-      )?.localWorkspacePath,
-    [workspaceAbsPath, workspaceIdentity, workspaceTabs],
-  );
-
+  const workspaceRemoteTarget = currentWorkspaceTab?.remoteTarget;
+  const workspaceLocalPathForRemoteMcpSync = currentWorkspaceTab?.localWorkspacePath;
   const workspaceShellSplitStyle = useMemo(
     () =>
       ({
@@ -787,13 +1118,6 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       workspaceSidebarPanelWidthPx,
     ],
   );
-  const activePreviewPath = useMemo(() => {
-    const activeSidePaneTab =
-      sidePaneState?.tabs.find((tab) => tab.id === sidePaneState.activeTabId) ?? null;
-    return activeSidePaneTab?.type === "code-viewer"
-      ? (activeSidePaneTab.source.path ?? null)
-      : null;
-  }, [sidePaneState]);
   const findFileLinkOwnerWorkspace = useCallback(
     (
       targetPath: string,
@@ -845,8 +1169,43 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       : workspaceMainView === "history-timeline"
         ? "timeline"
         : null;
+  const handleOpenDraftPluginUi = useCallback(
+    (request: DraftPluginUiOpenRequest) => {
+      if (!isDesktop || workspaceReadOnlyReason || workspaceRemoteSessionId) return;
+      const store = useCCbuddySessionStore.getState();
+      const draft = store.getWorkspaceState(workspaceAbsPath, workspaceIdentity);
+      useWorkbenchGroupStore.getState().deactivateActiveGroup();
+      usePaneLayoutStore.getState().resetToPrimaryPane();
+      // 返回已有根草稿，保留项目和输入；不能将当前正式会话当作插件目标。
+      if (draft.activeTaskId !== null)
+        store.startDraft(workspaceAbsPath, undefined, workspaceIdentity, {
+          projectId: draft.draftProjectId,
+          taskGroupId: draft.draftTaskGroupId,
+        });
+      store.requestPluginUiOpen(request);
+      showChatMainView();
+    },
+    [
+      isDesktop,
+      workspaceReadOnlyReason,
+      workspaceRemoteSessionId,
+      workspaceAbsPath,
+      workspaceIdentity,
+      showChatMainView,
+    ],
+  );
+  // nav.primary 插槽的 Shell 入口（docs/plugins/extension-host.md §16.4）：根草稿与回到对话都归 Shell。
+  // 用 useMemo 保持引用稳定，避免穿透侧栏的 memo。
+  const navPrimarySlot = useMemo(
+    () => ({
+      sessionId: activeTaskId,
+      onOpenDraftUi: handleOpenDraftPluginUi,
+      onShowChat: showChatMainView,
+    }),
+    [activeTaskId, handleOpenDraftPluginUi, showChatMainView],
+  );
   const primaryNavigationBack =
-    workspaceMainView === "plugin-store" ? handleManageInstalledPlugins : handleTaskNavBack;
+    workspaceMainView === "plugin-store" ? showChatMainView : handleTaskNavBack;
   const canPrimaryNavigationBack = workspaceMainView === "plugin-store" || canTaskNavBack;
   useEffect(() => {}, [onWorkspaceMainViewChange, workspaceMainView]);
   const handleCreateTaskInChat = useCallback(
@@ -878,6 +1237,11 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         : null,
     [activeTaskId, workspaceAbsPath, workspaceIdentity, workspaceRemoteSessionId],
   );
+  // 切入草稿曾改变侧栏选任务回调，让全部项目重渲染；点击时使用最近已提交的绑定，保留分屏导航语义。
+  const shellWorkbenchBindingRef = useRef(shellWorkbenchBinding);
+  useLayoutEffect(() => {
+    shellWorkbenchBindingRef.current = shellWorkbenchBinding;
+  }, [shellWorkbenchBinding]);
   const handleCreateAutomationInChat = useCallback(
     (prompt: string, targetWorkspace?: { workspacePath: string; workspaceIdentity?: string }) => {
       // 带 target 时跳过活动 workspace 只读检查，交由 handleCreateTaskInChat / root 动作在
@@ -926,12 +1290,16 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         }
         const resolvedRemoteSessionId =
           targetRemoteSessionId ??
-          workspaceTabs.find(
-            (tab) =>
-              (tab.workspaceIdentity?.trim() || tab.workspacePath) ===
-              (targetWorkspaceIdentity?.trim() || targetWorkspacePath),
-          )?.remoteSessionId;
-        const target: V4SplitPaneSessionTarget = {
+          // tab 分类变化不影响点击回调；目标连接从窗口 store 读取，保持最新远端身份。
+          tabStoreApi
+            .getState()
+            .tabs.filter(isWorkspaceTab)
+            .find(
+              (tab) =>
+                (tab.workspaceIdentity?.trim() || tab.workspacePath) ===
+                (targetWorkspaceIdentity?.trim() || targetWorkspacePath),
+            )?.remoteSessionId;
+        const target: WorkbenchSessionTarget = {
           workspacePath: targetWorkspacePath,
           ...(targetWorkspaceIdentity?.trim()
             ? { workspaceIdentity: targetWorkspaceIdentity }
@@ -939,7 +1307,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
           ...(resolvedRemoteSessionId ? { remoteSessionId: resolvedRemoteSessionId } : {}),
           sessionId: taskId,
         };
-        selectWorkbenchSession(shellWorkbenchBinding, target);
+        selectWorkbenchSession(shellWorkbenchBindingRef.current, target);
       }
       // 只有目标 workspace 已经激活或补开成功后才关闭 Automations，避免失败时看起来像跳转成功。
       showChatMainView();
@@ -949,7 +1317,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         handleSelectTask(targetWorkspacePath, taskId, targetWorkspaceIdentity);
       }
     },
-    [handleSelectTask, intl, shellWorkbenchBinding, showChatMainView, tabStoreApi, workspaceTabs],
+    [handleSelectTask, intl, showChatMainView, tabStoreApi],
   );
   // 中枢直接启动 accepted 后切到新会话（run 卡已在顶部）：复用运行历史那条导航，
   // target 恒带工作流所属项目坐标（不变式 7），remoteSessionId 决定连接 endpoint。
@@ -1085,7 +1453,9 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         remoteSessionId?: string;
       },
       sessionId: string,
+      origin?: "draft-promotion",
     ) => {
+      if (origin === "draft-promotion") handleSidePaneDraftPromotion(sessionId);
       handleSelectTaskInChat(
         scope.workspacePath,
         sessionId,
@@ -1093,31 +1463,9 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         scope.remoteSessionId,
       );
     },
-    [handleSelectTaskInChat],
+    [handleSelectTaskInChat, handleSidePaneDraftPromotion],
   );
 
-  const canOpenSessionInSplitPane = useCallback(
-    (target: V4SplitPaneSessionTarget) => {
-      return canPlaceWorkbenchSessionInSplit(shellWorkbenchBinding, target, {
-        mode: "context-menu",
-        side: "right",
-      });
-    },
-    [shellWorkbenchBinding],
-  );
-  const handleOpenSessionInSplitPane = useCallback(
-    (target: V4SplitPaneSessionTarget) => {
-      showChatMainView();
-      const shouldSelectTarget = placeWorkbenchSessionInSplit(shellWorkbenchBinding, target, {
-        mode: "context-menu",
-        side: "right",
-      });
-      if (shouldSelectTarget) {
-        handleSelectTask(target.workspacePath, target.sessionId, target.workspaceIdentity);
-      }
-    },
-    [handleSelectTask, shellWorkbenchBinding, showChatMainView],
-  );
   const handleStartDraftInWorkspaceInChat = useCallback(
     (
       targetWorkspacePath: string,
@@ -1140,33 +1488,37 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       handleStartDraftInWorkspaceInChat(path, identity, undefined, "project"),
     [handleStartDraftInWorkspaceInChat],
   );
-  const activeWorkspacePurpose =
-    workspaceTabs.find(
-      (tab) =>
-        tab.workspacePath === workspaceAbsPath &&
-        (!workspaceIdentity || tab.workspaceIdentity === workspaceIdentity),
-    )?.workspacePurpose ?? "project";
+  const activeWorkspacePurpose = currentWorkspaceTab?.workspacePurpose ?? "project";
   const handleSelectConversationWorkspace = useCallback(async () => {
     if (!onResolveConversationWorkspace) {
       return;
     }
-    let targetWorkspacePath: string;
+    let target: Awaited<ReturnType<typeof onResolveConversationWorkspace>>;
     try {
-      targetWorkspacePath = await onResolveConversationWorkspace();
+      target = await onResolveConversationWorkspace();
     } catch (error) {
       logger.error("[WorkspaceShellLayout] 切换对话 workspace 失败", {
         error,
       });
       return;
     }
-    if ((workspaceIdentity?.trim() || workspaceAbsPath) !== targetWorkspacePath) {
+    // Bug 原因：这里曾用 targetWorkspacePath 在 workspaceTabs 里反查 conversation tab 的 identity。
+    // 多设备的 conversation backing path 同为各自 home 下的固定目录，home 相同时会命中别的设备。
+    // 现在 identity 由 Root 按 Source 归属解析后一并回传，Shell 直接消费，不再按路径判等。
+    const targetWorkspaceKey = target.workspaceIdentity?.trim() || target.workspacePath;
+    if ((workspaceIdentity?.trim() || workspaceAbsPath) !== targetWorkspaceKey) {
       requestV4ComposerDraftWorkspaceTransfer({
         sourceWorkspacePath: workspaceAbsPath,
         sourceWorkspaceIdentity: workspaceIdentity,
-        targetWorkspacePath,
+        targetWorkspacePath: target.workspacePath,
+        targetWorkspaceIdentity: target.workspaceIdentity,
       });
     }
-    handleStartDraftInWorkspaceInChat(targetWorkspacePath, undefined, "conversation");
+    handleStartDraftInWorkspaceInChat(
+      target.workspacePath,
+      target.workspaceIdentity,
+      "conversation",
+    );
   }, [
     handleStartDraftInWorkspaceInChat,
     onResolveConversationWorkspace,
@@ -1190,59 +1542,157 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   // v4 pane 生命周期回调（稳定引用，供 memo 友好的 pane 宿主消费）：
   // createSession/fork 后接入既有选择路径；删除会话后回 draft。
   const handleV4SessionCreated = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, origin?: "draft-promotion") => {
+      if (origin === "draft-promotion") handleSidePaneDraftPromotion(sessionId);
       handleSelectTask(workspaceAbsPath, sessionId, workspaceIdentity);
     },
-    [handleSelectTask, workspaceAbsPath, workspaceIdentity],
+    [handleSelectTask, handleSidePaneDraftPromotion, workspaceAbsPath, workspaceIdentity],
   );
-  // 草稿态 composer contextHeader（m5-composer-parity §5.2）：workspace 切换菜单 +
-  // Git 分支切换器，与旧 ChatView 空态 contextHeaderContent 同构。壳级能力
-  // （workspaceTabs / 远程连接回调）在此闭合，pane 只收 ReactNode。
-  // onSelectWorkspace 语义与旧版一致：切到目标 workspace 的新草稿。
+  // 草稿头部保留项目菜单与 Git 分支；项目目录由共享 Provider 提供。
+  // Shell 只连接既有导航回调，pane 不持有另一份项目列表或 cwd 归属推断。
+  const draftProjectId = useCCbuddySessionStore(
+    (state) => state.getWorkspaceState(workspaceAbsPath, workspaceIdentity).draftProjectId ?? null,
+  );
+  // worktree 复选框只对本地桌面的 Git 项目草稿开放（docs/git/worktree.md §3.1）。
+  const worktreeEligible =
+    activeWorkspacePurpose === "project" &&
+    !isOfficeMode &&
+    !workspaceIdentity &&
+    !workspaceRemoteSessionId &&
+    gitState.summary.isRepository &&
+    Boolean(draftProjectId);
+  const worktreeSupport = useWorktreeSupport(workspaceAbsPath, workspaceIdentity, worktreeEligible);
+  const draftWorktree = useCCbuddySessionStore(
+    (state) => state.getWorkspaceState(workspaceAbsPath, workspaceIdentity).draftWorktree ?? null,
+  );
+  const setDraftWorktree = useCCbuddySessionStore((state) => state.setDraftWorktree);
+  const draftWorktreeCallbacks = useMemo(
+    () => createDraftWorktreeCallbacks(setDraftWorktree, workspaceAbsPath, workspaceIdentity),
+    [setDraftWorktree, workspaceAbsPath, workspaceIdentity],
+  );
+  const viewWorktreeCreation = useCCbuddySessionStore((state) => state.viewWorktreeCreation);
+  const viewedCreationId = useCCbuddySessionStore(
+    (state) =>
+      state.getWorkspaceState(workspaceAbsPath, workspaceIdentity).draftWorktreeCreationId ?? null,
+  );
+  const worktreeCreations = useManagedWorktreeCreations();
+  // 结束事件先于记录列表推送到达（§3.3），此时列表里仍有这条记录；用 ref 在回调中读取最新列表。
+  const worktreeCreationsRef = useRef(worktreeCreations);
+  worktreeCreationsRef.current = worktreeCreations;
+  const beginWorktreeHandoff = useCCbuddySessionStore((state) => state.beginWorktreeHandoff);
+  const worktreeHandoff = useCCbuddySessionStore(
+    (state) => state.getWorkspaceState(workspaceAbsPath, workspaceIdentity).worktreeHandoff ?? null,
+  );
+  const viewedCreation =
+    activeTaskId === null && viewedCreationId
+      ? (worktreeCreations.find((creation) => creation.id === viewedCreationId) ?? null)
+      : null;
+  // 会话首个快照到达前，创建视图盖在已挂载的会话上（§3.3）。
+  const handoffCreation =
+    worktreeHandoff && worktreeHandoff.sessionId === activeTaskId ? worktreeHandoff.creation : null;
+  // 创建结束：会话已启动则打开它；放弃则把首条消息放回新草稿（§3.5）。只处理当前展示的记录。
+  const handleWorktreeSettlement = useCallback(
+    (settlement: ManagedWorktreeCreationSettlement) => {
+      const state = useCCbuddySessionStore
+        .getState()
+        .getWorkspaceState(settlement.workspacePath, workspaceIdentity);
+      if (state.draftWorktreeCreationId !== settlement.creationId) return;
+      const creation = worktreeCreationsRef.current.find(
+        (entry) => entry.id === settlement.creationId,
+      );
+      // Bug 原因：曾在结束事件时直接卸载创建视图并打开会话，会话首个快照要几百毫秒后才到，
+      // 中间主区一片空白。现在保留最后一份记录，盖在会话上，直到时间线出现内容（§3.3）。
+      if (settlement.outcome === "session-started" && creation)
+        beginWorktreeHandoff(
+          settlement.workspacePath,
+          { sessionId: settlement.sessionId, creation },
+          workspaceIdentity,
+        );
+      viewWorktreeCreation(settlement.workspacePath, null, workspaceIdentity);
+      if (settlement.outcome === "session-started") {
+        handleSelectTaskInChat(settlement.workspacePath, settlement.sessionId);
+        return;
+      }
+      handleCreateTaskInChat({
+        ...(state.draftProjectId !== undefined ? { projectId: state.draftProjectId } : {}),
+        ...(settlement.promptText ? { initialPrompt: settlement.promptText } : {}),
+      });
+    },
+    [
+      beginWorktreeHandoff,
+      handleCreateTaskInChat,
+      handleSelectTaskInChat,
+      viewWorktreeCreation,
+      workspaceIdentity,
+    ],
+  );
+  useManagedWorktreeSettlements(handleWorktreeSettlement);
   const draftComposerHeader = useMemo(
     () => (
       <>
-        <ChatEmptyWorkspacePreviewMenu
+        <ProjectComposerMenu
+          showEditProject
           workspacePath={workspaceAbsPath}
           workspaceIdentity={workspaceIdentity}
-          isWindowsDesktop={isWindowsDesktop}
-          workspaceTabs={workspaceTabs}
-          onSelectWorkspace={(workspaceTab) =>
-            handleStartDraftInWorkspaceInChat(
-              workspaceTab.workspacePath,
-              workspaceTab.workspaceIdentity,
-              workspaceTab.workspacePurpose,
-            )
-          }
+          onCreateTask={handleCreateTaskInChat}
           onSelectConversationWorkspace={handleSelectConversationWorkspace}
-          onOpenFolder={onOpenFolderFromWorkspaceMenu}
-          allowOpenWorkspace={allowOpenWorkspace}
           allowRemoteWorkspace={allowRemoteWorkspace}
-          remoteWorkspaceSessions={remoteWorkspaceSessions}
+          onOpenRemoteWorkspace={onOpenRemoteWorkspace}
           onConnectRemote={onConnectRemote}
-          onSelectRemoteProject={onSelectRemoteProject}
-          onCancelRemoteProject={onCancelRemoteProject}
-        />
-        {isOfficeMode ? (
-          <WorkspacePluginPreview
-            onOpen={handleOpenPluginStore}
-            onSelectPlugin={handleSelectComposerPlugin}
-            workspacePath={workspaceAbsPath}
-            workspaceIdentity={workspaceIdentity}
-            remoteSessionId={workspaceRemoteSessionId ?? undefined}
-          />
-        ) : !isOfficeMode && activeWorkspacePurpose === "project" ? (
-          <GitBranchSwitcher
-            workspacePath={workspaceAbsPath}
-            gitSummary={gitState.summary}
-            dirtyFileCount={gitDirtyFileCount}
-            onRefreshGit={handleRefreshGit}
-            className="px-0 pt-0"
-            popoverClassName="w-72"
-            branchListClassName="max-h-48"
-            // Bugfix（旧注释保真）：输入框区域在底部，Radix 碰撞避让会把分支菜单翻到下方。
-            // 这里锁定上方弹出，避免菜单遮挡输入区并保持操作方向稳定。
-            avoidPopoverCollisions={false}
+          onCancelRemote={onCancelRemoteProject}
+        >
+          {isOfficeMode ? (
+            <WorkspacePluginPreview
+              onOpen={handleOpenPluginStore}
+              onSelectPlugin={handleSelectComposerPlugin}
+              workspacePath={workspaceAbsPath}
+              workspaceIdentity={workspaceIdentity}
+              remoteSessionId={workspaceRemoteSessionId ?? undefined}
+            />
+          ) : !isOfficeMode &&
+            activeWorkspacePurpose === "project" &&
+            draftWorktree &&
+            draftProjectId ? (
+            // worktree 模式：分支只决定新 worktree 的起点，不切换主目录（§3.2）。
+            <WorktreeBranchPicker
+              projectId={draftProjectId}
+              selectedRef={draftWorktree.ref}
+              // Bug 原因：这里曾用 branchName ?? "HEAD"，GitBranchSwitcher 用 resolveGitBranchTriggerLabel；
+              // 游离 HEAD 时一个显示"HEAD"、一个显示"游离 HEAD"，勾选 worktree 时胶囊文字和宽度跳变（WT-34）。
+              currentBranchLabel={resolveGitBranchTriggerLabel({
+                headRefType: gitState.summary.headRefType,
+                currentBranchName: gitState.summary.branchName ?? null,
+                detachedLabel: intl.formatMessage({ id: "git.head.detached" }),
+                fallbackLabel: intl.formatMessage({ id: "git.branchSwitcher.label" }),
+              })}
+              onSelect={draftWorktreeCallbacks.onSelect}
+              // Bug 原因：两个分支胶囊的外层间距不同（px-1 pt-2 与 px-0 pt-0），勾选 worktree 时
+              // composer 头部变高 4px、复选框右移 8px，看起来抖动。两者使用同一外层间距。
+              className="px-0 pt-0"
+            />
+          ) : !isOfficeMode && activeWorkspacePurpose === "project" ? (
+            <GitBranchSwitcher
+              workspacePath={workspaceAbsPath}
+              gitSummary={gitState.summary}
+              dirtyFileCount={gitDirtyFileCount}
+              onRefreshGit={handleRefreshGit}
+              className="px-0 pt-0"
+              popoverClassName="w-72"
+              branchListClassName="max-h-48"
+              // Bugfix（旧注释保真）：输入框区域在底部，Radix 碰撞避让会把分支菜单翻到下方。
+              // 这里锁定上方弹出，避免菜单遮挡输入区并保持操作方向稳定。
+              avoidPopoverCollisions={false}
+            />
+          ) : null}
+        </ProjectComposerMenu>
+        {/* worktree 复选框固定贴在头部最右端（docs/git/worktree.md §3.2）：渲染在项目菜单之后，
+            ml-auto 吃掉中间剩余空间。高度跟随其他胶囊的 h-7，避免三个 hover 容器高度不一致。 */}
+        {worktreeEligible && worktreeSupport.visible ? (
+          <WorktreeToggle
+            className="ml-auto"
+            checked={Boolean(draftWorktree)}
+            disabled={!worktreeSupport.available}
+            onCheckedChange={draftWorktreeCallbacks.onCheckedChange}
           />
         ) : null}
       </>
@@ -1252,23 +1702,24 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       workspaceRemoteSessionId,
       handleOpenPluginStore,
       handleSelectComposerPlugin,
-      allowOpenWorkspace,
       allowRemoteWorkspace,
       activeWorkspacePurpose,
       gitDirtyFileCount,
       gitState.summary,
       handleRefreshGit,
       handleSelectConversationWorkspace,
-      handleStartDraftInWorkspaceInChat,
-      isWindowsDesktop,
-      onCancelRemoteProject,
+      handleCreateTaskInChat,
+      onOpenRemoteWorkspace,
       onConnectRemote,
-      onOpenFolderFromWorkspaceMenu,
-      onSelectRemoteProject,
-      remoteWorkspaceSessions,
+      onCancelRemoteProject,
       workspaceAbsPath,
       workspaceIdentity,
-      workspaceTabs,
+      worktreeEligible,
+      worktreeSupport.available,
+      worktreeSupport.visible,
+      draftWorktree,
+      draftProjectId,
+      draftWorktreeCallbacks,
     ],
   );
   const handleV4SessionDeleted = useCallback(() => {
@@ -1318,6 +1769,9 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
             type: "file",
             title: getPathLeaf(target.path),
             path: target.path,
+            // Bugfix：这里曾只传 path，链接里的行号被丢弃，预览总停在第 1 行。
+            // 每次点击带上新的 focusRequestId，复用已打开的同文件 tab 时也能重新定位。
+            ...buildFileLinkLineFocus(target.lineRanges),
             workspacePath: target.workspacePath,
             workspaceIdentity: target.workspaceIdentity,
             workspaceRemoteSessionId: target.workspaceRemoteSessionId,
@@ -1378,6 +1832,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
             type: "file",
             title: getPathLeaf(target.path),
             path: target.path,
+            ...buildFileLinkLineFocus(target.lineRanges),
             workspacePath: target.workspacePath,
             workspaceIdentity: target.workspaceIdentity,
             workspaceRemoteSessionId: target.workspaceRemoteSessionId,
@@ -1447,7 +1902,12 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       });
     }
   }, [activeTaskId, workspaceKey]);
-  const sidePanePanel = (
+  const hasUpdateStatusButton =
+    updateReadyVersion !== null ||
+    updateState?.kind === "update-available" ||
+    updateState?.kind === "download-progress" ||
+    updateState?.kind === "update-downloaded";
+  const renderSidePanePanel = (options: { mobileOverlay?: boolean } = {}) => (
     <AnimatedSidePanePanel
       services={services}
       isDesktop={isDesktop}
@@ -1461,15 +1921,49 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
         supportsNativeRoundedCorners:
           desktopWindowChromeState?.supportsNativeRoundedCorners ?? null,
       })}
-      showWindowControls={usesInlineWindowControls}
-      isVisible={isSidePaneVisible}
+      showWindowControls={!options.mobileOverlay && usesInlineWindowControls}
+      // 工作区保活与侧栏动画会保留 DOM；独立 guest 浮层必须同步服从当前页面的展示状态。
+      isVisible={
+        isWorkspaceVisible &&
+        workspaceMainView === "chat" &&
+        isSidePaneOpen &&
+        (options.mobileOverlay || isSidePaneVisible)
+      }
       onCloseSidePane={handleToggleSidePane}
       toggleSidePaneShortcutLabel={toggleSidePaneShortcutLabel}
+      fullViewToggle={
+        !options.mobileOverlay && fullViewController
+          ? {
+              active: isFullView,
+              onToggle: fullViewController.toggle,
+              shortcutLabel: toggleSidePaneFullViewShortcutLabel,
+            }
+          : undefined
+      }
+      fullView={
+        !options.mobileOverlay && activeFullView && fullViewController
+          ? {
+              surface: activeFullView.surface,
+              conversationTitle: fullViewConversationTitle,
+              leadingInsetClassName: resolveTopOverlayLeadingPaddingClass({
+                isSidebarVisible,
+                isMacDesktop,
+                isMacFullscreen,
+                hasUpdateReady: hasUpdateStatusButton,
+              }),
+              onSelectSurface: fullViewController.setSurface,
+            }
+          : null
+      }
+      fullViewSlotRef={options.mobileOverlay ? undefined : setFullViewSlotElement}
       sidePaneState={sidePaneState}
       recentClosedSidePaneTabs={recentClosedSidePaneTabs}
       isBrowserOpen={isBrowserOpen}
       supportsEmbeddedBrowser={supportsEmbeddedBrowser}
       workspaceAbsPath={workspaceAbsPath}
+      taskCwd={
+        resolvedActiveTaskMeta?.taskId === activeTaskId ? resolvedActiveTaskMeta?.cwd : undefined
+      }
       workspaceIdentity={workspaceIdentity}
       workspaceRemoteSessionId={workspaceRemoteSessionId}
       activeTaskId={activeTaskId}
@@ -1489,6 +1983,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       onCloseCodeViewer={handleCloseCodeViewer}
       onCloseGit={handleCloseGit}
       onActivateTab={handleActivateSidePaneTab}
+      onOpenNewTab={handleOpenNewSidePaneTab}
       onReorderTab={handleReorderSidePaneTab}
       onCloseTab={handleCloseSidePaneTab}
       onCloseOtherTabs={handleCloseOtherSidePaneTabs}
@@ -1498,6 +1993,12 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       onOpenBrowserPermissionSettings={handleOpenBrowserPermissionSettings}
       onOpenWhiteboard={handleOpenWhiteboard}
       onOpenDeveloperTools={handleOpenDeveloperTools}
+      onOpenFileManager={handleOpenFileManager}
+      onNavigateFileManager={handleNavigateFileManager}
+      onCodeViewerFocusRequestApplied={handleCodeViewerFocusRequestApplied}
+      onOpenPluginMarket={handleOpenPluginMarket}
+      onCreateTask={handleCreateTaskInChat}
+      isMacDesktop={isMacDesktop}
       onOpenTerminalTab={handleOpenTerminalTab}
       onOpenReviewTab={handleToggleGit}
       onOpenSelectionSideConversation={handleOpenSelectionSideConversationLauncher}
@@ -1518,11 +2019,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       onSelectGitSource={setGitSelectedSourceId}
     />
   );
-  const hasUpdateStatusButton =
-    updateReadyVersion !== null ||
-    updateState?.kind === "update-available" ||
-    updateState?.kind === "download-progress" ||
-    updateState?.kind === "update-downloaded";
+  const sidePanePanel = renderSidePanePanel();
   // 修复原因：Draft 之前维护一套独立轻量 header，导致 side pane、caption 安全区和拖拽入口
   // 与 Task Header 分叉。桌面端统一复用 WorkspaceHeader，只由 variant 裁剪 task 专属内容；
   const shouldRenderMainViewHeader = workspaceMainView === "chat";
@@ -1540,155 +2037,186 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
     [workspaceKey, isSidebarVisible],
   );
 
-  return (
+  // 手机 home 与桌面 sidebar 共用同一个项目入口；Shell 只接收导航完成事件。
+  // 侧栏不消费代码预览；该回调随 session 变化，传入会让无关列表穿透 memo。
+  const renderWorkspaceSidebar = () => (
+    <WorkspaceSidebar
+      workspacePath={workspaceAbsPath}
+      workspaceIdentity={workspaceIdentity}
+      onOpenHistoryView={platform.historyReview ? showHistoryMainView : undefined}
+      historyViewActive={historyViewActive}
+      workspaceRemoteSessionId={workspaceRemoteSessionId}
+      onOpenFileManager={handleOpenSidebarFiles}
+      onSelectTask={handleSelectTaskInChat}
+      onStartDraftInWorkspace={handleStartDraftInWorkspaceInChat}
+      onOpenBrowserUrl={handleOpenBrowserUrl}
+      fileTreeOpenRequest={fileTreeOpenRequest}
+      onCreateTask={handleCreateTaskInChat}
+      onCreateConversationTask={onCreateConversationTask ?? handleCreateTaskInChat}
+      onCreateConversationTaskOnSource={onCreateConversationTaskOnSource}
+      onOpenFolderFromWorkspaceMenu={onOpenFolderFromWorkspaceMenu}
+      onOpenRemoteWorkspace={onOpenRemoteWorkspace}
+      theme={theme}
+      onConnectRemote={onConnectRemote}
+      onSelectRemoteProject={onSelectRemoteProject}
+      onCancelRemoteProject={onCancelRemoteProject}
+      onReconnectRemoteWorkspace={onReconnectRemoteWorkspace}
+      reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
+      remoteWorkspaceRecoveryByWorkspaceKey={remoteWorkspaceRecoveryByWorkspaceKey}
+      remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}
+      onLogout={onLogout}
+      onLogin={onLogin}
+      user={user}
+      isDesktop={isDesktop}
+      isMacDesktop={isMacDesktop}
+      isWindowsDesktop={isWindowsDesktop}
+      isSidebarVisible={isSidebarVisible}
+      onToggleSidebar={handleToggleSidebar}
+      toggleSidebarShortcutLabel={toggleSidebarShortcutLabel}
+      canGoBack={canPrimaryNavigationBack}
+      canGoForward={canTaskNavForward}
+      onGoBack={primaryNavigationBack}
+      onGoForward={handleTaskNavForward}
+      goBackShortcutLabel={goBackShortcutLabel}
+      goForwardShortcutLabel={goForwardShortcutLabel}
+      onOpenCommandCenter={handleOpenCommandCenter}
+      onOpenAutomations={handleOpenAutomations}
+      automationsActive={workspaceMainView === "automations"}
+      onOpenPluginStore={handleOpenPluginStore}
+      pluginStoreActive={workspaceMainView === "plugin-store"}
+      navPrimarySlot={navPrimarySlot}
+    />
+  );
+
+  // 断点切换曾卸载查看 Reporter，伪造离开后返回并清掉手动未读。
+  // 同一 Shell 持有查看与手机导航，只替换布局内容；真实 Home/后台仍立即撤销查看。
+
+  const wideContent = (
     // 完成卡上那两个壳级落点（docs/dynamic-workflow/transcript-and-notifications.md「Saving the
     // run, and running it again」）：芯片开到中枢那一页、「再次运行」启动后切到新会话。只包桌面
     <SavedWorkflowHubProvider
       openWorkflow={handleOpenSavedWorkflowInHub}
       navigateToRun={handleNavigateToLaunchedRun}
     >
-      <DesktopWindowFrame
-        title={`CCbuddy / ${getPathLeaf(workspaceAbsPath)}`}
-        showHeader
-        isDesktop={isDesktop}
-        isMacDesktop={isMacDesktop}
-        isWindowsDesktop={isWindowsDesktop}
-        headerTestId={TID_APP_HEADER}
+      <div
+        ref={workspaceShellRef}
+        data-workspace-shell="true"
+        style={workspaceShellSplitStyle}
+        className={cn(
+          "relative flex h-full min-h-0 w-full overflow-hidden [anchor-scope:--sidebar-task-list-divider]",
+          // 修复原因：窗口原生 resize 时，外层 react-resizable-panels 会把每一帧
+          // 都写进 layout store，连带侧栏 tooltip/menu 子树反复 commit。这里改成
+          // CSS 变量驱动的专用 split，普通窗口 resize 只走浏览器布局，不触发 React 状态。
+        )}
       >
         <div
-          ref={workspaceShellRef}
-          data-workspace-shell="true"
-          style={workspaceShellSplitStyle}
-          className={cn("relative flex h-full min-h-0 w-full overflow-hidden")}
+          ref={workspaceSidebarPanelElementRef}
+          data-panel=""
+          data-workspace-sidebar-panel="true"
+          id="sidebar"
+          className={cn(
+            "w-[var(--workspace-sidebar-panel-width)] max-w-[50%] flex-none overflow-hidden duration-200 ease-out transition-[width,opacity] data-[workspace-sidebar-resizing=true]:transition-opacity motion-reduce:transition-none",
+            // Bugfix：性能优化曾删掉展开/收起的宽度过渡，导致侧栏瞬切。
+            // 恢复原动画；拖动仍直接跟手，不把指针位移变成延迟的尺寸过渡。
+            isSidebarPanelVisible ? "opacity-100" : "pointer-events-none opacity-0",
+          )}
         >
-          <div
-            ref={workspaceSidebarPanelElementRef}
-            data-panel=""
-            data-workspace-sidebar-panel="true"
-            id="sidebar"
-            className={cn(
-              "w-[var(--workspace-sidebar-panel-width)] max-w-[50%] flex-none overflow-hidden duration-200 ease-out transition-[width,opacity] data-[workspace-sidebar-resizing=true]:transition-opacity",
-              // 修复原因：拖动侧栏宽度时如果继续过渡 width，会让指针移动和实际宽度之间产生滞后。
-              // 拖拽 active 通过 DOM 标记切 transition，避免 pointerdown/up 为了切 class 重渲染整棵 workspace。
-              isSidebarPanelVisible ? "opacity-100" : "pointer-events-none opacity-0",
-            )}
+          {/* Bugfix: 折叠远控顶部导航时保持组件挂载，避免展开后整块 sidebar 重新加载。 */}
+          <aside
+            id={undefined}
+            ref={sidebarContainerRef}
+            className={cn("h-full overflow-hidden select-none")}
+            aria-hidden={!isSidebarPanelVisible}
           >
-            <aside
-              ref={sidebarContainerRef}
-              className={cn("h-full overflow-hidden select-none")}
-              aria-hidden={!isSidebarPanelVisible}
+            <ScopedErrorBoundary
+              scope="workspace-sidebar"
+              resetKeys={workspaceOnlyResetKeys}
+              variant="panel"
+              className="h-full"
             >
-              <ScopedErrorBoundary
-                scope="workspace-sidebar"
-                resetKeys={workspaceOnlyResetKeys}
-                variant="panel"
-                className="h-full"
-              >
-                <V4SplitPaneEntryProvider
-                  enabled
-                  canOpenSession={canOpenSessionInSplitPane}
-                  onOpenSession={handleOpenSessionInSplitPane}
-                >
-                  <WorkflowRunOpenProvider onOpenRun={handleOpenSidebarWorkflowRun}>
-                    <WorkspaceSidebar
-                      workspacePath={workspaceAbsPath}
-                      workspaceRemoteSessionId={workspaceRemoteSessionId}
-                      activePreviewPath={activePreviewPath}
-                      onSelectTask={handleSelectTaskInChat}
-                      onStartDraftInWorkspace={handleCreateProjectDraft}
-                      onOpenCodeViewer={handleOpenCodeViewer}
-                      onOpenBrowserUrl={handleOpenBrowserUrl}
-                      fileTreeOpenRequest={fileTreeOpenRequest}
-                      onCreateTask={handleCreateTaskInChat}
-                      onCreateConversationTask={onCreateConversationTask ?? handleCreateTaskInChat}
-                      onOpenFolderFromWorkspaceMenu={onOpenFolderFromWorkspaceMenu}
-                      onOpenRemoteWorkspace={onOpenRemoteWorkspace}
-                      theme={theme}
-                      onConnectRemote={onConnectRemote}
-                      onSelectRemoteProject={onSelectRemoteProject}
-                      onCancelRemoteProject={onCancelRemoteProject}
-                      onReconnectRemoteWorkspace={onReconnectRemoteWorkspace}
-                      reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
-                      remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}
-                      reconnectingRemoteWorkspaceLogsByWorkspaceKey={
-                        reconnectingRemoteWorkspaceLogsByWorkspaceKey
-                      }
-                      onLogout={onLogout}
-                      onLogin={onLogin}
-                      user={user}
-                      isDesktop={isDesktop}
-                      isMacDesktop={isMacDesktop}
-                      isWindowsDesktop={isWindowsDesktop}
-                      isSidebarVisible={isSidebarVisible}
-                      onToggleSidebar={handleToggleSidebar}
-                      toggleSidebarShortcutLabel={toggleSidebarShortcutLabel}
-                      canGoBack={canPrimaryNavigationBack}
-                      canGoForward={canTaskNavForward}
-                      onGoBack={primaryNavigationBack}
-                      onGoForward={handleTaskNavForward}
-                      goBackShortcutLabel={goBackShortcutLabel}
-                      goForwardShortcutLabel={goForwardShortcutLabel}
-                      onOpenCommandCenter={handleOpenCommandCenter}
-                      onOpenAutomations={handleOpenAutomations}
-                      automationsActive={workspaceMainView === "automations"}
-                      onOpenPluginStore={handleOpenPluginStore}
-                      pluginStoreActive={workspaceMainView === "plugin-store"}
-                      onOpenHistoryView={platform.historyReview ? showHistoryMainView : undefined}
-                      historyViewActive={historyViewActive}
-                      onFileTreeOpenChange={setIsSidebarFileTreeOpen}
-                    />
-                  </WorkflowRunOpenProvider>
-                </V4SplitPaneEntryProvider>
-              </ScopedErrorBoundary>
-            </aside>
-          </div>
+              <V4SplitPaneEntryProvider enabled>
+                <WorkflowRunOpenProvider onOpenRun={handleOpenSidebarWorkflowRun}>
+                  {renderWorkspaceSidebar()}
+                </WorkflowRunOpenProvider>
+              </V4SplitPaneEntryProvider>
+            </ScopedErrorBoundary>
+          </aside>
+        </div>
 
-          {isSidebarVisible ? (
-            <div
-              role="separator"
-              tabIndex={0}
-              aria-controls="sidebar"
-              aria-label={workspaceSidebarResizeLabel}
-              aria-orientation="vertical"
-              aria-valuemin={WORKSPACE_SIDEBAR_MIN_WIDTH_PX}
-              aria-valuenow={Math.round(workspaceSidebarPanelWidthPx)}
-              data-testid="resizable-handle"
-              onKeyDown={handleWorkspaceSidebarResizeKeyDown}
-              onPointerCancel={(event) => finishWorkspaceSidebarResize(event, true)}
-              onPointerDown={handleWorkspaceSidebarResizeStart}
-              onPointerMove={handleWorkspaceSidebarResizeMove}
-              onPointerUp={(event) => finishWorkspaceSidebarResize(event)}
-              className={cn(
-                "group/handle relative z-10 flex h-full w-1 shrink-0 touch-none cursor-ew-resize items-center justify-center bg-transparent outline-none [app-region:no-drag] focus:outline-none focus-visible:ring-0",
-                "after:pointer-events-none after:absolute after:rounded-full after:bg-foreground-subtlest/50 after:opacity-0 after:transition-opacity after:content-[''] after:inset-y-[var(--workspace-panel-radius)] after:w-0.5",
-                "hover:after:opacity-100 data-[separator=hover]:after:opacity-100 data-[separator=active]:after:opacity-100 focus-visible:after:opacity-100 [[data-workspace-sidebar-resizing=true]_&]:after:opacity-100",
-                hasDesktopPanelInset && "after:inset-y-[var(--workspace-resize-handle-inset)]",
-              )}
-            />
-          ) : null}
-          {/* 右侧主工作区：上方 header，下面左侧会话+终端，右侧共享 browser/code-viewer 槽位 */}
+        {isSidebarPanelVisible ? (
           <div
-            data-panel=""
-            id="content"
+            role="separator"
+            tabIndex={0}
+            aria-controls="sidebar"
+            aria-label={workspaceSidebarResizeLabel}
+            aria-orientation="vertical"
+            aria-valuemin={WORKSPACE_SIDEBAR_MIN_WIDTH_PX}
+            aria-valuenow={Math.round(workspaceSidebarPanelWidthPx)}
+            data-testid="resizable-handle"
+            onKeyDown={handleWorkspaceSidebarResizeKeyDown}
+            onPointerCancel={(event) => finishWorkspaceSidebarResize(event, true)}
+            onPointerDown={handleWorkspaceSidebarResizeStart}
+            onPointerMove={handleWorkspaceSidebarResizeMove}
+            onPointerUp={(event) => finishWorkspaceSidebarResize(event)}
             className={cn(
-              "flex min-w-[320px] flex-1 flex-col",
-              hasDesktopPanelInset ? "p-1 pl-0 pt-0" : "p-0",
+              "group/handle relative z-10 flex h-full w-1 shrink-0 touch-none cursor-ew-resize items-center justify-center bg-transparent outline-none [app-region:no-drag] focus:outline-none focus-visible:ring-0",
+              "after:pointer-events-none after:absolute after:rounded-full after:bg-foreground-subtlest/50 platform-mac-desktop:after:bg-resize-handle platform-windows-desktop:after:bg-resize-handle platform-linux-desktop:after:bg-resize-handle after:opacity-0 after:transition-opacity after:content-[''] after:inset-y-[var(--workspace-panel-radius)] after:w-0.5",
+              "hover:after:opacity-100 data-[separator=hover]:after:opacity-100 data-[separator=active]:after:opacity-100 focus-visible:after:opacity-100 [[data-workspace-sidebar-resizing=true]_&]:after:opacity-100",
+              hasDesktopPanelInset && "after:inset-y-[var(--workspace-resize-handle-inset)]",
+            )}
+          />
+        ) : null}
+        {isSidebarPanelVisible ? (
+          // 原因：侧栏 overflow 裁掉横线末端；延伸装饰放在共同布局容器，不改变拖拽命中区。
+          <span
+            aria-hidden="true"
+            data-sidebar-divider-extension="true"
+            className={cn(
+              "pointer-events-none absolute h-px w-1 bg-border/50 [left:anchor(--sidebar-task-list-divider_right,-4px)] [top:anchor(--sidebar-task-list-divider_top,-1px)]",
+            )}
+          />
+        ) : null}
+        {/* 右侧主工作区：上方 header，下面左侧会话+终端，右侧共享 browser/code-viewer 槽位 */}
+        <div
+          data-panel=""
+          id="content"
+          className={cn(
+            "flex min-w-[320px] flex-1 flex-col",
+            hasDesktopPanelInset ? (isWindowsDesktop ? "pr-1.5 pb-1.5" : "pr-1 pb-1") : "p-0",
+          )}
+        >
+          {
+            hasDesktopPanelInset && (
+              <div className={cn("w-full [app-region:drag]", isWindowsDesktop ? "h-1.5" : "h-1")} />
+            ) /* 修复 macOS 顶部窗口控制按钮被 header 遮挡无法点击的问题 */
+          }
+          <ResizablePanelGroup
+            layoutId="workspace-body-layout"
+            panelIds={WORKSPACE_BODY_PANEL_IDS}
+            className={cn(
+              "min-h-0 flex-1",
+              // 完整视图：面板外框以 Group 为定位容器铺满整行，对话内容由宿主 fixed 定位。
+              // 修复原因：曾用 CSS 把对话列 flex 压成 0，react-resizable-panels 以各 panel offsetWidth
+              // 之和作为 group 尺寸，面板从收起展开时两者皆为 0，resize 得到 NaN，面板一直停在收起态。
+              // 这里不改库管理的 flex，已保存的面板占比也不写入。
+              isFullView && "relative",
             )}
           >
-            {
-              hasDesktopPanelInset && (
-                <div className="h-1 w-full [app-region:drag]" />
-              ) /* 修复 macOS 顶部窗口控制按钮被 header 遮挡无法点击的问题 */
-            }
-            <ResizablePanelGroup
-              layoutId="workspace-body-layout"
-              panelIds={WORKSPACE_BODY_PANEL_IDS}
-              className={cn("min-h-0 flex-1")}
+            <ResizablePanel
+              id="conversation-column"
+              // 对话列给浏览器、预览让位：按能放下输入框的宽度兜底，不按窗口比例卡死（11-11 用户反馈 35% 拖不动）
+              minSize="360px"
+              defaultSize={isSidePaneVisible ? "52%" : undefined}
+              className="min-w-[320px]"
             >
-              <ResizablePanel
-                id="conversation-column"
-                minSize={"35%"}
-                defaultSize={isSidePaneVisible ? "52%" : undefined}
+              <SidePaneFullViewConversationHost
+                mode={fullViewMode}
+                floating={activeFullView?.floating ?? "collapsed"}
+                anchor={floatingAnchor}
+                slotElement={fullViewSlotElement}
+                onFloatingChange={handleFullViewFloatingChange}
+                onAnchorChange={handleFloatingAnchorChange}
+                onOpenConversation={handleOpenFullViewConversation}
               >
                 <ResizablePanelGroup
                   orientation="vertical"
@@ -1717,9 +2245,14 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                                 desktopWindowChromeState?.supportsNativeRoundedCorners ?? null,
                             }),
                         isTerminalVisible && "rounded-b-[var(--workspace-panel-radius)] border-b",
+                        "border-[0.5px]",
+                        !isFullView && "shadow-xs",
+                        "max-md:rounded-none max-md:border-x-0 max-md:border-b-0",
+                        // 完整视图由面板外框或浮窗外框承担边框与圆角，对话 frame 不再叠一层。
+                        isFullView && "rounded-none border-0",
                       )}
                     >
-                      {shouldRenderWorkspaceHeader ? (
+                      {shouldRenderWorkspaceHeader && !isFullView ? (
                         <ScopedErrorBoundary
                           scope="workspace-header"
                           resetKeys={workspaceOnlyResetKeys}
@@ -1877,7 +2410,9 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                                     workspacePath={workspaceAbsPath}
                                     workspaceIdentity={workspaceIdentity}
                                     onCreateTask={handleCreateTaskInChat}
-                                    onManageInstalled={handleManageInstalledPlugins}
+                                    onOpenDraftUi={handleOpenDraftPluginUi}
+                                    sessionId={activeTaskId}
+                                    remoteSessionId={workspaceRemoteSessionId}
                                   />
                                 </div>
                               </div>
@@ -1898,63 +2433,74 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                                   永远停在 draft。v4 语义下 sessionId ≡ taskId，meta 只服务 Header 显示。
                                   M5⑤：桌面主区升级为分屏宿主（Layout/Focus 两层）；primary pane
                                   绑定语义与 testid 契约（paneId=workspace-main）不变。 */}
-                              <V4WorkspaceChatArea
-                                readOnly={Boolean(workspaceReadOnlyReason)}
-                                foregroundEnabled={isWorkspaceVisible}
-                                workspacePath={workspaceAbsPath}
-                                workspaceIdentity={workspaceIdentity}
-                                isDesktop={isDesktop === true}
-                                remoteSessionId={workspaceRemoteSessionId}
-                                sessionId={activeTaskId}
-                                activeSelectionSideChatSessionId={activeSelectionSideChatSessionId}
-                                provider={activeTaskProvider ?? undefined}
-                                onSessionCreated={handleV4SessionCreated}
-                                onSessionDeleted={handleV4SessionDeleted}
-                                draftComposerHeader={draftComposerHeader}
-                                onPrimaryDraftDropTargetControllerChange={
-                                  setDraftHeaderDropTargetController
-                                }
-                                gitSummary={gitState.summary}
-                                gitDirtyFileCount={gitDirtyFileCount}
-                                activeTaskChangeSummary={activeTaskChangeSummary}
-                                gitWorktreeReviewSourceId={gitWorktreeReviewSourceId}
-                                gitWorktreeChangeSummary={gitWorktreeChangeSummary}
-                                summaryPanelVariantOverride={summaryPanelVariantOverride}
-                                onSummaryPanelVariantOverrideChange={
-                                  onSummaryPanelVariantOverrideChange
-                                }
-                                onRefreshGit={handleRefreshGit}
-                                onOpenGitReview={handleOpenGitReview}
-                                onPaneActiveSessionChange={handlePaneActiveSessionChange}
-                                onOpenBrowserUrl={handleOpenBrowserUrl}
-                                onOpenAutomationsMain={handleOpenAutomations}
-                                onOpenCodeViewer={handleOpenCodeViewer}
-                                onAutoOpenAssistantPptx={
-                                  isDesktop ? handleAutoOpenAssistantPptx : undefined
-                                }
-                                onOpenBackgroundBash={handleOpenBackgroundBash}
-                                onOpenSubagentSession={handleOpenSubagentSession}
-                                onOpenSubagentDirectory={handleOpenSubagentDirectory}
-                                onSyncSubagentSessionTabs={handleSyncSubagentSessionTabs}
-                                onOpenSelectionSideChat={handleOpenSelectionSideChat}
-                                onOpenPlanDetail={handleOpenPlanDetail}
-                                onOpenWorkflowRun={handleOpenWorkflowRun}
-                                onOpenWorkflowArtifact={handleOpenWorkflowArtifact}
-                                onOpenWorkflowRunDirectory={handleOpenWorkflowRunDirectory}
-                                onOpenWorkflowActorSession={handleOpenWorkflowActorSession}
-                                onOpenWorkflowWorkspace={handleOpenWorkflowWorkspace}
-                                onOpenFileLink={handleOpenMarkdownFileLink}
-                                conversationFindQuery={conversationFindQuery}
-                                conversationFindActiveIndex={conversationFindActiveIndex}
-                                conversationFindNavigationRequestId={
-                                  conversationFindNavigationRequestId
-                                }
-                                onConversationFindMatchStateChange={
-                                  onConversationFindMatchStateChange
-                                }
-                                searchResultHighlightRequest={activeSearchResultHighlightRequest}
-                                onSearchResultHighlightDone={onSearchResultHighlightDone}
-                              />
+                              {handoffCreation ? (
+                                <div className="absolute inset-0 z-10 flex flex-col bg-background">
+                                  <ManagedWorktreeCreationView creation={handoffCreation} />
+                                </div>
+                              ) : null}
+                              {viewedCreation ? (
+                                <ManagedWorktreeCreationView creation={viewedCreation} />
+                              ) : (
+                                <V4WorkspaceChatArea
+                                  allowEscapeStopOutsidePane={
+                                    isWorkspaceVisible && !isSidePaneOpen && !isSidePaneVisible
+                                  }
+                                  readOnly={Boolean(workspaceReadOnlyReason)}
+                                  readOnlyReason={workspaceReadOnlyReason}
+                                  foregroundEnabled={isWorkspaceVisible}
+                                  workspacePath={workspaceAbsPath}
+                                  workspaceIdentity={workspaceIdentity}
+                                  isDesktop={isDesktop === true}
+                                  remoteSessionId={workspaceRemoteSessionId}
+                                  sessionId={activeTaskId}
+                                  activeSelectionSideChatSessionId={
+                                    activeSelectionSideChatSessionId
+                                  }
+                                  provider={activeTaskProvider ?? undefined}
+                                  onSessionCreated={handleV4SessionCreated}
+                                  onSessionDeleted={handleV4SessionDeleted}
+                                  draftComposerHeader={draftComposerHeader}
+                                  onPrimaryDraftDropTargetControllerChange={
+                                    registerDraftHeaderDropTarget
+                                  }
+                                  gitSummary={gitState.summary}
+                                  gitDirtyFileCount={gitDirtyFileCount}
+                                  activeTaskChangeSummary={activeTaskChangeSummary}
+                                  gitWorktreeReviewSourceId={gitWorktreeReviewSourceId}
+                                  gitWorktreeChangeSummary={gitWorktreeChangeSummary}
+                                  onRefreshGit={handleRefreshGit}
+                                  onOpenGitReview={handleOpenGitReview}
+                                  onPaneActiveSessionChange={handlePaneActiveSessionChange}
+                                  onOpenBrowserUrl={handleOpenBrowserUrl}
+                                  onOpenAutomationsMain={handleOpenAutomations}
+                                  onOpenCodeViewer={handleOpenCodeViewer}
+                                  onAutoOpenAssistantPptx={
+                                    isDesktop ? handleAutoOpenAssistantPptx : undefined
+                                  }
+                                  onOpenBackgroundBash={handleOpenBackgroundBash}
+                                  onOpenSubagentSession={handleOpenSubagentSession}
+                                  onOpenSubagentDirectory={handleOpenSubagentDirectory}
+                                  onSyncSubagentSessionTabs={handleSyncSubagentSessionTabs}
+                                  onOpenSelectionSideChat={handleOpenSelectionSideChat}
+                                  onOpenPlanDetail={handleOpenPlanDetail}
+                                  onOpenWorkflowRun={handleOpenWorkflowRun}
+                                  onOpenWorkflowArtifact={handleOpenWorkflowArtifact}
+                                  onOpenWorkflowRunDirectory={handleOpenWorkflowRunDirectory}
+                                  onOpenWorkflowActorSession={handleOpenWorkflowActorSession}
+                                  onOpenWorkflowWorkspace={handleOpenWorkflowWorkspace}
+                                  onOpenFileLink={handleOpenMarkdownFileLink}
+                                  conversationFindQuery={conversationFindQuery}
+                                  conversationFindActiveIndex={conversationFindActiveIndex}
+                                  conversationFindNavigationRequestId={
+                                    conversationFindNavigationRequestId
+                                  }
+                                  onConversationFindMatchStateChange={
+                                    onConversationFindMatchStateChange
+                                  }
+                                  searchResultHighlightRequest={activeSearchResultHighlightRequest}
+                                  onSearchResultHighlightDone={onSearchResultHighlightDone}
+                                />
+                              )}
                             </ScopedErrorBoundary>
                           </main>
                         )}
@@ -1990,49 +2536,61 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                     />
                   ) : null}
                 </ResizablePanelGroup>
-              </ResizablePanel>
-              {/* Bugfix：Browser Guest Host 必须与主视图路由解耦，避免 automations/plugin
+              </SidePaneFullViewConversationHost>
+            </ResizablePanel>
+            {/* Bugfix：Browser Guest Host 必须与主视图路由解耦，避免 automations/plugin
                     切换时卸载 Guest；截图请求期间由上层临时展开真实面板承载可合成的 WebContents。 */}
-              {sidePanePanel}
-            </ResizablePanelGroup>
-          </div>
-          <ScopedErrorBoundary
-            scope="desktop-top-overlay"
-            resetKeys={workspaceSidebarVisibilityResetKeys}
-            variant="silent"
-          >
-            <DesktopTopOverlay
-              newTaskDisabledReason={workspaceReadOnlyReason}
-              workspaceAbsPath={workspaceAbsPath}
-              isMacDesktop={isMacDesktop}
-              isMacFullscreen={isMacFullscreen}
-              macWindowControlsLeftPaddingPx={macWindowControlsLeftPaddingPx}
-              windowsWindowControlsRightPaddingPx={windowsWindowControlsRightPaddingPx}
-              isWindowsDesktop={isWindowsDesktop}
-              isDesktop={isDesktop}
-              isSidebarVisible={isSidebarVisible}
-              updateReadyVersion={updateReadyVersion}
-              updateState={updateState}
-              toggleSidebarShortcutLabel={toggleSidebarShortcutLabel}
-              newTaskShortcutLabel={newTaskShortcutLabel}
-              goBackShortcutLabel={goBackShortcutLabel}
-              goForwardShortcutLabel={goForwardShortcutLabel}
-              canTaskNavBack={canPrimaryNavigationBack}
-              canTaskNavForward={canTaskNavForward}
-              canGoBack={canGoBack}
-              canGoForward={canGoForward}
-              showNewTaskButton={showTopOverlayNewTaskButton}
-              appLogoUrl={appLogoUrl}
-              platform={platform}
-              onToggleSidebar={handleToggleSidebar}
-              onCreateTask={handleCreateTaskInChat}
-              onGoBack={primaryNavigationBack}
-              onGoForward={handleTaskNavForward}
-              hideTaskNavigationButtons={false}
-            />
-          </ScopedErrorBoundary>
+            {sidePanePanel}
+          </ResizablePanelGroup>
         </div>
-      </DesktopWindowFrame>
+        <ScopedErrorBoundary
+          scope="desktop-top-overlay"
+          resetKeys={workspaceSidebarVisibilityResetKeys}
+          variant="silent"
+        >
+          <DesktopTopOverlay
+            newTaskDisabledReason={workspaceReadOnlyReason}
+            workspaceAbsPath={workspaceAbsPath}
+            isMacDesktop={isMacDesktop}
+            isMacFullscreen={isMacFullscreen}
+            macWindowControlsLeftPaddingPx={macWindowControlsLeftPaddingPx}
+            windowsWindowControlsRightPaddingPx={windowsWindowControlsRightPaddingPx}
+            isWindowsDesktop={isWindowsDesktop}
+            isDesktop={isDesktop}
+            isSidebarVisible={isSidebarVisible}
+            updateReadyVersion={updateReadyVersion}
+            updateState={updateState}
+            toggleSidebarShortcutLabel={toggleSidebarShortcutLabel}
+            newTaskShortcutLabel={newTaskShortcutLabel}
+            goBackShortcutLabel={goBackShortcutLabel}
+            goForwardShortcutLabel={goForwardShortcutLabel}
+            canTaskNavBack={canPrimaryNavigationBack}
+            canTaskNavForward={canTaskNavForward}
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            showNewTaskButton={showTopOverlayNewTaskButton}
+            appLogoUrl={appLogoUrl}
+            platform={platform}
+            onToggleSidebar={handleToggleSidebar}
+            onCreateTask={handleCreateTaskInChat}
+            onGoBack={primaryNavigationBack}
+            onGoForward={handleTaskNavForward}
+            hideTaskNavigationButtons={simplifyHeaderForNarrowRemote}
+          />
+        </ScopedErrorBoundary>
+      </div>
     </SavedWorkflowHubProvider>
+  );
+  return (
+    <DesktopWindowFrame
+      title={`CCbuddy / ${getPathLeaf(workspaceAbsPath)}`}
+      showHeader
+      isDesktop={isDesktop}
+      isMacDesktop={isMacDesktop}
+      isWindowsDesktop={isWindowsDesktop}
+      headerTestId={TID_APP_HEADER}
+    >
+      {wideContent}
+    </DesktopWindowFrame>
   );
 });

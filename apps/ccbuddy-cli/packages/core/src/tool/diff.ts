@@ -13,18 +13,10 @@ export const createStructuredPatch = ({
   newContent: string;
   oldContent: string;
 }): DiffHunk[] => {
-  const patch = structuredPatch(
-    filePath,
-    filePath,
-    oldContent,
-    newContent,
-    undefined,
-    undefined,
-    {
-      context: CONTEXT_LINES,
-      timeout: DIFF_TIMEOUT_MS,
-    },
-  );
+  const patch = structuredPatch(filePath, filePath, oldContent, newContent, undefined, undefined, {
+    context: CONTEXT_LINES,
+    timeout: DIFF_TIMEOUT_MS,
+  });
 
   return patch?.hunks ?? [];
 };

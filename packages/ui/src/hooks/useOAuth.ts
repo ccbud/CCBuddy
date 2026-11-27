@@ -6,19 +6,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OAuthProviderId, OAuthProviderMeta } from "@ccbuddy/shared";
-import {
-  BIGMODEL_PROVIDER_ID,
-  isCredentialDecryptError,
-  resolveSafeTelemetryHostname,
-  ZAI_PROVIDER_ID,
-} from "@ccbuddy/shared";
+import { isBuiltinOAuthProvider, resolveSafeTelemetryHostname } from "@ccbuddy/shared";
 import { reportAppTelemetryEvent } from "@/lib/appTelemetry.js";
 import { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
 import type { LoginEntryPurpose } from "@/store/index.js";
 import { useCCbuddyStore } from "@/store/StoreProvider.js";
-import { logger } from "../logger.js";
-import { usePlatform } from "./usePlatform.js";
-import { useServices } from "./useServices.js";
+import { logger } from "@/logger.js";
+import { usePlatform } from "@/hooks/usePlatform.js";
+import { useServices } from "@/hooks/useServices.js";
 
 type OAuthStatus = "idle" | "waiting" | "error";
 
@@ -31,41 +26,55 @@ export function useOAuth() {
   const [providers, setProviders] = useState<OAuthProviderMeta[]>([]);
   const [activeProvider, setActiveProvider] = useState<OAuthProviderId | null>(null);
   const [loadingProviders, setLoadingProviders] = useState(true);
+  // activeProvider 读取失败时为真。null 本身分不清「确认未登录」与「没读到」，
+  // 需要区分的调用方（插件商店定向展示）用它判断，其他调用方不受影响。
+  const [activeProviderReadFailed, setActiveProviderReadFailed] = useState(false);
   const [pendingProvider, setPendingProvider] = useState<OAuthProviderId | null>(null);
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const loginAttemptRef = useRef(0);
+  const providerRefreshRef = useRef(0);
   const setOAuthPollingActive = useCCbuddyStore((state) => state.setOAuthPollingActive);
 
   const refreshProviders = useCallback(async () => {
+    const refresh = ++providerRefreshRef.current;
+    const isCurrent = () => providerRefreshRef.current === refresh;
     try {
       setLoadingProviders(true);
+      setActiveProviderReadFailed(false);
       const providerList = await oauthService.getProviders();
+      if (!isCurrent()) return;
       setProviders(providerList);
 
       try {
         const active = await oauthService.getActiveProvider();
+        if (!isCurrent()) return;
         setActiveProvider(active);
       } catch (err) {
-        // 只有本地 OAuth 凭据解密失败才可恢复为未登录态；RPC/存储权限等错误需要走外层错误路径。
-        if (!isCredentialDecryptError(err)) {
-          throw err;
-        }
-
-        // active provider 只是登录态指针，解密失败时服务层会清理 OAuth 凭据。
-        // provider 列表仍然可用，不能让用户看到“没有登录渠道”。
-        logger.warn("[useOAuth] 加载 active provider 凭据失败，已按未登录处理:", err);
+        if (!isCurrent()) return;
+        // 账号读取失败不代表渠道不可用；保留已取得的元数据，只清空本地账号投影。
+        // 不在 UI 清理或重建凭据，避免把整库损坏、IO 故障当作可恢复的单条密文。
+        logger.warn("[useOAuth] 加载 active provider 失败，保留登录渠道:", err);
         setActiveProvider(null);
+        setActiveProviderReadFailed(true);
       }
     } catch (err) {
+      if (!isCurrent()) return;
       logger.error("[useOAuth] 加载 provider 列表失败:", err);
       setProviders([]);
       setActiveProvider(null);
+      // 渠道列表失败时 activeProvider 也没读到，同样不是「确认未登录」。
+      setActiveProviderReadFailed(true);
     } finally {
-      setLoadingProviders(false);
+      if (isCurrent()) setLoadingProviders(false);
     }
   }, [oauthService]);
 
   useEffect(() => {
     void refreshProviders();
+    // 迟到的成功、失败和 finally 均不能覆盖新服务实例或已卸载界面的状态。
+    return () => {
+      providerRefreshRef.current += 1;
+    };
   }, [refreshProviders]);
 
   const startLogin = useCallback(
@@ -75,6 +84,7 @@ export function useOAuth() {
         setStatus("waiting");
         setError(null);
         setPendingProvider(provider);
+        setAuthorizeUrl(null);
 
         const {
           authorizeUrl,
@@ -86,10 +96,9 @@ export function useOAuth() {
           return;
         }
 
+        setAuthorizeUrl(authorizeUrl);
         platform.registerOAuthState({ state, provider: startedProvider });
-        setOAuthPollingActive(
-          startedProvider === ZAI_PROVIDER_ID || startedProvider === BIGMODEL_PROVIDER_ID,
-        );
+        setOAuthPollingActive(isBuiltinOAuthProvider(startedProvider));
         platform.openExternal(authorizeUrl);
         void reportAppTelemetryEvent(
           platform,
@@ -117,6 +126,7 @@ export function useOAuth() {
         logger.error("[useOAuth] 启动 OAuth 失败:", err);
         setOAuthPollingActive(false);
         setStatus("error");
+        setAuthorizeUrl(null);
         // OAuth 启动失败也属于登录失败，不把服务端或平台错误原文展示给用户。
         // 原文通过 i18n 渲染，避免登录页出现 provider/token 等具体失败原因。
         setError(intl.formatMessage({ id: "login.oauth.loginFailure" }));
@@ -129,6 +139,7 @@ export function useOAuth() {
   const cancel = useCallback(
     async (provider?: OAuthProviderId) => {
       loginAttemptRef.current += 1;
+      setAuthorizeUrl(null);
       await oauthService.cancelPending(provider);
       setOAuthPollingActive(false);
       setStatus("idle");
@@ -142,6 +153,7 @@ export function useOAuth() {
     setStatus("idle");
     setError(null);
     setPendingProvider(null);
+    setAuthorizeUrl(null);
   }, []);
 
   /** 由 Root/App 层的回调监听器调用，更新 UI 状态 */
@@ -149,12 +161,14 @@ export function useOAuth() {
     setStatus("error");
     setError(message);
     setPendingProvider(null);
+    setAuthorizeUrl(null);
   }, []);
 
   const setOAuthSuccess = useCallback(async () => {
     setStatus("idle");
     setError(null);
     setPendingProvider(null);
+    setAuthorizeUrl(null);
     await refreshProviders();
   }, [refreshProviders]);
 
@@ -166,8 +180,10 @@ export function useOAuth() {
     error,
     providers,
     activeProvider,
+    activeProviderReadFailed,
     loadingProviders,
     pendingProvider,
+    authorizeUrl,
     refreshProviders,
     setOAuthError,
     setOAuthSuccess,

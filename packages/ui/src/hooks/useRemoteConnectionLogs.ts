@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { RemoteConnectionRuntimeLog } from "@ccbuddy/shared";
+import { getRemoteTransferProgressKey, type RemoteConnectionRuntimeLog } from "@ccbuddy/shared";
 import { usePlatform } from "@/hooks/usePlatform.js";
 
 export interface RemoteConnectionLogEntry {
@@ -10,28 +10,14 @@ export interface RemoteConnectionLogEntry {
 }
 
 export function normalizeRemoteConnectionLogMessage(message: string): string {
-  return message
-    .replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\]\s*/u, "")
-    .replace(/^\[pid:\d+\]\s*/u, "")
-    .replace(/^(?:\[[^\]]+\]\s*)+/u, "")
-    .trim();
-}
-
-function isRemoteDownloadProgressLog(message: string): boolean {
-  return /^download progress:/iu.test(message);
-}
-
-function getRemoteTransferProgressKey(message: string): string | null {
-  if (isRemoteDownloadProgressLog(message)) {
-    return "download";
-  }
-
-  const uploadMatch = /^upload progress(?: \[([^\]]+)\])?(?: \((.+)\))?:/iu.exec(message);
-  if (!uploadMatch) {
-    return null;
-  }
-
-  return `upload:${uploadMatch[1]?.trim() ?? ""}:${uploadMatch[2]?.trim() ?? ""}`;
+  return (
+    message
+      .replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\]\s*/u, "")
+      .replace(/^\[pid:\d+\]\s*/u, "")
+      // Source Server phase 是 bootstrap UI 的正式状态，不是通用日志前缀，必须保留。
+      .replace(/^(?:\[(?!source-server:)[^\]]+\]\s*)+/u, "")
+      .trim()
+  );
 }
 
 export function appendRemoteConnectionRuntimeLog(

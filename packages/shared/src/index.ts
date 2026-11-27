@@ -34,7 +34,24 @@ export type {
   PersistedWorkspaceSessionEntry,
 } from "./protocol.js";
 export type { WorkspacePurpose } from "./workspacePurpose.js";
-export { DEFAULT_LOCALE } from "./protocol.js";
+export { DEFAULT_LOCALE, SUPPORTED_LOCALES } from "./protocol.js";
+export {
+  hasLegacyIncompatiblePersistedLocale,
+  isLocale,
+  isLocalePreference,
+  LOCALE_NATIVE_NAMES,
+  resolveLocaleFromLanguageTag,
+  resolvePersistedUiLocale,
+  resolvePersistedUiLocalePreference,
+  toLegacyPersistedLocalePreference,
+  toPersistedSettingsLocaleFields,
+  toZhOrEnLocale,
+} from "./locale.js";
+export type {
+  LegacyPersistedLocale,
+  LegacyPersistedLocalePreference,
+  PersistedSettingsLocaleFields,
+} from "./locale.js";
 export { CCBUDDY_VERSION, CCBUDDY_COMMIT, CCBUDDY_BUILD_TIME } from "./version.js";
 export type { HelloMessage, HelloAckMessage } from "./handshake.js";
 export type { ArmsRumEnv, CCbuddyEnv, CCbuddyProductFlavor } from "./env.js";
@@ -72,6 +89,7 @@ export {
   CCBUDDY_PRODUCT_FLAVOR,
   CCBUDDY_APP_VERSION_ENV,
   CCBUDDY_BUILD_COMMIT_ID_ENV,
+  CCBUDDY_CLIENT_LANGUAGE_ENV,
   RUNTIME_CCBUDDY_DEBUG,
   CCBUDDY_ARMS_RUM_ENDPOINT,
   CCBUDDY_TELEMETRY_REPORT_ENDPOINT,
@@ -81,6 +99,10 @@ export {
   normalizeCCbuddyProductFlavor,
 } from "./env.js";
 export * from "./errors.js";
+export {
+  USER_INSTRUCTIONS_MAX_BYTES,
+  USER_INSTRUCTIONS_TOO_LARGE_ERROR_CODE,
+} from "./userInstructions.js";
 export * from "./rendererActionTrace.js";
 export * from "./validation.js";
 export * from "./api.js";
@@ -98,6 +120,7 @@ export * from "./official-mcp-auth.js";
 export * from "./official-mcp-tool-error.js";
 export * from "./conversation-message-projection-policy.js";
 export * from "./conversation-share.js";
+export * from "./conversation-share-content.js";
 export * from "./conversation-preview-artifacts.js";
 export * from "./ccbuddy-session-task-status.js";
 export * from "./ccbuddy-session-content-profile.js";
@@ -115,6 +138,7 @@ export * from "./dynamic-workflow-feature.js";
 export * from "./markdown-artifact-images.js";
 export * from "./serviceAuthority.js";
 export * from "./server-remote.js";
+export * from "./source-server/index.js";
 
 export interface ICredentialStore {
   get(key: string): Promise<string | null>;
@@ -122,7 +146,6 @@ export interface ICredentialStore {
   delete(key: string): Promise<void>;
 }
 
-export * from "./test-ids.js";
 export * from "./test-ids-workflow.js";
 export * from "./channels.js";
 export * from "./storage.js";
@@ -140,24 +163,38 @@ export {
   BROWSER_SCREENSHOT_SURFACE_PREPARE_TIMEOUT_MS,
   BROWSER_VIEW_RESTORE_BOOTSTRAP_URL,
   LOCAL_MEDIA_PREVIEW_SCHEME,
+  BROWSER_VIEW_DRAFT_SESSION_ID,
+  BROWSER_LOCAL_PREVIEW_SCHEME,
+  browserPreviewSourceUrl,
   DesktopCommandIds,
   buildLocalMediaPreviewUrl,
   createOpenInEditorRemoteTarget,
+  unwrapRemoteWorkspaceBindResult,
 } from "./platform.js";
 export type {
   ArmsCustomEventPayload,
   ConfigureFinalArmsCustomEventE2ERequest,
   FinalArmsCustomEventE2EEntry,
   FinalArmsCustomEventPayload,
+  MobilePluginDiscoveryTelemetry,
   RendererTelemetryEventPayload,
   TelemetryEventPayload,
   TelemetryRendererContext,
+  TelemetryUiMode,
 } from "./telemetry.js";
 export {
+  PLUGIN_TELEMETRY_EVENTS,
+  mobilePluginDiscoveryTelemetrySchema,
+  sanitizePluginTelemetryDetail,
   collectTelemetryRendererContext,
+  normalizeTelemetryUiMode,
+  telemetryUiModeSchema,
   resolveSafeTelemetryHostname,
   sanitizeTelemetryErrorMessage,
+  sanitizeTelemetrySkillName,
   sanitizeTelemetryEventDetail,
+  normalizeToolErrorCode,
+  sanitizeToolErrorCode,
 } from "./telemetry.js";
 export type {
   RedactTelemetryTextOptions,
@@ -180,10 +217,12 @@ export { LAUNCH_MARKS_QUERY_KEY, parseLaunchMarks, serializeLaunchMarks } from "
 export type {
   CancelPendingRemoteConnectionRequest,
   BindRemoteWorkspaceSessionContextRequest,
-  BotRemoteWorkspaceReconnectedEvent,
+  BindRemoteWorkspaceSessionContextIpcResult,
+  BindRemoteWorkspaceSessionContextResult,
   BrowserTabResidencyState,
   BrowserViewCloseTabNotification,
   BrowserViewCloseTabRequest,
+  BrowserViewPromoteDraftTabsRequest,
   BrowserViewOperationPayload,
   BrowserViewResidencyReportPayload,
   BrowserViewResidencyTransitionPayload,
@@ -198,6 +237,8 @@ export type {
   ChromeBrowserDataImportOptions,
   ChromeBrowserDataImportResult,
   ConnectRemoteRequest,
+  FileApplicationInfo,
+  FileApplicationTarget,
   CreateTempTextAttachmentRequest,
   CreateTempTextAttachmentResult,
   MaterializeWorkflowArtifactFileRequest,
@@ -205,6 +246,12 @@ export type {
   SaveFileRequest,
   SaveFileResult,
   PrintPageToPdfResult,
+  MicrophoneAccessResetResult,
+  MicrophoneAccessResult,
+  MicrophoneSettingsTarget,
+  CaptureBrowserGuestPageClip,
+  CaptureBrowserGuestPageRequest,
+  CaptureBrowserGuestPageResult,
   DesktopCloseToTrayCapability,
   DesktopCommandId,
   CuaOsSupport,
@@ -228,12 +275,18 @@ export type {
   EmbeddedBrowserSitePermissionUpdateRequest,
   EmbeddedBrowserSitePermissionsSnapshot,
   IPlatformService,
+  AppNavigationTarget,
+  AppNavigationResult,
+  AppNavigationHandler,
+  DesktopZoomState,
+  WindowControlsOverlayMetrics,
   OpenInEditorRemoteTarget,
   OpenInEditorOptions,
   PostUpdateReleaseNotesPayload,
   RemoteConnectionRuntimeLog,
   RemoteSessionClosedEvent,
   RemoteWorkspaceSessionTarget,
+  RemoteSessionReconnectedEvent,
   RemoteServiceSession,
   SSHConfigAliasOption,
   TaskNotificationPayload,
@@ -329,7 +382,7 @@ export * from "./subagent-runtime-config.js";
 export * from "./subagent-profile.js";
 export { parseAgentProfileFromMarkdown } from "./subagent-profile-parser.js";
 
-export * from "./localTtft.js";
+export * from "./local-ttft/contract.js";
 export * from "./pluginStoreOrder.js";
 export * from "./clientConfig.js";
 export * from "./pluginStoreOrdering.js";
@@ -340,8 +393,13 @@ export * from "./session-debug.js";
 export { redactFeedbackText } from "./feedbackPrivacy.js";
 export { API_KEY_USAGE_SCENE, type ApiKeyCreationUsageScene } from "./api-key-usage-scene.js";
 export {
+  isProjectTokenTransportFailureCode,
   projectAccessTokenFingerprint,
+  projectAccessTokenRetryAfterMs,
+  ProjectAccessTokenError,
+  ProjectAccessTokenHttpStatusError,
   ProjectAccessTokenTransientError,
+  type ProjectAccessTokenRequestFailure,
 } from "./project-access-token.js";
 export {
   ProjectAccessTokenClient,
@@ -353,9 +411,12 @@ export * from "./conversationSelection.js";
 export * from "./attachment-source.js";
 
 export * from "./channel-mention.js";
+export * from "./plugin-store-visibility.js";
 
 export {
   requestSecuritySensitiveHeaders,
   isRequestSecurityFailure,
 } from "./request-security-edition/policy.js";
 export * from "./request-security-edition/verification-policy.js";
+
+export * from "./conversation-share-tool-presentation.js";

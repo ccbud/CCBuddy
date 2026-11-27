@@ -2,7 +2,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Settings2 } from "lucide-react";
 import type { CCbuddyTaskMeta } from "@ccbuddy/shared";
-import { TID_TASK_LIST, TID_TASK_EMPTY, TID_TASK_SETTINGS_BUTTON } from "@ccbuddy/shared";
+import { TID_TASK_LIST, TID_TASK_EMPTY, TID_TASK_SETTINGS_BUTTON } from "@ccbuddy/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu.js";
 import { toast } from "@/components/ui/toast.js";
@@ -38,15 +38,22 @@ export const TaskList = memo(function TaskList({
   showCreateButton = true,
   showFooter = true,
   showEmptyState = true,
+  taskRowVariant = "default",
+  hoverEnabled = true,
   loading: inputLoading,
   hasMore = false,
   onShowMore,
   onRenameTask,
   onSetTaskPinned,
   onArchiveTask,
+  isArchived = false,
   onSetTaskUnread,
   readOnlyReason,
+  onOpenFileTree,
+  organizationActions,
+  renameOnDoubleClick = true,
 }: {
+  organizationActions?: React.ReactNode;
   workspacePath: string;
   remoteSessionId?: string;
   workspaceIdentity?: string;
@@ -59,15 +66,20 @@ export const TaskList = memo(function TaskList({
   showCreateButton?: boolean;
   showFooter?: boolean;
   showEmptyState?: boolean;
+  taskRowVariant?: "default" | "timeline";
+  hoverEnabled?: boolean;
   loading?: boolean;
   hasMore?: boolean;
   onShowMore?: () => void;
   onRenameTask: (taskId: string, title: string) => Promise<CCbuddyTaskMeta | null>;
   onSetTaskPinned: (taskId: string, pinned: boolean) => Promise<CCbuddyTaskMeta | null>;
   onArchiveTask: (taskId: string) => Promise<CCbuddyTaskMeta | null>;
+  isArchived?: boolean;
   onSetTaskUnread: (taskId: string, unread: boolean) => Promise<CCbuddyTaskMeta | null>;
 
   readOnlyReason?: string;
+  onOpenFileTree?: () => void | Promise<void>;
+  renameOnDoubleClick?: boolean;
 }) {
   const { intl } = useCCbuddyIntl();
   const pinnedTaskIdSet = useMemo(
@@ -360,7 +372,10 @@ export const TaskList = memo(function TaskList({
         workspacePath={workspacePath}
         remoteSessionId={remoteSessionId}
         task={task}
+        variant={taskRowVariant}
+        hoverEnabled={hoverEnabled}
         isPinned={isPinned}
+        isArchived={isArchived}
         isActive={isWorkspaceActive && task.taskId === activeTaskId}
         onSelectTask={handleSelectTaskItem}
         onArchiveTaskInline={handleArchiveTaskFromInline}
@@ -371,8 +386,10 @@ export const TaskList = memo(function TaskList({
         onArchiveTask={handleArchiveTask}
         onMarkTaskAsUnread={handleMarkTaskAsUnread}
         onOpenTaskContextMenu={handleOpenTaskContextMenu}
+        onOpenFileTree={onOpenFileTree}
         actionsDisabled={Boolean(readOnlyReason)}
         actionsDisabledReason={readOnlyReason}
+        renameOnDoubleClick={renameOnDoubleClick}
         intl={intl}
       />
     );
@@ -454,6 +471,8 @@ export const TaskList = memo(function TaskList({
                   remoteSessionId={remoteSessionId}
                   task={contextMenuTask}
                   isPinned={pinnedTaskIdSet.has(contextMenuTask.taskId)}
+                  isArchived={isArchived}
+                  organizationActions={organizationActions}
                   intl={intl}
                   onTogglePinTask={handleTogglePinTask}
                   onStartRenameTask={handleStartRenameTask}
@@ -467,13 +486,15 @@ export const TaskList = memo(function TaskList({
           )}
         </div>
         {hasMore && onShowMore ? (
-          <div className="cursor-pointer pl-8.5">
-            <span
-              className="text-ui-base text-foreground-subtlest hover:text-foreground-subtle"
+          <div className="pl-8.5">
+            <button
+              type="button"
+              data-task-list-show-more="true"
+              className="rounded-sm bg-transparent p-0 text-ui-sm text-foreground-subtle outline-none transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30"
               onClick={onShowMore}
             >
               {intl.formatMessage({ id: "taskList.showMore" })}
-            </span>
+            </button>
           </div>
         ) : null}
       </div>

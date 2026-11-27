@@ -1,9 +1,11 @@
 /* eslint-disable max-lines -- workspace 的 task、自动化与插件市场共享浏览器式历史，集中处理才能保证前进/后退目标一致。 */
-import { useCallback } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import {
   canGoBack as navCanGoBack,
   canGoForward as navCanGoForward,
+  goBack,
+  goForward,
   isAutomationsNavEntry,
   isPluginStoreNavEntry,
   type AutomationsNavigationTab,
@@ -11,7 +13,7 @@ import {
 import { shouldBlockTaskSelectionDuringModelRestart } from "@/lib/taskSwitchGuard.js";
 import { logger } from "@/logger.js";
 import { toast } from "@/components/ui/toast.js";
-import { getVisibleTaskMetas, useCCbuddySessionStore } from "@/store/ccbuddySessionStore.js";
+import { useCCbuddySessionStore } from "@/store/ccbuddySessionStore.js";
 import { buildTaskEntityKey, buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
 import {
   markTaskQueryCacheScopesStale,
@@ -20,11 +22,16 @@ import {
   setTaskQueryCacheUnreadOverlay,
   useTaskQueryCacheStore,
 } from "@/store/taskQueryCacheStore.js";
-import { taskNavigationTargetExists } from "@/lib/taskNavigationTarget.js";
 import { getRemoteWorkspaceSession } from "@/store/remoteWorkspaceSessionStore.js";
 import { useTabStoreApi } from "@/store/TabStoreProvider.js";
 import { isWorkspaceTab } from "@/store/tabStore.js";
 import { bumpTaskListMembershipVersion } from "@/v4/taskListMembershipVersion.js";
+import {
+  onTaskNavigationCommitted,
+  onTaskNavigationRequested,
+} from "@/store/ccbuddySessionStoreNavigation.js";
+import { ensureTaskNavigationWorkspace } from "@/app-shell/taskNavigationWorkspace.js";
+import { selectWorkbenchSession } from "@/v4/workbenchSessionPlacement.js";
 
 export interface AutomationsNavigationTarget {
   workspacePath: string;
@@ -59,9 +66,16 @@ export function useWorkspaceTaskNavigation({
   const taskNavHistory = useCCbuddySessionStore((s) => s.taskNavHistory);
   const taskNavPushAutomations = useCCbuddySessionStore((s) => s.taskNavPushAutomations);
   const taskNavPushPluginStore = useCCbuddySessionStore((s) => s.taskNavPushPluginStore);
-  const taskNavGoBack = useCCbuddySessionStore((s) => s.taskNavGoBack);
-  const taskNavGoForward = useCCbuddySessionStore((s) => s.taskNavGoForward);
-  const removeTaskFromNavHistory = useCCbuddySessionStore((s) => s.removeTaskFromNavHistory);
+  const navigationVersion = useRef(0);
+  useEffect(() => {
+    const subscription = onTaskNavigationCommitted(() => {
+      navigationVersion.current += 1;
+    });
+    return () => {
+      navigationVersion.current += 1;
+      subscription.dispose();
+    };
+  }, []);
 
   const handleSelectTask = useCallback(
     (
@@ -93,12 +107,19 @@ export function useWorkspaceTaskNavigation({
       // 当同一窗口里存在相同路径的多个 remote tab 时，路径映射会命中旧 session，
       // 导致“点开这个任务”却把已读状态写到另一条远端连接上。
       // 这里先激活目标 tab，再从当前激活 tab 上读取更精确的 remoteSessionId。
-      activateTabByPath(
-        targetWorkspacePath,
-        targetWorkspaceIdentityHint
-          ? { workspaceIdentity: targetWorkspaceIdentityHint }
-          : undefined,
-      );
+      // 全局搜索可返回尚未打开的目录；仅 activate 会失败并把用户留在原任务。
+      const workspaceResult = ensureTaskNavigationWorkspace({
+        workspacePath: targetWorkspacePath,
+        workspaceIdentity: targetWorkspaceIdentityHint,
+        activateTabByPath,
+        addLocalWorkspaceTab: (path) => {
+          tabStoreApi.getState().addTab(path);
+        },
+      });
+      if (!workspaceResult.accepted) {
+        toast(intl.formatMessage({ id: "automations.runs.openSessionFailed" }));
+        return;
+      }
       const activeTab = tabStoreApi
         .getState()
         .tabs.find((tab) => tab.id === tabStoreApi.getState().activeTabId);
@@ -224,180 +245,182 @@ export function useWorkspaceTaskNavigation({
     onNavigateToPluginStore?.({ workspacePath: workspaceAbsPath, workspaceIdentity });
   }, [onNavigateToPluginStore, taskNavPushPluginStore, workspaceAbsPath, workspaceIdentity]);
 
+  const navigateHistory = useCallback(
+    async (direction: "back" | "forward") => {
+      const sessionStore = useCCbuddySessionStore.getState();
+      const origin = sessionStore.getWorkspaceState(workspaceAbsPath, workspaceIdentity);
+      if (
+        shouldBlockTaskSelectionDuringModelRestart(
+          origin.modelSwitchPending,
+          origin.modelSwitchStage,
+        )
+      ) {
+        toast(intl.formatMessage({ id: "taskList.switchBlockedByModelRestart" }));
+        return;
+      }
+      const request = ++navigationVersion.current;
+      const originalHistory = sessionStore.taskNavHistory;
+      const originalTabId = tabStoreApi.getState().activeTabId;
+      const isCurrent = () => {
+        const state = useCCbuddySessionStore.getState();
+        const current = state.getWorkspaceState(workspaceAbsPath, workspaceIdentity);
+        return (
+          request === navigationVersion.current &&
+          state.taskNavHistory === originalHistory &&
+          tabStoreApi.getState().activeTabId === originalTabId &&
+          current.activeTaskId === origin.activeTaskId &&
+          current.draftFocusVersion === origin.draftFocusVersion
+        );
+      };
+      const step = direction === "back" ? goBack : goForward;
+      let history = originalHistory;
+      try {
+        for (let next = step(history); next; next = step(history)) {
+          const { entry } = next;
+          if (isAutomationsNavEntry(entry) || isPluginStoreNavEntry(entry)) {
+            if (!isCurrent()) return;
+            useCCbuddySessionStore.setState({ taskNavHistory: next.history });
+            activateTabByPath(entry.workspacePath, { workspaceIdentity: entry.workspaceIdentity });
+            if (isAutomationsNavEntry(entry)) onNavigateToAutomations?.(entry);
+            else onNavigateToPluginStore?.(entry);
+            return;
+          }
+          const targetTab = tabStoreApi
+            .getState()
+            .tabs.find(
+              (tab) =>
+                isWorkspaceTab(tab) &&
+                buildTaskWorkspaceKey(tab.workspacePath, tab.workspaceIdentity) ===
+                  buildTaskWorkspaceKey(entry.workspacePath, entry.workspaceIdentity),
+            );
+          const remoteSessionId =
+            targetTab && isWorkspaceTab(targetTab) ? targetTab.remoteSessionId : undefined;
+          const remote = Boolean(
+            entry.workspaceIdentity ||
+            (targetTab && isWorkspaceTab(targetTab) && targetTab.remoteTarget),
+          );
+          const services = remoteSessionId
+            ? getRemoteWorkspaceSession(remoteSessionId)?.services
+            : remote
+              ? undefined
+              : baseServices;
+          if (!services) throw new Error("Navigation target is disconnected");
+          // 侧栏已迁到项目树，旧缓存未命中不代表删除；只信 Host 索引的明确空结果。
+          // 查询期间不移动真实游标，新选择、草稿或连接换代会使迟到结果失效。
+          const meta = await services.ccbuddyTaskService.getTaskMeta({
+            workspacePath: entry.workspacePath,
+            workspaceIdentity: entry.workspaceIdentity,
+            taskId: entry.taskId,
+          });
+          if (
+            !isCurrent() ||
+            (remoteSessionId && getRemoteWorkspaceSession(remoteSessionId)?.services !== services)
+          )
+            return;
+          if (!meta) {
+            // 只删除本次查询的精确条目，保持当前位置；批量删除重复 task 会跳过相邻目标。
+            history = {
+              entries: history.entries.filter((_, index) => index !== next.history.cursor),
+              cursor: history.cursor - (next.history.cursor < history.cursor ? 1 : 0),
+            };
+            continue;
+          }
+          const targetState = useCCbuddySessionStore
+            .getState()
+            .getWorkspaceState(entry.workspacePath, entry.workspaceIdentity);
+          if (
+            shouldBlockTaskSelectionDuringModelRestart(
+              targetState.modelSwitchPending,
+              targetState.modelSwitchStage,
+            )
+          ) {
+            toast(intl.formatMessage({ id: "taskList.switchBlockedByModelRestart" }));
+            return;
+          }
+          const workspace = ensureTaskNavigationWorkspace({
+            workspacePath: entry.workspacePath,
+            workspaceIdentity: entry.workspaceIdentity,
+            activateTabByPath,
+            addLocalWorkspaceTab: (path) => {
+              tabStoreApi.getState().addTab(path);
+            },
+          });
+          if (!workspace.accepted) throw new Error("Navigation target is disconnected");
+          // 与侧栏选择共用工作台 owner，避免只改 shell activeTaskId 而分屏仍显示原会话。
+          selectWorkbenchSession(
+            origin.activeTaskId
+              ? {
+                  sessionId: origin.activeTaskId,
+                  workspaceScope: { workspacePath: workspaceAbsPath, workspaceIdentity },
+                }
+              : null,
+            {
+              workspacePath: entry.workspacePath,
+              workspaceIdentity: entry.workspaceIdentity,
+              remoteSessionId,
+              sessionId: entry.taskId,
+            },
+          );
+          useCCbuddySessionStore.setState({ taskNavHistory: next.history });
+          handleSelectTask(
+            entry.workspacePath,
+            entry.taskId,
+            entry.workspaceIdentity,
+            meta.unreadAt,
+          );
+          return;
+        }
+        if (isCurrent()) {
+          useCCbuddySessionStore.setState({ taskNavHistory: history });
+          toast(
+            intl.formatMessage({
+              id: direction === "back" ? "taskNav.noMoreBack" : "taskNav.noMoreForward",
+            }),
+          );
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+        logger.warn("[task-navigation] 历史目标查询或打开失败，保留当前选择和历史", {
+          direction,
+          error,
+        });
+        toast(intl.formatMessage({ id: "automations.runs.openSessionFailed" }));
+      }
+    },
+    [
+      activateTabByPath,
+      baseServices,
+      handleSelectTask,
+      intl,
+      onNavigateToAutomations,
+      onNavigateToPluginStore,
+      tabStoreApi,
+      workspaceAbsPath,
+      workspaceIdentity,
+    ],
+  );
   const handleTaskNavBack = useCallback(() => {
-    const currentWorkspaceState = useCCbuddySessionStore
-      .getState()
-      .getWorkspaceState(workspaceAbsPath);
-    if (
-      shouldBlockTaskSelectionDuringModelRestart(
-        currentWorkspaceState.modelSwitchPending,
-        currentWorkspaceState.modelSwitchStage,
-      )
-    ) {
-      logger.info(
-        "[App] 模型运行时重建中，忽略任务后退导航 workspace=" +
-          workspaceAbsPath +
-          " stage=" +
-          currentWorkspaceState.modelSwitchStage,
-      );
-      toast(intl.formatMessage({ id: "taskList.switchBlockedByModelRestart" }));
-      return;
-    }
-
-    let entry = taskNavGoBack();
-    // 性能修复：task meta 恢复/流式同步会高频刷新 query cache。
-    // 历史导航只在命令执行时需要存在性快照，避免 hook 订阅整张 meta 表导致 shell 重渲染。
-    const taskMetaByEntityKey = useTaskQueryCacheStore.getState().taskMetaByEntityKey;
-    while (entry) {
-      const currentEntry = entry;
-      if (isAutomationsNavEntry(currentEntry)) {
-        activateTabByPath(
-          currentEntry.workspacePath,
-          currentEntry.workspaceIdentity
-            ? { workspaceIdentity: currentEntry.workspaceIdentity }
-            : undefined,
-        );
-        onNavigateToAutomations?.({
-          workspacePath: currentEntry.workspacePath,
-          ...(currentEntry.workspaceIdentity
-            ? { workspaceIdentity: currentEntry.workspaceIdentity }
-            : {}),
-          ...(currentEntry.automationId ? { automationId: currentEntry.automationId } : {}),
-          ...(currentEntry.automationTab ? { automationTab: currentEntry.automationTab } : {}),
-        });
-        return;
-      }
-      if (isPluginStoreNavEntry(currentEntry)) {
-        activateTabByPath(
-          currentEntry.workspacePath,
-          currentEntry.workspaceIdentity
-            ? { workspaceIdentity: currentEntry.workspaceIdentity }
-            : undefined,
-        );
-        onNavigateToPluginStore?.(currentEntry);
-        return;
-      }
-      const navWorkspaceState = useCCbuddySessionStore
-        .getState()
-        .getWorkspaceState(currentEntry.workspacePath, currentEntry.workspaceIdentity);
-      const exists = taskNavigationTargetExists({
-        entry: currentEntry,
-        visibleTasks: getVisibleTaskMetas(navWorkspaceState),
-        taskMetaByEntityKey,
-      });
-      if (exists) {
-        handleSelectTask(
-          currentEntry.workspacePath,
-          currentEntry.taskId,
-          currentEntry.workspaceIdentity,
-        );
-        return;
-      }
-
-      // 目标 task 已被删除，从历史中清理并继续尝试
-      removeTaskFromNavHistory(currentEntry.taskId);
-      entry = taskNavGoBack();
-    }
-
-    toast(intl.formatMessage({ id: "taskNav.noMoreBack" }));
-  }, [
-    activateTabByPath,
-    handleSelectTask,
-    intl,
-    onNavigateToAutomations,
-    onNavigateToPluginStore,
-    removeTaskFromNavHistory,
-    taskNavGoBack,
-    workspaceAbsPath,
-  ]);
-
+    void navigateHistory("back");
+  }, [navigateHistory]);
   const handleTaskNavForward = useCallback(() => {
-    const currentWorkspaceState = useCCbuddySessionStore
-      .getState()
-      .getWorkspaceState(workspaceAbsPath);
-    if (
-      shouldBlockTaskSelectionDuringModelRestart(
-        currentWorkspaceState.modelSwitchPending,
-        currentWorkspaceState.modelSwitchStage,
-      )
-    ) {
-      logger.info(
-        "[App] 模型运行时重建中，忽略任务前进导航 workspace=" +
-          workspaceAbsPath +
-          " stage=" +
-          currentWorkspaceState.modelSwitchStage,
-      );
-      toast(intl.formatMessage({ id: "taskList.switchBlockedByModelRestart" }));
-      return;
-    }
-
-    let entry = taskNavGoForward();
-    // 性能修复：只在前进命令触发时读取最新 query cache，避免 task meta 小更新订阅整棵导航 hook。
-    const taskMetaByEntityKey = useTaskQueryCacheStore.getState().taskMetaByEntityKey;
-    while (entry) {
-      const currentEntry = entry;
-      if (isAutomationsNavEntry(currentEntry)) {
-        activateTabByPath(
-          currentEntry.workspacePath,
-          currentEntry.workspaceIdentity
-            ? { workspaceIdentity: currentEntry.workspaceIdentity }
-            : undefined,
-        );
-        onNavigateToAutomations?.({
-          workspacePath: currentEntry.workspacePath,
-          ...(currentEntry.workspaceIdentity
-            ? { workspaceIdentity: currentEntry.workspaceIdentity }
-            : {}),
-          ...(currentEntry.automationId ? { automationId: currentEntry.automationId } : {}),
-          ...(currentEntry.automationTab ? { automationTab: currentEntry.automationTab } : {}),
-        });
-        return;
-      }
-      if (isPluginStoreNavEntry(currentEntry)) {
-        activateTabByPath(
-          currentEntry.workspacePath,
-          currentEntry.workspaceIdentity
-            ? { workspaceIdentity: currentEntry.workspaceIdentity }
-            : undefined,
-        );
-        onNavigateToPluginStore?.(currentEntry);
-        return;
-      }
-      const navWorkspaceState = useCCbuddySessionStore
-        .getState()
-        .getWorkspaceState(currentEntry.workspacePath, currentEntry.workspaceIdentity);
-      const exists = taskNavigationTargetExists({
-        entry: currentEntry,
-        visibleTasks: getVisibleTaskMetas(navWorkspaceState),
-        taskMetaByEntityKey,
-      });
-      if (exists) {
-        handleSelectTask(
-          currentEntry.workspacePath,
-          currentEntry.taskId,
-          currentEntry.workspaceIdentity,
-        );
-        return;
-      }
-
-      removeTaskFromNavHistory(currentEntry.taskId);
-      entry = taskNavGoForward();
-    }
-
-    toast(intl.formatMessage({ id: "taskNav.noMoreForward" }));
-  }, [
-    activateTabByPath,
-    handleSelectTask,
-    intl,
-    onNavigateToAutomations,
-    onNavigateToPluginStore,
-    removeTaskFromNavHistory,
-    taskNavGoForward,
-    workspaceAbsPath,
-  ]);
+    void navigateHistory("forward");
+  }, [navigateHistory]);
 
   const canGoBack = navCanGoBack(taskNavHistory);
   const canGoForward = navCanGoForward(taskNavHistory);
+  // 深层组件的跳转请求（规格 0.13）在这里落地：本 hook 是 handleSelectTask 的唯一持有者，
+  // 订阅放在它这儿才不会出现第二条导航路径。App 只挂一次，所以订阅者唯一。
+  const selectTaskRef = useRef(handleSelectTask);
+  useLayoutEffect(() => {
+    selectTaskRef.current = handleSelectTask;
+  });
+  useEffect(() => {
+    const subscription = onTaskNavigationRequested((request) => {
+      selectTaskRef.current(request.workspacePath, request.taskId, request.workspaceIdentity);
+    });
+    return () => subscription.dispose();
+  }, []);
+
   const currentWorkspaceState = useCCbuddySessionStore
     .getState()
     .getWorkspaceState(workspaceAbsPath);

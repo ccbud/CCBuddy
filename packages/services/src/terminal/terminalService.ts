@@ -1,7 +1,7 @@
 import { accessSync, chmodSync, constants, existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, release } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Emitter, type Event } from "@ccbuddy/rpc";
 import type { IPty } from "node-pty";
 import type { ISettingService } from "../setting/setting.js";
@@ -21,6 +21,8 @@ interface TerminalInstance {
   pty: IPty;
   dataEmitter: Emitter<string>;
   exitEmitter: Emitter<number>;
+  /** 启动时的工作目录；shell 内 cd 之后的目录无法追踪（docs/git/worktree.md §12 第 4 项）。 */
+  cwd: string;
 }
 
 let hasEnsuredNodePtyHelper = false;
@@ -320,8 +322,60 @@ export function resolveTerminalCwd(cwd?: string): string {
   throw new Error("No usable working directory found for terminal startup");
 }
 
+/** 无监听者期间最多保留的 PTY 输出字符数；超出后丢弃最旧的块，保留屏幕上最可能仍可见的尾部。 */
+const TERMINAL_UNSUBSCRIBED_OUTPUT_MAX_CHARS = 1_048_576;
+
+/**
+ * Bug 原因（R3 远端终端 xterm 恒空，2026-09-14）：PTY 的首批输出（bash 提示符在 spawn 后约 10ms 就到达）
+ * 在 renderer 通过 create() 拿到 id 并订阅 onDynamicData 之前就已 fire，而普通 Emitter 在没有监听者时
+ * 直接丢弃事件，ProxyChannel 对 onDynamicXxx 也不做缓冲。本地链路往返只有毫秒级，多数时候能抢在提示符
+ * 之前订阅；远端目标经 SSH 往返 40~200ms，首个提示符必丢，之后 shell 空闲再无输出，用户看到空白终端。
+ * 修法：输出的唯一来源在这里，于是在没有监听者时把输出有界缓存，监听者到来后按序回放再转直通。
+ * 订阅断开（例如远端连接换代）期间同样缓存，避免重连后丢失中间输出；不依赖任何超时。
+ */
+function createBufferedTerminalOutputEmitter(): {
+  emitter: Emitter<string>;
+  push: (data: string) => void;
+} {
+  const pending: string[] = [];
+  let pendingChars = 0;
+  let hasListener = false;
+
+  const emitter: Emitter<string> = new Emitter<string>({
+    // Emitter 会先登记监听者再触发该钩子，因此这里 fire 能直接送达刚订阅的监听者。
+    onWillAddFirstListener: () => {
+      hasListener = true;
+      const buffered = pending.splice(0);
+      pendingChars = 0;
+      for (const chunk of buffered) {
+        emitter.fire(chunk);
+      }
+    },
+    onDidRemoveLastListener: () => {
+      hasListener = false;
+    },
+  });
+
+  return {
+    emitter,
+    push: (data) => {
+      if (hasListener) {
+        emitter.fire(data);
+        return;
+      }
+      pending.push(data);
+      pendingChars += data.length;
+      while (pendingChars > TERMINAL_UNSUBSCRIBED_OUTPUT_MAX_CHARS && pending.length > 1) {
+        pendingChars -= pending.shift()?.length ?? 0;
+      }
+    },
+  };
+}
+
 export function createTerminalService(dependencies: {
   settingService: ISettingService;
+  /** cwd 位于删除中的受管 worktree 时返回 true（docs/git/worktree.md §8.3）。 */
+  isCwdBlocked?: (cwd: string) => boolean;
 }): ITerminalService {
   const terminals = new Map<string, TerminalInstance>();
   let nextId = 0;
@@ -373,9 +427,12 @@ export function createTerminalService(dependencies: {
       });
       const nodePty = await loadNodePtyModule();
       ensureNodePtySpawnHelperExecutable();
-      const dataEmitter = new Emitter<string>();
+      const terminalOutput = createBufferedTerminalOutputEmitter();
+      const dataEmitter = terminalOutput.emitter;
       const exitEmitter = new Emitter<number>();
 
+      // 检查、启动与登记在同一段同步代码中：删除方取得租约后列出的终端一定包含已启动的终端。
+      if (dependencies.isCwdBlocked?.(cwd)) throw new Error("worktree.removing");
       let p: IPty;
       try {
         p = spawnTerminalProcess({
@@ -392,7 +449,7 @@ export function createTerminalService(dependencies: {
         );
       }
 
-      p.onData((data) => dataEmitter.fire(data));
+      p.onData((data) => terminalOutput.push(data));
       p.onExit(({ exitCode }) => {
         exitEmitter.fire(exitCode);
         dataEmitter.dispose();
@@ -400,7 +457,7 @@ export function createTerminalService(dependencies: {
         terminals.delete(id);
       });
 
-      terminals.set(id, { pty: p, dataEmitter, exitEmitter });
+      terminals.set(id, { pty: p, dataEmitter, exitEmitter, cwd });
       return {
         id,
         shell,
@@ -422,6 +479,16 @@ export function createTerminalService(dependencies: {
 
     async dispose(params: { id: string }): Promise<void> {
       cleanupTerminal(params.id);
+    },
+
+    async listTerminalIdsUnderPath(params: { path: string }): Promise<string[]> {
+      const root = resolve(params.path);
+      return [...terminals.entries()]
+        .filter(([, terminal]) => {
+          const rel = relative(root, resolve(terminal.cwd));
+          return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+        })
+        .map(([id]) => id);
     },
 
     onDynamicData(id: string): Event<string> {

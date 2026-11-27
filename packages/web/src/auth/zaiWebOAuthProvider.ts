@@ -1,6 +1,6 @@
 import { BIGMODEL_PROVIDER_ID, ZAI_PROVIDER_ID } from "@ccbuddy/shared";
 import type { OAuthTokenSet, UserInfo } from "@ccbuddy/shared";
-import type { WebOAuthProviderId } from "./browserOAuthCredentialRepo.js";
+import type { WebOAuthProviderId } from "./webOAuthProviderId.js";
 
 export interface WebZaiOAuthProviderConfig {
   authorizeUrl: string;

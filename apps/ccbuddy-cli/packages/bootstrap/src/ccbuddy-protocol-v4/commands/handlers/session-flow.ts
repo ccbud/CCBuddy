@@ -1,3 +1,4 @@
+import { normalizeGenUiInput } from "@ccbuddy/core";
 // 会话流命令组：sendText / stop（模式样板）。
 // 每个命令组一个文件：handler 纯函数 (host, envelope) → CommandResult|undefined，
 // 决策逻辑直驱 core，环境能力走 host 钩子（见 ../types.ts 的过渡标注）。
@@ -7,12 +8,12 @@ import type {
   CommandResult,
 } from "@ccbuddy/shared/ccbuddy-protocol-v4";
 import { isHighspeedProviderId } from "@ccbuddy/shared";
-import { createModelExecutionContext } from "../../../ccbuddy-protocol/model-execution.js";
+import { createModelExecutionContext } from "../../../session-execution/index.js";
 import { mapAttachmentRefsToTurnAttachments } from "../attachment-refs.js";
-import { normalizeGenUiInput } from "@ccbuddy/core";
 import {
   applyHeldQueueDisposition,
   hasPromptInput,
+  resolveOrdinaryQueueModelSelection,
   resolveSubmittedExecutionState,
   V4InputAdmissionRejectedError,
 } from "../input-admission.js";
@@ -24,7 +25,7 @@ import {
   V4PromptRejectedError,
 } from "../prompt-turn.js";
 import { requireRecord } from "../record-access.js";
-import type { V4CommandCoreHost, V4QueuedTurnExecution, V4SessionRecordView } from "../types.js";
+import type { V4CommandCoreHost, V4SessionRecordView, V4TurnExecution } from "../types.js";
 import { V4CommandNoopError } from "../../v4-gateway.js";
 
 /** 等 idle 轮询参数：25ms 间隔、5s 超时。 */
@@ -63,7 +64,6 @@ async function sendText(
   }
   const activeAutomationId = resolveTurnAutomationId({
     automationId: rawPayload.automationId,
-    inputId: envelope.commandId,
   });
   // Bug 根因：Highspeed admission 与 automation 派发来自不同上游；契约漂移时可能把
   // automationId、highspeedMeta 和加速执行材料同时送到同一轮。定时执行身份必须优先：
@@ -92,9 +92,14 @@ async function sendText(
     });
   const routingMode = host.getInputRoutingMode?.(envelope.sessionId ?? "") ?? null;
   const forceStartNow = payload.requestedDelivery === "startNow";
+  // 队首被 composer 编辑态冻结时 Core 可能完全空闲；不强制入队会 startNow 越过冻结项。
+  const queueHeadEditLocked =
+    !forceStartNow &&
+    routingMode === "enqueue" &&
+    host.isQueueHeadEditLocked?.(record.app.sessionId) === true;
   // 加速本轮由「标准 Selection 指向加速 Provider + 单次执行材料」表达；判定必须用 Family
   // 谓词，不能和单个 provider id 常量比较，否则 BigModel 账号的卡会被当成普通轮静默丢弃。
-  const highspeedExecution: V4QueuedTurnExecution | undefined = isHighspeedProviderId(
+  const highspeedExecution: V4TurnExecution | undefined = isHighspeedProviderId(
     payload.modelSelection?.providerId,
   )
     ? payload.modelExecution
@@ -111,17 +116,29 @@ async function sendText(
       routingMode === "guide");
 
   const queueHighspeedTurn = async (): Promise<CommandResult | undefined> => {
-    if (!highspeedExecution) {
+    const highspeedSelection = payload.modelSelection;
+    if (!highspeedExecution || !highspeedSelection) {
       throw new V4InputAdmissionRejectedError(
         "fault.command.inputRejected",
         "Highspeed queue requires turn execution material",
       );
     }
-    // 加速凭据只驻留 CLI 内存：提升时按 (sessionId, sourceCommandId) 取回，绝不进队列事件。
-    host.retainQueuedTurnExecution?.(record.app.sessionId, envelope.commandId, highspeedExecution);
+    const ordinarySelection = resolveOrdinaryQueueModelSelection(
+      record,
+      highspeedExecution.selectionFallback?.target,
+    );
+    const retainQueuedTurnExecution = host.retainQueuedTurnExecution;
+    // Bug 根因：队列曾把单轮 Highspeed Selection 持久化进 QueueItem，撤回编辑会把它
+    // 恢复到 Composer，并污染下一次 fallback。队列只保存普通提交模型；加速 Selection
+    // 与凭据必须作为同一 execution bundle 驻留 CLI 内存。
+    if (retainQueuedTurnExecution) {
+      retainQueuedTurnExecution(record.app.sessionId, envelope.commandId, {
+        modelSelection: highspeedSelection,
+        modelExecution: highspeedExecution,
+      });
+    }
     try {
       const requestedDelivery = routingMode === "guide" ? "guide" : "queue";
-      // 加速轮的 Selection 必须进 canonical intent：提升时只从队列项读模型，不再回看会话。
       const intent = submissionIntent({
         text: payload.text,
         requestedDelivery,
@@ -129,6 +146,10 @@ async function sendText(
         ...(routingMode === "guide" ? { fallbackReasonCode: HIGHSPEED_QUEUE_FALLBACK_REASON } : {}),
         attachmentRefs: payload.attachments,
       });
+      intent.modelSelection = ordinarySelection;
+      if (!retainQueuedTurnExecution) delete intent.highspeed;
+      // 入队与 canonical 编辑入队一致，只提交普通 Selection：Core 用它写会话常驻模型，
+      // execution 不进入准入，只在提升边界由暂存 bundle 应用。
       const queued = await startPromptTurn(host, record, {
         content: payload.text,
         ...(payload.browserAmbientContext
@@ -152,7 +173,9 @@ async function sendText(
         inputId: envelope.commandId,
       };
     } catch (error) {
-      host.deleteQueuedTurnExecution?.(record.app.sessionId, envelope.commandId);
+      if (retainQueuedTurnExecution) {
+        host.deleteQueuedTurnExecution?.(record.app.sessionId, envelope.commandId);
+      }
       throw error;
     }
   };
@@ -164,7 +187,6 @@ async function sendText(
   }
   const foregroundPromotionLeaseId = forceStartNow ? `send-now:${envelope.commandId}` : undefined;
   let foregroundPromotionLeaseAcquired = false;
-  let preempted = false;
   const releaseForegroundPromotionLease = () => {
     if (!foregroundPromotionLeaseAcquired || !foregroundPromotionLeaseId) return;
     record.app.runtime.releaseForegroundPromotionLease(foregroundPromotionLeaseId);
@@ -193,7 +215,7 @@ async function sendText(
         payload.heldQueueDisposition,
         payload.expectedHeldQueueItemIds,
       );
-      preempted = await preemptActiveTurnAndWait(host, record, {
+      await preemptActiveTurnAndWait(host, record, {
         abortMessage: "v4 sendText startNow preempts active turn",
         goalPausedMutationReason: "send_now_goal_paused",
         preserveQueueAutoDrainOnCancel: true,
@@ -235,9 +257,9 @@ async function sendText(
         ? { browserAmbientContext: payload.browserAmbientContext }
         : {}),
       inputId: envelope.commandId,
-      // 立即发送切换了 runtime turn，导致运行中用户输入遗漏 human 提示。
-      // 只按 Core 的实际抢占回执标记纯文本；空闲及附件输入保留原路径。
-      ...(preempted && !attachments?.length ? { inputPresentation: "user_steer" as const } : {}),
+      // 立即发送是用户的新指令：抢占后与空闲时一样按普通用户消息开新一轮，不加中途提示。
+      // 修复原因：原来抢占后标成 user_steer，模型看到"在当前轮继续"的提示；MCS 关时这段提示
+      // 还并入上一次请求已发出的 tool_result，改写了那次请求写入的缓存。
       intent,
       ...(payload.context_refs ? { sharedContextRefs: payload.context_refs } : {}),
       ...turnBackgroundAttributionOf(payload),
@@ -250,6 +272,7 @@ async function sendText(
       // promotion lease 本身属于 Core busy authority；若不声明 requireIdle，
       // 抢占完成后的 startNow 会先落 deferred queue，待 lease 释放后再被自动 drain。
       ...(forceStartNow ? { requireIdle: true } : {}),
+      ...(queueHeadEditLocked ? { requireQueue: true } : {}),
     });
   } catch (error) {
     if (
@@ -392,7 +415,6 @@ export async function waitForSessionIdle(record: V4SessionRecordView): Promise<v
   }
 }
 
-/** 等待旧执行释放，返回 Core 是否实际取消了前台执行。 */
 export async function preemptActiveTurnAndWait(
   host: V4CommandCoreHost,
   record: V4SessionRecordView,
@@ -401,7 +423,7 @@ export async function preemptActiveTurnAndWait(
     goalPausedMutationReason: string;
     preserveQueueAutoDrainOnCancel?: boolean;
   },
-): Promise<boolean> {
+): Promise<void> {
   const bootstrapAbortController = record.activeAbortController;
   // background notification 的 model-only turn 由 Core runtime command
   // 独立持有 foreground authority，不会创建 Bootstrap activeAbortController。
@@ -420,7 +442,6 @@ export async function preemptActiveTurnAndWait(
     }
   }
   await waitForSessionIdle(record);
-  return runtimeStop?.kind === "stopped";
 }
 
 export const sessionFlowHandlers = { sendText, stop };

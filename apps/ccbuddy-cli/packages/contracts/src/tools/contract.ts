@@ -85,6 +85,8 @@ export interface ProviderNativeToolSpec {
 }
 
 export interface ToolPermissionSpec {
+  /** 内置工具在 handler 内收集专用确认；权限规则与 plan 限制仍先执行。 */
+  confirmationHandledByTool?: boolean;
   permission: string;
   reason: string;
   riskLevel: RiskLevel;
@@ -156,6 +158,22 @@ export interface ToolCancellationPolicy {
   supported: boolean;
   cleanup: "none" | "bestEffort" | "required";
   userVisibleMessage: string;
+}
+
+/**
+ * 立即发送抢占（`InputPreemptionAbortReason`）到达时一次工具调用的处理：
+ * `cancel` 照旧立即取消；`wait` 由工具不碰 I/O 立即给出自己的结果（例如前台 Agent 转后台后
+ * 返回 `async_launched`），executor 等它。
+ */
+export type InputPreemptionHandling = "cancel" | "wait";
+
+/**
+ * executor 为每次工具调用提供的输入抢占接管点。工具（或它调用的 port）注册一个判断函数；
+ * 抢占到达时 executor 调用这个函数，工具自己也可以在同一次 abort 里调用它，两边按同一个结果处理。
+ * 没有注册时 executor 照旧取消。判断函数必须同步返回，同一次 abort 里重复调用结果必须一致。
+ */
+export interface InputPreemptionControl {
+  register(decide: () => InputPreemptionHandling): void;
 }
 
 export interface ToolTracePolicy {

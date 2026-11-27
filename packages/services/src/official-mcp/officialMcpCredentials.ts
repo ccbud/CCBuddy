@@ -17,30 +17,21 @@
  */
 import {
   OFFICIAL_MCP_AUTH_HEADER_NAMES,
-  getModelProviderFamilySpec,
   ccbuddyProviderAccountAccessSchema,
+  type OfficialAuthConsumerKind,
   type OfficialMcpAuthFailureReason,
   type CCbuddyAccountAccess,
   type CCbuddyProviderAccountAccess,
 } from "@ccbuddy/shared";
+import {
+  isSameOAuthAccountMaterial,
+  type OAuthAccountMaterial,
+  type OAuthIdentityMaterial,
+} from "#src/oauth/repo/oauthCredentialRepo.js";
 import type { ModelSelectionView } from "@ccbuddy/provider";
 import { createServiceLogger } from "#src/logger/serviceLogger.js";
 
 const log = createServiceLogger("official-mcp");
-
-const CCBUDDY_JWT_TOKEN_KEY = "ccbuddyjwttoken";
-const ACTIVE_OAUTH_PROVIDER_KEY = "oauth:active_provider";
-
-/**
- * MaaS 登录 JWT 的凭证键（`oauth:<provider>:access_token`，见 oauth/repo/oauthCredentialRepo.ts）。
- *
- * 必须按 provider family 精确选择、**禁止跨 family 回退**：拿 ZAI 的业务 JWT 去打 BigModel 的
- * Coding Plan 只会得到一次注定失败的请求，而且失败原因会指向"没有套餐"这种误导结论。
- * 这几行与 bigmodelUsageQuotaProvider 的 reset 通道逻辑等价但独立（见文件头说明）。
- */
-function maasJwtCredentialKey(providerFamily: "zai" | "bigmodel"): string {
-  return `oauth:${getModelProviderFamilySpec(providerFamily).oauthProviderId}:access_token`;
-}
 
 /**
  * 只为日志算出 JWT 的剩余有效期（秒）。**不参与任何控制流**，解析失败返回 undefined。
@@ -91,13 +82,24 @@ export function createCredentialResolvedLogKey(input: {
 
 let lastCredentialResolvedLogKey: string | undefined;
 
+export interface OfficialMcpCredentialResolveOptions {
+  /**
+   * 套餐可选（插件命令进程，技术方案 5.8）：选中连接没有有效套餐时不返回 plan_required，
+   * 只给 CCbuddy 登录身份，由服务端按免费档处理。登录态不完整（缺 MaaS JWT、跨 family）
+   * 仍按 unavailable 返回，绝不把付费用户降成免费。
+   */
+  planOptional?: boolean;
+}
+
 export interface OfficialMcpCredentialResolverDeps {
   accountRequestAuthService: {
     resolveAccessCurrent(
       access: CCbuddyProviderAccountAccess,
     ): Promise<CCbuddyAccountAccess | null>;
   };
-  credentialService: { load(key: string): Promise<string | null | undefined> };
+  getRegistryRevision(): number | null;
+  loadOAuthIdentityMaterial(): Promise<OAuthIdentityMaterial | null>;
+  loadOAuthAccountMaterial(family: "zai" | "bigmodel"): Promise<OAuthAccountMaterial | null>;
   modelSelectionService: {
     getView(): Promise<ModelSelectionView>;
   };
@@ -117,7 +119,7 @@ export interface OfficialMcpCredentialSnapshot {
    * 前缀在 buildOfficialMcpAuthHeaders 里加，与 reset / usage 通道的既有约定一致。
    */
   codingPlanAuthorization?: string;
-  providerFamily: "zai" | "bigmodel";
+  providerFamily: "zai" | "bigmodel" | "zai_cn";
   /** 当前选中连接的产品/额度归属；畸形旧 Team key 无法精确归属时为 null。 */
   planScope: OfficialMcpPlanScope | null;
   /** 实际发往 Server MCP 的身份头 scope；ZAI Team 与 Off-Peak 一致为 null。 */
@@ -215,10 +217,13 @@ function createSelectionFingerprint(registry: ModelSelectionView): string {
 }
 
 type OfficialMcpIdentitySnapshot = {
-  activeProvider: "zai" | "bigmodel";
+  activeProvider: "zai" | "bigmodel" | "zai_cn";
+  userId: string;
+  sessionRevision: string | null;
   jwt: string;
   registry: ModelSelectionView;
   selectionFingerprint: string;
+  registryRevision: number | null;
 };
 
 async function readIdentitySnapshot(
@@ -227,22 +232,30 @@ async function readIdentitySnapshot(
   | { ok: true; snapshot: OfficialMcpIdentitySnapshot }
   | { ok: false; reason: OfficialMcpAuthFailureReason }
 > {
-  const [registry, activeProviderValue, jwtValue] = await Promise.all([
-    deps.modelSelectionService.getView(),
-    deps.credentialService.load(ACTIVE_OAUTH_PROVIDER_KEY),
-    deps.credentialService.load(CCBUDDY_JWT_TOKEN_KEY),
-  ]);
-  const activeProvider = activeProviderValue?.trim();
-  const jwt = jwtValue?.trim() ?? "";
-  if ((activeProvider !== "zai" && activeProvider !== "bigmodel") || !jwt) {
-    return fail("official_auth_unavailable");
-  }
+  const registryRevision = deps.getRegistryRevision();
+  const registry = await deps.modelSelectionService.getView();
+  const identity = await deps.loadOAuthIdentityMaterial();
+  // 读取身份期间套餐 Registry 可能已切换；同步版本检查之后不再 await。
+  if (deps.getRegistryRevision() !== registryRevision) return fail("official_auth_unavailable");
+  if (!identity) return fail("official_auth_unavailable");
+  const activeProvider =
+    identity.loginProvider === "zai"
+      ? "zai"
+      : identity.loginProvider === "bigmodel"
+        ? "bigmodel"
+        : identity.loginProvider === "zai_cn"
+          ? "zai_cn"
+          : null;
+  if (!activeProvider) return fail("official_auth_unavailable");
   return {
     ok: true,
     snapshot: {
       activeProvider,
-      jwt,
+      userId: identity.ccbuddyUserId,
+      sessionRevision: identity.sessionRevision,
+      jwt: identity.ccbuddyJwtToken,
       registry,
+      registryRevision,
       selectionFingerprint: createSelectionFingerprint(registry),
     },
   };
@@ -254,7 +267,10 @@ function isSameIdentitySnapshot(
 ): boolean {
   return (
     before.activeProvider === after.activeProvider &&
+    before.userId === after.userId &&
+    before.sessionRevision === after.sessionRevision &&
     before.jwt === after.jwt &&
+    before.registryRevision === after.registryRevision &&
     before.selectionFingerprint === after.selectionFingerprint
   );
 }
@@ -279,12 +295,12 @@ function identityOnlyOutcome(identity: OfficialMcpIdentitySnapshot): OfficialMcp
  * 解析当前选中连接的官方 MCP 凭证。
  *
  * 防竞态：Registry、动态 Account Access、active provider、ccbuddy JWT 与 MaaS JWT
- * 都可能在解析期间变化。这里在前后各取一次并比对，任一不一致就整轮
- * 重来，绝不拼接两代凭证——既包括"ccbuddy JWT 来自 ZAI 而 MaaS JWT 来自 BigModel"（跨 family 混搭），
- * 也包括"旧 JWT + 新 JWT"（同 family 的 token 轮换）。两轮仍不稳定则按不可用返回。
+ * 都可能在解析期间变化。登录渠道不决定套餐 family；主身份与关联材料必须匹配同一
+ * user ID、revision 和业务 JWT。解析前后再比对选择及关联材料，两轮仍不稳定则返回不可用。
  */
 export async function resolveOfficialMcpCredentials(
   deps: OfficialMcpCredentialResolverDeps,
+  options: OfficialMcpCredentialResolveOptions = {},
 ): Promise<OfficialMcpCredentialOutcome> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const identity = await readIdentitySnapshot(deps);
@@ -307,47 +323,47 @@ export async function resolveOfficialMcpCredentials(
       selectedProvider.provider.access,
     );
     const selected = resolveSelectedPlan(selectedProvider.provider, accountAccess);
-    if (!selected.ok) return selected;
-
-    // ccbuddy JWT 是全局登录身份镜像；只校验 selectedKey 会把 ZAI JWT 与 BigModel key 拼到同一请求。
-    if (identity.snapshot.activeProvider !== selected.plan.providerFamily) {
-      return fail("official_auth_unavailable");
+    if (!selected.ok) {
+      if (!options.planOptional || selected.reason !== "official_auth_plan_required") {
+        return selected;
+      }
+      // 套餐可选：选中的 Coding Plan 连接当前没有有效套餐（过期、类型不符），按只有登录身份处理。
+      // 和上面「没有选中套餐」一样先确认身份没有在解析期间变化。
+      const latestIdentity = await readIdentitySnapshot(deps);
+      if (
+        !latestIdentity.ok ||
+        !isSameIdentitySnapshot(identity.snapshot, latestIdentity.snapshot)
+      ) {
+        continue;
+      }
+      return identityOnlyOutcome(identity.snapshot);
     }
 
-    const maasJwtKey = maasJwtCredentialKey(selected.plan.providerFamily);
-    const codingPlanAuthorization = (await deps.credentialService.load(maasJwtKey))?.trim() ?? "";
-    if (!codingPlanAuthorization) {
-      // 归类为 unavailable 而不是 plan_required：这是登录态不完整（需要重新登录），
-      // 不是"没有套餐"。两个 provider adapter 在登录时都会硬性要求写入该 token，
-      // 因此正常路径不会命中，主要出现在历史迁移过来的旧登录态上。
-      log.warn("official mcp maas jwt missing", {
-        providerFamily: selected.plan.providerFamily,
-        reason: "official_auth_unavailable",
-      });
-      return fail("official_auth_unavailable");
-    }
-
-    const [latestIdentity, latestMaasJwt] = await Promise.all([
-      readIdentitySnapshot(deps),
-      deps.credentialService.load(maasJwtKey),
-    ]);
-    const latestSelectedProvider = latestIdentity.ok
-      ? resolveSelectedProvider(latestIdentity.snapshot.registry)
-      : latestIdentity;
-    const latestAccountAccess = latestSelectedProvider.ok
-      ? await deps.accountRequestAuthService.resolveAccessCurrent(
-          latestSelectedProvider.provider.access,
-        )
-      : null;
+    const material = await deps.loadOAuthAccountMaterial(selected.plan.providerFamily);
+    // 登录渠道和套餐家族可以不同；只能接受主身份绑定的同一份关联材料。
+    if (
+      !material ||
+      material.loginProvider !== identity.snapshot.activeProvider ||
+      material.ccbuddyUserId !== identity.snapshot.userId ||
+      material.sessionRevision !== identity.snapshot.sessionRevision ||
+      material.ccbuddyJwtToken !== identity.snapshot.jwt
+    )
+      continue;
+    const codingPlanAuthorization = material.accessToken.trim();
+    if (!codingPlanAuthorization) return fail("official_auth_unavailable");
+    const latestAccountAccess = await deps.accountRequestAuthService.resolveAccessCurrent(
+      selectedProvider.provider.access,
+    );
+    const latestMaterial = await deps.loadOAuthAccountMaterial(selected.plan.providerFamily);
+    // 最后一项 IO 再读取主身份和 Registry，不能在换号后仍拼装此前的套餐头。
+    const latestIdentity = await readIdentitySnapshot(deps);
     if (
       !latestIdentity.ok ||
       !isSameIdentitySnapshot(identity.snapshot, latestIdentity.snapshot) ||
-      !latestSelectedProvider.ok ||
       JSON.stringify(accountAccess) !== JSON.stringify(latestAccountAccess) ||
-      codingPlanAuthorization !== (latestMaasJwt?.trim() ?? "")
-    ) {
+      !isSameOAuthAccountMaterial(material, latestMaterial)
+    )
       continue;
-    }
 
     // provider 条目只作"该 Coding Plan 连接确实存在"的门槛。业务 key 本身不再是凭证
     // （已切到 MaaS JWT 通道），因此不再要求它有值——否则业务 key 正在刷新的瞬态
@@ -420,6 +436,7 @@ export function buildOfficialMcpAuthHeaders(
 
 /** host handler 透传的请求上下文；不参与凭证选择。 */
 export interface OfficialMcpAuthHeadersRequestContext {
+  consumer: OfficialAuthConsumerKind;
   mcpKey: string;
   pluginId: string;
   targetOrigin: string;
@@ -442,25 +459,33 @@ export function createOfficialMcpAuthHeadersResolver(deps: OfficialMcpCredential
     request?: OfficialMcpAuthHeadersRequestContext,
   ): Promise<OfficialMcpAuthHeadersOutcome>;
 } {
-  let pending: Promise<OfficialMcpAuthHeadersOutcome> | null = null;
+  // 两种消费方的解析结果不同（套餐可选与否），按模式分别合并在飞的请求。
+  const pending = new Map<
+    "plan-required" | "plan-optional",
+    Promise<OfficialMcpAuthHeadersOutcome>
+  >();
 
   return {
-    // request 仅为契约对齐（host handler 已在此之前完成可信校验，见 ccbuddyAgentService）；
+    // request 只用来选解析模式（host handler 已在此之前完成可信校验，见 ccbuddyAgentService）；
     // 凭据是 host 全局状态，**不**按 plugin/mcpKey/workspace 分桶——分桶只会削弱 in-flight
-    // 去重而不增加隔离。参数保留是为了将来审计需要时不必再改接口。
-    resolveHeaders(_request?: OfficialMcpAuthHeadersRequestContext) {
-      if (pending) return pending;
+    // 去重而不增加隔离。
+    resolveHeaders(request?: OfficialMcpAuthHeadersRequestContext) {
+      const mode = request?.consumer === "plugin-command" ? "plan-optional" : "plan-required";
+      const existing = pending.get(mode);
+      if (existing) return existing;
       const inFlight = (async (): Promise<OfficialMcpAuthHeadersOutcome> => {
-        const outcome = await resolveOfficialMcpCredentials(deps);
+        const outcome = await resolveOfficialMcpCredentials(deps, {
+          planOptional: mode === "plan-optional",
+        });
         if (!outcome.ok) return { ok: false, reason: outcome.reason };
         return { ok: true, headers: buildOfficialMcpAuthHeaders(outcome.snapshot) };
       })();
-      pending = inFlight;
+      pending.set(mode, inFlight);
       // 用双 handler 的 then 而非 finally：finally 会派生一个同样 reject 的 promise，
       // 调用方只 await 了 inFlight，那个派生 promise 无人处理会变成 unhandled rejection。
       // 解析抛错也必须清空 slot，否则后续请求会永久复用失败的 Promise。
       const clear = (): void => {
-        if (pending === inFlight) pending = null;
+        if (pending.get(mode) === inFlight) pending.delete(mode);
       };
       inFlight.then(clear, clear);
       return inFlight;

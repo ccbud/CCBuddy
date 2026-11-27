@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleHelp, Loader2 } from "lucide-react";
+import { CircleHelp, LoaderCircle } from "lucide-react";
 import { CCBUDDY_AGENT_PROVIDER, type CCbuddyConfigOption } from "@ccbuddy/shared";
 import { ThoughtLevelCycleControl } from "@/chat-input-toolbar/ThoughtLevelCycleControl.js";
 import type { useCCbuddyIntl } from "@/i18n/IntlProvider.js";
@@ -53,7 +53,7 @@ export function SubagentReasoningField({
         className="inline-flex h-8 items-center gap-1 rounded-lg border border-input-border bg-input px-2 py-1.5 text-ui-base text-foreground-subtle"
       >
         {loading ? (
-          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
         ) : (
           <CircleHelp className="size-4" aria-hidden="true" />
         )}
